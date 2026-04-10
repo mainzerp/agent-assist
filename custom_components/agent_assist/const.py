@@ -4,7 +4,7 @@ DOMAIN = "agent_assist"
 DEFAULT_CONTAINER_URL = "http://localhost:8080"
 CONF_URL = "url"
 CONF_API_KEY = "api_key"
-PLATFORMS = ["conversation"]
+# PLATFORMS moved to __init__.py using Platform enum
 ATTR_CONVERSATION_ID = "conversation_id"
 ATTR_LANGUAGE = "language"
 WS_PATH = "/ws/conversation"
