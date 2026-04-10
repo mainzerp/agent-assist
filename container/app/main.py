@@ -158,7 +158,7 @@ async def lifespan(app: FastAPI):
     general_agent = GeneralAgent(ha_client=ha_client, entity_index=entity_index)
     await registry.register(general_agent)
 
-    light_agent = LightAgent(ha_client=ha_client, entity_index=entity_index)
+    light_agent = LightAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
     await registry.register(light_agent)
 
     music_agent = MusicAgent(ha_client=ha_client, entity_index=entity_index)

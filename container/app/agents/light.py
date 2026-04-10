@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from app.agents.base import BaseAgent
+from app.agents.action_executor import parse_action, execute_action
 from app.models.agent import AgentCard, AgentTask
 
 logger = logging.getLogger(__name__)
@@ -12,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 class LightAgent(BaseAgent):
     """Controls lighting devices via HA REST API."""
+
+    def __init__(self, ha_client=None, entity_index=None, entity_matcher=None) -> None:
+        super().__init__(ha_client=ha_client, entity_index=entity_index)
+        self._entity_matcher = entity_matcher
 
     @property
     def agent_card(self) -> AgentCard:
@@ -40,6 +45,24 @@ class LightAgent(BaseAgent):
 
         response = await self._call_llm(messages)
 
-        # Phase 1.9: parse response for structured action, resolve entity,
-        # execute via ha_client, verify result. For now, return LLM response.
+        # Parse structured action from LLM response
+        action = parse_action(response)
+        if action and self._ha_client:
+            result = await execute_action(
+                action,
+                self._ha_client,
+                self._entity_index,
+                self._entity_matcher,
+            )
+            return {
+                "speech": result["speech"],
+                "action_executed": {
+                    "action": action.get("action"),
+                    "entity_id": result.get("entity_id"),
+                    "success": result.get("success"),
+                    "new_state": result.get("new_state"),
+                },
+            }
+
+        # No action parsed (informational query) -- return LLM text as-is
         return {"speech": response, "action_executed": None}

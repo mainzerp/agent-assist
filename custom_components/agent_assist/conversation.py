@@ -10,6 +10,7 @@ from typing import Any, Literal
 import aiohttp
 
 from homeassistant.components import assist_pipeline, conversation
+from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_URL, CONF_API_KEY, MATCH_ALL
 from homeassistant.core import HomeAssistant
@@ -44,6 +45,7 @@ class AgentAssistConversationEntity(
 
     _attr_has_entity_name = True
     _attr_name = None
+    _attr_supported_features = ConversationEntityFeature.CONTROL
 
     def __init__(self, entry: ConfigEntry, url: str, api_key: str) -> None:
         self._entry = entry
