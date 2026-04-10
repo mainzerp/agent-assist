@@ -12,7 +12,7 @@ import aiohttp
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntity, ConversationInput, ConversationResult
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_URL, CONF_API_KEY
+from homeassistant.const import CONF_URL, CONF_API_KEY, MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers import intent
@@ -42,6 +42,7 @@ class AgentAssistConversationEntity(ConversationEntity):
 
     _attr_has_entity_name = True
     _attr_name = "Agent Assist"
+    _attr_supported_languages = MATCH_ALL
 
     def __init__(self, entry: ConfigEntry, url: str, api_key: str) -> None:
         self._entry = entry
