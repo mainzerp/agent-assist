@@ -5,17 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
 import aiohttp
 
-from homeassistant.components import conversation
-from homeassistant.components.conversation import ConversationEntity, ConversationInput, ConversationResult
+from homeassistant.components import assist_pipeline, conversation
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_URL, CONF_API_KEY, MATCH_ALL
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers import intent
+from homeassistant.helpers import device_registry as dr, intent
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
     DOMAIN,
@@ -30,19 +29,21 @@ logger = logging.getLogger(__name__)
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the conversation entity from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
     async_add_entities([AgentAssistConversationEntity(entry, data["url"], data["api_key"])])
 
 
-class AgentAssistConversationEntity(ConversationEntity):
+class AgentAssistConversationEntity(
+    conversation.ConversationEntity,
+    conversation.AbstractConversationAgent,
+):
     """Conversation entity that bridges HA voice to the agent-assist container."""
 
     _attr_has_entity_name = True
-    _attr_name = "Agent Assist"
-    _attr_supported_languages = MATCH_ALL
+    _attr_name = None
 
     def __init__(self, entry: ConfigEntry, url: str, api_key: str) -> None:
         self._entry = entry
@@ -50,21 +51,35 @@ class AgentAssistConversationEntity(ConversationEntity):
         self._api_key = api_key
         self._session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
-        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}"
+        self._attr_unique_id = entry.entry_id
         self._reconnect_delay = RECONNECT_BASE_DELAY
+        self._attr_device_info = dr.DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="Agent Assist",
+            model="Multi-Agent Assistant",
+            entry_type=dr.DeviceEntryType.SERVICE,
+        )
 
     @property
-    def supported_features(self) -> conversation.ConversationEntityFeature:
-        """Return supported features."""
-        return conversation.ConversationEntityFeature.CONTROL
+    def supported_languages(self) -> list[str] | Literal["*"]:
+        """Return a list of supported languages."""
+        return MATCH_ALL
 
     async def async_added_to_hass(self) -> None:
-        """Initialize WebSocket connection when entity is added."""
+        """When entity is added to Home Assistant."""
+        await super().async_added_to_hass()
+        assist_pipeline.async_migrate_engine(
+            self.hass, "conversation", self._entry.entry_id, self.entity_id
+        )
+        conversation.async_set_agent(self.hass, self._entry, self)
         await self._connect_ws()
 
     async def async_will_remove_from_hass(self) -> None:
-        """Close WebSocket connection when entity is removed."""
+        """When entity will be removed from Home Assistant."""
+        conversation.async_unset_agent(self.hass, self._entry)
         await self._disconnect_ws()
+        await super().async_will_remove_from_hass()
 
     async def _connect_ws(self) -> bool:
         """Establish persistent WebSocket connection to the container."""
@@ -103,7 +118,7 @@ class AgentAssistConversationEntity(ConversationEntity):
             self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
         return connected
 
-    async def async_process(self, user_input: ConversationInput) -> ConversationResult:
+    async def async_process(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         """Process a conversation turn by forwarding to the container."""
         if not await self._ensure_connected():
             # Fallback: try REST endpoint
@@ -116,7 +131,7 @@ class AgentAssistConversationEntity(ConversationEntity):
             await self._disconnect_ws()
             return await self._process_via_rest(user_input)
 
-    async def _process_via_ws(self, user_input: ConversationInput) -> ConversationResult:
+    async def _process_via_ws(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         """Send request via WebSocket and accumulate streaming tokens."""
         payload = {
             "text": user_input.text,
@@ -144,7 +159,7 @@ class AgentAssistConversationEntity(ConversationEntity):
         speech = "".join(speech_parts)
         return self._build_result(speech, final_conversation_id, user_input.language)
 
-    async def _process_via_rest(self, user_input: ConversationInput) -> ConversationResult:
+    async def _process_via_rest(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         """Fallback: send request via REST and get full response."""
         try:
             if self._session is None:
@@ -180,8 +195,8 @@ class AgentAssistConversationEntity(ConversationEntity):
                 user_input.language,
             )
 
-    def _build_result(self, speech: str, conversation_id: str | None, language: str | None) -> ConversationResult:
+    def _build_result(self, speech: str, conversation_id: str | None, language: str | None) -> conversation.ConversationResult:
         """Assemble a ConversationResult from the response."""
         response = intent.IntentResponse(language=language or "en")
         response.async_set_speech(speech)
-        return ConversationResult(response=response, conversation_id=conversation_id)
+        return conversation.ConversationResult(response=response, conversation_id=conversation_id)
