@@ -17,6 +17,37 @@
          :class="messageType === 'error' ? 'alert-error' : 'alert-success'"
          x-text="message"></div>
 
+    <!-- Section 0: LLM Providers -->
+    <details class="card mb-md" open>
+        <summary>LLM Providers</summary>
+        <div class="details-content">
+            <p class="text-muted mb-md" style="font-size: 0.875rem;">
+                Configure API keys for LLM providers. Keys are encrypted at rest.
+            </p>
+            <div style="display:flex; flex-direction:column; gap:0.5rem; max-width:700px;">
+                <template x-for="p in [{id:'openrouter', label:'OpenRouter', placeholder:'sk-or-...', type:'password'}, {id:'groq', label:'Groq', placeholder:'gsk_...', type:'password'}, {id:'anthropic', label:'Anthropic', placeholder:'sk-ant-...', type:'password'}, {id:'ollama', label:'Ollama', placeholder:'http://localhost:11434', type:'url'}]" :key="p.id">
+                    <div style="display:grid; grid-template-columns: 90px 70px 1fr auto; align-items:center; gap:0.5rem; padding:0.4rem 0; border-bottom:1px solid var(--border-subtle, rgba(255,255,255,0.06));">
+                        <span class="form-label" style="margin:0; font-weight:600;" x-text="p.label"></span>
+                        <div>
+                            <span x-show="providers[p.id] && providers[p.id].configured" class="badge badge-teal" style="font-size:0.7rem;"
+                                  x-text="p.id === 'ollama' ? 'Configured' : ('...' + (providers[p.id] && providers[p.id].masked_key || ''))"></span>
+                            <span x-show="!providers[p.id] || !providers[p.id].configured" class="badge" style="font-size:0.7rem; background:var(--danger, #ef4444); color:#fff;">No key</span>
+                        </div>
+                        <input :type="p.type" class="form-input" x-model="providerKeys[p.id]" :placeholder="p.placeholder" style="margin:0;">
+                        <div style="display:flex; gap:0.25rem; flex-shrink:0;">
+                            <button class="btn btn-primary btn-sm" @click="saveProviderKey(p.id)"
+                                x-show="providerKeys[p.id]">Save</button>
+                            <button class="btn btn-secondary btn-sm" @click="testProvider(p.id)">Test</button>
+                        </div>
+                    </div>
+                </template>
+            </div>
+            <div x-show="providerMessage" x-transition class="alert mt-sm"
+                 :class="providerMessageType === 'error' ? 'alert-error' : 'alert-success'"
+                 x-text="providerMessage"></div>
+        </div>
+    </details>
+
     <!-- Section 1: Embedding -->
     <details class="card mb-md" open>
         <summary>Embedding</summary>
@@ -26,16 +57,19 @@
                     <label class="form-label">Provider</label>
                     <select class="form-input" x-model="s['embedding.provider']">
                         <option value="local">local</option>
-                        <option value="external">external</option>
+                        <option value="openrouter">openrouter</option>
+                        <option value="groq">groq</option>
+                        <option value="anthropic">anthropic</option>
+                        <option value="ollama">ollama</option>
+                        <option value="external" x-show="s['embedding.provider'] === 'external'" style="display:none;">external (legacy)</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">Local Model</label>
-                    <input type="text" class="form-input" x-model="s['embedding.local_model']" placeholder="all-MiniLM-L6-v2">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">External Model</label>
-                    <input type="text" class="form-input" x-model="s['embedding.external_model']" placeholder="">
+                    <label class="form-label">Model</label>
+                    <input type="text" class="form-input"
+                           :value="s['embedding.provider'] === 'local' ? s['embedding.local_model'] : s['embedding.external_model']"
+                           @input="if(s['embedding.provider'] === 'local') { s['embedding.local_model'] = $event.target.value } else { s['embedding.external_model'] = $event.target.value }"
+                           :placeholder="getEmbeddingPlaceholder(s['embedding.provider'])">
                 </div>
                 <div class="form-group">
                     <label class="form-label">Dimension</label>
@@ -181,6 +215,15 @@ function settingsPage() {
         weights: {},
         message: '',
         messageType: 'success',
+        providers: {
+            openrouter: { configured: false, masked_key: null },
+            groq: { configured: false, masked_key: null },
+            anthropic: { configured: false, masked_key: null },
+            ollama: { configured: false, url: null }
+        },
+        providerKeys: { openrouter: '', groq: '', anthropic: '', ollama: '' },
+        providerMessage: '',
+        providerMessageType: 'success',
         weightKeys: [
             { key: 'weight.levenshtein', label: 'Levenshtein' },
             { key: 'weight.jaro_winkler', label: 'Jaro-Winkler' },
@@ -190,7 +233,84 @@ function settingsPage() {
         ],
 
         async loadAll() {
-            await Promise.all([this.loadSettings(), this.loadWeights()]);
+            await Promise.all([this.loadSettings(), this.loadWeights(), this.loadProviders()]);
+        },
+
+        async loadProviders() {
+            try {
+                var resp = await fetch('/api/admin/llm-providers', { credentials: 'same-origin' });
+                var data = await resp.json();
+                this.providers = data.providers;
+            } catch (e) {
+                console.error('Failed to load LLM providers', e);
+            }
+        },
+
+        async saveProviderKey(provider) {
+            try {
+                var url, body;
+                if (provider === 'ollama') {
+                    url = '/api/admin/llm-providers/ollama';
+                    body = JSON.stringify({ url: this.providerKeys.ollama });
+                } else {
+                    url = '/api/admin/llm-providers';
+                    body = JSON.stringify({ provider: provider, api_key: this.providerKeys[provider] });
+                }
+                var resp = await fetch(url, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: body,
+                });
+                if (resp.ok) {
+                    this.providerKeys[provider] = '';
+                    await this.loadProviders();
+                    this.showProviderMessage(provider + ' saved.', 'success');
+                } else {
+                    this.showProviderMessage('Failed to save ' + provider + '.', 'error');
+                }
+            } catch (e) {
+                this.showProviderMessage('Network error.', 'error');
+            }
+        },
+
+        async testProvider(provider) {
+            try {
+                var key = this.providerKeys[provider] || null;
+                var resp = await fetch('/api/admin/llm-providers/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ provider: provider, api_key: key }),
+                });
+                var data = await resp.json();
+                if (data.status === 'ok') {
+                    this.showProviderMessage(provider + ' connected successfully!', 'success');
+                } else {
+                    this.showProviderMessage(provider + ': ' + (data.detail || 'Test failed'), 'error');
+                }
+            } catch (e) {
+                this.showProviderMessage('Network error testing ' + provider + '.', 'error');
+            }
+        },
+
+        showProviderMessage(msg, type) {
+            this.providerMessage = msg;
+            this.providerMessageType = type;
+            var self = this;
+            setTimeout(function() { self.providerMessage = ''; }, 4000);
+        },
+
+        getEmbeddingPlaceholder(provider) {
+            var placeholders = {
+                'local': 'all-MiniLM-L6-v2',
+                'openrouter': 'openai/text-embedding-3-small',
+                'groq': 'model-name',
+                'anthropic': 'voyage/voyage-3',
+                'ollama': 'nomic-embed-text',
+                'external': 'provider/model-name'
+            };
+            return placeholders[provider] || 'model-name';
         },
 
         async loadSettings() {

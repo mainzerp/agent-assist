@@ -262,7 +262,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("cache.response.partial_threshold", "0.80", "float", "cache", "Response cache partial match threshold"),
         ("cache.response.max_entries", "20000", "int", "cache", "Response cache max entries (LRU eviction)"),
         # Embedding settings
-        ("embedding.provider", "local", "string", "embedding", "Embedding provider: local or external"),
+        ("embedding.provider", "local", "string", "embedding", "Embedding provider: local, openrouter, groq, anthropic, or ollama"),
         ("embedding.local_model", "all-MiniLM-L6-v2", "string", "embedding", "Local embedding model name"),
         ("embedding.external_model", "", "string", "embedding", "External embedding model (e.g., openai/text-embedding-3-small)"),
         ("embedding.dimension", "384", "int", "embedding", "Embedding dimension (auto-detected from model)"),

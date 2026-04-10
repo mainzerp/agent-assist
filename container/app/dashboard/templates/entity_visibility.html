@@ -120,7 +120,14 @@ function entityVisibility() {
         message: '',
         messageType: 'success',
         loading: false,
-        init() { this.loadAgents(); },
+        init() {
+            this.loadAgents();
+            var params = new URLSearchParams(window.location.search);
+            var preselect = params.get('agent');
+            if (preselect) {
+                this.selectedAgent = preselect;
+            }
+        },
         async loadAgents() {
             try {
                 const resp = await fetch('/api/admin/custom-agents');
@@ -132,6 +139,10 @@ function entityVisibility() {
                 const builtIn = ['orchestrator-agent','general-agent','light-agent','music-agent',
                     'timer-agent','climate-agent','media-agent','scene-agent','automation-agent','security-agent'];
                 this.agentList = builtIn.concat(this.agentList);
+                // If pre-selected via query param, trigger load
+                if (this.selectedAgent) {
+                    this.onAgentSelected();
+                }
             } catch (e) { console.error('Failed to load agents', e); }
         },
         async onAgentSelected() {

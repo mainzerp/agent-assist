@@ -444,3 +444,179 @@ class TestConversationsAPI:
         data = resp.json()
         assert "conversations" in data
         assert "total" in data
+
+
+# ===================================================================
+# LLM Provider API
+# ===================================================================
+
+
+@pytest.mark.integration
+class TestLLMProviderAPI:
+
+    async def test_get_llm_providers_returns_200(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/api/admin/llm-providers")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "providers" in data
+        assert "openrouter" in data["providers"]
+        assert "groq" in data["providers"]
+        assert "anthropic" in data["providers"]
+        assert "ollama" in data["providers"]
+
+    async def test_get_llm_providers_none_configured(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/api/admin/llm-providers")
+        data = resp.json()
+        assert data["providers"]["openrouter"]["configured"] is False
+        assert data["providers"]["groq"]["configured"] is False
+        assert data["providers"]["anthropic"]["configured"] is False
+
+    async def test_put_llm_provider_key(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/llm-providers",
+            json={"provider": "groq", "api_key": "gsk_test_key_12345678"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["provider"] == "groq"
+
+    async def test_put_llm_provider_key_then_get_shows_configured(
+        self, authed_client: httpx.AsyncClient
+    ):
+        await authed_client.put(
+            "/api/admin/llm-providers",
+            json={"provider": "groq", "api_key": "gsk_test_key_12345678"},
+        )
+        resp = await authed_client.get("/api/admin/llm-providers")
+        data = resp.json()
+        assert data["providers"]["groq"]["configured"] is True
+        assert data["providers"]["groq"]["masked_key"] == "5678"
+
+    async def test_put_llm_provider_unknown_returns_400(
+        self, authed_client: httpx.AsyncClient
+    ):
+        resp = await authed_client.put(
+            "/api/admin/llm-providers",
+            json={"provider": "unknown_provider", "api_key": "key"},
+        )
+        assert resp.status_code == 400
+
+    async def test_put_ollama_url(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/llm-providers/ollama",
+            json={"url": "http://myhost:11434"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+
+    async def test_put_ollama_url_then_get_shows_configured(
+        self, authed_client: httpx.AsyncClient
+    ):
+        await authed_client.put(
+            "/api/admin/llm-providers/ollama",
+            json={"url": "http://myhost:11434"},
+        )
+        resp = await authed_client.get("/api/admin/llm-providers")
+        data = resp.json()
+        assert data["providers"]["ollama"]["configured"] is True
+        assert data["providers"]["ollama"]["url"] == "http://myhost:11434"
+
+    async def test_delete_llm_provider_key(self, authed_client: httpx.AsyncClient):
+        # Store a key first
+        await authed_client.put(
+            "/api/admin/llm-providers",
+            json={"provider": "openrouter", "api_key": "sk-or-test1234"},
+        )
+        # Delete it
+        resp = await authed_client.delete("/api/admin/llm-providers/openrouter")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        # Verify it's gone
+        resp = await authed_client.get("/api/admin/llm-providers")
+        data = resp.json()
+        assert data["providers"]["openrouter"]["configured"] is False
+
+    async def test_delete_llm_provider_unknown_returns_400(
+        self, authed_client: httpx.AsyncClient
+    ):
+        resp = await authed_client.delete("/api/admin/llm-providers/unknown_prov")
+        assert resp.status_code == 400
+
+    async def test_test_llm_provider_no_key_returns_error(
+        self, authed_client: httpx.AsyncClient
+    ):
+        resp = await authed_client.post(
+            "/api/admin/llm-providers/test",
+            json={"provider": "groq"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+        assert "No API key" in data["detail"]
+
+    async def test_test_llm_provider_unknown_returns_error(
+        self, authed_client: httpx.AsyncClient
+    ):
+        resp = await authed_client.post(
+            "/api/admin/llm-providers/test",
+            json={"provider": "unknown_prov"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "error"
+
+    async def test_get_configured_providers(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/api/admin/llm-providers/configured")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "providers" in data
+        assert isinstance(data["providers"], list)
+        # Ollama is always included
+        assert "ollama" in data["providers"]
+
+    async def test_get_configured_providers_after_storing_key(
+        self, authed_client: httpx.AsyncClient
+    ):
+        await authed_client.put(
+            "/api/admin/llm-providers",
+            json={"provider": "groq", "api_key": "gsk_test_key_12345678"},
+        )
+        resp = await authed_client.get("/api/admin/llm-providers/configured")
+        data = resp.json()
+        assert "groq" in data["providers"]
+        assert "ollama" in data["providers"]
+
+
+# ===================================================================
+# Entity Visibility Summary API
+# ===================================================================
+
+
+@pytest.mark.integration
+class TestEntityVisibilitySummaryAPI:
+
+    async def test_visibility_summary_empty(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/api/admin/agents/visibility-summary")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "summary" in data
+        assert isinstance(data["summary"], dict)
+
+    async def test_visibility_summary_with_rules(self, authed_client: httpx.AsyncClient):
+        from app.db.repository import EntityVisibilityRepository
+
+        await EntityVisibilityRepository.set_rules("light-agent", [
+            {"rule_type": "entity", "rule_value": "light.kitchen"},
+            {"rule_type": "entity", "rule_value": "light.bedroom"},
+            {"rule_type": "domain", "rule_value": "switch"},
+        ])
+        resp = await authed_client.get("/api/admin/agents/visibility-summary")
+        data = resp.json()
+        summary = data["summary"]
+        assert "light-agent" in summary
+        assert summary["light-agent"]["has_rules"] is True
+        assert "light" in summary["light-agent"]["domains"]
+        assert "switch" in summary["light-agent"]["domains"]

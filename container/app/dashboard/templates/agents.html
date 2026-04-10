@@ -41,13 +41,50 @@
                     </div>
                 </div>
 
+                <!-- Entity visibility badges -->
+                <div class="form-row gap-sm mt-sm" style="display:flex; flex-wrap:wrap; gap:0.25rem;">
+                    <template x-if="visibilitySummary[agent.agent_id] && visibilitySummary[agent.agent_id].has_rules">
+                        <template x-for="domain in visibilitySummary[agent.agent_id].domains" :key="domain">
+                            <a :href="'/dashboard/entity-visibility?agent=' + agent.agent_id"
+                               class="badge badge-teal" style="cursor:pointer; text-decoration:none; font-size:0.75rem;"
+                               x-text="domain"></a>
+                        </template>
+                    </template>
+                    <template x-if="!visibilitySummary[agent.agent_id] || !visibilitySummary[agent.agent_id].has_rules">
+                        <a :href="'/dashboard/entity-visibility?agent=' + agent.agent_id"
+                           class="badge badge-muted" style="cursor:pointer; text-decoration:none; font-size:0.75rem;">All entities</a>
+                    </template>
+                </div>
+
                 <!-- Inline config editor -->
                 <template x-if="agent._editing">
                     <div class="edit-panel">
                         <div class="form-grid">
                             <div class="form-group">
+                                <label class="form-label">Provider</label>
+                                <select class="form-input" x-model="agent._provider" @change="updateModelString(agent, true)"
+                                        x-init="$nextTick(() => { $el.value = agent._provider })">
+                                    <option value="">-- select --</option>
+                                    <template x-for="p in allProviders" :key="p">
+                                        <option :value="p" :selected="agent._provider === p"
+                                                x-text="configuredProviders.indexOf(p) !== -1 ? p : p + ' (no key)'"></option>
+                                    </template>
+                                    <template x-if="agent._provider && allProviders.indexOf(agent._provider) === -1">
+                                        <option :value="agent._provider" x-text="agent._provider" selected></option>
+                                    </template>
+                                </select>
+                            </div>
+                            <div class="form-group">
                                 <label class="form-label">Model</label>
-                                <input type="text" class="form-input" x-model="agent.model" placeholder="default">
+                                <input type="text" class="form-input" x-model="agent._modelName"
+                                       @input="updateModelString(agent, false)"
+                                       :placeholder="getModelPlaceholder(agent._provider)"
+                                       list="model-suggestions">
+                                <datalist id="model-suggestions">
+                                    <template x-for="m in getModelSuggestions(agent._provider)" :key="m">
+                                        <option :value="m"></option>
+                                    </template>
+                                </datalist>
                             </div>
                             <div class="form-group">
                                 <label class="form-label">Timeout (s)</label>
@@ -74,6 +111,7 @@
                         <div class="form-actions">
                             <button class="btn btn-primary btn-sm" @click="saveAgent(agent)">Save</button>
                             <span x-show="agent._saved" class="save-feedback text-sage">Saved</span>
+                            <span x-show="agent._saveError" class="save-feedback" style="color: var(--danger, #ef4444);" x-text="agent._saveError"></span>
                         </div>
                     </div>
                 </template>
@@ -101,8 +139,12 @@ function agentsPage() {
     return {
         agents: [],
         loading: true,
+        allProviders: [],
+        configuredProviders: [],
+        visibilitySummary: {},
         async loadAgents() {
             try {
+                await this.loadConfiguredProviders();
                 var resp = await fetch("/api/admin/agents", { credentials: "same-origin" });
                 var data = await resp.json();
                 this.agents = (data.agents || []).map(function(a) {
@@ -112,12 +154,71 @@ function agentsPage() {
                     a._promptLoading = false;
                     a._promptSaved = false;
                     a._saved = false;
+                    a._saveError = '';
+                    a._provider = '';
+                    a._modelName = '';
+                    if (a.model && a.model.indexOf('/') !== -1) {
+                        a._provider = a.model.split('/')[0];
+                        a._modelName = a.model.substring(a._provider.length + 1);
+                    } else if (a.model) {
+                        a._modelName = a.model;
+                    }
                     return a;
                 });
+                await this.loadVisibilitySummary();
             } catch(e) {
                 console.error("Failed to load agents", e);
             }
             this.loading = false;
+        },
+        async loadConfiguredProviders() {
+            try {
+                var resp = await fetch('/api/admin/llm-providers/configured', { credentials: 'same-origin' });
+                var data = await resp.json();
+                this.allProviders = data.providers || [];
+                this.configuredProviders = data.configured || [];
+            } catch (e) {
+                console.error('Failed to load configured providers', e);
+            }
+        },
+        async loadVisibilitySummary() {
+            try {
+                var resp = await fetch('/api/admin/agents/visibility-summary', { credentials: 'same-origin' });
+                var data = await resp.json();
+                this.visibilitySummary = data.summary || {};
+            } catch (e) {
+                console.error('Failed to load visibility summary', e);
+            }
+        },
+        updateModelString(agent, providerChanged) {
+            if (providerChanged) {
+                agent._modelName = '';
+            }
+            if (agent._provider && agent._modelName) {
+                agent.model = agent._provider + '/' + agent._modelName;
+            } else if (agent._modelName) {
+                agent.model = agent._modelName;
+            } else {
+                agent.model = '';
+            }
+        },
+        getModelSuggestions(provider) {
+            var suggestions = {
+                'openrouter': ['openai/gpt-4o-mini', 'openai/gpt-4o', 'anthropic/claude-3.5-sonnet', 'google/gemini-2.0-flash-001', 'meta-llama/llama-3.1-8b-instruct'],
+                'groq': ['llama-3.1-8b-instant', 'llama-3.1-70b-versatile', 'mixtral-8x7b-32768', 'gemma2-9b-it'],
+                'anthropic': ['claude-3-haiku-20240307', 'claude-3-5-sonnet-20241022', 'claude-3-opus-20240229'],
+                'ollama': ['llama3', 'mistral', 'codellama', 'gemma2']
+            };
+            return suggestions[provider] || [];
+        },
+        getModelPlaceholder(provider) {
+            var placeholders = {
+                'openrouter': 'openai/gpt-4o-mini',
+                'groq': 'llama-3.1-8b-instant',
+                'anthropic': 'claude-3-haiku-20240307',
+                'ollama': 'llama3'
+            };
+            return placeholders[provider] || 'model-name';
         },
         async toggleAgent(agent) {
             var newEnabled = agent.enabled == 1 ? false : true;
@@ -134,8 +235,9 @@ function agentsPage() {
             }
         },
         async saveAgent(agent) {
+            agent._saveError = '';
             try {
-                await fetch("/api/admin/agents/" + agent.agent_id, {
+                var resp = await fetch("/api/admin/agents/" + agent.agent_id, {
                     method: "PUT",
                     headers: { "Content-Type": "application/json" },
                     credentials: "same-origin",
@@ -148,10 +250,19 @@ function agentsPage() {
                         description: agent.description || null
                     })
                 });
+                if (!resp.ok) {
+                    var errData = null;
+                    try { errData = await resp.json(); } catch(_) {}
+                    agent._saveError = (errData && errData.detail) || ('Error ' + resp.status);
+                    setTimeout(function() { agent._saveError = ''; }, 5000);
+                    return;
+                }
                 agent._saved = true;
                 setTimeout(function() { agent._saved = false; }, 2000);
             } catch(e) {
                 console.error("Failed to save agent config", e);
+                agent._saveError = 'Network error';
+                setTimeout(function() { agent._saveError = ''; }, 5000);
             }
         },
         async loadPrompt(agent) {
