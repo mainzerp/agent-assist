@@ -35,6 +35,10 @@ class TracingMiddleware(BaseHTTPMiddleware):
         start_time = datetime.now(timezone.utc).isoformat()
         status_code = 500
 
+        root_span_id = uuid.uuid4().hex[:12]
+        request.state.root_span_id = root_span_id
+        span_collector._span_stack.append(root_span_id)
+
         try:
             response = await call_next(request)
             status_code = response.status_code
@@ -42,10 +46,14 @@ class TracingMiddleware(BaseHTTPMiddleware):
             status_code = 500
             raise
         finally:
+            if span_collector._span_stack:
+                span_collector._span_stack.pop()
+
             duration_ms = (time.perf_counter() - t0) * 1000
 
             # Record the top-level HTTP span
             span_collector._spans.append({
+                "span_id": root_span_id,
                 "trace_id": trace_id,
                 "span_name": f"{method} {path}",
                 "agent_id": None,
@@ -61,6 +69,13 @@ class TracingMiddleware(BaseHTTPMiddleware):
                 await span_collector.flush()
             except Exception:
                 logger.warning("Failed to flush spans for trace %s", trace_id, exc_info=True)
+
+            # Update trace summary duration (fire-and-forget)
+            try:
+                from app.db.repository import TraceSummaryRepository
+                await TraceSummaryRepository.update_duration(trace_id, round(duration_ms, 2))
+            except Exception:
+                pass
 
         response.headers["X-Trace-Id"] = trace_id
         logger.info(

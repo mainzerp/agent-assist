@@ -129,7 +129,7 @@ class TestAgentConfig:
         cfg = AgentConfig(agent_id="test")
         assert cfg.enabled is True
         assert cfg.timeout == 5
-        assert cfg.temperature == 0.7
+        assert cfg.temperature == 0.2
 
     def test_factory(self):
         cfg = make_agent_config(enabled=False, temperature=0.3)

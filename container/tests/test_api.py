@@ -429,6 +429,152 @@ class TestTracesAPI:
         resp = await authed_client.get("/api/admin/traces/nonexistent-trace-id")
         assert resp.status_code == 404
 
+    async def test_list_traces_with_search(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/api/admin/traces?search=light")
+        assert resp.status_code == 200
+
+    async def test_list_traces_with_agent_filter(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/api/admin/traces?agent=light-agent")
+        assert resp.status_code == 200
+
+    async def test_export_traces_csv(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/api/admin/traces/export")
+        assert resp.status_code == 200
+        assert "text/csv" in resp.headers.get("content-type", "")
+
+    async def test_list_labels(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/api/admin/traces/labels")
+        assert resp.status_code == 200
+        assert "labels" in resp.json()
+
+    async def test_update_label_not_found(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/traces/nonexistent/label",
+            json={"label": "test"},
+        )
+        assert resp.status_code == 404
+
+    async def test_trace_detail_returns_three_communication_entries(self, authed_client: httpx.AsyncClient):
+        """Trace detail should build 3 agent_communication entries for the full round-trip."""
+        summary = {
+            "trace_id": "t-comm-3",
+            "conversation_id": "conv-1",
+            "created_at": "2024-01-01T00:00:00",
+            "total_duration_ms": 100,
+            "user_input": "turn on the light",
+            "final_response": "Done, light is on.",
+            "routing_agent": "light-agent",
+            "routing_confidence": 0.9,
+            "routing_duration_ms": 20,
+            "routing_reasoning": None,
+            "agent_instructions": None,
+            "label": None,
+            "source": "api",
+        }
+        spans = [
+            {
+                "span_name": "classify",
+                "agent_id": "orchestrator",
+                "start_time": "2024-01-01T00:00:00",
+                "duration_ms": 20,
+                "status": "ok",
+                "metadata": {
+                    "target_agent": "light-agent",
+                    "condensed_task": "Turn on the light",
+                    "confidence": 0.9,
+                    "routing_cached": False,
+                },
+            },
+            {
+                "span_name": "dispatch",
+                "agent_id": "light-agent",
+                "start_time": "2024-01-01T00:00:01",
+                "duration_ms": 80,
+                "status": "ok",
+                "metadata": {"agent_response": "Light turned on."},
+            },
+        ]
+        with patch("app.api.routes.traces_api.TraceSummaryRepository") as mock_summary, \
+             patch("app.api.routes.traces_api.TraceSpanRepository") as mock_spans:
+            mock_summary.get = AsyncMock(return_value=summary)
+            mock_spans.get_trace_spans = AsyncMock(return_value=spans)
+            resp = await authed_client.get("/api/admin/traces/t-comm-3")
+        assert resp.status_code == 200
+        data = resp.json()
+        comms = data["agent_communication"]
+        assert len(comms) == 3
+        assert comms[0]["from_agent"] == "user"
+        assert comms[0]["to_agent"] == "orchestrator"
+        assert comms[0]["task"] == "turn on the light"
+        assert comms[1]["from_agent"] == "orchestrator"
+        assert comms[1]["to_agent"] == "light-agent"
+        assert comms[1]["task"] == "Turn on the light"
+        assert comms[1]["response"] == "Light turned on."
+        assert comms[2]["from_agent"] == "light-agent"
+        assert comms[2]["to_agent"] == "orchestrator"
+        assert comms[2]["task"] == ""
+        assert comms[2]["response"] == "Done, light is on."
+        assert comms[2]["response_unchanged"] is False
+
+    async def test_trace_communication_task_pass_through(self, authed_client: httpx.AsyncClient):
+        """When condensed_task == user_input, step 2 should have task_pass_through=True."""
+        summary = {
+            "trace_id": "t-pass",
+            "conversation_id": "conv-1",
+            "created_at": "2024-01-01T00:00:00",
+            "total_duration_ms": 100,
+            "user_input": "turn on the light",
+            "final_response": "Done.",
+            "routing_agent": "light-agent",
+            "routing_confidence": 0.9,
+            "routing_duration_ms": 20,
+            "routing_reasoning": None,
+            "agent_instructions": None,
+            "label": None,
+            "source": "api",
+        }
+        spans = [
+            {
+                "span_name": "classify",
+                "agent_id": "orchestrator",
+                "start_time": "2024-01-01T00:00:00",
+                "duration_ms": 20,
+                "status": "ok",
+                "metadata": {
+                    "target_agent": "light-agent",
+                    "condensed_task": "turn on the light",
+                    "confidence": 0.9,
+                    "routing_cached": False,
+                },
+            },
+            {
+                "span_name": "dispatch",
+                "agent_id": "light-agent",
+                "start_time": "2024-01-01T00:00:01",
+                "duration_ms": 80,
+                "status": "ok",
+                "metadata": {"agent_response": "Done."},
+            },
+            {
+                "span_name": "return",
+                "agent_id": "orchestrator",
+                "start_time": "2024-01-01T00:00:02",
+                "duration_ms": 5,
+                "status": "ok",
+                "metadata": {"from_agent": "light-agent", "final_response": "Done.", "mediated": False},
+            },
+        ]
+        with patch("app.api.routes.traces_api.TraceSummaryRepository") as mock_summary, \
+             patch("app.api.routes.traces_api.TraceSpanRepository") as mock_spans:
+            mock_summary.get = AsyncMock(return_value=summary)
+            mock_spans.get_trace_spans = AsyncMock(return_value=spans)
+            resp = await authed_client.get("/api/admin/traces/t-pass")
+        assert resp.status_code == 200
+        data = resp.json()
+        comms = data["agent_communication"]
+        assert comms[1]["task_pass_through"] is True
+        assert comms[2]["response_unchanged"] is True
+
 
 # ===================================================================
 # Conversations API
@@ -609,9 +755,9 @@ class TestEntityVisibilitySummaryAPI:
         from app.db.repository import EntityVisibilityRepository
 
         await EntityVisibilityRepository.set_rules("light-agent", [
-            {"rule_type": "entity", "rule_value": "light.kitchen"},
-            {"rule_type": "entity", "rule_value": "light.bedroom"},
-            {"rule_type": "domain", "rule_value": "switch"},
+            {"rule_type": "domain_include", "rule_value": "light"},
+            {"rule_type": "domain_include", "rule_value": "switch"},
+            {"rule_type": "domain_exclude", "rule_value": "sensor"},
         ])
         resp = await authed_client.get("/api/admin/agents/visibility-summary")
         data = resp.json()
@@ -620,3 +766,29 @@ class TestEntityVisibilitySummaryAPI:
         assert summary["light-agent"]["has_rules"] is True
         assert "light" in summary["light-agent"]["domains"]
         assert "switch" in summary["light-agent"]["domains"]
+        assert "sensor" in summary["light-agent"]["excluded_domains"]
+
+
+@pytest.mark.integration
+class TestEntityVisibilityRuleTypeValidation:
+
+    async def test_put_invalid_rule_type_returns_422(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/entity-visibility/light-agent",
+            json={"rules": [{"rule_type": "bogus", "rule_value": "light"}]},
+        )
+        assert resp.status_code == 422
+        data = resp.json()
+        assert "Invalid rule_type" in data["detail"]
+
+    async def test_put_valid_rule_type_succeeds(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/entity-visibility/light-agent",
+            json={"rules": [
+                {"rule_type": "domain_include", "rule_value": "light"},
+                {"rule_type": "entity_include", "rule_value": "switch.kitchen"},
+            ]},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["rules_count"] == 2

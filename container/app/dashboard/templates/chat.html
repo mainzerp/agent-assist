@@ -1,0 +1,173 @@
+{% extends "dashboard_base.html" %}
+{% block page_title %}Chat{% endblock %}
+{% block nav_chat %}active{% endblock %}
+{% block header_title %}Chat{% endblock %}
+{% block page_content %}
+<div x-data="chatPage()" x-init="init()">
+
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">Chat Test Interface</h2>
+            <p class="page-subtitle">Send messages and see real-time streamed responses from the agent pipeline.</p>
+        </div>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <button class="btn btn-secondary btn-sm" @click="clearChat()">Clear</button>
+            <span class="text-mono text-muted" style="font-size: 0.75rem;" x-show="conversationId" x-text="'Conv: ' + (conversationId || '').substring(0, 8) + '...'"></span>
+        </div>
+    </div>
+
+    <div class="card chat-container">
+        <!-- Message area -->
+        <div class="chat-messages" x-ref="messages">
+            <template x-if="messages.length === 0">
+                <div class="empty-state" style="margin: auto;">
+                    <p class="text-muted">Send a message to start a conversation.</p>
+                </div>
+            </template>
+            <template x-for="(msg, i) in messages" :key="i">
+                <div>
+                    <div class="chat-bubble-label" x-text="msg.role === 'user' ? 'You' : 'Assistant'"></div>
+                    <div class="chat-bubble"
+                         :class="{
+                             'chat-bubble-user': msg.role === 'user',
+                             'chat-bubble-assistant': msg.role === 'assistant',
+                             'chat-bubble-error': msg.role === 'error'
+                         }"
+                         x-text="msg.text">
+                    </div>
+                </div>
+            </template>
+            <template x-if="streaming">
+                <div>
+                    <div class="chat-bubble-label">Assistant</div>
+                    <div class="chat-bubble chat-bubble-assistant">
+                        <span x-text="streamBuffer"></span>
+                        <span class="chat-typing-indicator">...</span>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Input bar -->
+        <div class="chat-input-bar">
+            <input type="text"
+                   class="form-input"
+                   placeholder="Type a message..."
+                   x-model="input"
+                   @keydown.enter="sendMessage()"
+                   :disabled="streaming">
+            <button class="btn btn-primary" @click="sendMessage()" :disabled="streaming || !input.trim()">
+                Send
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+function chatPage() {
+    return {
+        messages: [],
+        input: '',
+        conversationId: null,
+        streaming: false,
+        streamBuffer: '',
+
+        init() {
+            this.$nextTick(() => {
+                const el = this.$refs.messages?.parentElement?.querySelector('input');
+                if (el) el.focus();
+            });
+        },
+
+        clearChat() {
+            this.messages = [];
+            this.conversationId = null;
+            this.input = '';
+            this.streaming = false;
+            this.streamBuffer = '';
+        },
+
+        scrollToBottom() {
+            this.$nextTick(() => {
+                const el = this.$refs.messages;
+                if (el) el.scrollTop = el.scrollHeight;
+            });
+        },
+
+        async sendMessage() {
+            const text = this.input.trim();
+            if (!text || this.streaming) return;
+
+            this.messages.push({ role: 'user', text });
+            this.input = '';
+            this.scrollToBottom();
+
+            this.streaming = true;
+            this.streamBuffer = '';
+
+            try {
+                const resp = await fetch('/api/admin/chat/stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: text,
+                        conversation_id: this.conversationId,
+                    }),
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.text();
+                    this.messages.push({ role: 'error', text: 'Error: ' + (err || resp.statusText) });
+                    this.streaming = false;
+                    this.scrollToBottom();
+                    return;
+                }
+
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            if (data.token) {
+                                this.streamBuffer += data.token;
+                                this.scrollToBottom();
+                            }
+                            if (data.done) {
+                                if (data.conversation_id) {
+                                    this.conversationId = data.conversation_id;
+                                }
+                            }
+                        } catch (e) {
+                            // Ignore parse errors on partial chunks
+                        }
+                    }
+                }
+
+                if (this.streamBuffer) {
+                    this.messages.push({ role: 'assistant', text: this.streamBuffer });
+                } else {
+                    this.messages.push({ role: 'assistant', text: '(empty response)' });
+                }
+            } catch (e) {
+                this.messages.push({ role: 'error', text: 'Request failed: ' + e.message });
+            }
+
+            this.streaming = false;
+            this.streamBuffer = '';
+            this.scrollToBottom();
+        },
+    };
+}
+</script>
+{% endblock %}

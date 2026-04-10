@@ -175,6 +175,7 @@ class EntityMatcher:
         domain_exclude = set()
         area_include = set()
         area_exclude = set()
+        entity_include = set()
         for rule in rules:
             rt = rule["rule_type"]
             rv = rule["rule_value"]
@@ -186,6 +187,8 @@ class EntityMatcher:
                 area_include.add(rv)
             elif rt == "area_exclude":
                 area_exclude.add(rv)
+            elif rt == "entity_include":
+                entity_include.add(rv)
 
         filtered = []
         for result in results:
@@ -206,5 +209,12 @@ class EntityMatcher:
                 continue
 
             filtered.append(result)
+
+        # entity_include: union with domain/area-filtered results
+        if entity_include:
+            filtered_ids = {r.entity_id for r in filtered}
+            for r in results:
+                if r.entity_id in entity_include and r.entity_id not in filtered_ids:
+                    filtered.append(r)
 
         return filtered

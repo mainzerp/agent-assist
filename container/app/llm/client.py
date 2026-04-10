@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import litellm
@@ -41,7 +42,25 @@ async def complete(
             temperature=temperature,
             **provider_params,
         )
-        return response.choices[0].message.content
+        content = response.choices[0].message.content
+
+        # Single retry on empty response (e.g. rate limiting)
+        if not content:
+            logger.warning(
+                "Empty LLM response for agent=%s model=%s finish_reason=%s, retrying once after 1s",
+                agent_id, model, response.choices[0].finish_reason,
+            )
+            await asyncio.sleep(1)
+            response = await litellm.acompletion(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                **provider_params,
+            )
+            content = response.choices[0].message.content
+
+        return content
     except litellm.exceptions.AuthenticationError:
         logger.error("Authentication failed for agent=%s model=%s -- check API key",
                       agent_id, model)

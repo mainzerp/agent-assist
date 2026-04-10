@@ -187,3 +187,52 @@ class TestDashboardTemplateRendering:
         resp = await dashboard_client.get("/dashboard/logout")
         assert resp.status_code == 303
         assert "/dashboard/login" in resp.headers.get("location", "")
+
+
+# ===================================================================
+# Personality page
+# ===================================================================
+
+
+@pytest.mark.integration
+class TestPersonalityPage:
+
+    async def test_personality_page_accessible(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/personality")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers.get("content-type", "")
+
+    async def test_personality_page_requires_auth(self, no_session_client: httpx.AsyncClient):
+        resp = await no_session_client.get("/dashboard/personality")
+        assert resp.status_code == 303
+
+    async def test_get_personality_config(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/api/admin/personality/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "prompt" in data
+
+    async def test_put_personality_config(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.put(
+            "/api/admin/personality/config",
+            json={"prompt": "You are Lucia, a friendly assistant."},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        # Verify it persisted
+        resp2 = await dashboard_client.get("/api/admin/personality/config")
+        assert resp2.json()["prompt"] == "You are Lucia, a friendly assistant."
+
+    async def test_put_personality_config_empty(self, dashboard_client: httpx.AsyncClient):
+        # Set then clear
+        await dashboard_client.put(
+            "/api/admin/personality/config",
+            json={"prompt": "Something"},
+        )
+        resp = await dashboard_client.put(
+            "/api/admin/personality/config",
+            json={"prompt": ""},
+        )
+        assert resp.status_code == 200
+        resp2 = await dashboard_client.get("/api/admin/personality/config")
+        assert resp2.json()["prompt"] == ""

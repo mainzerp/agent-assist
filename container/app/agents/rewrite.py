@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from app.agents.base import BaseAgent
+from app.db.repository import SettingsRepository
 from app.models.agent import AgentCard, AgentTask
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,12 @@ class RewriteAgent(BaseAgent):
         Falls back to returning cached_text verbatim on any failure.
         """
         system_prompt = self._load_prompt("rewrite")
+        try:
+            personality = await SettingsRepository.get_value("personality.prompt", "")
+            if personality.strip():
+                system_prompt = f"{personality.strip()}\n\n{system_prompt}"
+        except Exception:
+            pass
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": cached_text},

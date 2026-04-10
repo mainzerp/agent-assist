@@ -289,8 +289,12 @@ class TestCacheManager:
         manager, store = self._make_manager()
         store.count.return_value = 0
         store.query.return_value = {"ids": [[]], "distances": [[]], "documents": [[]], "metadatas": [[]]}
-        manager.store_routing("query", "light-agent", 0.95)
+        manager.store_routing("query", "light-agent", 0.95, "Turn on the light")
         store.upsert.assert_called()
+        # Verify condensed_task is in the metadata
+        call_args = store.upsert.call_args
+        metadatas = call_args[1].get("metadatas") or call_args[0][2] if len(call_args[0]) > 2 else call_args[1]["metadatas"]
+        assert metadatas[0]["condensed_task"] == "Turn on the light"
 
     def test_store_response_delegates(self):
         manager, store = self._make_manager()
@@ -351,8 +355,8 @@ class TestCacheManager:
             return mapping.get(key, default)
 
         async def mgr_get_value(key, default=None):
-            if key == "rewrite.enabled":
-                return "false"
+            if key == "personality.prompt":
+                return ""
             return default
 
         with patch("app.cache.routing_cache.SettingsRepository") as mock_rs, \
@@ -383,8 +387,8 @@ class TestCacheManager:
             return mapping.get(key, default)
 
         async def mgr_get_value(key, default=None):
-            if key == "rewrite.enabled":
-                return "false"
+            if key == "personality.prompt":
+                return ""
             return default
 
         with patch("app.cache.routing_cache.SettingsRepository") as mock_rs, \
@@ -394,6 +398,61 @@ class TestCacheManager:
             mock_resps.get_value = AsyncMock(side_effect=response_get_value)
             mock_cms.get_value = AsyncMock(side_effect=mgr_get_value)
             await manager.reload_config()
+
+    def test_routing_cache_stores_condensed_task(self):
+        """Routing cache should persist condensed_task in the ChromaDB metadata."""
+        cache, store = TestRoutingCache()._make_cache()
+        store.count.return_value = 0
+        cache.store("turn on light", "light-agent", 0.95, "Turn on the light")
+        store.upsert.assert_called_once()
+        call_kwargs = store.upsert.call_args
+        metadatas = call_kwargs[1].get("metadatas") or call_kwargs[0][3]
+        assert metadatas[0]["condensed_task"] == "Turn on the light"
+
+    def test_routing_cache_lookup_returns_condensed_task(self):
+        """Routing cache lookup should return the stored condensed_task."""
+        cache, store = TestRoutingCache()._make_cache()
+        store.query.return_value = {
+            "ids": [["entry-1"]],
+            "distances": [[0.05]],
+            "documents": [["turn on light"]],
+            "metadatas": [[{
+                "agent_id": "light-agent",
+                "confidence": "0.95",
+                "hit_count": "0",
+                "condensed_task": "Turn on the light",
+                "created_at": "2025-01-01T00:00:00",
+                "last_accessed": "2025-01-01T00:00:00",
+            }]],
+        }
+        entry = cache.lookup("turn on light")
+        assert entry is not None
+        assert entry.condensed_task == "Turn on the light"
+
+    def test_cache_result_carries_condensed_task(self):
+        """CacheResult should propagate condensed_task from routing entry."""
+        manager, store = self._make_manager()
+        store.query.side_effect = [
+            # Response cache miss
+            {"ids": [[]], "distances": [[]], "documents": [[]], "metadatas": [[]]},
+            # Routing cache hit
+            {
+                "ids": [["r-1"]],
+                "distances": [[0.03]],
+                "documents": [["turn on light"]],
+                "metadatas": [[{
+                    "agent_id": "light-agent",
+                    "confidence": "0.95",
+                    "hit_count": "0",
+                    "condensed_task": "Turn on the light",
+                    "created_at": "2025-01-01T00:00:00",
+                    "last_accessed": "2025-01-01T00:00:00",
+                }]],
+            },
+        ]
+        result = manager._process_inner("turn on light")
+        assert result.hit_type == "routing_hit"
+        assert result.condensed_task == "Turn on the light"
 
 
 # ---------------------------------------------------------------------------

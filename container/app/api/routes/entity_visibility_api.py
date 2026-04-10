@@ -29,6 +29,11 @@ class SetRulesRequest(BaseModel):
     rules: list[VisibilityRule]
 
 
+VALID_RULE_TYPES = {
+    "domain_include", "domain_exclude", "area_include", "area_exclude", "entity_include",
+}
+
+
 @router.get("/{agent_id}")
 async def get_visibility_rules(agent_id: str) -> list[dict[str, Any]]:
     """Get visibility rules for an agent."""
@@ -41,6 +46,13 @@ async def set_visibility_rules(
 ) -> dict[str, Any]:
     """Set visibility rules for an agent."""
     rules = [r.model_dump() for r in body.rules]
+    invalid = [r["rule_type"] for r in rules if r["rule_type"] not in VALID_RULE_TYPES]
+    if invalid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid rule_type(s): {', '.join(set(invalid))}. "
+                   f"Valid types: {', '.join(sorted(VALID_RULE_TYPES))}",
+        )
     await EntityVisibilityRepository.set_rules(agent_id, rules)
     return {"agent_id": agent_id, "rules_count": len(rules)}
 

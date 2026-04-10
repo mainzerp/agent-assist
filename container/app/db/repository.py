@@ -744,6 +744,9 @@ class TraceSpanRepository:
     async def insert_batch(spans: list[dict[str, Any]]) -> None:
         async with get_db() as db:
             for span in spans:
+                meta = dict(span.get("metadata") or {})
+                if span.get("span_id"):
+                    meta["span_id"] = span["span_id"]
                 await db.execute(
                     "INSERT INTO trace_spans "
                     "(trace_id, span_name, agent_id, parent_span, start_time, "
@@ -752,7 +755,7 @@ class TraceSpanRepository:
                      span.get("agent_id"), span.get("parent_span"),
                      span["start_time"], span["duration_ms"],
                      span.get("status", "ok"),
-                     json.dumps(span["metadata"]) if span.get("metadata") else None),
+                     json.dumps(meta) if meta else None),
                 )
             await db.commit()
 
@@ -802,3 +805,246 @@ class TraceSpanRepository:
             )
             await db.commit()
             return cursor.rowcount
+
+
+class TraceSummaryRepository:
+    """CRUD for trace summary records."""
+
+    @staticmethod
+    async def create(data: dict[str, Any]) -> None:
+        agents = data.get("agents")
+        if isinstance(agents, (list, dict)):
+            agents = json.dumps(agents)
+        agent_instructions = data.get("agent_instructions")
+        if isinstance(agent_instructions, (list, dict)):
+            agent_instructions = json.dumps(agent_instructions)
+        async with get_db() as db:
+            await db.execute(
+                "INSERT INTO trace_summary "
+                "(trace_id, conversation_id, user_input, final_response, "
+                "agents, total_duration_ms, label, source, routing_agent, "
+                "routing_confidence, routing_duration_ms, routing_reasoning, "
+                "agent_instructions) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    data.get("trace_id"),
+                    data.get("conversation_id"),
+                    data.get("user_input"),
+                    data.get("final_response"),
+                    agents,
+                    data.get("total_duration_ms"),
+                    data.get("label"),
+                    data.get("source"),
+                    data.get("routing_agent"),
+                    data.get("routing_confidence"),
+                    data.get("routing_duration_ms"),
+                    data.get("routing_reasoning"),
+                    agent_instructions,
+                ),
+            )
+            await db.commit()
+
+    @staticmethod
+    async def list_filtered(
+        search: str | None = None,
+        agent: str | None = None,
+        label: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        page: int = 1,
+        per_page: int = 50,
+    ) -> list[dict[str, Any]]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if search:
+            conditions.append("user_input LIKE ?")
+            params.append(f"%{search}%")
+        if agent:
+            conditions.append("routing_agent = ?")
+            params.append(agent)
+        if label:
+            conditions.append("label = ?")
+            params.append(label)
+        if date_from:
+            conditions.append("created_at >= ?")
+            params.append(date_from)
+        if date_to:
+            conditions.append("created_at <= ?")
+            params.append(date_to)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        offset = (page - 1) * per_page
+        params.extend([per_page, offset])
+
+        async with get_db() as db:
+            cursor = await db.execute(
+                f"SELECT * FROM trace_summary {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                params,
+            )
+            rows = [dict(row) for row in await cursor.fetchall()]
+            for row in rows:
+                if row.get("agents"):
+                    try:
+                        row["agents"] = json.loads(row["agents"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                if row.get("agent_instructions"):
+                    try:
+                        row["agent_instructions"] = json.loads(row["agent_instructions"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            return rows
+
+    @staticmethod
+    async def count_filtered(
+        search: str | None = None,
+        agent: str | None = None,
+        label: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> int:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if search:
+            conditions.append("user_input LIKE ?")
+            params.append(f"%{search}%")
+        if agent:
+            conditions.append("routing_agent = ?")
+            params.append(agent)
+        if label:
+            conditions.append("label = ?")
+            params.append(label)
+        if date_from:
+            conditions.append("created_at >= ?")
+            params.append(date_from)
+        if date_to:
+            conditions.append("created_at <= ?")
+            params.append(date_to)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        async with get_db() as db:
+            cursor = await db.execute(
+                f"SELECT COUNT(*) FROM trace_summary {where}", params,
+            )
+            row = await cursor.fetchone()
+            return row[0]
+
+    @staticmethod
+    async def get(trace_id: str) -> dict[str, Any] | None:
+        async with get_db() as db:
+            cursor = await db.execute(
+                "SELECT * FROM trace_summary WHERE trace_id = ?", (trace_id,)
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            result = dict(row)
+            if result.get("agents"):
+                try:
+                    result["agents"] = json.loads(result["agents"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if result.get("agent_instructions"):
+                try:
+                    result["agent_instructions"] = json.loads(result["agent_instructions"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            return result
+
+    @staticmethod
+    async def update_label(trace_id: str, label: str | None) -> None:
+        async with get_db() as db:
+            await db.execute(
+                "UPDATE trace_summary SET label = ? WHERE trace_id = ?",
+                (label, trace_id),
+            )
+            await db.commit()
+
+    @staticmethod
+    async def list_labels() -> list[str]:
+        async with get_db() as db:
+            cursor = await db.execute(
+                "SELECT DISTINCT label FROM trace_summary "
+                "WHERE label IS NOT NULL AND label != '' ORDER BY label"
+            )
+            return [row[0] for row in await cursor.fetchall()]
+
+    @staticmethod
+    async def list_agents() -> list[str]:
+        async with get_db() as db:
+            cursor = await db.execute(
+                "SELECT DISTINCT routing_agent FROM trace_summary "
+                "WHERE routing_agent IS NOT NULL AND routing_agent != '' "
+                "ORDER BY routing_agent"
+            )
+            agents = [row[0] for row in await cursor.fetchall()]
+            if "orchestrator" not in agents and agents:
+                agents.insert(0, "orchestrator")
+            return agents
+
+    @staticmethod
+    async def export_filtered(
+        search: str | None = None,
+        agent: str | None = None,
+        label: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> list[dict[str, Any]]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if search:
+            conditions.append("user_input LIKE ?")
+            params.append(f"%{search}%")
+        if agent:
+            conditions.append("routing_agent = ?")
+            params.append(agent)
+        if label:
+            conditions.append("label = ?")
+            params.append(label)
+        if date_from:
+            conditions.append("created_at >= ?")
+            params.append(date_from)
+        if date_to:
+            conditions.append("created_at <= ?")
+            params.append(date_to)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(10000)
+
+        async with get_db() as db:
+            cursor = await db.execute(
+                f"SELECT * FROM trace_summary {where} ORDER BY created_at DESC LIMIT ?",
+                params,
+            )
+            rows = [dict(row) for row in await cursor.fetchall()]
+            for row in rows:
+                if row.get("agents"):
+                    try:
+                        row["agents"] = json.loads(row["agents"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                if row.get("agent_instructions"):
+                    try:
+                        row["agent_instructions"] = json.loads(row["agent_instructions"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            return rows
+
+    @staticmethod
+    async def cleanup_old(days: int = 30) -> int:
+        async with get_db() as db:
+            cursor = await db.execute(
+                "DELETE FROM trace_summary WHERE created_at < datetime('now', ?)",
+                (f"-{days} days",),
+            )
+            await db.commit()
+            return cursor.rowcount
+
+    @staticmethod
+    async def update_duration(trace_id: str, duration_ms: float) -> None:
+        async with get_db() as db:
+            await db.execute(
+                "UPDATE trace_summary SET total_duration_ms = ? WHERE trace_id = ?",
+                (duration_ms, trace_id),
+            )
+            await db.commit()

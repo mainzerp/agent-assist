@@ -113,6 +113,22 @@ async def conversations_page(
     return templates.TemplateResponse(request, "conversations.html")
 
 
+@router.get("/chat", response_class=HTMLResponse)
+async def chat_page(
+    request: Request,
+    _session: dict = Depends(require_admin_session_redirect),
+):
+    """Chat test interface."""
+    return templates.TemplateResponse(request, "chat.html")
+
+@router.get("/personality", response_class=HTMLResponse)
+async def personality_page(
+    request: Request,
+    _session: dict = Depends(require_admin_session_redirect),
+):
+    """Personality configuration page."""
+    return templates.TemplateResponse(request, "personality.html")
+
 @router.get("/cache", response_class=HTMLResponse)
 async def cache_page(
     request: Request,

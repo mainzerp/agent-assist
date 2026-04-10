@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from app.a2a.protocol import JsonRpcRequest
+from app.analytics.tracer import SpanCollector
 from app.models.conversation import ConversationRequest, ConversationResponse, StreamToken
 from app.models.agent import AgentTask
 from app.security.auth import require_api_key, require_api_key_ws
@@ -27,7 +28,7 @@ def set_dispatcher(dispatcher) -> None:
     _dispatcher = dispatcher
 
 
-def _build_a2a_request(conv_request: ConversationRequest, method: str) -> tuple[JsonRpcRequest, AgentTask]:
+def _build_a2a_request(conv_request: ConversationRequest, method: str, span_collector=None) -> tuple[JsonRpcRequest, AgentTask]:
     """Convert a ConversationRequest into an A2A JsonRpcRequest + AgentTask."""
     task = AgentTask(
         description=conv_request.text,
@@ -38,7 +39,11 @@ def _build_a2a_request(conv_request: ConversationRequest, method: str) -> tuple[
     # Route all requests through the orchestrator for intent classification
     a2a_request = JsonRpcRequest(
         method=method,
-        params={"agent_id": "orchestrator", "task": task.model_dump()},
+        params={
+            "agent_id": "orchestrator",
+            "task": task.model_dump(),
+            "_span_collector": span_collector,
+        },
         id=request_id,
     )
     return a2a_request, task
@@ -46,42 +51,59 @@ def _build_a2a_request(conv_request: ConversationRequest, method: str) -> tuple[
 
 @router.post("/api/conversation", response_model=ConversationResponse)
 async def conversation_rest(
-    request: ConversationRequest,
+    request: Request,
+    conv_request: ConversationRequest,
     _: str = Depends(require_api_key),
 ):
     """REST endpoint -- full response."""
-    a2a_request, _ = _build_a2a_request(request, "message/send")
+    span_collector = getattr(request.state, "span_collector", None)
+    if span_collector:
+        span_collector.source = "ha"
+    a2a_request, _ = _build_a2a_request(conv_request, "message/send", span_collector)
     response = await _dispatcher.dispatch(a2a_request)
 
     if response.error:
         return ConversationResponse(
             speech=f"Error: {response.error.message}",
-            conversation_id=request.conversation_id,
+            conversation_id=conv_request.conversation_id,
         )
 
     result = response.result or {}
     return ConversationResponse(
         speech=result.get("speech", ""),
-        conversation_id=request.conversation_id,
+        conversation_id=conv_request.conversation_id,
     )
 
 
 @router.post("/api/conversation/stream")
 async def conversation_sse(
-    request: ConversationRequest,
+    request: Request,
+    conv_request: ConversationRequest,
     _: str = Depends(require_api_key),
 ):
     """SSE streaming endpoint."""
-    a2a_request, _ = _build_a2a_request(request, "message/stream")
+    span_collector = getattr(request.state, "span_collector", None)
+    if span_collector:
+        span_collector.source = "ha"
+    a2a_request, _ = _build_a2a_request(conv_request, "message/stream", span_collector)
 
     async def generate():
-        async for chunk in _dispatcher.dispatch_stream(a2a_request):
-            token = StreamToken(
-                token=chunk.result.get("token", ""),
-                done=chunk.done,
-                conversation_id=request.conversation_id if chunk.done else None,
-            )
-            yield f"data: {token.model_dump_json()}\n\n"
+        root_span_id = getattr(request.state, "root_span_id", None)
+        if span_collector and root_span_id:
+            span_collector._span_stack.append(root_span_id)
+        try:
+            async for chunk in _dispatcher.dispatch_stream(a2a_request):
+                token = StreamToken(
+                    token=chunk.result.get("token", ""),
+                    done=chunk.done,
+                    conversation_id=conv_request.conversation_id if chunk.done else None,
+                )
+                yield f"data: {token.model_dump_json()}\n\n"
+        finally:
+            if span_collector and root_span_id and root_span_id in span_collector._span_stack:
+                span_collector._span_stack.remove(root_span_id)
+            if span_collector:
+                await span_collector.flush()
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -97,14 +119,19 @@ async def ws_conversation(
         while True:
             data = await websocket.receive_json()
             conv_request = ConversationRequest(**data)
-            a2a_request, _ = _build_a2a_request(conv_request, "message/stream")
+            trace_id = uuid.uuid4().hex[:16]
+            span_collector = SpanCollector(trace_id)
+            a2a_request, _ = _build_a2a_request(conv_request, "message/stream", span_collector)
 
-            async for chunk in _dispatcher.dispatch_stream(a2a_request):
-                token = StreamToken(
-                    token=chunk.result.get("token", ""),
-                    done=chunk.done,
-                    conversation_id=conv_request.conversation_id if chunk.done else None,
-                )
-                await websocket.send_json(token.model_dump())
+            try:
+                async for chunk in _dispatcher.dispatch_stream(a2a_request):
+                    token = StreamToken(
+                        token=chunk.result.get("token", ""),
+                        done=chunk.done,
+                        conversation_id=conv_request.conversation_id if chunk.done else None,
+                    )
+                    await websocket.send_json(token.model_dump())
+            finally:
+                await span_collector.flush()
     except WebSocketDisconnect:
         logger.debug("WebSocket client disconnected")

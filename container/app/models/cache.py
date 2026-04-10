@@ -12,6 +12,7 @@ class RoutingCacheEntry(BaseModel):
     agent_id: str
     confidence: float
     hit_count: int = 0
+    condensed_task: str | None = None
     created_at: str | None = None
     last_accessed: str | None = None
 

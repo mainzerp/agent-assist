@@ -1,0 +1,94 @@
+{% extends "dashboard_base.html" %}
+{% block page_title %}Personality{% endblock %}
+{% block nav_personality %}active{% endblock %}
+{% block header_title %}Personality{% endblock %}
+{% block page_content %}
+<div x-data="personalityPage()" x-init="loadConfig()">
+
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">Personality Configuration</h2>
+            <p class="page-subtitle">Define the assistant personality. When set, all responses are mediated through this prompt.</p>
+        </div>
+    </div>
+
+    <div class="card card-narrow">
+        <h3 class="card-title mb-md">Personality Prompt</h3>
+
+        <div class="form-group">
+            <label class="form-label">System Personality Prompt</label>
+            <textarea
+                class="form-input"
+                rows="10"
+                x-model="config.prompt"
+                placeholder="e.g. You are Lucia, a warm and friendly smart home assistant. You speak in a casual, helpful tone and occasionally use gentle humor."
+                style="resize: vertical; min-height: 120px;"
+            ></textarea>
+            <span class="form-hint">When this prompt is non-empty, all agent responses will be mediated through an LLM call that applies this personality. Leave empty to disable mediation.</span>
+        </div>
+
+        <div class="form-actions">
+            <button class="btn btn-primary" @click="saveConfig()">Save Changes</button>
+            <button class="btn btn-secondary" @click="clearPrompt()" x-show="config.prompt">Clear</button>
+            <span x-show="saved" class="text-sage" style="font-size: 0.875rem;">Saved</span>
+            <span x-show="error" class="text-coral" style="font-size: 0.875rem;" x-text="error"></span>
+        </div>
+    </div>
+
+    <div class="card card-narrow" style="margin-top: 1.5rem;">
+        <h3 class="card-title mb-md">Status</h3>
+        <p class="text-muted" style="font-size: 0.875rem;">
+            <template x-if="config.prompt && config.prompt.trim()">
+                <span class="text-sage">Active -- responses will be mediated with the personality prompt.</span>
+            </template>
+            <template x-if="!config.prompt || !config.prompt.trim()">
+                <span>Inactive -- agent responses are passed through unchanged.</span>
+            </template>
+        </p>
+    </div>
+</div>
+
+<script>
+function personalityPage() {
+    return {
+        config: { prompt: "" },
+        saved: false,
+        error: "",
+        async loadConfig() {
+            try {
+                var resp = await fetch("/api/admin/personality/config", { credentials: "same-origin" });
+                if (resp.ok) {
+                    this.config = await resp.json();
+                }
+            } catch(e) {
+                console.error("Failed to load personality config", e);
+            }
+        },
+        async saveConfig() {
+            this.saved = false;
+            this.error = "";
+            try {
+                var resp = await fetch("/api/admin/personality/config", {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    credentials: "same-origin",
+                    body: JSON.stringify(this.config)
+                });
+                if (resp.ok) {
+                    this.saved = true;
+                    var self = this;
+                    setTimeout(function() { self.saved = false; }, 2000);
+                } else {
+                    this.error = "Failed to save";
+                }
+            } catch(e) {
+                this.error = "Network error";
+            }
+        },
+        clearPrompt() {
+            this.config.prompt = "";
+        }
+    };
+}
+</script>
+{% endblock %}

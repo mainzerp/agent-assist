@@ -136,6 +136,7 @@ async def lifespan(app: FastAPI):
 
     # Inject dispatcher and registry into route modules
     conversation_routes.set_dispatcher(dispatcher)
+    dashboard_api_routes.set_chat_dispatcher(dispatcher)
     admin_routes.set_registry(registry)
 
     # Initialize presence detector (will be fully initialized after WS setup)
@@ -161,7 +162,7 @@ async def lifespan(app: FastAPI):
     light_agent = LightAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
     await registry.register(light_agent)
 
-    music_agent = MusicAgent(ha_client=ha_client, entity_index=entity_index)
+    music_agent = MusicAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
     await registry.register(music_agent)
 
     # Register Phase 2 agents (only if enabled in agent_configs)

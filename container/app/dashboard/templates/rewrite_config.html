@@ -15,16 +15,6 @@
     <div class="card card-narrow">
         <h3 class="card-title mb-md">Rewrite Settings</h3>
 
-        <div class="form-row">
-            <div class="form-group mb-0">
-                <label class="form-label">Enabled</label>
-                <label class="toggle">
-                    <input type="checkbox" x-model="config.enabled">
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
-        </div>
-
         <div class="form-group">
             <label class="form-label">Model</label>
             <input type="text" class="form-input" x-model="config.model" placeholder="e.g. groq/llama-3.1-8b-instant">
@@ -47,7 +37,7 @@
 <script>
 function rewritePage() {
     return {
-        config: { enabled: false, model: "", temperature: 0.7 },
+        config: { model: "", temperature: 0.7 },
         saved: false,
         error: "",
         async loadConfig() {

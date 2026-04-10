@@ -256,14 +256,19 @@ async def get_all_agents_visibility_summary():
     summary: dict[str, dict] = {}
     for agent_id, rules in agent_rules.items():
         domains: set[str] = set()
+        excluded_domains: set[str] = set()
         for r in rules:
-            if r["rule_type"] == "domain":
+            if r["rule_type"] == "domain_include":
                 domains.add(r["rule_value"])
-            elif r["rule_type"] == "entity":
-                parts = r["rule_value"].split(".")
-                if parts:
-                    domains.add(parts[0])
-            elif r["rule_type"] == "area":
+            elif r["rule_type"] == "domain_exclude":
+                excluded_domains.add(r["rule_value"])
+            elif r["rule_type"] == "area_include":
                 domains.add("area:" + r["rule_value"])
-        summary[agent_id] = {"domains": sorted(domains), "has_rules": True}
+            elif r["rule_type"] == "area_exclude":
+                excluded_domains.add("area:" + r["rule_value"])
+        summary[agent_id] = {
+            "domains": sorted(domains),
+            "excluded_domains": sorted(excluded_domains),
+            "has_rules": True,
+        }
     return {"summary": summary}

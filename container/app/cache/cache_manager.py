@@ -23,6 +23,7 @@ class CacheResult:
     response_text: str | None = None
     cached_action: CachedAction | None = None
     entry: ResponseCacheEntry | RoutingCacheEntry | None = None
+    condensed_task: str | None = None
 
 
 class CacheManager:
@@ -44,8 +45,8 @@ class CacheManager:
         await self._routing_cache.load_config()
         await self._response_cache.load_config()
         from app.db.repository import SettingsRepository
-        val = await SettingsRepository.get_value("rewrite.enabled", "false")
-        self._rewrite_enabled = val == "true"
+        personality = await SettingsRepository.get_value("personality.prompt", "")
+        self._rewrite_enabled = bool(personality.strip())
 
     async def reload_config(self) -> None:
         """Hot-reload thresholds and rewrite setting from DB."""
@@ -53,9 +54,8 @@ class CacheManager:
         await self._response_cache.reload_config()
         from app.db.repository import SettingsRepository
         if self._rewrite_agent:
-            self._rewrite_enabled = (
-                await SettingsRepository.get_value("rewrite.enabled", "false")
-            ) == "true"
+            personality = await SettingsRepository.get_value("personality.prompt", "")
+            self._rewrite_enabled = bool(personality.strip())
 
     async def process(self, query_text: str) -> CacheResult:
         """Check both cache tiers in order: response first, then routing.
@@ -119,14 +119,15 @@ class CacheManager:
                 hit_type="routing_hit",
                 agent_id=routing_entry.agent_id,
                 entry=routing_entry,
+                condensed_task=routing_entry.condensed_task,
             )
 
         # 3. Complete miss
         return CacheResult(hit_type="miss")
 
-    def store_routing(self, query_text: str, agent_id: str, confidence: float) -> None:
+    def store_routing(self, query_text: str, agent_id: str, confidence: float, condensed_task: str = "") -> None:
         """Store a routing decision after an agent handles a request."""
-        self._routing_cache.store(query_text, agent_id, confidence)
+        self._routing_cache.store(query_text, agent_id, confidence, condensed_task)
 
     def store_response(self, entry: ResponseCacheEntry) -> None:
         """Store a full response after successful execution."""

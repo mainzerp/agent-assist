@@ -36,6 +36,7 @@ async def init_db() -> None:
         await _create_tables(db)
         await _create_indexes(db)
         await _seed_defaults(db)
+        await _run_migrations(db)
         await db.commit()
 
 
@@ -67,7 +68,7 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             model TEXT,
             timeout INTEGER NOT NULL DEFAULT 5,
             max_iterations INTEGER NOT NULL DEFAULT 3,
-            temperature REAL NOT NULL DEFAULT 0.7,
+            temperature REAL NOT NULL DEFAULT 0.2,
             max_tokens INTEGER NOT NULL DEFAULT 256,
             description TEXT,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -203,6 +204,26 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
         )
     """)
 
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS trace_summary (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trace_id TEXT NOT NULL UNIQUE,
+            conversation_id TEXT,
+            user_input TEXT,
+            final_response TEXT,
+            agents TEXT,
+            total_duration_ms REAL,
+            label TEXT,
+            source TEXT,
+            routing_agent TEXT,
+            routing_confidence REAL,
+            routing_duration_ms REAL,
+            routing_reasoning TEXT,
+            agent_instructions TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+
 
 async def _create_indexes(db: aiosqlite.Connection) -> None:
     """Create indexes for query performance."""
@@ -248,6 +269,22 @@ async def _create_indexes(db: aiosqlite.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_trace_spans_created_at "
         "ON trace_spans(created_at)"
     )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trace_summary_trace_id "
+        "ON trace_summary(trace_id)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trace_summary_created_at "
+        "ON trace_summary(created_at)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trace_summary_routing_agent "
+        "ON trace_summary(routing_agent)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trace_summary_label "
+        "ON trace_summary(label)"
+    )
 
 
 async def _seed_defaults(db: aiosqlite.Connection) -> None:
@@ -273,15 +310,16 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("presence.enabled", "true", "bool", "presence", "Enable presence detection"),
         ("presence.decay_timeout", "300", "int", "presence", "Presence decay timeout in seconds"),
         # Rewrite agent settings
-        ("rewrite.enabled", "false", "bool", "rewrite", "Enable rewrite agent for cached response variation"),
         ("rewrite.model", "groq/llama-3.1-8b-instant", "string", "rewrite", "LLM model for rewrite agent"),
         ("rewrite.temperature", "0.8", "float", "rewrite", "Temperature for rewrite agent"),
+        # Personality settings
+        ("personality.prompt", "", "string", "personality", "Personality system prompt for response mediation"),
         # Communication settings
         ("communication.streaming_mode", "websocket", "string", "communication", "Streaming mode: websocket, sse, none"),
         ("communication.ws_reconnect_interval", "5", "int", "communication", "WebSocket reconnect interval in seconds"),
         ("communication.stream_buffer_size", "1", "int", "communication", "Token batching buffer size"),
         # A2A settings
-        ("a2a.default_timeout", "5", "int", "a2a", "Default agent timeout in seconds"),
+        ("a2a.default_timeout", "10", "int", "a2a", "Default agent timeout in seconds"),
         ("a2a.max_iterations", "3", "int", "a2a", "Max iterations per agent to prevent loops"),
         # General settings
         ("general.conversation_context_turns", "3", "int", "general", "Number of conversation turns to keep"),
@@ -296,15 +334,15 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
     # Default agent configs
     default_agents = [
         ("orchestrator", 1, "groq/llama-3.1-8b-instant", 10, 3, 0.3, 256, "Intent classification and task routing"),
-        ("light-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.7, 256, "Lighting control"),
-        ("music-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.7, 256, "Music and media playback"),
-        ("general-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.7, 512, "Fallback and general Q&A"),
-        ("timer-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.7, 256, "Timers and alarms"),
-        ("climate-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.7, 256, "Climate and HVAC control"),
-        ("media-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.7, 256, "Media player control"),
-        ("scene-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.7, 256, "Scene activation"),
-        ("automation-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.7, 256, "Automation management"),
-        ("security-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.7, 256, "Security system control"),
+        ("light-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 512, "Lighting control"),
+        ("music-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 512, "Music and media playback"),
+        ("general-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.5, 512, "Fallback and general Q&A"),
+        ("timer-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Timers and alarms"),
+        ("climate-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Climate and HVAC control"),
+        ("media-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Media player control"),
+        ("scene-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Scene activation"),
+        ("automation-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Automation management"),
+        ("security-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Security system control"),
         ("rewrite-agent", 0, "groq/llama-3.1-8b-instant", 2, 1, 0.8, 128, "Cached response phrasing variation"),
     ]
 
@@ -348,3 +386,119 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
     await db.execute(
         "INSERT OR IGNORE INTO schema_version (version) VALUES (1)"
     )
+
+    # Default entity visibility rules
+    default_visibility_rules = [
+        ("light-agent", "domain_include", "light"),
+        ("light-agent", "domain_include", "switch"),
+        ("music-agent", "domain_include", "media_player"),
+        ("climate-agent", "domain_include", "climate"),
+        ("media-agent", "domain_include", "media_player"),
+        ("scene-agent", "domain_include", "scene"),
+        ("automation-agent", "domain_include", "automation"),
+        ("security-agent", "domain_include", "alarm_control_panel"),
+        ("security-agent", "domain_include", "lock"),
+    ]
+
+    await db.executemany(
+        "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) "
+        "VALUES (?, ?, ?)",
+        default_visibility_rules,
+    )
+
+
+async def _run_migrations(db: aiosqlite.Connection) -> None:
+    """Run incremental schema migrations based on schema_version."""
+    cursor = await db.execute("SELECT MAX(version) FROM schema_version")
+    row = await cursor.fetchone()
+    current_version = row[0] if row and row[0] else 1
+
+    if current_version < 2:
+        # Migration 2: Lower default temperature for action-oriented agents
+        await db.execute("""
+            UPDATE agent_configs
+            SET temperature = 0.2
+            WHERE agent_id IN (
+                'light-agent', 'music-agent', 'timer-agent',
+                'climate-agent', 'media-agent', 'scene-agent',
+                'automation-agent', 'security-agent'
+            )
+            AND temperature = 0.7
+        """)
+        await db.execute("""
+            UPDATE agent_configs
+            SET temperature = 0.5
+            WHERE agent_id = 'general-agent'
+            AND temperature = 0.7
+        """)
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (2)"
+        )
+
+    if current_version < 3:
+        # Migration 3: Increase light-agent max_tokens and default timeout
+        await db.execute("""
+            UPDATE agent_configs
+            SET max_tokens = 512
+            WHERE agent_id = 'light-agent'
+            AND max_tokens = 256
+        """)
+        await db.execute("""
+            UPDATE settings
+            SET value = '10'
+            WHERE key = 'a2a.default_timeout'
+            AND value = '5'
+        """)
+        await db.execute("""
+            UPDATE agent_configs
+            SET max_tokens = 512
+            WHERE agent_id = 'music-agent'
+            AND max_tokens = 256
+        """)
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (3)"
+        )
+
+    if current_version < 4:
+        # Migration 4: Seed default entity visibility rules for agents with zero rules
+        agents_with_defaults = {
+            "light-agent": ["light", "switch"],
+            "music-agent": ["media_player"],
+            "climate-agent": ["climate"],
+            "media-agent": ["media_player"],
+            "scene-agent": ["scene"],
+            "automation-agent": ["automation"],
+            "security-agent": ["alarm_control_panel", "lock"],
+        }
+
+        for agent_id, domains in agents_with_defaults.items():
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM entity_visibility_rules WHERE agent_id = ?",
+                (agent_id,),
+            )
+            row = await cursor.fetchone()
+            if row and row[0] == 0:
+                for domain in domains:
+                    await db.execute(
+                        "INSERT OR IGNORE INTO entity_visibility_rules "
+                        "(agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+                        (agent_id, "domain_include", domain),
+                    )
+
+        # Migrate legacy rule_types
+        await db.execute(
+            "UPDATE entity_visibility_rules SET rule_type = 'entity_include' "
+            "WHERE rule_type = 'entity'"
+        )
+        await db.execute(
+            "UPDATE entity_visibility_rules SET rule_type = 'domain_include' "
+            "WHERE rule_type = 'domain'"
+        )
+        await db.execute(
+            "UPDATE entity_visibility_rules SET rule_type = 'area_include' "
+            "WHERE rule_type = 'area'"
+        )
+
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (4)"
+        )

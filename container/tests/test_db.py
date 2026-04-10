@@ -14,10 +14,12 @@ from app.db.repository import (
     AgentConfigRepository,
     AliasRepository,
     CustomAgentRepository,
+    EntityVisibilityRepository,
     McpServerRepository,
     SecretsRepository,
     SettingsRepository,
     SetupStateRepository,
+    TraceSummaryRepository,
 )
 
 
@@ -33,6 +35,7 @@ class TestSchemaCreation:
             "entity_matching_config", "aliases", "mcp_servers", "secrets",
             "admin_accounts", "setup_state", "entity_visibility_rules",
             "plugins", "conversations", "analytics", "trace_spans",
+            "trace_summary",
         }
         async with aiosqlite.connect(str(db_repository)) as db:
             cursor = await db.execute(
@@ -95,6 +98,16 @@ class TestSeedData:
         assert "admin_password" in step_names
         assert "review_complete" in step_names
         assert len(steps) == 5
+
+    async def test_default_visibility_rules_seeded(self, db_repository):
+        rules = await EntityVisibilityRepository.get_rules("light-agent")
+        rule_map = {r["rule_value"]: r["rule_type"] for r in rules}
+        assert rule_map.get("light") == "domain_include"
+        assert rule_map.get("switch") == "domain_include"
+
+        rules = await EntityVisibilityRepository.get_rules("music-agent")
+        rule_map = {r["rule_value"]: r["rule_type"] for r in rules}
+        assert rule_map.get("media_player") == "domain_include"
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +348,93 @@ class TestSecretsRepository:
         result = await SecretsRepository.get("not_a_key")
         assert result is None
 
+
+# ---------------------------------------------------------------------------
+# Repository CRUD -- trace_summary
+# ---------------------------------------------------------------------------
+
+class TestTraceSummaryRepository:
+
+    async def test_create_and_get(self, db_repository):
+        await TraceSummaryRepository.create({
+            "trace_id": "trace-001",
+            "conversation_id": "conv-001",
+            "user_input": "Turn on the kitchen light",
+            "final_response": "Done, the kitchen light is on.",
+            "agents": ["orchestrator", "light-agent"],
+            "total_duration_ms": 345.6,
+            "label": None,
+            "source": "ha",
+            "routing_agent": "light-agent",
+            "routing_confidence": 0.95,
+            "routing_duration_ms": 120.0,
+            "routing_reasoning": None,
+            "agent_instructions": {"light-agent": "Turn on the kitchen light"},
+        })
+        result = await TraceSummaryRepository.get("trace-001")
+        assert result is not None
+        assert result["trace_id"] == "trace-001"
+        assert result["user_input"] == "Turn on the kitchen light"
+        assert result["routing_agent"] == "light-agent"
+        assert result["routing_confidence"] == 0.95
+        assert isinstance(result["agents"], list)
+        assert "light-agent" in result["agents"]
+        assert isinstance(result["agent_instructions"], dict)
+        assert result["agent_instructions"]["light-agent"] == "Turn on the kitchen light"
+
+    async def test_list_filtered(self, db_repository):
+        await TraceSummaryRepository.create({
+            "trace_id": "trace-f1",
+            "user_input": "Play some jazz music",
+            "routing_agent": "music-agent",
+            "agents": ["music-agent"],
+            "source": "chat",
+        })
+        await TraceSummaryRepository.create({
+            "trace_id": "trace-f2",
+            "user_input": "Turn off the bedroom light",
+            "routing_agent": "light-agent",
+            "agents": ["light-agent"],
+            "source": "ha",
+        })
+        # No filter
+        all_rows = await TraceSummaryRepository.list_filtered()
+        assert len(all_rows) >= 2
+        # Filter by agent
+        agent_rows = await TraceSummaryRepository.list_filtered(agent="music-agent")
+        assert all(r["routing_agent"] == "music-agent" for r in agent_rows)
+        # Filter by search
+        search_rows = await TraceSummaryRepository.list_filtered(search="jazz")
+        assert len(search_rows) >= 1
+
+    async def test_update_label(self, db_repository):
+        await TraceSummaryRepository.create({
+            "trace_id": "trace-lbl",
+            "user_input": "Test label",
+            "routing_agent": "general-agent",
+            "agents": [],
+        })
+        await TraceSummaryRepository.update_label("trace-lbl", "important")
+        result = await TraceSummaryRepository.get("trace-lbl")
+        assert result["label"] == "important"
+
+    async def test_list_labels(self, db_repository):
+        await TraceSummaryRepository.create({
+            "trace_id": "trace-la",
+            "user_input": "a",
+            "label": "bug",
+            "agents": [],
+        })
+        await TraceSummaryRepository.create({
+            "trace_id": "trace-lb",
+            "user_input": "b",
+            "label": "slow",
+            "agents": [],
+        })
+        labels = await TraceSummaryRepository.list_labels()
+        assert "bug" in labels
+        assert "slow" in labels
+
     async def test_delete(self, db_repository):
         await SecretsRepository.set("del_key", b"data")
         await SecretsRepository.delete("del_key")
@@ -422,3 +522,182 @@ class TestSetupStateRepository:
     async def test_get_all_steps(self, db_repository):
         steps = await SetupStateRepository.get_all_steps()
         assert len(steps) == 5
+
+
+# ---------------------------------------------------------------------------
+# Schema migration v2 -- temperature defaults
+# ---------------------------------------------------------------------------
+
+class TestMigrationV2:
+
+    async def test_migration_v2_lowers_agent_temperatures(self, db_repository):
+        """Migration v2 should lower temperatures for action agents from 0.7 to 0.2/0.5."""
+        from app.db.schema import _run_migrations
+
+        # Simulate pre-migration state: set agents to old 0.7 default
+        old_temp_agents = [
+            "light-agent", "music-agent", "timer-agent", "climate-agent",
+            "media-agent", "scene-agent", "automation-agent", "security-agent",
+            "general-agent",
+        ]
+        for aid in old_temp_agents:
+            await AgentConfigRepository.upsert(aid, temperature=0.7)
+
+        # Remove migration v2 marker so migration runs
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("DELETE FROM schema_version WHERE version = 2")
+            await db.commit()
+            await _run_migrations(db)
+            await db.commit()
+
+        # Verify temperatures updated
+        for aid in ["light-agent", "music-agent", "timer-agent", "climate-agent",
+                     "media-agent", "scene-agent", "automation-agent", "security-agent"]:
+            cfg = await AgentConfigRepository.get(aid)
+            assert cfg["temperature"] == 0.2, f"{aid} should be 0.2"
+        general = await AgentConfigRepository.get("general-agent")
+        assert general["temperature"] == 0.5
+        # Unchanged agents
+        orchestrator = await AgentConfigRepository.get("orchestrator")
+        assert orchestrator["temperature"] == 0.3
+        rewrite = await AgentConfigRepository.get("rewrite-agent")
+        assert rewrite["temperature"] == 0.8
+
+    async def test_migration_v2_skips_user_modified_temperatures(self, db_repository):
+        """Migration should not overwrite user-customized temperature values."""
+        from app.db.schema import _run_migrations
+
+        # Simulate user changing light-agent temperature to 0.4
+        await AgentConfigRepository.upsert("light-agent", temperature=0.4)
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            # Reset schema version to allow migration to re-run
+            await db.execute("DELETE FROM schema_version WHERE version = 2")
+            await db.commit()
+            await _run_migrations(db)
+            await db.commit()
+
+        light = await AgentConfigRepository.get("light-agent")
+        assert light["temperature"] == 0.4  # Should NOT be overwritten
+
+
+# ---------------------------------------------------------------------------
+# Schema migration v4 -- entity visibility defaults and legacy migration
+# ---------------------------------------------------------------------------
+
+class TestMigrationV4:
+
+    async def test_migration_v4_seeds_defaults_for_empty_agents(self, db_repository):
+        """Migration v4 should insert domain_include defaults for agents with zero rules."""
+        from app.db.schema import _run_migrations
+        from app.db.repository import EntityVisibilityRepository
+
+        # Clear all visibility rules to simulate pre-migration state
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("DELETE FROM entity_visibility_rules")
+            await db.execute("DELETE FROM schema_version WHERE version >= 4")
+            await db.commit()
+            await _run_migrations(db)
+            await db.commit()
+
+        # Verify default rules seeded for light-agent
+        rules = await EntityVisibilityRepository.get_rules("light-agent")
+        rule_values = {r["rule_value"] for r in rules if r["rule_type"] == "domain_include"}
+        assert "light" in rule_values
+        assert "switch" in rule_values
+
+        # Verify music-agent
+        rules = await EntityVisibilityRepository.get_rules("music-agent")
+        rule_values = {r["rule_value"] for r in rules if r["rule_type"] == "domain_include"}
+        assert "media_player" in rule_values
+
+    async def test_migration_v4_skips_agents_with_existing_rules(self, db_repository):
+        """Migration v4 should not overwrite existing user-configured rules."""
+        from app.db.schema import _run_migrations
+        from app.db.repository import EntityVisibilityRepository
+
+        # Clear migration marker and set custom rules for light-agent
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("DELETE FROM entity_visibility_rules")
+            await db.execute("DELETE FROM schema_version WHERE version >= 4")
+            await db.execute(
+                "INSERT INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+                ("light-agent", "domain_include", "custom_domain"),
+            )
+            await db.commit()
+            await _run_migrations(db)
+            await db.commit()
+
+        # light-agent should only have the user's custom rule, not defaults
+        rules = await EntityVisibilityRepository.get_rules("light-agent")
+        rule_values = {r["rule_value"] for r in rules}
+        assert "custom_domain" in rule_values
+        assert "light" not in rule_values  # default NOT inserted
+
+    async def test_migration_v4_migrates_legacy_entity_rule_type(self, db_repository):
+        """Migration v4 should convert 'entity' -> 'entity_include'."""
+        from app.db.schema import _run_migrations
+        from app.db.repository import EntityVisibilityRepository
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("DELETE FROM entity_visibility_rules")
+            await db.execute("DELETE FROM schema_version WHERE version >= 4")
+            await db.execute(
+                "INSERT INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+                ("test-agent", "entity", "light.kitchen"),
+            )
+            await db.commit()
+            await _run_migrations(db)
+            await db.commit()
+
+        rules = await EntityVisibilityRepository.get_rules("test-agent")
+        assert len(rules) == 1
+        assert rules[0]["rule_type"] == "entity_include"
+        assert rules[0]["rule_value"] == "light.kitchen"
+
+    async def test_migration_v4_migrates_legacy_domain_rule_type(self, db_repository):
+        """Migration v4 should convert 'domain' -> 'domain_include'."""
+        from app.db.schema import _run_migrations
+        from app.db.repository import EntityVisibilityRepository
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("DELETE FROM entity_visibility_rules")
+            await db.execute("DELETE FROM schema_version WHERE version >= 4")
+            await db.execute(
+                "INSERT INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+                ("test-agent", "domain", "light"),
+            )
+            await db.commit()
+            await _run_migrations(db)
+            await db.commit()
+
+        rules = await EntityVisibilityRepository.get_rules("test-agent")
+        assert len(rules) == 1
+        assert rules[0]["rule_type"] == "domain_include"
+
+    async def test_migration_v4_migrates_legacy_area_rule_type(self, db_repository):
+        """Migration v4 should convert 'area' -> 'area_include'."""
+        from app.db.schema import _run_migrations
+        from app.db.repository import EntityVisibilityRepository
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("DELETE FROM entity_visibility_rules")
+            await db.execute("DELETE FROM schema_version WHERE version >= 4")
+            await db.execute(
+                "INSERT INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+                ("test-agent", "area", "kitchen"),
+            )
+            await db.commit()
+            await _run_migrations(db)
+            await db.commit()
+
+        rules = await EntityVisibilityRepository.get_rules("test-agent")
+        assert len(rules) == 1
+        assert rules[0]["rule_type"] == "area_include"

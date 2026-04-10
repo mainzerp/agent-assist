@@ -71,11 +71,12 @@ class RoutingCache:
             agent_id=meta["agent_id"],
             confidence=similarity,
             hit_count=hit_count,
+            condensed_task=meta.get("condensed_task"),
             created_at=meta.get("created_at"),
             last_accessed=now,
         )
 
-    def store(self, query_text: str, agent_id: str, confidence: float) -> None:
+    def store(self, query_text: str, agent_id: str, confidence: float, condensed_task: str = "") -> None:
         """Store a new routing decision in the cache."""
         self._enforce_lru()
         now = datetime.now(timezone.utc).isoformat()
@@ -88,6 +89,7 @@ class RoutingCache:
                 "agent_id": agent_id,
                 "confidence": str(confidence),
                 "hit_count": "0",
+                "condensed_task": condensed_task,
                 "created_at": now,
                 "last_accessed": now,
             }],

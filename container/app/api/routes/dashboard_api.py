@@ -10,13 +10,17 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.security.auth import require_admin_session
+from app.a2a.protocol import JsonRpcRequest
+from app.models.conversation import StreamToken
+from app.models.agent import AgentTask
 from app.db.repository import (
     AgentConfigRepository,
     SettingsRepository,
@@ -34,6 +38,16 @@ router = APIRouter(
 PROMPTS_DIR = Path(__file__).parent.parent.parent / "prompts"
 
 _SAFE_AGENT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+# --- Chat dispatcher (injected by main.py) ---
+
+_dispatcher = None
+
+
+def set_chat_dispatcher(dispatcher) -> None:
+    """Called by main.py to inject the A2A dispatcher for chat bridge."""
+    global _dispatcher
+    _dispatcher = dispatcher
 
 
 def _validate_agent_path(agent_id: str) -> Path:
@@ -64,9 +78,12 @@ class PromptUpdate(BaseModel):
 
 
 class RewriteConfigUpdate(BaseModel):
-    enabled: bool | None = None
     model: str | None = None
     temperature: float | None = None
+
+
+class PersonalityConfigUpdate(BaseModel):
+    prompt: str | None = None
 
 
 # --- Overview ---
@@ -274,11 +291,9 @@ async def get_extended_health(request: Request):
 @router.get("/rewrite/config")
 async def get_rewrite_config():
     """Get current rewrite agent settings."""
-    enabled = await SettingsRepository.get_value("rewrite.enabled", "false")
     model = await SettingsRepository.get_value("rewrite.model", "")
     temperature = await SettingsRepository.get_value("rewrite.temperature", "0.7")
     return {
-        "enabled": enabled == "true",
         "model": model or "",
         "temperature": float(temperature),
     }
@@ -287,11 +302,6 @@ async def get_rewrite_config():
 @router.put("/rewrite/config")
 async def update_rewrite_config(payload: RewriteConfigUpdate):
     """Update rewrite agent settings."""
-    if payload.enabled is not None:
-        await SettingsRepository.set(
-            "rewrite.enabled", "true" if payload.enabled else "false",
-            "bool", "rewrite", "Enable rewrite agent",
-        )
     if payload.model is not None:
         await SettingsRepository.set(
             "rewrite.model", payload.model,
@@ -303,3 +313,111 @@ async def update_rewrite_config(payload: RewriteConfigUpdate):
             "float", "rewrite", "Rewrite temperature",
         )
     return {"status": "ok"}
+
+
+# --- Personality config ---
+
+@router.get("/personality/config")
+async def get_personality_config():
+    """Get current personality prompt."""
+    prompt = await SettingsRepository.get_value("personality.prompt", "")
+    return {"prompt": prompt}
+
+
+@router.put("/personality/config")
+async def update_personality_config(payload: PersonalityConfigUpdate):
+    """Save personality prompt."""
+    if payload.prompt is not None:
+        await SettingsRepository.set(
+            "personality.prompt", payload.prompt,
+            "string", "personality", "Personality system prompt for response mediation",
+        )
+    return {"status": "ok"}
+
+
+# --- Chat bridge ---
+
+class ChatRequest(BaseModel):
+    text: str
+    conversation_id: str | None = None
+    language: str = "en"
+
+
+@router.post("/chat")
+async def admin_chat(request: Request, payload: ChatRequest):
+    """Bridge: session-auth chat -> internal conversation pipeline."""
+    if _dispatcher is None:
+        return JSONResponse(status_code=503, content={"detail": "Dispatcher not ready"})
+
+    span_collector = getattr(request.state, "span_collector", None)
+    if span_collector:
+        span_collector.source = "chat"
+    task = AgentTask(
+        description=payload.text,
+        user_text=payload.text,
+        conversation_id=payload.conversation_id,
+    )
+    a2a_request = JsonRpcRequest(
+        method="message/send",
+        params={
+            "agent_id": "orchestrator",
+            "task": task.model_dump(),
+            "_span_collector": span_collector,
+        },
+        id=str(uuid.uuid4()),
+    )
+    response = await _dispatcher.dispatch(a2a_request)
+
+    if response.error:
+        return {"speech": f"Error: {response.error.message}", "conversation_id": payload.conversation_id}
+
+    result = response.result or {}
+    return {
+        "speech": result.get("speech", ""),
+        "conversation_id": payload.conversation_id,
+    }
+
+
+@router.post("/chat/stream")
+async def admin_chat_stream(request: Request, payload: ChatRequest):
+    """Bridge: session-auth SSE chat -> internal conversation pipeline (streaming)."""
+    if _dispatcher is None:
+        return JSONResponse(status_code=503, content={"detail": "Dispatcher not ready"})
+
+    span_collector = getattr(request.state, "span_collector", None)
+    if span_collector:
+        span_collector.source = "chat"
+    task = AgentTask(
+        description=payload.text,
+        user_text=payload.text,
+        conversation_id=payload.conversation_id,
+    )
+    a2a_request = JsonRpcRequest(
+        method="message/stream",
+        params={
+            "agent_id": "orchestrator",
+            "task": task.model_dump(),
+            "_span_collector": span_collector,
+        },
+        id=str(uuid.uuid4()),
+    )
+
+    async def generate():
+        root_span_id = getattr(request.state, "root_span_id", None)
+        if span_collector and root_span_id:
+            span_collector._span_stack.append(root_span_id)
+        try:
+            async for chunk in _dispatcher.dispatch_stream(a2a_request):
+                token = StreamToken(
+                    token=chunk.result.get("token", ""),
+                    done=chunk.done,
+                    conversation_id=payload.conversation_id if chunk.done else None,
+                )
+                yield f"data: {token.model_dump_json()}\n\n"
+        finally:
+            if span_collector and root_span_id and root_span_id in span_collector._span_stack:
+                span_collector._span_stack.remove(root_span_id)
+            if span_collector:
+                await span_collector.flush()
+
+    return StreamingResponse(generate(), media_type="text/event-stream")

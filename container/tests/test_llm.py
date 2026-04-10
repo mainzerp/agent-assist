@@ -191,3 +191,59 @@ class TestLLMComplete:
         from app.llm.client import complete
         with pytest.raises(Exception, match="API Error"):
             await complete("test-agent", [{"role": "user", "content": "test"}])
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_complete_retries_once_on_empty_response(self, mock_repo, mock_params, mock_acompletion):
+        mock_repo.get = AsyncMock(return_value={
+            "agent_id": "light-agent",
+            "enabled": True,
+            "model": "openrouter/openai/gpt-4o-mini",
+            "timeout": 5,
+            "max_iterations": 3,
+            "temperature": 0.2,
+            "max_tokens": 256,
+            "description": "Light agent",
+        })
+        empty_choice = MagicMock()
+        empty_choice.message.content = ""
+        empty_choice.finish_reason = "length"
+        empty_response = MagicMock(choices=[empty_choice])
+
+        valid_choice = MagicMock()
+        valid_choice.message.content = "Light is on!"
+        valid_response = MagicMock(choices=[valid_choice])
+
+        mock_acompletion.side_effect = [empty_response, valid_response]
+
+        from app.llm.client import complete
+        result = await complete("light-agent", [{"role": "user", "content": "turn on light"}])
+        assert result == "Light is on!"
+        assert mock_acompletion.await_count == 2
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_complete_returns_empty_after_retry_exhausted(self, mock_repo, mock_params, mock_acompletion):
+        mock_repo.get = AsyncMock(return_value={
+            "agent_id": "light-agent",
+            "enabled": True,
+            "model": "openrouter/openai/gpt-4o-mini",
+            "timeout": 5,
+            "max_iterations": 3,
+            "temperature": 0.2,
+            "max_tokens": 256,
+            "description": "Light agent",
+        })
+        empty_choice = MagicMock()
+        empty_choice.message.content = ""
+        empty_choice.finish_reason = "length"
+        empty_response = MagicMock(choices=[empty_choice])
+
+        mock_acompletion.side_effect = [empty_response, empty_response]
+
+        from app.llm.client import complete
+        result = await complete("light-agent", [{"role": "user", "content": "turn on light"}])
+        assert result == ""
+        assert mock_acompletion.await_count == 2

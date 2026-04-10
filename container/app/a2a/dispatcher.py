@@ -58,6 +58,7 @@ class Dispatcher:
         params = request.params or {}
         agent_id = params.get("agent_id")
         task_dict = params.get("task")
+        span_collector = params.pop("_span_collector", None)
 
         if not agent_id or task_dict is None:
             yield JsonRpcStreamChunk(
@@ -68,6 +69,8 @@ class Dispatcher:
             return
 
         task = AgentTask(**task_dict)
+        if span_collector:
+            task._span_collector = span_collector
         async for chunk in self._transport.stream(agent_id, task, request.id):
             yield chunk
 
@@ -75,11 +78,14 @@ class Dispatcher:
         params = request.params or {}
         agent_id = params.get("agent_id")
         task_dict = params.get("task")
+        span_collector = params.pop("_span_collector", None)
 
         if not agent_id or task_dict is None:
             return error_response(request.id, INVALID_PARAMS, "Missing agent_id or task")
 
         task = AgentTask(**task_dict)
+        if span_collector:
+            task._span_collector = span_collector
         return await self._transport.send(agent_id, task, request.id)
 
     async def _handle_agent_discover(self, request: JsonRpcRequest) -> JsonRpcResponse:

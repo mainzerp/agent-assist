@@ -52,6 +52,10 @@
                         </label>
                         <span style="font-weight: 600;" x-text="domain.name"></span>
                         <span class="text-muted" x-text="'(' + domainEntityCount(domain) + ' entities)'"></span>
+                        <span x-show="domainIncludeRules.includes(domain.name)"
+                              style="margin-left: 0.5rem; font-size: 0.7rem; background: var(--accent); color: #fff; padding: 0.1rem 0.4rem; border-radius: 4px;">
+                            domain_include
+                        </span>
                     </div>
 
                     <!-- Areas -->
@@ -115,6 +119,7 @@ function entityVisibility() {
         entityTree: [],
         checkedEntities: [],
         currentRules: [],
+        domainIncludeRules: [],
         expandedDomains: [],
         expandedAreas: [],
         message: '',
@@ -135,8 +140,8 @@ function entityVisibility() {
                     const agents = await resp.json();
                     this.agentList = agents.map(a => 'custom-' + a.name);
                 }
-                // Also add built-in agent IDs
-                const builtIn = ['orchestrator-agent','general-agent','light-agent','music-agent',
+                // Built-in agents that use entity matching (orchestrator/general/rewrite don't)
+                const builtIn = ['light-agent','music-agent',
                     'timer-agent','climate-agent','media-agent','scene-agent','automation-agent','security-agent'];
                 this.agentList = builtIn.concat(this.agentList);
                 // If pre-selected via query param, trigger load
@@ -161,7 +166,10 @@ function entityVisibility() {
                 if (rulesResp.ok) {
                     this.currentRules = await rulesResp.json();
                     this.checkedEntities = this.currentRules
-                        .filter(r => r.rule_type === 'entity')
+                        .filter(r => r.rule_type === 'entity_include')
+                        .map(r => r.rule_value);
+                    this.domainIncludeRules = this.currentRules
+                        .filter(r => r.rule_type === 'domain_include')
                         .map(r => r.rule_value);
                 }
             } catch (e) { console.error('Failed to load data', e); }
@@ -214,7 +222,10 @@ function entityVisibility() {
             else if (!checked && idx >= 0) this.checkedEntities.splice(idx, 1);
         },
         async saveRules() {
-            const rules = this.checkedEntities.map(id => ({rule_type: 'entity', rule_value: id}));
+            // Preserve existing non-entity rules (domain_include, domain_exclude, etc.)
+            const nonEntityRules = this.currentRules.filter(r => r.rule_type !== 'entity_include');
+            const entityRules = this.checkedEntities.map(id => ({rule_type: 'entity_include', rule_value: id}));
+            const rules = nonEntityRules.concat(entityRules);
             try {
                 const resp = await fetch('/api/admin/entity-visibility/' + encodeURIComponent(this.selectedAgent), {
                     method: 'PUT',

@@ -211,3 +211,168 @@ class TestExecuteAction:
 
         assert result["success"] is True
         assert result["new_state"] is None
+
+    @pytest.mark.asyncio
+    async def test_execute_action_passes_agent_id(self, ha_client, entity_matcher, entity_index):
+        """Verify that entity_matcher.match is called with agent_id kwarg."""
+        action = {"action": "turn_on", "entity": "kitchen light", "parameters": {}}
+        result = await execute_action(action, ha_client, entity_index, entity_matcher, agent_id="light-agent")
+
+        assert result["success"] is True
+        entity_matcher.match.assert_awaited_once_with("kitchen light", agent_id="light-agent")
+
+
+# ---------------------------------------------------------------------------
+# execute_music_action tests
+# ---------------------------------------------------------------------------
+
+from app.agents.music_executor import execute_music_action  # noqa: E402
+
+
+class TestMusicExecutor:
+    """Tests for execute_music_action() with mocked dependencies."""
+
+    @pytest.fixture()
+    def ha_client(self):
+        client = AsyncMock()
+        client.call_service = AsyncMock(return_value={})
+        client.get_state = AsyncMock(return_value={"state": "playing", "attributes": {}})
+        return client
+
+    @pytest.fixture()
+    def entity_matcher(self):
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "media_player.ma_kitchen"
+        match_result.friendly_name = "Kitchen Speaker"
+        matcher.match = AsyncMock(return_value=[match_result])
+        return matcher
+
+    @pytest.fixture()
+    def entity_index(self):
+        index = MagicMock()
+        entry = MagicMock()
+        entry.entity_id = "media_player.ma_kitchen"
+        entry.friendly_name = "Kitchen Speaker"
+        index.search = MagicMock(return_value=[(entry, 0.1)])
+        return index
+
+    @pytest.mark.asyncio
+    async def test_execute_play_media(self, ha_client, entity_matcher, entity_index):
+        action = {"action": "play_media", "entity": "kitchen speaker", "parameters": {"media_id": "jazz", "media_type": "track", "enqueue": "play"}}
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        assert result["entity_id"] == "media_player.ma_kitchen"
+        ha_client.call_service.assert_awaited_once_with(
+            "mass", "play_media", "media_player.ma_kitchen",
+            {"media_id": "jazz", "media_type": "track", "enqueue": "play"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_execute_volume_set(self, ha_client, entity_matcher, entity_index):
+        action = {"action": "volume_set", "entity": "kitchen speaker", "parameters": {"volume_level": 0.5}}
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        ha_client.call_service.assert_awaited_once_with(
+            "media_player", "volume_set", "media_player.ma_kitchen",
+            {"volume_level": 0.5},
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action_name", ["media_play", "media_pause", "media_next_track", "media_previous_track"])
+    async def test_execute_transport_controls(self, action_name, ha_client, entity_matcher, entity_index):
+        action = {"action": action_name, "entity": "kitchen speaker", "parameters": {}}
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        ha_client.call_service.assert_awaited_once_with(
+            "media_player", action_name, "media_player.ma_kitchen", None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_execute_shuffle_set(self, ha_client, entity_matcher, entity_index):
+        action = {"action": "shuffle_set", "entity": "kitchen speaker", "parameters": {"shuffle": True}}
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        ha_client.call_service.assert_awaited_once_with(
+            "media_player", "shuffle_set", "media_player.ma_kitchen",
+            {"shuffle": True},
+        )
+
+    @pytest.mark.asyncio
+    async def test_execute_repeat_set(self, ha_client, entity_matcher, entity_index):
+        action = {"action": "repeat_set", "entity": "kitchen speaker", "parameters": {"repeat": "all"}}
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        ha_client.call_service.assert_awaited_once_with(
+            "media_player", "repeat_set", "media_player.ma_kitchen",
+            {"repeat": "all"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_execute_search_returns_speech(self, ha_client, entity_matcher, entity_index):
+        ha_client.call_service = AsyncMock(return_value=[
+            {"name": "Jazz Suite", "artist": "Dave Brubeck"},
+            {"name": "Blue Train", "artist": "John Coltrane"},
+        ])
+        action = {"action": "search", "entity": "kitchen speaker", "parameters": {"name": "jazz", "media_type": "track"}}
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        assert result["new_state"] is None
+        assert "Jazz Suite" in result["speech"]
+        assert "Dave Brubeck" in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_execute_unknown_action(self, ha_client, entity_matcher, entity_index):
+        action = {"action": "nonexistent", "entity": "kitchen speaker", "parameters": {}}
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is False
+        assert "Unknown action" in result["speech"]
+        ha_client.call_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_execute_entity_not_found(self, ha_client):
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        index = MagicMock()
+        index.search = MagicMock(return_value=[])
+
+        action = {"action": "play_media", "entity": "nonexistent speaker", "parameters": {"media_id": "jazz"}}
+        result = await execute_music_action(action, ha_client, index, matcher)
+
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        ha_client.call_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_execute_service_call_failure(self, ha_client, entity_matcher, entity_index):
+        ha_client.call_service = AsyncMock(side_effect=Exception("Connection refused"))
+        action = {"action": "media_play", "entity": "kitchen speaker", "parameters": {}}
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is False
+        assert "Failed" in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_entity_resolution_prefers_matcher(self, ha_client, entity_matcher, entity_index):
+        action = {"action": "media_play", "entity": "kitchen speaker", "parameters": {}}
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        entity_matcher.match.assert_awaited_once_with("kitchen speaker", agent_id=None)
+        entity_index.search.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_execute_music_action_passes_agent_id(self, ha_client, entity_matcher, entity_index):
+        """Verify that entity_matcher.match is called with agent_id kwarg."""
+        action = {"action": "media_play", "entity": "kitchen speaker", "parameters": {}}
+        result = await execute_music_action(action, ha_client, entity_index, entity_matcher, agent_id="music-agent")
+
+        assert result["success"] is True
+        entity_matcher.match.assert_awaited_once_with("kitchen speaker", agent_id="music-agent")

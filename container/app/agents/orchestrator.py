@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections import defaultdict
 from typing import AsyncGenerator
@@ -74,49 +75,35 @@ class OrchestratorAgent(BaseAgent):
             endpoint="local://orchestrator",
         )
 
-    async def handle_task(self, task: AgentTask) -> dict:
-        user_text = task.user_text or task.description
-        conversation_id = task.conversation_id
-
-        # Get span collector from task context if available
-        span_collector = getattr(task, "_span_collector", None)
-
-        # 1. Classify intent and get condensed task
-        if span_collector:
-            async with span_collector.start_span("classify", agent_id="orchestrator") as span:
-                target_agent, condensed_task = await self._classify(user_text)
-                span["metadata"]["target_agent"] = target_agent
-        else:
-            target_agent, condensed_task = await self._classify(user_text)
-        logger.info(
-            "Routed to %s: %s (conversation=%s)",
-            target_agent, condensed_task[:80], conversation_id,
-        )
-
-        # 2. Build context with conversation turns
-        turns = self._get_turns(conversation_id)
+    async def _dispatch_single(
+        self,
+        target_agent: str,
+        condensed_task: str,
+        user_text: str,
+        conversation_id: str | None,
+        turns: list[dict],
+        span_collector,
+    ) -> tuple[str, str, dict | None]:
+        """Dispatch a single task to one agent and return (agent_id, speech, result_dict)."""
         context = TaskContext(conversation_turns=turns)
-
-        # Inject presence room if available
         if self._presence_detector:
             room = self._presence_detector.get_most_likely_room()
             if room:
                 context.presence_room = room
 
-        # 3. Build task for target agent
-        # description = condensed task (PRIMARY input for the agent)
-        # user_text = original unmodified user text (FALLBACK ONLY)
         agent_task = AgentTask(
             description=condensed_task,
             user_text=user_text,
             conversation_id=conversation_id,
             context=context,
         )
-
-        # 4. Dispatch via A2A message/send with timeout
         request = JsonRpcRequest(
             method="message/send",
-            params={"agent_id": target_agent, "task": agent_task.model_dump()},
+            params={
+                "agent_id": target_agent,
+                "task": agent_task.model_dump(),
+                "_span_collector": span_collector,
+            },
             id=conversation_id or "orchestrator-dispatch",
         )
         try:
@@ -129,6 +116,9 @@ class OrchestratorAgent(BaseAgent):
                     )
                     latency_ms = (time.perf_counter() - t0) * 1000
                     span["metadata"]["latency_ms"] = round(latency_ms, 1)
+                    result_data = response.result or {}
+                    span["metadata"]["agent_response"] = (result_data.get("speech") or "")[:500]
+                    span["metadata"]["condensed_task"] = condensed_task[:500]
             else:
                 response = await asyncio.wait_for(
                     self._dispatcher.dispatch(request),
@@ -147,13 +137,8 @@ class OrchestratorAgent(BaseAgent):
                 request.params["agent_id"] = _FALLBACK_AGENT
                 response = await self._dispatcher.dispatch(request)
             else:
-                return {
-                    "speech": "I couldn't process that request in time.",
-                    "routed_to": target_agent,
-                    "action_executed": None,
-                }
+                return target_agent, "I couldn't process that request in time.", None
 
-        # 5. Extract result
         if response.error:
             logger.warning(
                 "Agent %s error: %s -- falling back to %s",
@@ -165,28 +150,168 @@ class OrchestratorAgent(BaseAgent):
 
         result = response.result or {}
         speech = result.get("speech", "")
+        return target_agent, speech, result
 
-        # 6. Store conversation turn
-        self._store_turn(conversation_id, user_text, speech)
+    async def handle_task(self, task: AgentTask, *, _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None) -> dict:
+        user_text = task.user_text or task.description
+        conversation_id = task.conversation_id
+
+        # Get span collector from task context if available
+        span_collector = getattr(task, "_span_collector", None)
+
+        # 1. Classify intent (skip if pre-classified by handle_task_stream)
+        if _pre_classified is not None:
+            classifications, routing_cached = _pre_classified
+            target_agent, condensed_task, confidence = classifications[0]
+        elif span_collector:
+            async with span_collector.start_span("classify", agent_id="orchestrator") as span:
+                classifications, routing_cached = await self._classify(user_text)
+                target_agent, condensed_task, confidence = classifications[0]
+                span["metadata"]["target_agent"] = ", ".join(a for a, _, _ in classifications)
+                span["metadata"]["user_input"] = user_text[:500]
+                span["metadata"]["condensed_task"] = condensed_task[:500]
+                span["metadata"]["confidence"] = confidence
+                span["metadata"]["routing_cached"] = routing_cached
+                span["metadata"]["multi_agent"] = len(classifications) > 1
+                if len(classifications) > 1:
+                    span["metadata"]["all_classifications"] = {
+                        a: {"task": t[:300], "confidence": c}
+                        for a, t, c in classifications
+                    }
+        else:
+            classifications, routing_cached = await self._classify(user_text)
+            target_agent, condensed_task, confidence = classifications[0]
+        logger.info(
+            "Routed to %s (%.0f%%): %s (conversation=%s)",
+            target_agent, confidence * 100, condensed_task[:80], conversation_id,
+        )
+
+        # 2. Build context with conversation turns
+        turns = self._get_turns(conversation_id)
+
+        # 3-4. Dispatch
+        if len(classifications) == 1:
+            # --- Single agent path (unchanged flow) ---
+            agent_id, speech, result = await self._dispatch_single(
+                target_agent, condensed_task, user_text, conversation_id, turns, span_collector,
+            )
+            action_executed = (result or {}).get("action_executed")
+            routed_to = agent_id
+        else:
+            # --- Multi-agent parallel dispatch ---
+            dispatch_coros = [
+                self._dispatch_single(aid, ctask, user_text, conversation_id, turns, span_collector)
+                for aid, ctask, _ in classifications
+            ]
+            dispatch_results = await asyncio.gather(*dispatch_coros, return_exceptions=True)
+
+            agent_responses: list[tuple[str, str, bool]] = []
+            action_executed = None
+            routed_agents: list[str] = []
+            for dr in dispatch_results:
+                if isinstance(dr, Exception):
+                    logger.warning("Multi-agent dispatch error: %s", dr)
+                    continue
+                aid, sp, res = dr
+                routed_agents.append(aid)
+                acted = bool(res and res.get("action_executed"))
+                agent_responses.append((aid, sp, acted))
+                if res and res.get("action_executed") and action_executed is None:
+                    action_executed = res["action_executed"]
+
+            target_agent = routed_agents[0] if routed_agents else _FALLBACK_AGENT
+            routed_to = ", ".join(routed_agents) if routed_agents else _FALLBACK_AGENT
+            speech = ""  # Will be set by _merge_responses inside return span
+
+        # 5. Mediate response, store turn, trace
+        original_speech = speech
+        if span_collector:
+            async with span_collector.start_span("return", agent_id="orchestrator") as ret_span:
+                ret_span["metadata"]["from_agent"] = routed_to
+                if len(classifications) > 1:
+                    speech = await self._merge_responses(agent_responses, user_text)
+                    result = {"speech": speech}
+                ret_span["metadata"]["agent_response"] = speech[:500]
+                if len(classifications) <= 1:
+                    speech = await self._mediate_response(speech, user_text, target_agent)
+                # Multi-agent merging already applied personality in _merge_responses
+                ret_span["metadata"]["final_response"] = speech[:500]
+                ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1
+                self._store_turn(conversation_id, user_text, speech)
+                try:
+                    from app.analytics.tracer import create_trace_summary
+                    classify_duration = None
+                    for s in span_collector._spans:
+                        if s.get("span_name") == "classify":
+                            classify_duration = s.get("duration_ms")
+                            break
+                    agents = list({s.get("agent_id") for s in span_collector._spans if s.get("agent_id")})
+                    if "orchestrator" not in agents:
+                        agents.insert(0, "orchestrator")
+                    await create_trace_summary(
+                        trace_id=span_collector.trace_id,
+                        conversation_id=conversation_id,
+                        user_input=user_text,
+                        final_response=speech,
+                        routing_agent=target_agent,
+                        routing_confidence=confidence,
+                        routing_duration_ms=classify_duration,
+                        condensed_task=condensed_task,
+                        agents=agents,
+                        source=getattr(span_collector, "source", "api"),
+                        agent_instructions={aid: ctask for aid, ctask, _ in classifications} if len(classifications) > 1 else None,
+                    )
+                except Exception:
+                    logger.warning("Failed to create trace summary", exc_info=True)
+        else:
+            if len(classifications) > 1:
+                speech = await self._merge_responses(agent_responses, user_text)
+                result = {"speech": speech}
+            elif len(classifications) <= 1:
+                speech = await self._mediate_response(speech, user_text, target_agent)
+            self._store_turn(conversation_id, user_text, speech)
 
         return {
             "speech": speech,
-            "routed_to": target_agent,
-            "action_executed": result.get("action_executed"),
+            "routed_to": routed_to,
+            "action_executed": action_executed,
         }
 
     async def handle_task_stream(self, task: AgentTask) -> AsyncGenerator[dict, None]:
         user_text = task.user_text or task.description
         conversation_id = task.conversation_id
+        span_collector = getattr(task, "_span_collector", None)
 
         # 1. Classify (non-streaming -- fast via Groq)
-        target_agent, condensed_task = await self._classify(user_text)
+        if span_collector:
+            async with span_collector.start_span("classify", agent_id="orchestrator") as span:
+                classifications, routing_cached = await self._classify(user_text)
+                target_agent, condensed_task, confidence = classifications[0]
+                span["metadata"]["target_agent"] = ", ".join(a for a, _, _ in classifications)
+                span["metadata"]["user_input"] = user_text[:500]
+                span["metadata"]["condensed_task"] = condensed_task[:500]
+                span["metadata"]["confidence"] = confidence
+                span["metadata"]["routing_cached"] = routing_cached
+                span["metadata"]["multi_agent"] = len(classifications) > 1
+        else:
+            classifications, routing_cached = await self._classify(user_text)
+            target_agent, condensed_task, confidence = classifications[0]
         logger.info(
             "Stream routed to %s: %s (conversation=%s)",
             target_agent, condensed_task[:80], conversation_id,
         )
 
-        # 2. Build context and task
+        # Multi-agent: fall back to non-streaming handle_task, yield as single chunk
+        if len(classifications) > 1:
+            result = await self.handle_task(task, _pre_classified=(classifications, routing_cached))
+            yield {
+                "token": result["speech"],
+                "done": True,
+                "conversation_id": conversation_id,
+            }
+            return
+
+        # 2. Build context and task (single agent streaming)
         turns = self._get_turns(conversation_id)
         context = TaskContext(conversation_turns=turns)
         agent_task = AgentTask(
@@ -199,27 +324,80 @@ class OrchestratorAgent(BaseAgent):
         # 3. Dispatch via A2A message/stream
         request = JsonRpcRequest(
             method="message/stream",
-            params={"agent_id": target_agent, "task": agent_task.model_dump()},
+            params={
+                "agent_id": target_agent,
+                "task": agent_task.model_dump(),
+                "_span_collector": span_collector,
+            },
             id=conversation_id or "orchestrator-stream",
         )
 
         collected_speech = []
-        async for chunk in self._dispatcher.dispatch_stream(request):
-            token = chunk.result.get("token", "")
-            done = chunk.result.get("done", False)
-            if token:
-                collected_speech.append(token)
-            yield {
-                "token": token,
-                "done": done,
-                "conversation_id": conversation_id if done else None,
-            }
+        if span_collector:
+            async with span_collector.start_span("dispatch", agent_id=target_agent) as span:
+                async for chunk in self._dispatcher.dispatch_stream(request):
+                    token = chunk.result.get("token", "")
+                    done = chunk.result.get("done", False)
+                    if token:
+                        collected_speech.append(token)
+                    yield {
+                        "token": token,
+                        "done": done,
+                        "conversation_id": conversation_id if done else None,
+                    }
+                span["metadata"]["token_count"] = len(collected_speech)
+                span["metadata"]["agent_response"] = "".join(collected_speech)[:500]
+        else:
+            async for chunk in self._dispatcher.dispatch_stream(request):
+                token = chunk.result.get("token", "")
+                done = chunk.result.get("done", False)
+                if token:
+                    collected_speech.append(token)
+                yield {
+                    "token": token,
+                    "done": done,
+                    "conversation_id": conversation_id if done else None,
+                }
 
-        # 4. Store conversation turn
+        # 4. Store conversation turn and create trace summary
         full_speech = "".join(collected_speech)
-        self._store_turn(conversation_id, user_text, full_speech)
+        if span_collector:
+            async with span_collector.start_span("return", agent_id="orchestrator") as ret_span:
+                ret_span["metadata"]["from_agent"] = target_agent
+                ret_span["metadata"]["agent_response"] = full_speech[:500]
+                full_speech = await self._mediate_response(full_speech, user_text, target_agent)
+                ret_span["metadata"]["final_response"] = full_speech[:500]
+                ret_span["metadata"]["mediated"] = (full_speech != "".join(collected_speech))
+                self._store_turn(conversation_id, user_text, full_speech)
+                try:
+                    from app.analytics.tracer import create_trace_summary
+                    classify_duration = None
+                    for s in span_collector._spans:
+                        if s.get("span_name") == "classify":
+                            classify_duration = s.get("duration_ms")
+                            break
+                    agents = list({s.get("agent_id") for s in span_collector._spans if s.get("agent_id")})
+                    if "orchestrator" not in agents:
+                        agents.insert(0, "orchestrator")
+                    await create_trace_summary(
+                        trace_id=span_collector.trace_id,
+                        conversation_id=conversation_id,
+                        user_input=user_text,
+                        final_response=full_speech,
+                        routing_agent=target_agent,
+                        routing_confidence=confidence,
+                        routing_duration_ms=classify_duration,
+                        condensed_task=condensed_task,
+                        agents=agents,
+                        source=getattr(span_collector, "source", "api"),
+                    )
+                except Exception:
+                    logger.warning("Failed to create trace summary", exc_info=True)
+        else:
+            full_speech = await self._mediate_response(full_speech, user_text, target_agent)
+            self._store_turn(conversation_id, user_text, full_speech)
 
-    async def _classify(self, user_text: str) -> tuple[str, str]:
+    async def _classify(self, user_text: str) -> tuple[list[tuple[str, str, float]], bool]:
         """Classify user intent and produce a condensed task.
 
         The condensed task is a clear, actionable English description of
@@ -228,7 +406,8 @@ class OrchestratorAgent(BaseAgent):
         never translated or normalized).
 
         Returns:
-            (target_agent_id, condensed_task) tuple.
+            (classifications, routing_cached) where classifications is a list
+            of (target_agent_id, condensed_task, confidence) tuples.
         """
         # Check routing cache before calling LLM
         if self._cache_manager:
@@ -236,7 +415,8 @@ class OrchestratorAgent(BaseAgent):
                 cache_result = await self._cache_manager.process(user_text)
                 if cache_result.hit_type == "routing_hit" and cache_result.agent_id:
                     logger.info("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
-                    return cache_result.agent_id, user_text
+                    condensed = cache_result.condensed_task or user_text
+                    return [(cache_result.agent_id, condensed, 1.0)], True
             except Exception:
                 logger.warning("Routing cache check failed, proceeding with LLM", exc_info=True)
 
@@ -248,42 +428,86 @@ class OrchestratorAgent(BaseAgent):
 
         try:
             response = await self._call_llm(messages)
-            target_agent, condensed = await self._parse_classification(response, user_text)
-            # Store routing decision after successful LLM classification
-            if self._cache_manager and target_agent != _FALLBACK_AGENT:
-                try:
-                    self._cache_manager.store_routing(user_text, target_agent, 1.0)
-                except Exception:
-                    logger.warning("Failed to store routing decision", exc_info=True)
-            return target_agent, condensed
+            logger.info("Classification LLM response for '%s': %s", user_text[:60], repr(response[:300]))
+            classifications = await self._parse_classification(response, user_text)
+            # Store routing decision only for single-agent results
+            if self._cache_manager and len(classifications) == 1:
+                target_agent, condensed, confidence = classifications[0]
+                if target_agent != _FALLBACK_AGENT:
+                    try:
+                        self._cache_manager.store_routing(user_text, target_agent, confidence, condensed)
+                    except Exception:
+                        logger.warning("Failed to store routing decision", exc_info=True)
+            return classifications, False
         except Exception:
             logger.exception("Intent classification failed, falling back to %s", _FALLBACK_AGENT)
-            return _FALLBACK_AGENT, user_text
+            return [(_FALLBACK_AGENT, user_text, 0.0)], False
 
-    async def _parse_classification(self, response: str, original_text: str) -> tuple[str, str]:
-        """Parse LLM classification response.
+    async def _parse_classification(self, response: str, original_text: str) -> list[tuple[str, str, float]]:
+        """Parse LLM classification response (single or multi-line).
 
-        Expected format: "<agent-id>: <condensed task>"
+        Expected format per line: "<agent-id> (<confidence>%): <condensed task>"
+        Falls back to old format: "<agent-id>: <condensed task>"
         Falls back to general-agent if parsing fails.
+
+        Returns a list of (agent_id, condensed_task, confidence) tuples.
         """
         response = response.strip()
-        if ":" not in response:
-            logger.warning("Could not parse classification: %s", response[:100])
-            return _FALLBACK_AGENT, original_text
-
-        agent_id, _, condensed = response.partition(":")
-        agent_id = agent_id.strip().lower()
-        condensed = condensed.strip()
-
         known_agents = await self._get_known_agents()
-        if agent_id not in known_agents:
-            logger.warning("Unknown agent '%s' in classification, falling back", agent_id)
-            return _FALLBACK_AGENT, original_text
+        results: list[tuple[str, str, float]] = []
 
-        if not condensed:
-            condensed = original_text
+        lines = [line.strip() for line in response.split("\n") if line.strip()]
+        for line in lines:
+            # Try new format: "agent-id (85%): task text"
+            match = re.match(r'^([\w-]+)\s*\((\d+)%?\)\s*:\s*(.+)$', line, re.DOTALL)
+            if match:
+                agent_id = match.group(1).strip().lower()
+                confidence = min(float(match.group(2)) / 100.0, 1.0)
+                condensed = match.group(3).strip()
+            else:
+                # Fallback to old format: "agent-id: task text"
+                if ":" not in line:
+                    logger.warning("Could not parse classification line: %s", line[:100])
+                    continue
+                agent_id, _, condensed = line.partition(":")
+                agent_id = agent_id.strip().lower()
+                condensed = condensed.strip()
+                confidence = 0.8
 
-        return agent_id, condensed
+            if agent_id not in known_agents:
+                logger.warning("Unknown agent '%s' in classification, skipping line", agent_id)
+                continue
+
+            if not condensed:
+                condensed = original_text
+
+            results.append((agent_id, condensed, confidence))
+
+        if not results:
+            return [(_FALLBACK_AGENT, original_text, 0.0)]
+
+        # Deduplicate by agent_id: keep higher confidence, merge tasks
+        seen: dict[str, tuple[str, float, list[str]]] = {}
+        for agent_id, condensed, confidence in results:
+            if agent_id in seen:
+                existing_condensed, existing_conf, tasks = seen[agent_id]
+                if confidence > existing_conf:
+                    tasks.append(existing_condensed)
+                    seen[agent_id] = (condensed, confidence, tasks)
+                else:
+                    tasks.append(condensed)
+            else:
+                seen[agent_id] = (condensed, confidence, [])
+
+        deduped = []
+        for agent_id, (condensed, confidence, extra_tasks) in seen.items():
+            if extra_tasks:
+                condensed = condensed + " ; " + " ; ".join(extra_tasks)
+            deduped.append((agent_id, condensed, confidence))
+
+        # Sort by confidence desc, cap at 3
+        deduped.sort(key=lambda x: x[2], reverse=True)
+        return deduped[:3]
 
     def _get_turns(self, conversation_id: str | None) -> list[dict]:
         """Get recent conversation turns for context."""
@@ -302,3 +526,122 @@ class OrchestratorAgent(BaseAgent):
         max_messages = _MAX_TURNS * 2
         if len(turns) > max_messages:
             self._conversations[conversation_id] = turns[-max_messages:]
+
+    async def _merge_responses(
+        self,
+        agent_responses: list[tuple[str, str, bool]],
+        user_text: str,
+    ) -> str:
+        """Merge multiple agent responses into a single natural answer via LLM.
+
+        Always calls LLM regardless of personality settings.
+        Includes personality prompt if configured.
+        Falls back to bracket-prefixed format on failure.
+        """
+        if not agent_responses:
+            return "I couldn't process that request."
+
+        # Only one response: return it directly
+        if len(agent_responses) == 1:
+            return agent_responses[0][1] or "I couldn't process that request."
+
+        # Build structured summary of each agent response
+        summary_parts = []
+        for agent_id, speech, acted in agent_responses:
+            status = "[action executed]" if acted else "[no action executed]"
+            if speech and speech.strip():
+                summary_parts.append(f"- {agent_id} {status}: {speech}")
+            else:
+                summary_parts.append(f"- {agent_id} {status}: (no response)")
+        agent_summary = "\n".join(summary_parts)
+
+        try:
+            from app.llm import client as llm_client
+
+            personality = ""
+            try:
+                personality = await SettingsRepository.get_value("personality.prompt", "")
+            except Exception:
+                pass
+
+            system_content = (
+                "You are combining responses from multiple smart home agents into one "
+                "natural, cohesive answer for the user. Rules:\n"
+                "- Merge all useful information into a single flowing response\n"
+                "- If an agent failed or had no useful response, acknowledge it briefly\n"
+                "- If an agent's status is [no action executed], do NOT claim that action was completed\n"
+                "- Keep all factual content and entity names exactly as they are\n"
+                "- Never add information that was not in an agent's response\n"
+                "- Keep it concise and natural"
+            )
+            if personality and personality.strip():
+                system_content = f"{personality.strip()}\n\n{system_content}"
+
+            messages = [
+                {"role": "system", "content": system_content},
+                {
+                    "role": "user",
+                    "content": (
+                        f"User asked: {user_text}\n\n"
+                        f"Agent responses:\n{agent_summary}\n\n"
+                        "Combine into one natural response:"
+                    ),
+                },
+            ]
+
+            model = await SettingsRepository.get_value("rewrite.model", "groq/llama-3.1-8b-instant")
+            temp = float(await SettingsRepository.get_value("rewrite.temperature", "0.3"))
+            result = await llm_client.complete("orchestrator", messages, model=model, temperature=temp)
+            return result.strip() if result and result.strip() else self._format_fallback(agent_responses)
+        except Exception:
+            logger.warning("Multi-agent response merge failed, using fallback format", exc_info=True)
+            return self._format_fallback(agent_responses)
+
+    @staticmethod
+    def _format_fallback(agent_responses: list[tuple[str, str, bool]]) -> str:
+        """Fallback formatting when LLM merge fails."""
+        parts = [f"[{aid}] {sp}" for aid, sp, _ in agent_responses if sp and sp.strip()]
+        return "\n\n".join(parts) if parts else "I couldn't process that request."
+
+    async def _mediate_response(self, agent_speech: str, user_text: str, agent_id: str) -> str:
+        """Optionally mediate the domain agent response with personality.
+
+        When personality.prompt is non-empty, passes the agent speech through
+        a lightweight LLM call to apply the configured personality.
+        Falls back to the original speech on any failure.
+        """
+        try:
+            personality = await SettingsRepository.get_value("personality.prompt", "")
+            if not personality.strip():
+                return agent_speech
+        except Exception:
+            return agent_speech
+
+        if not agent_speech or not agent_speech.strip():
+            return agent_speech
+
+        try:
+            from app.llm import client as llm_client
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        f"{personality.strip()}\n\n"
+                        "You are reformulating a smart home assistant response to match "
+                        "this personality. Keep all factual content and entity names "
+                        "exactly as they are. Never add information that was not in the "
+                        "original response. Keep it concise."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"User asked: {user_text}\nAgent ({agent_id}) responded: {agent_speech}\n\nReformulate:",
+                },
+            ]
+            model = await SettingsRepository.get_value("rewrite.model", "groq/llama-3.1-8b-instant")
+            temp = float(await SettingsRepository.get_value("rewrite.temperature", "0.3"))
+            result = await llm_client.complete("orchestrator", messages, model=model, temperature=temp)
+            return result.strip() if result and result.strip() else agent_speech
+        except Exception:
+            logger.warning("Response mediation failed, using original speech", exc_info=True)
+            return agent_speech

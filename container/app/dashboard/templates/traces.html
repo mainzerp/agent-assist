@@ -7,113 +7,616 @@
 <link href="https://unpkg.com/vis-timeline@7.7.3/styles/vis-timeline-graph2d.min.css" rel="stylesheet" type="text/css">
 <script src="https://unpkg.com/vis-timeline@7.7.3/standalone/umd/vis-timeline-graph2d.min.js"></script>
 
-<div x-data="tracesPage()" x-init="loadTraces()">
+<div x-data="tracesPage()" x-init="init()">
 
     <div class="page-header">
         <div class="page-header-text">
             <h2 class="section-title mt-0 mb-0">Request Traces</h2>
-            <p class="page-subtitle">Distributed tracing with span-level Gantt visualization.</p>
+            <p class="page-subtitle">Lucia-style distributed tracing with search, labels, and span-level Gantt visualization.</p>
         </div>
     </div>
 
-    <!-- Trace list -->
-    <div class="card mb-lg">
-        <div class="flex-between mb-md">
-            <h3 class="card-title mb-0">Recent Traces</h3>
-            <div class="flex-center" style="gap: 0.5rem;">
-                <button class="btn btn-sm btn-secondary" :disabled="page <= 1" @click="page--; loadTraces()">Prev</button>
-                <span class="text-mono" style="font-size: 0.875rem;" x-text="page + ' / ' + pages"></span>
-                <button class="btn btn-sm btn-secondary" :disabled="page >= pages" @click="page++; loadTraces()">Next</button>
+    <!-- ============================================================ -->
+    <!-- OVERVIEW LIST (hidden when detail is open)                    -->
+    <!-- ============================================================ -->
+    <div x-show="!selectedTraceId">
+
+        <!-- Search & Filter Bar -->
+        <div class="card mb-md" style="padding: 1rem;">
+            <div class="form-row" style="align-items: flex-end;">
+                <!-- Search -->
+                <div class="form-group mb-0" style="flex: 1; min-width: 200px;">
+                    <label class="form-label">Search</label>
+                    <input type="text" class="form-input" placeholder="Search user input..."
+                           x-model="search"
+                           @keyup.enter="page=1; loadTraces()"
+                           @input.debounce.500ms="page=1; loadTraces()">
+                </div>
+
+                <!-- Agent filter -->
+                <div class="form-group mb-0">
+                    <label class="form-label">Agent</label>
+                    <select class="form-input" style="width: auto; min-width: 150px;"
+                            x-model="agentFilter" @change="page=1; loadTraces()">
+                        <option value="">All Agents</option>
+                        <template x-for="a in allAgents" :key="a">
+                            <option :value="a" x-text="a"></option>
+                        </template>
+                    </select>
+                </div>
+
+                <!-- Label filter -->
+                <div class="form-group mb-0">
+                    <label class="form-label">Label</label>
+                    <select class="form-input" style="width: auto; min-width: 120px;"
+                            x-model="labelFilter" @change="page=1; loadTraces()">
+                        <option value="">All Labels</option>
+                        <template x-for="l in allLabels" :key="l">
+                            <option :value="l" x-text="l"></option>
+                        </template>
+                    </select>
+                </div>
+
+                <!-- Date From -->
+                <div class="form-group mb-0">
+                    <label class="form-label">From</label>
+                    <input type="date" class="form-input" style="width: auto;"
+                           x-model="dateFrom" @change="page=1; loadTraces()">
+                </div>
+
+                <!-- Date To -->
+                <div class="form-group mb-0">
+                    <label class="form-label">To</label>
+                    <input type="date" class="form-input" style="width: auto;"
+                           x-model="dateTo" @change="page=1; loadTraces()">
+                </div>
+
+                <!-- Export -->
+                <button class="btn btn-sm btn-secondary" style="align-self: flex-end;" @click="exportCSV()">Export CSV</button>
             </div>
         </div>
 
-        <template x-if="loading">
-            <p class="text-muted">Loading traces...</p>
-        </template>
-
-        <div class="table-container-flush" x-show="!loading && traces.length > 0">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Trace ID</th>
-                        <th>Start Time</th>
-                        <th>Spans</th>
-                        <th>Duration</th>
-                        <th>Agents</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <template x-for="t in traces" :key="t.trace_id">
-                        <tr>
-                            <td class="text-mono" style="font-size: 0.75rem;" x-text="t.trace_id"></td>
-                            <td class="text-mono" style="font-size: 0.75rem;" x-text="t.start_time"></td>
-                            <td x-text="t.span_count"></td>
-                            <td class="text-mono" x-text="t.total_duration_ms ? Math.round(t.total_duration_ms) + 'ms' : '-'"></td>
-                            <td style="font-size: 0.75rem;" x-text="t.agents || '-'"></td>
-                            <td>
-                                <button class="btn btn-sm btn-primary" @click="showGantt(t.trace_id)">View</button>
-                            </td>
-                        </tr>
-                    </template>
-                </tbody>
-            </table>
-        </div>
-
-        <template x-if="!loading && traces.length === 0">
-            <div class="empty-state">
-                <p>No traces found.</p>
-            </div>
-        </template>
-    </div>
-
-    <!-- Gantt visualization -->
-    <template x-if="selectedTrace">
-        <div class="card">
+        <!-- Traces Table -->
+        <div class="card mb-lg">
             <div class="flex-between mb-md">
-                <h3 class="card-title mb-0">Trace: <span class="text-mono" x-text="selectedTrace"></span></h3>
-                <button class="btn btn-sm btn-secondary" @click="selectedTrace = null; ganttSpans = [];">Close</button>
+                <span class="text-muted" style="font-size: 0.875rem;" x-text="'Total: ' + total + ' traces'"></span>
+                <div class="flex-center" style="gap: 0.5rem;">
+                    <button class="btn btn-sm btn-secondary" :disabled="page <= 1" @click="page--; loadTraces()">Prev</button>
+                    <span class="text-mono" style="font-size: 0.875rem;" x-text="page + ' / ' + pages"></span>
+                    <button class="btn btn-sm btn-secondary" :disabled="page >= pages" @click="page++; loadTraces()">Next</button>
+                </div>
             </div>
-            {% include "partials/_trace_gantt.html" %}
+
+            <template x-if="loading">
+                <p class="text-muted">Loading traces...</p>
+            </template>
+
+            <div class="table-container-flush" x-show="!loading && traces.length > 0">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>User Input</th>
+                            <th>Agents</th>
+                            <th>Duration</th>
+                            <th>Label</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="t in traces" :key="t.trace_id">
+                            <tr class="row-clickable" @click="showDetail(t.trace_id)">
+                                <td class="text-mono" style="font-size: 0.75rem; white-space: nowrap;"
+                                    x-text="formatTimestamp(t.created_at)"></td>
+                                <td class="truncate" style="max-width: 300px;"
+                                    x-text="t.user_input || '-'"></td>
+                                <td>
+                                    <div style="display: flex; gap: 0.25rem; flex-wrap: wrap;">
+                                        <template x-for="agent in (t.agents || [])" :key="agent">
+                                            <span class="badge" :style="'background-color:' + agentColor(agent) + '22; color:' + agentColor(agent) + '; font-size: 0.7rem;'"
+                                                  x-text="agent"></span>
+                                        </template>
+                                    </div>
+                                </td>
+                                <td class="text-mono" x-text="t.total_duration_ms ? Math.round(t.total_duration_ms) + 'ms' : '-'"></td>
+                                <td>
+                                    <span x-show="t.label" class="badge badge-blue" style="font-size: 0.7rem;"
+                                          x-text="t.label"></span>
+                                </td>
+                                <td>
+                                    <button class="btn btn-sm btn-primary" @click.stop="showDetail(t.trace_id)">View</button>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+
+            <template x-if="!loading && traces.length === 0">
+                <div class="empty-state">
+                    <p>No traces found.</p>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- TRACE DETAIL VIEW (shown when a trace is selected)            -->
+    <!-- ============================================================ -->
+    <template x-if="selectedTraceId">
+        <div>
+            <template x-if="detailLoading">
+                <div class="card"><p class="text-muted">Loading trace detail...</p></div>
+            </template>
+
+            <template x-if="!detailLoading && traceDetail">
+                <div>
+                    <!-- Header -->
+                    <div class="card mb-md">
+                        <div class="flex-between mb-md">
+                            <h3 class="card-title mb-0">Trace Detail</h3>
+                            <button class="btn btn-sm btn-secondary" @click="closeDetail()">Back to List</button>
+                        </div>
+
+                        <!-- Summary bar -->
+                        <div class="flex-center" style="gap: 1.5rem; flex-wrap: wrap;">
+                            <div>
+                                <span class="text-muted" style="font-size: 0.75rem;">Timestamp</span><br>
+                                <span class="text-mono" style="font-size: 0.875rem;" x-text="formatTimestamp(traceDetail.timestamp)"></span>
+                            </div>
+                            <div>
+                                <span class="text-muted" style="font-size: 0.75rem;">Session</span><br>
+                                <span class="text-mono" style="font-size: 0.875rem;" x-text="traceDetail.conversation_id || '-'"></span>
+                            </div>
+                            <div>
+                                <span class="text-muted" style="font-size: 0.75rem;">Duration</span><br>
+                                <span class="text-mono" style="font-size: 0.875rem;" x-text="traceDetail.duration_ms ? Math.round(traceDetail.duration_ms) + 'ms' : '-'"></span>
+                            </div>
+                            <div>
+                                <span class="text-muted" style="font-size: 0.75rem;">Source</span><br>
+                                <span class="badge badge-blue" style="font-size: 0.7rem;" x-text="traceDetail.source || '-'"></span>
+                            </div>
+                            <div>
+                                <span class="text-muted" style="font-size: 0.75rem;">Label</span><br>
+                                <template x-if="!editingLabel">
+                                    <span>
+                                        <span x-show="traceDetail.label" class="badge badge-blue" style="font-size: 0.7rem; cursor: pointer;"
+                                              x-text="traceDetail.label" @click="editingLabel = true; newLabel = traceDetail.label || ''"></span>
+                                        <button x-show="!traceDetail.label" class="btn btn-sm btn-secondary" style="font-size: 0.7rem; padding: 0.15rem 0.5rem;"
+                                                @click="editingLabel = true; newLabel = ''">+ Label</button>
+                                    </span>
+                                </template>
+                                <template x-if="editingLabel">
+                                    <span style="display: flex; gap: 0.25rem; align-items: center;">
+                                        <input type="text" class="form-input" style="width: 100px; font-size: 0.75rem; padding: 0.25rem 0.5rem;"
+                                               x-model="newLabel" @keyup.enter="saveLabel()" @keyup.escape="editingLabel = false">
+                                        <button class="btn btn-sm btn-primary" @click="saveLabel()">Save</button>
+                                        <button class="btn btn-sm btn-secondary" @click="editingLabel = false">Cancel</button>
+                                    </span>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- User Input -->
+                    <div class="card mb-md" style="background: var(--bg-obsidian);">
+                        <h4 class="card-title mb-sm" style="font-size: 0.875rem;">User Input</h4>
+                        <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.875rem; margin: 0; color: var(--color-cloud);"
+                             x-text="traceDetail.user_input || '-'"></pre>
+                    </div>
+
+                    <!-- Final Response -->
+                    <div class="card mb-md" style="background: var(--bg-obsidian);">
+                        <h4 class="card-title mb-sm" style="font-size: 0.875rem;">Final Response</h4>
+                        <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.875rem; margin: 0; color: var(--color-cloud);"
+                             x-text="traceDetail.final_response || '-'"></pre>
+                    </div>
+
+                    <!-- Routing Decision -->
+                    <div class="card mb-md" style="background: var(--bg-obsidian);">
+                        <h4 class="card-title mb-sm" style="font-size: 0.875rem;">Routing Decision</h4>
+                        <div class="span-detail-grid">
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Selected Agent</span>
+                                <template x-if="traceDetail.routing?.multi_agent && traceDetail.routing?.all_agents">
+                                    <span style="display: flex; gap: 0.3rem; flex-wrap: wrap;">
+                                        <template x-for="a in (traceDetail.routing.all_agents || '').split(', ')" :key="a">
+                                            <span class="badge" :style="'background-color:' + agentColor(a.trim()) + '22; color:' + agentColor(a.trim()) + ';'"
+                                                  x-text="a.trim()"></span>
+                                        </template>
+                                    </span>
+                                </template>
+                                <template x-if="!traceDetail.routing?.multi_agent || !traceDetail.routing?.all_agents">
+                                    <span class="badge" :style="'background-color:' + agentColor(traceDetail.routing?.selected_agent) + '22; color:' + agentColor(traceDetail.routing?.selected_agent) + ';'"
+                                          x-text="traceDetail.routing?.selected_agent || '-'"></span>
+                                </template>
+                            </div>
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Confidence</span>
+                                <span class="text-mono" x-text="traceDetail.routing?.confidence != null ? Math.round(traceDetail.routing.confidence * 100) + '%' : '-'"></span>
+                            </div>
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Routing Duration</span>
+                                <span class="text-mono" x-text="traceDetail.routing?.duration_ms ? Math.round(traceDetail.routing.duration_ms) + 'ms' : '-'"></span>
+                            </div>
+                            <div class="span-detail-row">
+                                <span class="span-detail-label">Routing Source</span>
+                                <span class="badge" :style="traceDetail.routing_cached
+                                    ? 'background-color: var(--teal-glow); color: #fff; font-size: 0.7rem;'
+                                    : 'background-color: var(--bg-charcoal); color: var(--text-silver); font-size: 0.7rem;'"
+                                    x-text="traceDetail.routing_cached ? 'Cached' : 'LLM'"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Agent Instructions -->
+                    <template x-if="traceDetail.agent_instructions && Object.keys(traceDetail.agent_instructions).length > 0">
+                        <div class="card mb-md" style="background: var(--bg-obsidian);">
+                            <h4 class="card-title mb-sm" style="font-size: 0.875rem;">Agent Instructions</h4>
+                            <template x-for="[agent, task] in Object.entries(traceDetail.agent_instructions || {})" :key="agent">
+                                <div style="margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.5rem;">
+                                    <span class="badge" :style="'background-color:' + agentColor(agent) + '22; color:' + agentColor(agent) + '; font-size: 0.7rem;'"
+                                          x-text="agent"></span>
+                                    <span style="font-size: 0.875rem; color: var(--color-cloud);" x-text="task"></span>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+
+                    <!-- Agent Communication -->
+                    <template x-if="traceDetail.agent_communication && traceDetail.agent_communication.length > 0">
+                        <div class="card mb-md" style="background: var(--bg-obsidian);">
+                            <h4 class="card-title mb-sm" style="font-size: 0.875rem;">Agent Communication</h4>
+                            <template x-for="(comm, idx) in traceDetail.agent_communication" :key="idx">
+                                <div style="margin-bottom: 0.75rem;" :class="comm.parallel ? 'parallel-step' : ''">
+                                    <!-- Flow step indicator -->
+                                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem;">
+                                        <span style="font-size: 0.65rem; color: var(--text-silver); min-width: 1.2rem; text-align: center; font-weight: 600;"
+                                              x-text="'#' + (idx + 1)"></span>
+                                        <span class="badge" :style="'background-color:' + agentColor(comm.from_agent) + '22; color:' + agentColor(comm.from_agent) + '; font-size: 0.7rem;'"
+                                              x-text="comm.from_agent"></span>
+                                        <span style="color: var(--text-silver); font-size: 0.75rem;">--&gt;</span>
+                                        <span class="badge" :style="'background-color:' + agentColor(comm.to_agent) + '22; color:' + agentColor(comm.to_agent) + '; font-size: 0.7rem;'"
+                                              x-text="comm.to_agent"></span>
+                                        <template x-if="comm.parallel">
+                                            <span style="font-size: 0.65rem; color: var(--teal-glow); font-weight: 600; margin-left: 0.25rem;">PARALLEL</span>
+                                        </template>
+                                    </div>
+                                    <template x-if="comm.task">
+                                        <div style="margin-left: 2rem; margin-bottom: 0.4rem;">
+                                            <span class="text-muted" style="font-size: 0.7rem;">Task:</span>
+                                            <template x-if="comm.task_pass_through">
+                                                <span style="font-size: 0.8rem; color: var(--text-silver); font-style: italic;"
+                                                      x-text="comm.task + ' (forwarded as-is)'"></span>
+                                            </template>
+                                            <template x-if="!comm.task_pass_through">
+                                                <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; margin: 0.2rem 0 0 0; color: var(--color-cloud);"
+                                                     x-text="comm.task"></pre>
+                                            </template>
+                                        </div>
+                                    </template>
+                                    <template x-if="comm.response_unchanged">
+                                        <div style="margin-left: 2rem;">
+                                            <span style="font-size: 0.8rem; color: var(--text-silver); font-style: italic;">
+                                                Returned unchanged
+                                            </span>
+                                        </div>
+                                    </template>
+                                    <template x-if="!comm.response_unchanged && comm.response">
+                                        <div style="margin-left: 2rem;">
+                                            <span class="text-muted" style="font-size: 0.7rem;">Response:</span>
+                                            <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; margin: 0.2rem 0 0 0; color: var(--color-cloud);"
+                                                 x-text="comm.response"></pre>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+
+                    <!-- Span Timeline (Gantt) -->
+                    <div class="card mb-md" style="background: var(--bg-obsidian);">
+                        <h4 class="card-title mb-sm" style="font-size: 0.875rem;">Span Timeline</h4>
+                        {% include "partials/_trace_gantt.html" %}
+                    </div>
+
+                    <!-- Span detail panel (on click) -->
+                    <template x-if="selectedSpan">
+                        <div class="span-detail-panel">
+                            <div class="flex-between mb-sm">
+                                <h4 class="card-title mb-0" x-text="selectedSpan.span_name + ' (' + (selectedSpan.agent_id || 'system') + ')'"></h4>
+                                <button class="btn btn-sm btn-secondary" @click="selectedSpan = null">Close</button>
+                            </div>
+                            <div class="span-detail-grid">
+                                <div class="span-detail-row">
+                                    <span class="span-detail-label">Duration</span>
+                                    <span class="text-mono" x-text="selectedSpan.duration_ms.toFixed(2) + 'ms'"></span>
+                                </div>
+                                <div class="span-detail-row">
+                                    <span class="span-detail-label">Status</span>
+                                    <span :class="selectedSpan.status === 'error' ? 'badge badge-red' : 'badge badge-green'" x-text="selectedSpan.status"></span>
+                                </div>
+                                <template x-if="selectedSpan.metadata && selectedSpan.metadata.user_input">
+                                    <div class="span-detail-row span-detail-wide">
+                                        <span class="span-detail-label">User Input</span>
+                                        <pre class="span-detail-content" x-text="selectedSpan.metadata.user_input"></pre>
+                                    </div>
+                                </template>
+                                <template x-if="selectedSpan.metadata && selectedSpan.metadata.condensed_task">
+                                    <div class="span-detail-row span-detail-wide">
+                                        <span class="span-detail-label">Condensed Task</span>
+                                        <template x-if="selectedSpan.metadata.all_classifications">
+                                            <div>
+                                                <template x-for="[agent, info] in Object.entries(selectedSpan.metadata.all_classifications)" :key="agent">
+                                                    <div style="margin-bottom: 0.3rem; display: flex; align-items: center; gap: 0.5rem;">
+                                                        <span class="badge" :style="'background-color:' + agentColor(agent) + '22; color:' + agentColor(agent) + '; font-size: 0.65rem;'"
+                                                              x-text="agent"></span>
+                                                        <span style="font-size: 0.8rem; color: var(--color-cloud);" x-text="info.task + ' (' + Math.round(info.confidence * 100) + '%)'"></span>
+                                                    </div>
+                                                </template>
+                                            </div>
+                                        </template>
+                                        <template x-if="!selectedSpan.metadata.all_classifications">
+                                            <pre class="span-detail-content" x-text="selectedSpan.metadata.condensed_task"></pre>
+                                        </template>
+                                    </div>
+                                </template>
+                                <template x-if="selectedSpan.metadata && selectedSpan.metadata.routing_cached !== undefined">
+                                    <div class="span-detail-row">
+                                        <span class="span-detail-label">Routing Cached</span>
+                                        <span class="badge" :style="selectedSpan.metadata.routing_cached
+                                            ? 'background-color: var(--teal-glow); color: #fff;'
+                                            : 'background-color: var(--bg-charcoal); color: var(--text-silver);'"
+                                            x-text="selectedSpan.metadata.routing_cached ? 'Yes' : 'No'"></span>
+                                    </div>
+                                </template>
+                                <template x-if="selectedSpan.metadata && selectedSpan.metadata.target_agent">
+                                    <div class="span-detail-row">
+                                        <span class="span-detail-label">Target Agent</span>
+                                        <span class="text-mono" x-text="selectedSpan.metadata.target_agent"></span>
+                                    </div>
+                                </template>
+                                <template x-if="selectedSpan.metadata && selectedSpan.metadata.llm_response">
+                                    <div class="span-detail-row span-detail-wide">
+                                        <span class="span-detail-label">LLM Response</span>
+                                        <pre class="span-detail-content" x-text="selectedSpan.metadata.llm_response"></pre>
+                                    </div>
+                                </template>
+                                <template x-if="selectedSpan.metadata && selectedSpan.metadata.agent_response">
+                                    <div class="span-detail-row span-detail-wide">
+                                        <span class="span-detail-label">Agent Response</span>
+                                        <pre class="span-detail-content" x-text="selectedSpan.metadata.agent_response"></pre>
+                                    </div>
+                                </template>
+                                <template x-if="selectedSpan.metadata && selectedSpan.metadata.action">
+                                    <div class="span-detail-row">
+                                        <span class="span-detail-label">Action</span>
+                                        <span class="text-mono" x-text="selectedSpan.metadata.action"></span>
+                                    </div>
+                                </template>
+                                <template x-if="selectedSpan.metadata && selectedSpan.metadata.entity">
+                                    <div class="span-detail-row">
+                                        <span class="span-detail-label">Entity</span>
+                                        <span class="text-mono" x-text="selectedSpan.metadata.entity"></span>
+                                    </div>
+                                </template>
+                                <template x-if="selectedSpan.metadata && selectedSpan.metadata.action_params && Object.keys(selectedSpan.metadata.action_params).length > 0">
+                                    <div class="span-detail-row span-detail-wide">
+                                        <span class="span-detail-label">Action Params</span>
+                                        <pre class="span-detail-content" x-text="JSON.stringify(selectedSpan.metadata.action_params, null, 2)"></pre>
+                                    </div>
+                                </template>
+                                <template x-if="selectedSpan.metadata && selectedSpan.metadata.result_speech">
+                                    <div class="span-detail-row span-detail-wide">
+                                        <span class="span-detail-label">Action Result</span>
+                                        <pre class="span-detail-content" x-text="selectedSpan.metadata.result_speech"></pre>
+                                    </div>
+                                </template>
+                                <template x-if="selectedSpan.metadata && selectedSpan.metadata.success !== undefined">
+                                    <div class="span-detail-row">
+                                        <span class="span-detail-label">Success</span>
+                                        <span :class="selectedSpan.metadata.success ? 'badge badge-green' : 'badge badge-red'" x-text="selectedSpan.metadata.success ? 'Yes' : 'No'"></span>
+                                    </div>
+                                </template>
+                                <template x-if="selectedSpan.metadata && selectedSpan.metadata.latency_ms">
+                                    <div class="span-detail-row">
+                                        <span class="span-detail-label">Latency</span>
+                                        <span class="text-mono" x-text="selectedSpan.metadata.latency_ms + 'ms'"></span>
+                                    </div>
+                                </template>
+                                <template x-if="selectedSpan.metadata && selectedSpan.metadata.status_code">
+                                    <div class="span-detail-row">
+                                        <span class="span-detail-label">Status Code</span>
+                                        <span class="text-mono" x-text="selectedSpan.metadata.status_code"></span>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- Agent Executions -->
+                    <template x-if="traceDetail.agent_executions && traceDetail.agent_executions.length > 0">
+                        <div class="card mb-md" style="background: var(--bg-obsidian);">
+                            <h4 class="card-title mb-sm" style="font-size: 0.875rem;">Agent Executions</h4>
+                            <div class="table-container-flush">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Agent</th>
+                                            <th>Span</th>
+                                            <th>Duration</th>
+                                            <th>Status</th>
+                                            <th>Response</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <template x-for="exec in traceDetail.agent_executions" :key="exec.agent_id + exec.span_name">
+                                            <tr>
+                                                <td>
+                                                    <span class="badge" :style="'background-color:' + agentColor(exec.agent_id) + '22; color:' + agentColor(exec.agent_id) + '; font-size: 0.7rem;'"
+                                                          x-text="exec.agent_id"></span>
+                                                </td>
+                                                <td class="text-mono" style="font-size: 0.75rem;" x-text="exec.span_name"></td>
+                                                <td class="text-mono" x-text="exec.duration_ms ? Math.round(exec.duration_ms) + 'ms' : '-'"></td>
+                                                <td>
+                                                    <span :class="exec.status === 'error' ? 'badge badge-red' : 'badge badge-green'"
+                                                          x-text="exec.status"></span>
+                                                </td>
+                                                <td class="truncate" style="max-width: 300px; font-size: 0.75rem;"
+                                                    x-text="exec.response || '-'"></td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </template>
         </div>
     </template>
 </div>
 
 <script>
+const _agentColors = {
+    'orchestrator': '#8b5cf6',
+    'light-agent': '#f59e0b',
+    'music-agent': '#3b82f6',
+    'climate-agent': '#10b981',
+    'timer-agent': '#ef4444',
+    'media-agent': '#ec4899',
+    'scene-agent': '#6366f1',
+    'automation-agent': '#14b8a6',
+    'security-agent': '#f97316',
+    'general-agent': '#6b7280',
+    'multi-agent': '#a855f7',
+    'user': '#94a3b8',
+};
+
 function tracesPage() {
     return {
+        // List state
         traces: [],
         loading: false,
         page: 1,
         pages: 1,
         total: 0,
-        selectedTrace: null,
+
+        // Filters
+        search: '',
+        agentFilter: '',
+        labelFilter: '',
+        dateFrom: '',
+        dateTo: '',
+
+        // Labels/agents for dropdowns
+        allLabels: [],
+        allAgents: [],
+
+        // Detail state
+        selectedTraceId: null,
+        traceDetail: null,
+        detailLoading: false,
+
+        // Gantt
         ganttSpans: [],
         timeline: null,
+        selectedSpan: null,
+
+        // Label editing
+        editingLabel: false,
+        newLabel: '',
+
+        async init() {
+            await this.loadTraces();
+        },
+
+        agentColor(id) {
+            return _agentColors[id] || '#6b7280';
+        },
+
+        formatTimestamp(ts) {
+            if (!ts) return '-';
+            try {
+                const d = new Date(ts);
+                return d.toLocaleString();
+            } catch { return ts; }
+        },
 
         async loadTraces() {
             this.loading = true;
             try {
-                const resp = await fetch('/api/admin/traces?page=' + this.page + '&per_page=50');
+                const params = new URLSearchParams({ page: this.page, per_page: 50 });
+                if (this.search) params.set('search', this.search);
+                if (this.agentFilter) params.set('agent', this.agentFilter);
+                if (this.labelFilter) params.set('label', this.labelFilter);
+                if (this.dateFrom) params.set('from', this.dateFrom);
+                if (this.dateTo) params.set('to', this.dateTo);
+
+                const resp = await fetch('/api/admin/traces?' + params.toString());
                 const data = await resp.json();
                 this.traces = data.traces || [];
                 this.total = data.total || 0;
                 this.pages = data.pages || 1;
+                this.allLabels = data.labels || [];
+                this.allAgents = data.agents || [];
             } catch (e) {
                 console.error('Failed to load traces', e);
             }
             this.loading = false;
         },
 
-        async showGantt(traceId) {
-            this.selectedTrace = traceId;
+        exportCSV() {
+            const params = new URLSearchParams();
+            if (this.search) params.set('search', this.search);
+            if (this.agentFilter) params.set('agent', this.agentFilter);
+            if (this.labelFilter) params.set('label', this.labelFilter);
+            if (this.dateFrom) params.set('from', this.dateFrom);
+            if (this.dateTo) params.set('to', this.dateTo);
+            window.open('/api/admin/traces/export?' + params.toString(), '_blank');
+        },
+
+        async showDetail(traceId) {
+            this.selectedTraceId = traceId;
+            this.detailLoading = true;
+            this.selectedSpan = null;
+            this.editingLabel = false;
             try {
                 const resp = await fetch('/api/admin/traces/' + encodeURIComponent(traceId));
-                const data = await resp.json();
-                this.ganttSpans = data.spans || [];
+                this.traceDetail = await resp.json();
+                this.ganttSpans = (this.traceDetail.spans || []).slice().sort((a, b) => {
+                    if (a.start_time < b.start_time) return -1;
+                    if (a.start_time > b.start_time) return 1;
+                    return 0;
+                });
                 this.$nextTick(() => { this.renderGantt(); });
             } catch (e) {
-                console.error('Failed to load trace spans', e);
+                console.error('Failed to load trace detail', e);
+            }
+            this.detailLoading = false;
+        },
+
+        closeDetail() {
+            this.selectedTraceId = null;
+            this.traceDetail = null;
+            this.ganttSpans = [];
+            this.selectedSpan = null;
+            if (this.timeline) { this.timeline.destroy(); this.timeline = null; }
+        },
+
+        async saveLabel() {
+            if (!this.selectedTraceId) return;
+            try {
+                await fetch('/api/admin/traces/' + encodeURIComponent(this.selectedTraceId) + '/label', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ label: this.newLabel || null }),
+                });
+                if (this.traceDetail) this.traceDetail.label = this.newLabel || null;
+                this.editingLabel = false;
+                this.loadTraces();
+            } catch (e) {
+                console.error('Failed to save label', e);
             }
         },
 
@@ -126,17 +629,41 @@ function tracesPage() {
                 this.timeline = null;
             }
 
+            const spanById = {};
+            this.ganttSpans.forEach(span => {
+                const sid = span.metadata && span.metadata.span_id;
+                if (sid) spanById[sid] = span;
+            });
+
+            const getDepth = (span) => {
+                if (!span.parent_span || !spanById[span.parent_span]) return 0;
+                return 1 + getDepth(spanById[span.parent_span]);
+            };
+
+            const colorMap = {
+                'classify': '#8b5cf6',
+                'dispatch': '#3b82f6',
+                'llm_call': '#f59e0b',
+                'ha_action': '#10b981',
+                'return': '#ec4899',
+            };
+
             const items = this.ganttSpans.map((span, idx) => {
                 const start = new Date(span.start_time);
                 const end = new Date(start.getTime() + span.duration_ms);
-                const color = span.status === 'error' ? '#ef4444' : '#3b82f6';
+                const isError = span.status === 'error';
+                const depth = getDepth(span);
+                const indent = '\u00A0\u00A0'.repeat(depth);
+                const color = isError ? '#ef4444' : (colorMap[span.span_name] || '#3b82f6');
+                const label = indent + span.span_name + (span.agent_id ? ' (' + span.agent_id + ')' : '') + ' [' + Math.round(span.duration_ms) + 'ms]';
+
                 return {
                     id: idx,
-                    content: span.span_name + (span.agent_id ? ' (' + span.agent_id + ')' : '') + ' [' + Math.round(span.duration_ms) + 'ms]',
+                    content: label,
                     start: start,
                     end: end,
-                    style: 'background-color: ' + color + '; color: white; border: none; border-radius: 4px; font-size: 0.75rem;',
-                    title: span.span_name + '\nDuration: ' + span.duration_ms.toFixed(2) + 'ms\nStatus: ' + span.status,
+                    style: 'background-color: ' + color + '; color: white; border: none; border-radius: 4px; font-size: 0.75rem; cursor: pointer;',
+                    title: span.span_name + '\nAgent: ' + (span.agent_id || '-') + '\nDuration: ' + span.duration_ms.toFixed(2) + 'ms\nStatus: ' + span.status,
                 };
             });
 
@@ -150,6 +677,15 @@ function tracesPage() {
             };
 
             this.timeline = new vis.Timeline(container, dataset, options);
+
+            this.timeline.on('select', (properties) => {
+                if (properties.items.length > 0) {
+                    const idx = properties.items[0];
+                    this.selectedSpan = this.ganttSpans[idx];
+                } else {
+                    this.selectedSpan = null;
+                }
+            });
         }
     };
 }

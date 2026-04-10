@@ -442,3 +442,100 @@ class TestEntityIndex:
         store.get.return_value = {"ids": [], "metadatas": []}
         entry = index.get_by_id("light.missing")
         assert entry is None
+
+
+# ---------------------------------------------------------------------------
+# Visibility rules filtering
+# ---------------------------------------------------------------------------
+
+class TestVisibilityRules:
+    """Tests for _apply_visibility_rules in EntityMatcher."""
+
+    def _make_matcher(self) -> tuple[EntityMatcher, MagicMock, AsyncMock]:
+        mock_index = MagicMock(spec=EntityIndex)
+        mock_alias = AsyncMock(spec=AliasResolver)
+        matcher = EntityMatcher(mock_index, mock_alias)
+        return matcher, mock_index, mock_alias
+
+    def _make_results(self, *entity_ids: str) -> list[MatchResult]:
+        return [
+            MatchResult(entity_id=eid, friendly_name=eid, score=1.0)
+            for eid in entity_ids
+        ]
+
+    async def test_no_rules_returns_all(self):
+        matcher, mock_index, _ = self._make_matcher()
+        results = self._make_results("light.kitchen", "switch.hallway", "media_player.sonos")
+
+        with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
+            mock_repo.get_rules = AsyncMock(return_value=[])
+            filtered = await matcher._apply_visibility_rules("light-agent", results)
+
+        assert len(filtered) == 3
+
+    async def test_domain_include_filters(self):
+        matcher, mock_index, _ = self._make_matcher()
+        mock_index.get_by_id.return_value = None
+        results = self._make_results("light.kitchen", "switch.hallway", "media_player.sonos")
+
+        with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
+            mock_repo.get_rules = AsyncMock(return_value=[
+                {"rule_type": "domain_include", "rule_value": "light"},
+            ])
+            filtered = await matcher._apply_visibility_rules("light-agent", results)
+
+        assert len(filtered) == 1
+        assert filtered[0].entity_id == "light.kitchen"
+
+    async def test_domain_exclude_filters(self):
+        matcher, mock_index, _ = self._make_matcher()
+        mock_index.get_by_id.return_value = None
+        results = self._make_results("light.kitchen", "switch.hallway", "media_player.sonos")
+
+        with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
+            mock_repo.get_rules = AsyncMock(return_value=[
+                {"rule_type": "domain_exclude", "rule_value": "switch"},
+            ])
+            filtered = await matcher._apply_visibility_rules("light-agent", results)
+
+        assert len(filtered) == 2
+        entity_ids = {r.entity_id for r in filtered}
+        assert "switch.hallway" not in entity_ids
+
+    async def test_entity_include_whitelists(self):
+        matcher, mock_index, _ = self._make_matcher()
+        mock_index.get_by_id.return_value = None
+        results = self._make_results("light.kitchen", "switch.hallway", "media_player.sonos")
+
+        with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
+            mock_repo.get_rules = AsyncMock(return_value=[
+                {"rule_type": "domain_include", "rule_value": "light"},
+                {"rule_type": "entity_include", "rule_value": "media_player.sonos"},
+            ])
+            filtered = await matcher._apply_visibility_rules("light-agent", results)
+
+        entity_ids = {r.entity_id for r in filtered}
+        assert "light.kitchen" in entity_ids
+        assert "media_player.sonos" in entity_ids
+        assert "switch.hallway" not in entity_ids
+        assert len(filtered) == 2
+
+    async def test_entity_include_union_with_domain(self):
+        matcher, mock_index, _ = self._make_matcher()
+        mock_index.get_by_id.return_value = None
+        results = self._make_results(
+            "light.kitchen", "light.bedroom", "media_player.sonos", "switch.hallway"
+        )
+
+        with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
+            mock_repo.get_rules = AsyncMock(return_value=[
+                {"rule_type": "domain_include", "rule_value": "light"},
+                {"rule_type": "entity_include", "rule_value": "media_player.sonos"},
+            ])
+            filtered = await matcher._apply_visibility_rules("light-agent", results)
+
+        entity_ids = {r.entity_id for r in filtered}
+        assert "light.kitchen" in entity_ids
+        assert "light.bedroom" in entity_ids
+        assert "media_player.sonos" in entity_ids
+        assert "switch.hallway" not in entity_ids

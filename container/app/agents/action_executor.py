@@ -111,6 +111,7 @@ async def execute_action(
     ha_client,
     entity_index,
     entity_matcher,
+    agent_id: str | None = None,
 ) -> dict:
     """Resolve an entity, call a HA service, and verify the result.
 
@@ -141,7 +142,7 @@ async def execute_action(
     friendly_name = entity_query
     try:
         if entity_matcher:
-            matches = await entity_matcher.match(entity_query)
+            matches = await entity_matcher.match(entity_query, agent_id=agent_id)
             if matches:
                 entity_id = matches[0].entity_id
                 friendly_name = matches[0].friendly_name or entity_id

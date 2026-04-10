@@ -25,7 +25,7 @@ class AgentConfig(BaseModel):
     model: str | None = None
     timeout: int = 5
     max_iterations: int = 3
-    temperature: float = 0.7
+    temperature: float = 0.2
     max_tokens: int = 256
     description: str | None = None
 
