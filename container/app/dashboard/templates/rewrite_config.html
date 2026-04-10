@@ -4,31 +4,42 @@
 {% block header_title %}Rewrite Agent Configuration{% endblock %}
 {% block page_content %}
 <div x-data="rewritePage()" x-init="loadConfig()">
-    <div class="card" style="max-width: 600px;">
-        <h3 style="margin-bottom: 1rem;">Rewrite Settings</h3>
 
-        <div class="form-group" style="display: flex; align-items: center; gap: 0.75rem;">
-            <label class="form-label" style="margin-bottom: 0;">Enabled</label>
-            <label class="toggle">
-                <input type="checkbox" x-model="config.enabled">
-                <span class="toggle-slider"></span>
-            </label>
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">Rewrite Agent Configuration</h2>
+            <p class="page-subtitle">Configure the LLM rewrite agent for response refinement.</p>
+        </div>
+    </div>
+
+    <div class="card card-narrow">
+        <h3 class="card-title mb-md">Rewrite Settings</h3>
+
+        <div class="form-row">
+            <div class="form-group mb-0">
+                <label class="form-label">Enabled</label>
+                <label class="toggle">
+                    <input type="checkbox" x-model="config.enabled">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
         </div>
 
         <div class="form-group">
             <label class="form-label">Model</label>
             <input type="text" class="form-input" x-model="config.model" placeholder="e.g. groq/llama-3.1-8b-instant">
+            <span class="form-hint">LiteLLM model identifier for the rewrite agent.</span>
         </div>
 
         <div class="form-group">
-            <label class="form-label">Temperature: <span class="mono" x-text="config.temperature"></span></label>
+            <label class="form-label">Temperature: <span class="text-mono" x-text="config.temperature"></span></label>
             <input type="range" min="0" max="2" step="0.1" x-model.number="config.temperature">
         </div>
 
-        <div style="display: flex; align-items: center; gap: 0.75rem; margin-top: 1rem;">
+        <div class="form-actions">
             <button class="btn btn-primary" @click="saveConfig()">Save Changes</button>
-            <span x-show="saved" style="color: var(--green); font-size: 0.875rem;">Saved</span>
-            <span x-show="error" style="color: var(--red); font-size: 0.875rem;" x-text="error"></span>
+            <span x-show="saved" class="text-sage" style="font-size: 0.875rem;">Saved</span>
+            <span x-show="error" class="text-coral" style="font-size: 0.875rem;" x-text="error"></span>
         </div>
     </div>
 </div>

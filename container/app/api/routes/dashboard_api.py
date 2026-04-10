@@ -55,6 +55,8 @@ class AgentConfigUpdate(BaseModel):
     timeout: int | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+    max_iterations: int | None = None
+    description: str | None = None
 
 
 class PromptUpdate(BaseModel):

@@ -9,58 +9,69 @@
 
 <div x-data="tracesPage()" x-init="loadTraces()">
 
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">Request Traces</h2>
+            <p class="page-subtitle">Distributed tracing with span-level Gantt visualization.</p>
+        </div>
+    </div>
+
     <!-- Trace list -->
-    <div class="card" style="margin-bottom: 1.5rem;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-            <h3>Recent Traces</h3>
-            <div style="display: flex; gap: 0.5rem; align-items: center;">
+    <div class="card mb-lg">
+        <div class="flex-between mb-md">
+            <h3 class="card-title mb-0">Recent Traces</h3>
+            <div class="flex-center" style="gap: 0.5rem;">
                 <button class="btn btn-sm btn-secondary" :disabled="page <= 1" @click="page--; loadTraces()">Prev</button>
-                <span class="mono" style="font-size: 0.875rem;" x-text="page + ' / ' + pages"></span>
+                <span class="text-mono" style="font-size: 0.875rem;" x-text="page + ' / ' + pages"></span>
                 <button class="btn btn-sm btn-secondary" :disabled="page >= pages" @click="page++; loadTraces()">Next</button>
             </div>
         </div>
 
         <template x-if="loading">
-            <p style="color: var(--text-secondary);">Loading traces...</p>
+            <p class="text-muted">Loading traces...</p>
         </template>
 
-        <table class="data-table" x-show="!loading && traces.length > 0">
-            <thead>
-                <tr>
-                    <th>Trace ID</th>
-                    <th>Start Time</th>
-                    <th>Spans</th>
-                    <th>Duration</th>
-                    <th>Agents</th>
-                    <th></th>
-                </tr>
-            </thead>
-            <tbody>
-                <template x-for="t in traces" :key="t.trace_id">
+        <div class="table-container-flush" x-show="!loading && traces.length > 0">
+            <table class="data-table">
+                <thead>
                     <tr>
-                        <td class="mono" style="font-size: 0.75rem;" x-text="t.trace_id"></td>
-                        <td class="mono" style="font-size: 0.75rem;" x-text="t.start_time"></td>
-                        <td x-text="t.span_count"></td>
-                        <td class="mono" x-text="t.total_duration_ms ? Math.round(t.total_duration_ms) + 'ms' : '-'"></td>
-                        <td style="font-size: 0.75rem;" x-text="t.agents || '-'"></td>
-                        <td>
-                            <button class="btn btn-sm btn-primary" @click="showGantt(t.trace_id)">View</button>
-                        </td>
+                        <th>Trace ID</th>
+                        <th>Start Time</th>
+                        <th>Spans</th>
+                        <th>Duration</th>
+                        <th>Agents</th>
+                        <th></th>
                     </tr>
-                </template>
-            </tbody>
-        </table>
+                </thead>
+                <tbody>
+                    <template x-for="t in traces" :key="t.trace_id">
+                        <tr>
+                            <td class="text-mono" style="font-size: 0.75rem;" x-text="t.trace_id"></td>
+                            <td class="text-mono" style="font-size: 0.75rem;" x-text="t.start_time"></td>
+                            <td x-text="t.span_count"></td>
+                            <td class="text-mono" x-text="t.total_duration_ms ? Math.round(t.total_duration_ms) + 'ms' : '-'"></td>
+                            <td style="font-size: 0.75rem;" x-text="t.agents || '-'"></td>
+                            <td>
+                                <button class="btn btn-sm btn-primary" @click="showGantt(t.trace_id)">View</button>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
 
         <template x-if="!loading && traces.length === 0">
-            <p style="color: var(--text-secondary);">No traces found.</p>
+            <div class="empty-state">
+                <p>No traces found.</p>
+            </div>
         </template>
     </div>
 
     <!-- Gantt visualization -->
     <template x-if="selectedTrace">
         <div class="card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                <h3>Trace: <span class="mono" x-text="selectedTrace"></span></h3>
+            <div class="flex-between mb-md">
+                <h3 class="card-title mb-0">Trace: <span class="text-mono" x-text="selectedTrace"></span></h3>
                 <button class="btn btn-sm btn-secondary" @click="selectedTrace = null; ganttSpans = [];">Close</button>
             </div>
             {% include "partials/_trace_gantt.html" %}

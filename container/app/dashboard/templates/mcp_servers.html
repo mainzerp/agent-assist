@@ -7,17 +7,22 @@
 {% block page_content %}
 <div x-data="mcpServers()">
 
-    <!-- Add Server Form Toggle -->
-    <div class="card" style="margin-bottom: 1.5rem;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-            <h2 class="card-title">MCP Server Management</h2>
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">MCP Servers</h2>
+            <p class="page-subtitle">Manage Model Context Protocol server connections and available tools.</p>
+        </div>
+        <div class="page-actions">
             <button class="btn btn-primary" @click="showAddForm = !showAddForm"
                     x-text="showAddForm ? 'Cancel' : 'Add Server'"></button>
         </div>
+    </div>
 
-        <!-- Add Server Form -->
-        <div x-show="showAddForm" x-transition style="margin-top: 1rem;">
-            <form @submit.prevent="addServer()">
+    <!-- Add Server Form -->
+    <div class="card mb-lg" x-show="showAddForm" x-transition>
+        <h3 class="card-title mb-md">Add Server</h3>
+        <form @submit.prevent="addServer()">
+            <div class="form-grid-2">
                 <div class="form-group">
                     <label class="form-label">Name</label>
                     <input type="text" class="form-input" x-model="newServer.name" required
@@ -30,12 +35,12 @@
                         <option value="http">http</option>
                     </select>
                 </div>
-                <div class="form-group">
+                <div class="form-group form-grid-full">
                     <label class="form-label">Command or URL</label>
                     <input type="text" class="form-input" x-model="newServer.command_or_url" required
                            placeholder="npx @example/mcp-server or http://localhost:3000">
                 </div>
-                <div class="form-group">
+                <div class="form-group form-grid-full">
                     <label class="form-label">Environment Variables (JSON)</label>
                     <textarea class="form-input" x-model="newServer.env_vars_json" rows="3"
                               placeholder='{"API_KEY": "value"}'></textarea>
@@ -45,28 +50,21 @@
                     <input type="number" class="form-input" x-model.number="newServer.timeout"
                            min="5" max="300" value="30">
                 </div>
+            </div>
+            <div class="form-actions">
                 <button type="submit" class="btn btn-primary">Add Server</button>
-            </form>
-        </div>
+            </div>
+        </form>
     </div>
 
     <!-- Status Message -->
     <div x-show="message" x-transition class="alert" :class="messageType === 'error' ? 'alert-error' : 'alert-success'"
-         style="margin-bottom: 1rem;" x-text="message"></div>
+         x-text="message"></div>
 
-    <!-- Server List -->
-    <div class="card">
-        <div id="server-list">
-            <template x-if="servers.length === 0">
-                <p class="text-muted">No servers configured.</p>
-            </template>
-        </div>
-    </div>
-
-    <!-- Server Table (rendered by Alpine after HTMX loads data) -->
+    <!-- Server Table -->
     <template x-if="servers.length > 0">
-        <div class="card" style="margin-top: 1rem;">
-            <table class="table">
+        <div class="table-container">
+            <table class="data-table">
                 <thead>
                     <tr>
                         <th>Name</th>
@@ -80,18 +78,20 @@
                 <tbody>
                     <template x-for="server in servers" :key="server.name">
                         <tr>
-                            <td x-text="server.name"></td>
-                            <td><span class="badge" x-text="server.transport"></span></td>
-                            <td class="text-mono" x-text="server.command_or_url"></td>
+                            <td><strong x-text="server.name"></strong></td>
+                            <td><span class="badge badge-teal" x-text="server.transport"></span></td>
+                            <td class="text-mono truncate" style="max-width: 300px;" x-text="server.command_or_url"></td>
                             <td>
-                                <span class="status-badge"
-                                      :class="server.connected ? 'status-healthy' : 'status-error'"
+                                <span class="badge badge-dot"
+                                      :class="server.connected ? 'badge-green' : 'badge-red'"
                                       x-text="server.connected ? 'Connected' : 'Disconnected'"></span>
                             </td>
-                            <td x-text="server.timeout + 's'"></td>
+                            <td class="mono" x-text="server.timeout + 's'"></td>
                             <td>
-                                <button class="btn btn-sm" @click="showTools(server.name)">Tools</button>
-                                <button class="btn btn-sm btn-danger" @click="removeServer(server.name)">Remove</button>
+                                <div class="btn-group">
+                                    <button class="btn btn-sm btn-secondary" @click="showTools(server.name)">Tools</button>
+                                    <button class="btn btn-sm btn-danger" @click="removeServer(server.name)">Remove</button>
+                                </div>
                             </td>
                         </tr>
                     </template>
@@ -100,18 +100,24 @@
         </div>
     </template>
 
-    <!-- Tools Modal -->
-    <div x-show="toolsServer" x-transition class="card" style="margin-top: 1rem;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-            <h3 class="card-title" x-text="'Tools for ' + toolsServer"></h3>
-            <button class="btn btn-sm" @click="toolsServer = null; toolsList = []">Close</button>
+    <template x-if="servers.length === 0">
+        <div class="empty-state">
+            <p>No servers configured. Click "Add Server" to connect your first MCP server.</p>
         </div>
-        <div style="margin-top: 1rem;">
-            <template x-if="toolsList.length === 0">
-                <p class="text-muted">No tools discovered or server not connected.</p>
-            </template>
-            <template x-if="toolsList.length > 0">
-                <table class="table">
+    </template>
+
+    <!-- Tools Modal -->
+    <div x-show="toolsServer" x-transition class="card mt-lg">
+        <div class="flex-between mb-md">
+            <h3 class="card-title" x-text="'Tools for ' + toolsServer"></h3>
+            <button class="btn btn-sm btn-secondary" @click="toolsServer = null; toolsList = []">Close</button>
+        </div>
+        <template x-if="toolsList.length === 0">
+            <p class="text-muted">No tools discovered or server not connected.</p>
+        </template>
+        <template x-if="toolsList.length > 0">
+            <div class="table-container-flush">
+                <table class="data-table">
                     <thead>
                         <tr><th>Tool Name</th><th>Description</th></tr>
                     </thead>
@@ -124,8 +130,8 @@
                         </template>
                     </tbody>
                 </table>
-            </template>
-        </div>
+            </div>
+        </template>
     </div>
 </div>
 

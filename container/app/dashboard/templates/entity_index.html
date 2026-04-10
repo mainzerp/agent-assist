@@ -5,62 +5,82 @@
 {% block page_content %}
 <div x-data="entityIndexPage()" x-init="loadStats()">
 
-    <!-- Stats overview -->
-    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
-        <div class="card">
-            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Total Entities</h3>
-            <div style="font-size: 1.5rem; font-weight: 600;" x-text="stats.count ?? '-'"></div>
-            <div style="font-size: 0.75rem; color: var(--text-secondary);">
-                Last refresh: <span x-text="stats.last_refresh || 'never'"></span>
-            </div>
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">Entity Index</h2>
+            <p class="page-subtitle">Indexed entities from Home Assistant, organized by domain.</p>
         </div>
-        <div class="card">
-            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Domains</h3>
-            <div style="font-size: 1.5rem; font-weight: 600;" x-text="Object.keys(stats.domains || {}).length"></div>
-        </div>
-        <div class="card">
-            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Actions</h3>
+        <div class="page-actions">
             <button class="btn btn-primary btn-sm" @click="refreshIndex()" :disabled="refreshing">
                 <span x-show="!refreshing">Refresh from HA</span>
                 <span x-show="refreshing">Refreshing...</span>
             </button>
-            <div x-show="refreshMessage" style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--green);" x-text="refreshMessage"></div>
+        </div>
+    </div>
+
+    <div x-show="refreshMessage" x-transition class="alert alert-success mb-md" x-text="refreshMessage"></div>
+
+    <!-- Stats overview -->
+    <div class="stat-grid-3">
+        <div class="stat-card">
+            <div class="stat-card-header">
+                <svg class="stat-card-icon text-teal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                <span class="stat-card-label">Total Entities</span>
+            </div>
+            <div class="stat-card-value" x-text="stats.count ?? '-'"></div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-header">
+                <svg class="stat-card-icon text-blue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                <span class="stat-card-label">Domains</span>
+            </div>
+            <div class="stat-card-value" x-text="Object.keys(stats.domains || {}).length"></div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-header">
+                <svg class="stat-card-icon text-sage" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                <span class="stat-card-label">Last Refresh</span>
+            </div>
+            <div class="stat-card-value" style="font-size: 1rem;" x-text="stats.last_refresh || 'never'"></div>
         </div>
     </div>
 
     <!-- Per-domain breakdown -->
     <div class="card">
-        <h3 style="margin-bottom: 1rem;">Domain Breakdown</h3>
+        <h3 class="card-title mb-md">Domain Breakdown</h3>
         <template x-if="!stats.domains || Object.keys(stats.domains).length === 0">
-            <p style="color: var(--text-secondary);">No entities indexed.</p>
+            <div class="empty-state"><p>No entities indexed.</p></div>
         </template>
-        <table class="data-table" x-show="stats.domains && Object.keys(stats.domains).length > 0">
-            <thead>
-                <tr>
-                    <th>Domain</th>
-                    <th>Count</th>
-                    <th>Percentage</th>
-                </tr>
-            </thead>
-            <tbody>
-                <template x-for="[domain, count] in sortedDomains()" :key="domain">
+        <div class="table-container-flush" x-show="stats.domains && Object.keys(stats.domains).length > 0">
+            <table class="data-table">
+                <thead>
                     <tr>
-                        <td class="mono" x-text="domain"></td>
-                        <td x-text="count"></td>
-                        <td>
-                            <div style="display: flex; align-items: center; gap: 0.5rem;">
-                                <div style="background: var(--card-bg); border-radius: 4px; width: 100px; height: 12px; overflow: hidden;">
-                                    <div style="background: var(--blue); height: 100%; border-radius: 4px;"
-                                         :style="'width: ' + (stats.count > 0 ? Math.round(count / stats.count * 100) : 0) + '%'"></div>
-                                </div>
-                                <span class="mono" style="font-size: 0.75rem;"
-                                      x-text="stats.count > 0 ? (count / stats.count * 100).toFixed(1) + '%' : '0%'"></span>
-                            </div>
-                        </td>
+                        <th>Domain</th>
+                        <th>Count</th>
+                        <th>Percentage</th>
                     </tr>
-                </template>
-            </tbody>
-        </table>
+                </thead>
+                <tbody>
+                    <template x-for="[domain, count] in sortedDomains()" :key="domain">
+                        <tr>
+                            <td class="mono" x-text="domain"></td>
+                            <td x-text="count"></td>
+                            <td>
+                                <div class="flex-center">
+                                    <div class="progress-bar" style="width: 100px;">
+                                        <div class="progress-fill"
+                                             style="background: var(--blue);"
+                                             :style="'width: ' + (stats.count > 0 ? Math.round(count / stats.count * 100) : 0) + '%'"></div>
+                                    </div>
+                                    <span class="mono text-dim" style="font-size: 0.75rem;"
+                                          x-text="stats.count > 0 ? (count / stats.count * 100).toFixed(1) + '%' : '0%'"></span>
+                                </div>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 

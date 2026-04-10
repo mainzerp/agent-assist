@@ -50,10 +50,15 @@ async def render_step(request: Request, step_num: int):
     """Render the appropriate step template."""
     steps = await SetupStateRepository.get_all_steps()
     step_map = {s["step"]: s["completed"] for s in steps}
+    display_steps = (
+        {k: v for k, v in step_map.items() if k != "review_complete"}
+        if step_num == 5
+        else step_map
+    )
     context = {
         "step_num": step_num,
         "total_steps": len(STEP_ORDER),
-        "steps": step_map,
+        "steps": display_steps,
     }
     return templates.TemplateResponse(request, f"step{step_num}.html", context=context)
 
@@ -134,7 +139,9 @@ async def complete_setup(request: Request):
 async def test_ha_endpoint(ha_url: str = Form(...), ha_token: str = Form(...)):
     """Test HA connection with provided URL and token."""
     success = await test_ha_connection(ha_url, ha_token)
-    return {"success": success}
+    if success:
+        return HTMLResponse('<div class="test-result test-success">Connected to Home Assistant!</div>')
+    return HTMLResponse('<div class="test-result test-error">Failed to connect to Home Assistant.</div>')
 
 
 @router.post("/test/llm")
@@ -149,7 +156,9 @@ async def test_llm_endpoint(provider: str = Form(...), api_key: str = Form(...))
         elif provider == "ollama":
             model = "ollama/llama3"
         else:
-            return {"success": False, "error": f"Unknown provider: {provider}"}
+            return HTMLResponse(
+                f'<div class="test-result test-error">Unknown provider: {provider}</div>'
+            )
 
         response = await litellm.acompletion(
             model=model,
@@ -157,6 +166,10 @@ async def test_llm_endpoint(provider: str = Form(...), api_key: str = Form(...))
             api_key=api_key,
             max_tokens=10,
         )
-        return {"success": True, "response": response.choices[0].message.content}
+        return HTMLResponse(
+            f'<div class="test-result test-success">Connected to {provider}!</div>'
+        )
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return HTMLResponse(
+            f'<div class="test-result test-error">Error: {e}</div>'
+        )

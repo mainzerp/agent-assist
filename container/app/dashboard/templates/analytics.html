@@ -5,10 +5,12 @@
 {% block page_content %}
 <div x-data="analyticsPage()" x-init="loadAll()">
 
-    <!-- Time range selector -->
-    <div class="card" style="margin-bottom: 1.5rem;">
-        <div style="display: flex; gap: 0.75rem; align-items: center;">
-            <label class="form-label" style="margin-bottom: 0;">Period:</label>
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">Analytics</h2>
+            <p class="page-subtitle">Request metrics, latency, cache performance, and token usage.</p>
+        </div>
+        <div class="page-actions">
             <select class="form-input" x-model.number="hours" @change="loadAll()" style="width: 140px;">
                 <option value="1">Last 1h</option>
                 <option value="6">Last 6h</option>
@@ -20,110 +22,134 @@
     </div>
 
     <!-- Overview cards -->
-    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
-        <div class="card">
-            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Total Requests</h3>
-            <div style="font-size: 1.5rem; font-weight: 600;" x-text="overview.total_requests ?? '-'"></div>
+    <div class="stat-grid mb-lg">
+        <div class="stat-card">
+            <div class="stat-card-header">
+                <div class="stat-card-icon" style="background: rgba(94,234,212,0.10);">
+                    <svg width="22" height="22" fill="none" stroke="var(--teal)" stroke-width="2" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                </div>
+                <span class="stat-card-label">Total Requests</span>
+            </div>
+            <div class="stat-card-value text-teal" x-text="overview.total_requests ?? '-'"></div>
         </div>
-        <div class="card">
-            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Avg Latency</h3>
-            <div style="font-size: 1.5rem; font-weight: 600;" x-text="overview.avg_latency_ms ? overview.avg_latency_ms + 'ms' : '-'"></div>
+        <div class="stat-card">
+            <div class="stat-card-header">
+                <div class="stat-card-icon" style="background: rgba(251,191,36,0.10);">
+                    <svg width="22" height="22" fill="none" stroke="var(--soft-amber)" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                </div>
+                <span class="stat-card-label">Avg Latency</span>
+            </div>
+            <div class="stat-card-value text-amber" x-text="overview.avg_latency_ms ? overview.avg_latency_ms + 'ms' : '-'"></div>
         </div>
-        <div class="card">
-            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Cache Hit Rate</h3>
-            <div style="font-size: 1.5rem; font-weight: 600;" x-text="overview.cache_hit_rate !== undefined ? overview.cache_hit_rate + '%' : '-'"></div>
+        <div class="stat-card">
+            <div class="stat-card-header">
+                <div class="stat-card-icon" style="background: rgba(134,239,172,0.10);">
+                    <svg width="22" height="22" fill="none" stroke="var(--sage)" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                </div>
+                <span class="stat-card-label">Cache Hit Rate</span>
+            </div>
+            <div class="stat-card-value text-sage" x-text="overview.cache_hit_rate !== undefined ? overview.cache_hit_rate + '%' : '-'"></div>
         </div>
-        <div class="card">
-            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Conversations</h3>
-            <div style="font-size: 1.5rem; font-weight: 600;" x-text="overview.total_conversations ?? '-'"></div>
+        <div class="stat-card">
+            <div class="stat-card-header">
+                <div class="stat-card-icon" style="background: rgba(96,165,250,0.10);">
+                    <svg width="22" height="22" fill="none" stroke="var(--blue)" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                </div>
+                <span class="stat-card-label">Conversations</span>
+            </div>
+            <div class="stat-card-value text-blue" x-text="overview.total_conversations ?? '-'"></div>
         </div>
     </div>
 
     <!-- Charts row -->
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
+    <div class="grid-2 mb-lg">
         <div class="card">
-            <h3 style="margin-bottom: 0.75rem;">Requests Over Time</h3>
+            <h3 class="card-title mb-md">Requests Over Time</h3>
             <canvas id="requestsChart" height="200"></canvas>
         </div>
         <div class="card">
-            <h3 style="margin-bottom: 0.75rem;">Cache Hit Rate</h3>
+            <h3 class="card-title mb-md">Cache Hit Rate</h3>
             <canvas id="cacheChart" height="200"></canvas>
         </div>
     </div>
 
     <!-- Agent metrics table -->
-    <div class="card" style="margin-bottom: 1.5rem;">
-        <h3 style="margin-bottom: 0.75rem;">Per-Agent Performance</h3>
+    <div class="card mb-lg">
+        <h3 class="card-title mb-md">Per-Agent Performance</h3>
         <template x-if="agentMetrics.length === 0">
-            <p style="color: var(--text-secondary);">No agent data available.</p>
+            <p class="text-muted">No agent data available.</p>
         </template>
-        <table class="data-table" x-show="agentMetrics.length > 0">
-            <thead>
-                <tr>
-                    <th>Agent</th>
-                    <th>Requests</th>
-                    <th>Avg Latency</th>
-                    <th>p50</th>
-                    <th>p95</th>
-                    <th>p99</th>
-                </tr>
-            </thead>
-            <tbody>
-                <template x-for="a in agentMetrics" :key="a.agent_id">
-                    <tr>
-                        <td class="mono" x-text="a.agent_id"></td>
-                        <td x-text="a.request_count"></td>
-                        <td class="mono" x-text="a.avg_latency_ms + 'ms'"></td>
-                        <td class="mono" x-text="a.p50 + 'ms'"></td>
-                        <td class="mono" x-text="a.p95 + 'ms'"></td>
-                        <td class="mono" x-text="a.p99 + 'ms'"></td>
-                    </tr>
-                </template>
-            </tbody>
-        </table>
-    </div>
-
-    <!-- Token usage + Rewrite stats -->
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
-        <div class="card">
-            <h3 style="margin-bottom: 0.75rem;">Token Usage by Agent</h3>
-            <template x-if="Object.keys(tokenData.by_agent || {}).length === 0">
-                <p style="color: var(--text-secondary);">No token usage data.</p>
-            </template>
-            <table class="data-table" x-show="Object.keys(tokenData.by_agent || {}).length > 0">
+        <div class="table-container-flush" x-show="agentMetrics.length > 0">
+            <table class="data-table">
                 <thead>
-                    <tr><th>Agent</th><th>In</th><th>Out</th><th>Calls</th></tr>
+                    <tr>
+                        <th>Agent</th>
+                        <th>Requests</th>
+                        <th>Avg Latency</th>
+                        <th>p50</th>
+                        <th>p95</th>
+                        <th>p99</th>
+                    </tr>
                 </thead>
                 <tbody>
-                    <template x-for="[agent, data] in Object.entries(tokenData.by_agent || {})" :key="agent">
+                    <template x-for="a in agentMetrics" :key="a.agent_id">
                         <tr>
-                            <td class="mono" x-text="agent"></td>
-                            <td x-text="data.tokens_in.toLocaleString()"></td>
-                            <td x-text="data.tokens_out.toLocaleString()"></td>
-                            <td x-text="data.calls"></td>
+                            <td class="text-mono" x-text="a.agent_id"></td>
+                            <td x-text="a.request_count"></td>
+                            <td class="text-mono" x-text="a.avg_latency_ms + 'ms'"></td>
+                            <td class="text-mono" x-text="a.p50 + 'ms'"></td>
+                            <td class="text-mono" x-text="a.p95 + 'ms'"></td>
+                            <td class="text-mono" x-text="a.p99 + 'ms'"></td>
                         </tr>
                     </template>
                 </tbody>
             </table>
         </div>
+    </div>
+
+    <!-- Token usage + Rewrite stats -->
+    <div class="grid-2 mb-lg">
         <div class="card">
-            <h3 style="margin-bottom: 0.75rem;">Rewrite Stats</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+            <h3 class="card-title mb-md">Token Usage by Agent</h3>
+            <template x-if="Object.keys(tokenData.by_agent || {}).length === 0">
+                <p class="text-muted">No token usage data.</p>
+            </template>
+            <div class="table-container-flush" x-show="Object.keys(tokenData.by_agent || {}).length > 0">
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Agent</th><th>In</th><th>Out</th><th>Calls</th></tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="[agent, data] in Object.entries(tokenData.by_agent || {})" :key="agent">
+                            <tr>
+                                <td class="text-mono" x-text="agent"></td>
+                                <td x-text="data.tokens_in.toLocaleString()"></td>
+                                <td x-text="data.tokens_out.toLocaleString()"></td>
+                                <td x-text="data.calls"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card">
+            <h3 class="card-title mb-md">Rewrite Stats</h3>
+            <div class="stat-grid" style="grid-template-columns: 1fr 1fr;">
                 <div>
-                    <div style="font-size: 0.75rem; color: var(--text-secondary);">Total</div>
+                    <div class="text-muted" style="font-size: 0.75rem;">Total</div>
                     <div style="font-size: 1.25rem; font-weight: 600;" x-text="rewriteData.total ?? 0"></div>
                 </div>
                 <div>
-                    <div style="font-size: 0.75rem; color: var(--text-secondary);">Avg Latency</div>
+                    <div class="text-muted" style="font-size: 0.75rem;">Avg Latency</div>
                     <div style="font-size: 1.25rem; font-weight: 600;" x-text="(rewriteData.avg_latency_ms ?? 0) + 'ms'"></div>
                 </div>
                 <div>
-                    <div style="font-size: 0.75rem; color: var(--text-secondary);">Successes</div>
-                    <div style="font-size: 1.25rem; font-weight: 600; color: var(--green);" x-text="rewriteData.successes ?? 0"></div>
+                    <div class="text-muted" style="font-size: 0.75rem;">Successes</div>
+                    <div class="text-sage" style="font-size: 1.25rem; font-weight: 600;" x-text="rewriteData.successes ?? 0"></div>
                 </div>
                 <div>
-                    <div style="font-size: 0.75rem; color: var(--text-secondary);">Failures</div>
-                    <div style="font-size: 1.25rem; font-weight: 600; color: var(--red);" x-text="rewriteData.failures ?? 0"></div>
+                    <div class="text-muted" style="font-size: 0.75rem;">Failures</div>
+                    <div class="text-coral" style="font-size: 1.25rem; font-weight: 600;" x-text="rewriteData.failures ?? 0"></div>
                 </div>
             </div>
         </div>

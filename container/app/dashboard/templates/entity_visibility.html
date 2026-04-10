@@ -7,11 +7,16 @@
 {% block page_content %}
 <div x-data="entityVisibility()">
 
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">Entity Visibility</h2>
+            <p class="page-subtitle">Control which entities each agent can see and interact with.</p>
+        </div>
+    </div>
+
     <!-- Agent Selector -->
-    <div class="card" style="margin-bottom: 1.5rem;">
-        <h2 class="card-title">Entity Visibility Rules</h2>
-        <p class="text-muted" style="margin-bottom: 1rem;">Select an agent to manage which entities it can see.</p>
-        <div class="form-group">
+    <div class="card mb-lg">
+        <div class="form-group mb-0">
             <label class="form-label">Agent</label>
             <select class="form-input" x-model="selectedAgent" @change="onAgentSelected()">
                 <option value="">-- Select Agent --</option>
@@ -24,23 +29,21 @@
 
     <!-- Status Message -->
     <div x-show="message" x-transition class="alert" :class="messageType === 'error' ? 'alert-error' : 'alert-success'"
-         style="margin-bottom: 1rem;" x-text="message"></div>
+         x-text="message"></div>
 
     <!-- Entity Tree -->
     <template x-if="selectedAgent && entityTree.length > 0">
         <div class="card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <div class="flex-between mb-md">
                 <h3 class="card-title">Entities</h3>
                 <button class="btn btn-primary" @click="saveRules()">Save Rules</button>
             </div>
 
             <template x-for="domain in entityTree" :key="domain.name">
-                <div style="margin-bottom: 1rem;">
+                <div class="tree-node">
                     <!-- Domain Level -->
-                    <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: #1e293b; border-radius: 0.375rem; cursor: pointer;"
-                         @click="toggleDomain(domain.name)">
-                        <span x-text="expandedDomains.includes(domain.name) ? 'v' : '>'"
-                              style="width: 1rem; font-family: monospace;"></span>
+                    <div class="tree-domain-header" @click="toggleDomain(domain.name)">
+                        <span class="tree-toggle" x-text="expandedDomains.includes(domain.name) ? 'v' : '>'"></span>
                         <label class="toggle" style="margin: 0;" @click.stop>
                             <input type="checkbox"
                                    :checked="isDomainChecked(domain)"
@@ -52,14 +55,12 @@
                     </div>
 
                     <!-- Areas -->
-                    <div x-show="expandedDomains.includes(domain.name)" x-transition style="margin-left: 1.5rem;">
+                    <div x-show="expandedDomains.includes(domain.name)" x-transition class="tree-children">
                         <template x-for="area in domain.areas" :key="area.name">
                             <div style="margin-top: 0.5rem;">
                                 <!-- Area Level -->
-                                <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0.5rem; cursor: pointer;"
-                                     @click="toggleArea(domain.name + '/' + area.name)">
-                                    <span x-text="expandedAreas.includes(domain.name + '/' + area.name) ? 'v' : '>'"
-                                          style="width: 1rem; font-family: monospace;"></span>
+                                <div class="tree-area-header" @click="toggleArea(domain.name + '/' + area.name)">
+                                    <span class="tree-toggle" x-text="expandedAreas.includes(domain.name + '/' + area.name) ? 'v' : '>'"></span>
                                     <label class="toggle" style="margin: 0;" @click.stop>
                                         <input type="checkbox"
                                                :checked="isAreaChecked(area)"
@@ -72,9 +73,9 @@
 
                                 <!-- Entities -->
                                 <div x-show="expandedAreas.includes(domain.name + '/' + area.name)" x-transition
-                                     style="margin-left: 1.5rem;">
+                                     class="tree-children">
                                     <template x-for="entity in area.entities" :key="entity.entity_id">
-                                        <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0;">
+                                        <div class="tree-entity-row">
                                             <label class="toggle" style="margin: 0;">
                                                 <input type="checkbox"
                                                        :checked="checkedEntities.includes(entity.entity_id)"
@@ -96,8 +97,8 @@
     </template>
 
     <template x-if="selectedAgent && entityTree.length === 0 && !loading">
-        <div class="card">
-            <p class="text-muted">No entities available. Ensure Home Assistant is connected.</p>
+        <div class="empty-state">
+            <p>No entities available. Ensure Home Assistant is connected and entities are indexed.</p>
         </div>
     </template>
 

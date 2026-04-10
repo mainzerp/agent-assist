@@ -4,72 +4,86 @@
 {% block header_title %}Conversation History{% endblock %}
 {% block page_content %}
 <div x-data="conversationsPage()" x-init="loadConversations()">
-    <div class="card" style="margin-bottom: 1.5rem;">
-        <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end;">
-            <div class="form-group" style="margin-bottom: 0;">
-                <label class="form-label">Agent</label>
-                <input type="text" class="form-input" x-model="filters.agent_id" placeholder="e.g. light-agent" style="width: 160px;">
-            </div>
-            <div class="form-group" style="margin-bottom: 0;">
-                <label class="form-label">Search</label>
-                <input type="text" class="form-input" x-model="filters.search" placeholder="Search text..." style="width: 200px;">
-            </div>
-            <div class="form-group" style="margin-bottom: 0;">
-                <label class="form-label">From</label>
-                <input type="date" class="form-input" x-model="filters.start_date">
-            </div>
-            <div class="form-group" style="margin-bottom: 0;">
-                <label class="form-label">To</label>
-                <input type="date" class="form-input" x-model="filters.end_date">
-            </div>
-            <button class="btn btn-primary btn-sm" @click="page = 1; loadConversations()">Filter</button>
-            <button class="btn btn-secondary btn-sm" @click="resetFilters()">Reset</button>
+
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">Conversation History</h2>
+            <p class="page-subtitle">Browse and search past conversations across all agents.</p>
         </div>
     </div>
 
+    <!-- Filter bar -->
+    <div class="card mb-lg">
+        <div class="form-row">
+            <div class="form-group mb-0">
+                <label class="form-label">Agent</label>
+                <input type="text" class="form-input" x-model="filters.agent_id" placeholder="e.g. light-agent" style="width: 160px;">
+            </div>
+            <div class="form-group mb-0">
+                <label class="form-label">Search</label>
+                <input type="text" class="form-input" x-model="filters.search" placeholder="Search text..." style="width: 200px;">
+            </div>
+            <div class="form-group mb-0">
+                <label class="form-label">From</label>
+                <input type="date" class="form-input" x-model="filters.start_date">
+            </div>
+            <div class="form-group mb-0">
+                <label class="form-label">To</label>
+                <input type="date" class="form-input" x-model="filters.end_date">
+            </div>
+            <button class="btn btn-primary btn-sm" @click="page = 1; loadConversations()" style="align-self: flex-end;">Filter</button>
+            <button class="btn btn-secondary btn-sm" @click="resetFilters()" style="align-self: flex-end;">Reset</button>
+        </div>
+    </div>
+
+    <!-- Results -->
     <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-            <span style="color: var(--text-secondary); font-size: 0.875rem;" x-text="'Total: ' + total + ' conversations'"></span>
-            <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <div class="flex-between mb-md">
+            <span class="text-muted" style="font-size: 0.875rem;" x-text="'Total: ' + total + ' conversations'"></span>
+            <div class="flex-center" style="gap: 0.5rem;">
                 <button class="btn btn-sm btn-secondary" :disabled="page <= 1" @click="page--; loadConversations()">Prev</button>
-                <span class="mono" style="font-size: 0.875rem;" x-text="page + ' / ' + pages"></span>
+                <span class="text-mono" style="font-size: 0.875rem;" x-text="page + ' / ' + pages"></span>
                 <button class="btn btn-sm btn-secondary" :disabled="page >= pages" @click="page++; loadConversations()">Next</button>
             </div>
         </div>
 
         <template x-if="loading">
-            <p style="color: var(--text-secondary);">Loading...</p>
+            <p class="text-muted">Loading...</p>
         </template>
 
-        <table class="data-table" x-show="!loading && conversations.length > 0">
-            <thead>
-                <tr>
-                    <th>Time</th>
-                    <th>Conv. ID</th>
-                    <th>Agent</th>
-                    <th>User Text</th>
-                    <th>Cache</th>
-                    <th>Latency</th>
-                </tr>
-            </thead>
-            <tbody>
-                <template x-for="c in conversations" :key="c.id">
-                    <tr @click="showDetail(c.conversation_id)" style="cursor: pointer;">
-                        <td class="mono" style="font-size: 0.75rem; white-space: nowrap;" x-text="c.created_at"></td>
-                        <td class="mono" style="font-size: 0.75rem;" x-text="c.conversation_id?.substring(0, 8) + '...'"></td>
-                        <td><span class="badge badge-blue" x-text="c.agent_id || '-'"></span></td>
-                        <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" x-text="c.user_text"></td>
-                        <td>
-                            <span class="badge" :class="c.cache_hit ? 'badge-green' : 'badge-yellow'" x-text="c.cache_hit || 'miss'"></span>
-                        </td>
-                        <td class="mono" x-text="c.latency_ms ? c.latency_ms.toFixed(0) + 'ms' : '-'"></td>
+        <div class="table-container-flush" x-show="!loading && conversations.length > 0">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Conv. ID</th>
+                        <th>Agent</th>
+                        <th>User Text</th>
+                        <th>Cache</th>
+                        <th>Latency</th>
                     </tr>
-                </template>
-            </tbody>
-        </table>
+                </thead>
+                <tbody>
+                    <template x-for="c in conversations" :key="c.id">
+                        <tr class="row-clickable" @click="showDetail(c.conversation_id)">
+                            <td class="text-mono" style="font-size: 0.75rem; white-space: nowrap;" x-text="c.created_at"></td>
+                            <td class="text-mono" style="font-size: 0.75rem;" x-text="c.conversation_id?.substring(0, 8) + '...'"></td>
+                            <td><span class="badge badge-teal" x-text="c.agent_id || '-'"></span></td>
+                            <td class="truncate" style="max-width: 300px;" x-text="c.user_text"></td>
+                            <td>
+                                <span class="badge" :class="c.cache_hit ? 'badge-green' : 'badge-yellow'" x-text="c.cache_hit || 'miss'"></span>
+                            </td>
+                            <td class="text-mono" x-text="c.latency_ms ? c.latency_ms.toFixed(0) + 'ms' : '-'"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
 
         <template x-if="!loading && conversations.length === 0">
-            <p style="color: var(--text-secondary);">No conversations found.</p>
+            <div class="empty-state">
+                <p>No conversations found.</p>
+            </div>
         </template>
     </div>
 
@@ -77,20 +91,20 @@
     <template x-if="detailConv">
         <div class="modal-overlay" @click.self="detailConv = null">
             <div class="card" style="max-width: 700px; width: 90%; max-height: 80vh; overflow-y: auto;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <div class="flex-between mb-md">
                     <strong>Conversation Detail</strong>
                     <button class="btn btn-sm btn-secondary" @click="detailConv = null">Close</button>
                 </div>
                 <template x-for="turn in detailConv.turns" :key="turn.id">
                     <div class="card" style="margin-bottom: 0.5rem; padding: 0.75rem;">
-                        <div style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.25rem;">
-                            <span class="badge badge-blue" x-text="turn.agent_id || 'user'"></span>
-                            <span class="mono" x-text="turn.created_at" style="margin-left: 0.5rem;"></span>
+                        <div style="font-size: 0.75rem; margin-bottom: 0.25rem;" class="text-muted">
+                            <span class="badge badge-teal" x-text="turn.agent_id || 'user'"></span>
+                            <span class="text-mono" x-text="turn.created_at" style="margin-left: 0.5rem;"></span>
                         </div>
                         <div style="margin-bottom: 0.25rem;"><strong>User:</strong> <span x-text="turn.user_text"></span></div>
                         <div x-show="turn.response_text"><strong>Response:</strong> <span x-text="turn.response_text"></span></div>
                         <div x-show="turn.action_executed" style="margin-top: 0.25rem;">
-                            <span class="badge badge-yellow">Action:</span> <span class="mono" x-text="turn.action_executed" style="font-size: 0.75rem;"></span>
+                            <span class="badge badge-yellow">Action:</span> <span class="text-mono" x-text="turn.action_executed" style="font-size: 0.75rem;"></span>
                         </div>
                     </div>
                 </template>

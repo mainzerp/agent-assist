@@ -245,6 +245,28 @@ class TestSetupStepSubmissions:
             assert resp.status_code == 303
             assert "/dashboard/" in resp.headers.get("location", "")
 
+    async def test_step5_review_excludes_review_complete(self, setup_client: httpx.AsyncClient):
+        """Step 5 review page should not show the 'review_complete' meta-step."""
+        with patch(
+            "app.setup.routes.SetupStateRepository.get_all_steps",
+            new_callable=AsyncMock,
+            return_value=[
+                {"step": "admin_password", "completed": True},
+                {"step": "ha_connection", "completed": True},
+                {"step": "container_api_key", "completed": True},
+                {"step": "llm_providers", "completed": True},
+                {"step": "review_complete", "completed": False},
+            ],
+        ):
+            resp = await setup_client.get("/setup/step/5")
+            assert resp.status_code == 200
+            body = resp.text
+            assert "Admin Password" in body
+            assert "Ha Connection" in body
+            assert "Container Api Key" in body
+            assert "Llm Providers" in body
+            assert "Review Complete" not in body
+
 
 # ===================================================================
 # HA connection test endpoint
@@ -265,8 +287,8 @@ class TestHAConnectionTest:
                 data={"ha_url": "http://ha.local:8123", "ha_token": "valid-token"},
             )
             assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is True
+            assert "test-success" in resp.text
+            assert "Connected to Home Assistant" in resp.text
 
     async def test_ha_connection_test_failure(self, setup_client: httpx.AsyncClient):
         with patch(
@@ -279,8 +301,8 @@ class TestHAConnectionTest:
                 data={"ha_url": "http://bad-url:8123", "ha_token": "bad-token"},
             )
             assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
+            assert "test-error" in resp.text
+            assert "Failed to connect" in resp.text
 
 
 # ===================================================================
@@ -305,9 +327,8 @@ class TestLLMTest:
                 data={"provider": "openrouter", "api_key": "sk-test"},
             )
             assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is True
-            assert "response" in data
+            assert "test-success" in resp.text
+            assert "Connected to openrouter" in resp.text
 
     async def test_llm_test_failure(self, setup_client: httpx.AsyncClient):
         mock_litellm_mod = MagicMock()
@@ -318,15 +339,16 @@ class TestLLMTest:
                 data={"provider": "openrouter", "api_key": "bad-key"},
             )
             assert resp.status_code == 200
-            data = resp.json()
-            assert data["success"] is False
-            assert "error" in data
+            assert "test-error" in resp.text
+            assert "Error:" in resp.text
 
     async def test_llm_test_unknown_provider(self, setup_client: httpx.AsyncClient):
-        resp = await setup_client.post(
-            "/setup/test/llm",
-            data={"provider": "unknown-provider", "api_key": "key"},
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["success"] is False
+        mock_litellm_mod = MagicMock()
+        with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
+            resp = await setup_client.post(
+                "/setup/test/llm",
+                data={"provider": "unknown-provider", "api_key": "key"},
+            )
+            assert resp.status_code == 200
+            assert "test-error" in resp.text
+            assert "Unknown provider" in resp.text

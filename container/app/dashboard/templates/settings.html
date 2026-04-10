@@ -1,0 +1,301 @@
+{% extends "dashboard_base.html" %}
+{% block page_title %}Settings{% endblock %}
+{% block nav_settings %}active{% endblock %}
+{% block header_title %}Settings{% endblock %}
+{% block page_content %}
+<div x-data="settingsPage()" x-init="loadAll()">
+
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">Settings</h2>
+            <p class="page-subtitle">Runtime configuration for embedding, caching, entity matching, and communication.</p>
+        </div>
+    </div>
+
+    <!-- Global save feedback -->
+    <div x-show="message" x-transition class="alert mb-md"
+         :class="messageType === 'error' ? 'alert-error' : 'alert-success'"
+         x-text="message"></div>
+
+    <!-- Section 1: Embedding -->
+    <details class="card mb-md" open>
+        <summary>Embedding</summary>
+        <div class="details-content">
+            <div class="form-grid-2">
+                <div class="form-group">
+                    <label class="form-label">Provider</label>
+                    <select class="form-input" x-model="s['embedding.provider']">
+                        <option value="local">local</option>
+                        <option value="external">external</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Local Model</label>
+                    <input type="text" class="form-input" x-model="s['embedding.local_model']" placeholder="all-MiniLM-L6-v2">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">External Model</label>
+                    <input type="text" class="form-input" x-model="s['embedding.external_model']" placeholder="">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Dimension</label>
+                    <input type="number" class="form-input" x-model.number="s['embedding.dimension']" min="1">
+                </div>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-primary btn-sm" @click="saveSection('embedding')">Save Embedding</button>
+            </div>
+        </div>
+    </details>
+
+    <!-- Section 2: Entity Matching -->
+    <details class="card mb-md">
+        <summary>Entity Matching</summary>
+        <div class="details-content">
+            <div class="form-grid-2">
+                <div class="form-group">
+                    <label class="form-label">Confidence Threshold: <span class="text-mono" x-text="s['entity_matching.confidence_threshold']"></span></label>
+                    <input type="range" min="0" max="1" step="0.01" x-model.number="s['entity_matching.confidence_threshold']">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Top N Candidates</label>
+                    <input type="number" class="form-input" x-model.number="s['entity_matching.top_n_candidates']" min="1" max="20">
+                </div>
+            </div>
+            <h4 class="section-header mt-md mb-sm" style="font-size: 0.875rem;">Signal Weights</h4>
+            <div class="form-grid-2">
+                <template x-for="w in weightKeys" :key="w.key">
+                    <div class="form-group">
+                        <label class="form-label"><span x-text="w.label"></span>: <span class="text-mono" x-text="weights[w.key]"></span></label>
+                        <input type="range" min="0" max="1" step="0.01" x-model.number="weights[w.key]">
+                    </div>
+                </template>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-primary btn-sm" @click="saveEntityMatching()">Save Entity Matching</button>
+            </div>
+        </div>
+    </details>
+
+    <!-- Section 3: Cache Thresholds -->
+    <details class="card mb-md">
+        <summary>Cache Thresholds</summary>
+        <div class="details-content">
+            <div class="form-grid-2">
+                <div class="form-group">
+                    <label class="form-label">Routing Threshold: <span class="text-mono" x-text="s['cache.routing.threshold']"></span></label>
+                    <input type="range" min="0" max="1" step="0.01" x-model.number="s['cache.routing.threshold']">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Routing Max Entries</label>
+                    <input type="number" class="form-input" x-model.number="s['cache.routing.max_entries']" min="1">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Response Threshold: <span class="text-mono" x-text="s['cache.response.threshold']"></span></label>
+                    <input type="range" min="0" max="1" step="0.01" x-model.number="s['cache.response.threshold']">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Response Partial Threshold: <span class="text-mono" x-text="s['cache.response.partial_threshold']"></span></label>
+                    <input type="range" min="0" max="1" step="0.01" x-model.number="s['cache.response.partial_threshold']">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Response Max Entries</label>
+                    <input type="number" class="form-input" x-model.number="s['cache.response.max_entries']" min="1">
+                </div>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-primary btn-sm" @click="saveSection('cache')">Save Cache</button>
+            </div>
+        </div>
+    </details>
+
+    <!-- Section 4: Communication -->
+    <details class="card mb-md">
+        <summary>Communication</summary>
+        <div class="details-content">
+            <div class="form-grid-2">
+                <div class="form-group">
+                    <label class="form-label">Streaming Mode</label>
+                    <select class="form-input" x-model="s['communication.streaming_mode']">
+                        <option value="websocket">websocket</option>
+                        <option value="sse">sse</option>
+                        <option value="none">none</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">WS Reconnect Interval (s)</label>
+                    <input type="number" class="form-input" x-model.number="s['communication.ws_reconnect_interval']" min="1">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Stream Buffer Size</label>
+                    <input type="number" class="form-input" x-model.number="s['communication.stream_buffer_size']" min="1">
+                </div>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-primary btn-sm" @click="saveSection('communication')">Save Communication</button>
+            </div>
+        </div>
+    </details>
+
+    <!-- Section 5: A2A -->
+    <details class="card mb-md">
+        <summary>A2A (Agent-to-Agent)</summary>
+        <div class="details-content">
+            <div class="form-grid-2">
+                <div class="form-group">
+                    <label class="form-label">Default Timeout (s)</label>
+                    <input type="number" class="form-input" x-model.number="s['a2a.default_timeout']" min="1">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Max Iterations</label>
+                    <input type="number" class="form-input" x-model.number="s['a2a.max_iterations']" min="1">
+                </div>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-primary btn-sm" @click="saveSection('a2a')">Save A2A</button>
+            </div>
+        </div>
+    </details>
+
+    <!-- Section 6: General -->
+    <details class="card mb-md">
+        <summary>General</summary>
+        <div class="details-content">
+            <div class="form-grid-2">
+                <div class="form-group">
+                    <label class="form-label">Conversation Context Turns</label>
+                    <input type="number" class="form-input" x-model.number="s['general.conversation_context_turns']" min="1" max="20">
+                </div>
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-primary btn-sm" @click="saveSection('general')">Save General</button>
+            </div>
+        </div>
+    </details>
+</div>
+
+<script>
+function settingsPage() {
+    return {
+        s: {},
+        weights: {},
+        message: '',
+        messageType: 'success',
+        weightKeys: [
+            { key: 'weight.levenshtein', label: 'Levenshtein' },
+            { key: 'weight.jaro_winkler', label: 'Jaro-Winkler' },
+            { key: 'weight.phonetic', label: 'Phonetic' },
+            { key: 'weight.embedding', label: 'Embedding' },
+            { key: 'weight.alias', label: 'Alias' },
+        ],
+
+        async loadAll() {
+            await Promise.all([this.loadSettings(), this.loadWeights()]);
+        },
+
+        async loadSettings() {
+            try {
+                var resp = await fetch('/api/admin/settings', { credentials: 'same-origin' });
+                var data = await resp.json();
+                var flat = {};
+                for (var cat in data.settings) {
+                    for (var item of data.settings[cat]) {
+                        var val = item.value;
+                        if (item.value_type === 'int') val = parseInt(val, 10);
+                        else if (item.value_type === 'float') val = parseFloat(val);
+                        else if (item.value_type === 'bool') val = val === 'true';
+                        flat[item.key] = val;
+                    }
+                }
+                this.s = flat;
+            } catch (e) {
+                console.error('Failed to load settings', e);
+            }
+        },
+
+        async loadWeights() {
+            try {
+                var resp = await fetch('/api/admin/entity-matching-weights', { credentials: 'same-origin' });
+                var data = await resp.json();
+                var w = {};
+                for (var key in data.weights) {
+                    w[key] = parseFloat(data.weights[key]);
+                }
+                this.weights = w;
+            } catch (e) {
+                console.error('Failed to load weights', e);
+            }
+        },
+
+        async saveSection(prefix) {
+            var payload = {};
+            for (var key in this.s) {
+                if (key.startsWith(prefix + '.')) {
+                    payload[key] = this.s[key];
+                }
+            }
+            try {
+                var resp = await fetch('/api/admin/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(payload),
+                });
+                if (resp.ok) {
+                    this.showMessage('Settings saved.', 'success');
+                } else {
+                    this.showMessage('Failed to save.', 'error');
+                }
+            } catch (e) {
+                this.showMessage('Network error.', 'error');
+            }
+        },
+
+        async saveEntityMatching() {
+            // Save settings-table values (threshold, top_n)
+            var settingsPayload = {};
+            for (var key in this.s) {
+                if (key.startsWith('entity_matching.')) {
+                    settingsPayload[key] = this.s[key];
+                }
+            }
+            // Save weights (separate table)
+            var weightsPayload = {};
+            for (var key in this.weights) {
+                weightsPayload[key] = this.weights[key];
+            }
+            try {
+                var results = await Promise.all([
+                    fetch('/api/admin/settings', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'same-origin',
+                        body: JSON.stringify(settingsPayload),
+                    }),
+                    fetch('/api/admin/entity-matching-weights', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'same-origin',
+                        body: JSON.stringify(weightsPayload),
+                    }),
+                ]);
+                if (results.every(function(r) { return r.ok; })) {
+                    this.showMessage('Entity matching settings saved.', 'success');
+                } else {
+                    this.showMessage('Failed to save some settings.', 'error');
+                }
+            } catch (e) {
+                this.showMessage('Network error.', 'error');
+            }
+        },
+
+        showMessage(msg, type) {
+            this.message = msg;
+            this.messageType = type;
+            var self = this;
+            setTimeout(function() { self.message = ''; }, 3000);
+        }
+    };
+}
+</script>
+{% endblock %}

@@ -5,89 +5,117 @@
 {% block page_content %}
 <div x-data="cachePage()" x-init="loadStats(); loadEntries()">
 
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">Cache Management</h2>
+            <p class="page-subtitle">View cache statistics and browse cached entries.</p>
+        </div>
+    </div>
+
     <!-- Stats cards -->
-    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
-        <div class="card">
-            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Routing Cache</h3>
-            <div style="font-size: 1.5rem; font-weight: 600;" x-text="stats.routing?.count ?? '-'"></div>
-            <div style="font-size: 0.75rem; color: var(--text-secondary);">
+    <div class="stat-grid-3 mb-lg">
+        <div class="stat-card">
+            <div class="stat-card-header">
+                <div class="stat-card-icon" style="background: rgba(94,234,212,0.10);">
+                    <svg width="22" height="22" fill="none" stroke="var(--teal)" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                </div>
+                <span class="stat-card-label">Routing Cache</span>
+            </div>
+            <div class="stat-card-value text-teal" x-text="stats.routing?.count ?? '-'"></div>
+            <div class="stat-card-detail">
                 max: <span x-text="stats.routing?.max_entries ?? '-'"></span>
                 | threshold: <span x-text="stats.routing?.threshold ?? '-'"></span>
+                | <a href="/dashboard/settings" class="text-blue">Edit</a>
             </div>
         </div>
-        <div class="card">
-            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Response Cache</h3>
-            <div style="font-size: 1.5rem; font-weight: 600;" x-text="stats.response?.count ?? '-'"></div>
-            <div style="font-size: 0.75rem; color: var(--text-secondary);">
+        <div class="stat-card">
+            <div class="stat-card-header">
+                <div class="stat-card-icon" style="background: rgba(94,234,212,0.10);">
+                    <svg width="22" height="22" fill="none" stroke="var(--sage)" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                </div>
+                <span class="stat-card-label">Response Cache</span>
+            </div>
+            <div class="stat-card-value text-sage" x-text="stats.response?.count ?? '-'"></div>
+            <div class="stat-card-detail">
                 max: <span x-text="stats.response?.max_entries ?? '-'"></span>
                 | hit: <span x-text="stats.response?.hit_threshold ?? '-'"></span>
                 | partial: <span x-text="stats.response?.partial_threshold ?? '-'"></span>
+                | <a href="/dashboard/settings" class="text-blue">Edit</a>
             </div>
         </div>
-        <div class="card">
-            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Actions</h3>
-            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem;">
+        <div class="stat-card">
+            <div class="stat-card-header">
+                <div class="stat-card-icon" style="background: rgba(248,113,113,0.10);">
+                    <svg width="22" height="22" fill="none" stroke="var(--coral)" stroke-width="2" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg>
+                </div>
+                <span class="stat-card-label">Actions</span>
+            </div>
+            <div class="btn-group mt-sm">
                 <button class="btn btn-sm btn-secondary" @click="flushCache('routing')">Flush Routing</button>
                 <button class="btn btn-sm btn-secondary" @click="flushCache('response')">Flush Response</button>
-                <button class="btn btn-sm" style="background: var(--red); color: white;" @click="flushCache(null)">Flush All</button>
+                <button class="btn btn-sm" style="background: var(--coral); color: white;" @click="flushCache(null)">Flush All</button>
             </div>
-            <div x-show="flushMessage" style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--green);" x-text="flushMessage"></div>
+            <div x-show="flushMessage" class="text-sage mt-sm" style="font-size: 0.75rem;" x-text="flushMessage"></div>
         </div>
     </div>
 
     <!-- Browse entries -->
     <div class="card">
-        <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin-bottom: 1rem;">
-            <div class="form-group" style="margin-bottom: 0;">
+        <div class="form-row mb-md">
+            <div class="form-group mb-0">
                 <label class="form-label">Tier</label>
                 <select class="form-input" x-model="tier" @change="page = 1; loadEntries()">
                     <option value="routing">Routing</option>
                     <option value="response">Response</option>
                 </select>
             </div>
-            <div class="form-group" style="margin-bottom: 0;">
+            <div class="form-group mb-0">
                 <label class="form-label">Search</label>
                 <input type="text" class="form-input" x-model="search" placeholder="Search entries..." style="width: 200px;">
             </div>
-            <button class="btn btn-primary btn-sm" @click="page = 1; loadEntries()">Search</button>
+            <button class="btn btn-primary btn-sm" @click="page = 1; loadEntries()" style="align-self: flex-end;">Search</button>
         </div>
 
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-            <span style="color: var(--text-secondary); font-size: 0.875rem;" x-text="'Showing ' + entries.length + ' of ' + entryTotal"></span>
-            <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <div class="flex-between mb-md">
+            <span class="text-muted" style="font-size: 0.875rem;" x-text="'Showing ' + entries.length + ' of ' + entryTotal"></span>
+            <div class="flex-center" style="gap: 0.5rem;">
                 <button class="btn btn-sm btn-secondary" :disabled="page <= 1" @click="page--; loadEntries()">Prev</button>
-                <span class="mono" style="font-size: 0.875rem;" x-text="page + ' / ' + entryPages"></span>
+                <span class="text-mono" style="font-size: 0.875rem;" x-text="page + ' / ' + entryPages"></span>
                 <button class="btn btn-sm btn-secondary" :disabled="page >= entryPages" @click="page++; loadEntries()">Next</button>
             </div>
         </div>
 
         <template x-if="loadingEntries">
-            <p style="color: var(--text-secondary);">Loading...</p>
+            <p class="text-muted">Loading...</p>
         </template>
 
-        <table class="data-table" x-show="!loadingEntries && entries.length > 0">
-            <thead>
-                <tr>
-                    <th>Document</th>
-                    <th>Agent</th>
-                    <th>Hits</th>
-                    <th>Last Accessed</th>
-                </tr>
-            </thead>
-            <tbody>
-                <template x-for="e in entries" :key="e.id">
+        <div class="table-container-flush" x-show="!loadingEntries && entries.length > 0">
+            <table class="data-table">
+                <thead>
                     <tr>
-                        <td style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" x-text="e.document"></td>
-                        <td><span class="badge badge-blue" x-text="e.agent_id || '-'"></span></td>
-                        <td class="mono" x-text="e.hit_count || '0'"></td>
-                        <td class="mono" style="font-size: 0.75rem;" x-text="e.last_accessed || '-'"></td>
+                        <th>Document</th>
+                        <th>Agent</th>
+                        <th>Hits</th>
+                        <th>Last Accessed</th>
                     </tr>
-                </template>
-            </tbody>
-        </table>
+                </thead>
+                <tbody>
+                    <template x-for="e in entries" :key="e.id">
+                        <tr>
+                            <td class="truncate" style="max-width: 400px;" x-text="e.document"></td>
+                            <td><span class="badge badge-teal" x-text="e.agent_id || '-'"></span></td>
+                            <td class="text-mono" x-text="e.hit_count || '0'"></td>
+                            <td class="text-mono" style="font-size: 0.75rem;" x-text="e.last_accessed || '-'"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
 
         <template x-if="!loadingEntries && entries.length === 0">
-            <p style="color: var(--text-secondary);">No cache entries found.</p>
+            <div class="empty-state">
+                <p>No cache entries found.</p>
+            </div>
         </template>
     </div>
 </div>

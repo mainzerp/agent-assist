@@ -8,16 +8,22 @@
 <div x-data="customAgents()">
 
     <!-- Header -->
-    <div class="card" style="margin-bottom: 1.5rem;">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-            <h2 class="card-title">Runtime Agent Builder</h2>
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">Custom Agents</h2>
+            <p class="page-subtitle">Create and manage runtime agents with custom prompts and capabilities.</p>
+        </div>
+        <div class="page-actions">
             <button class="btn btn-primary" @click="showCreateForm = !showCreateForm"
                     x-text="showCreateForm ? 'Cancel' : 'Create Agent'"></button>
         </div>
+    </div>
 
-        <!-- Create Form -->
-        <div x-show="showCreateForm" x-transition style="margin-top: 1rem;">
-            <form @submit.prevent="createAgent()">
+    <!-- Create Form -->
+    <div class="card mb-lg" x-show="showCreateForm" x-transition>
+        <h3 class="card-title mb-md">New Agent</h3>
+        <form @submit.prevent="createAgent()">
+            <div class="form-grid-2">
                 <div class="form-group">
                     <label class="form-label">Name (slug)</label>
                     <input type="text" class="form-input" x-model="newAgent.name" required
@@ -28,7 +34,7 @@
                     <input type="text" class="form-input" x-model="newAgent.description"
                            placeholder="What this agent does">
                 </div>
-                <div class="form-group">
+                <div class="form-group form-grid-full">
                     <label class="form-label">System Prompt</label>
                     <textarea class="form-input" x-model="newAgent.system_prompt" rows="6" required
                               placeholder="You are an assistant that..."></textarea>
@@ -43,39 +49,41 @@
                     <textarea class="form-input" x-model="newAgent.intent_patterns_text" rows="3"
                               placeholder="control the garden&#10;water the plants"></textarea>
                 </div>
-                <div class="form-group">
+                <div class="form-group form-grid-full">
                     <label class="form-label">MCP Tools (JSON array, optional)</label>
                     <textarea class="form-input" x-model="newAgent.mcp_tools_json" rows="3"
                               placeholder='[{"server": "name", "tool": "tool_name"}]'></textarea>
                 </div>
+            </div>
+            <div class="form-actions">
                 <button type="submit" class="btn btn-primary">Create</button>
-            </form>
-        </div>
+            </div>
+        </form>
     </div>
 
     <!-- Status Message -->
     <div x-show="message" x-transition class="alert" :class="messageType === 'error' ? 'alert-error' : 'alert-success'"
-         style="margin-bottom: 1rem;" x-text="message"></div>
+         x-text="message"></div>
 
     <!-- Agent List -->
     <template x-for="agent in agents" :key="agent.name">
-        <div class="card" style="margin-bottom: 1rem;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div class="card">
+            <div class="flex-between">
                 <div>
-                    <h3 class="card-title" style="margin-bottom: 0.25rem;" x-text="'custom-' + agent.name"></h3>
-                    <p class="text-muted" x-text="agent.description || 'No description'"></p>
+                    <h3 class="card-title mb-0" x-text="'custom-' + agent.name"></h3>
+                    <p class="text-muted mb-sm" x-text="agent.description || 'No description'"></p>
                 </div>
-                <div style="display: flex; gap: 0.5rem; align-items: center;">
-                    <span class="status-badge"
-                          :class="agent.enabled ? 'status-healthy' : 'status-warning'"
+                <div class="btn-group">
+                    <span class="badge badge-dot"
+                          :class="agent.enabled ? 'badge-green' : 'badge-muted'"
                           x-text="agent.enabled ? 'Enabled' : 'Disabled'"></span>
-                    <button class="btn btn-sm" @click="editAgent(agent)">Edit</button>
+                    <button class="btn btn-sm btn-secondary" @click="editAgent(agent)">Edit</button>
                     <button class="btn btn-sm btn-danger" @click="deleteAgent(agent.name)">Delete</button>
                 </div>
             </div>
 
             <!-- Inline Details -->
-            <div style="margin-top: 0.75rem; font-size: 0.875rem;">
+            <div class="flex-center flex-wrap mt-sm" style="font-size: 0.875rem;">
                 <span class="text-muted">Model:</span>
                 <span x-text="agent.model_override || 'default'"></span>
                 <span class="text-muted" style="margin-left: 1rem;">Patterns:</span>
@@ -85,34 +93,36 @@
             </div>
 
             <!-- Edit Form (inline) -->
-            <div x-show="editingAgent === agent.name" x-transition style="margin-top: 1rem; border-top: 1px solid #334155; padding-top: 1rem;">
+            <div x-show="editingAgent === agent.name" x-transition class="card-body">
                 <form @submit.prevent="updateAgent(agent.name)">
-                    <div class="form-group">
-                        <label class="form-label">Description</label>
-                        <input type="text" class="form-input" x-model="editData.description">
+                    <div class="form-grid-2">
+                        <div class="form-group">
+                            <label class="form-label">Description</label>
+                            <input type="text" class="form-input" x-model="editData.description">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Model Override</label>
+                            <input type="text" class="form-input" x-model="editData.model_override">
+                        </div>
+                        <div class="form-group form-grid-full">
+                            <label class="form-label">System Prompt</label>
+                            <textarea class="form-input" x-model="editData.system_prompt" rows="6"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Intent Patterns (one per line)</label>
+                            <textarea class="form-input" x-model="editData.intent_patterns_text" rows="3"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Enabled</label>
+                            <label class="toggle">
+                                <input type="checkbox" x-model="editData.enabled">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label">System Prompt</label>
-                        <textarea class="form-input" x-model="editData.system_prompt" rows="6"></textarea>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Model Override</label>
-                        <input type="text" class="form-input" x-model="editData.model_override">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Intent Patterns (one per line)</label>
-                        <textarea class="form-input" x-model="editData.intent_patterns_text" rows="3"></textarea>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Enabled</label>
-                        <label class="toggle">
-                            <input type="checkbox" x-model="editData.enabled">
-                            <span class="toggle-slider"></span>
-                        </label>
-                    </div>
-                    <div style="display: flex; gap: 0.5rem;">
+                    <div class="form-actions">
                         <button type="submit" class="btn btn-primary">Save</button>
-                        <button type="button" class="btn" @click="editingAgent = null">Cancel</button>
+                        <button type="button" class="btn btn-secondary" @click="editingAgent = null">Cancel</button>
                     </div>
                 </form>
             </div>
@@ -120,8 +130,8 @@
     </template>
 
     <template x-if="agents.length === 0 && !showCreateForm">
-        <div class="card">
-            <p class="text-muted">No custom agents defined. Click "Create Agent" to build one.</p>
+        <div class="empty-state">
+            <p>No custom agents defined. Click "Create Agent" to build one.</p>
         </div>
     </template>
 </div>

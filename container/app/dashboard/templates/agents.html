@@ -4,27 +4,34 @@
 {% block header_title %}Agent Configuration{% endblock %}
 {% block page_content %}
 <div x-data="agentsPage()" x-init="loadAgents()">
-    <div class="card" style="margin-bottom: 1.5rem;">
-        <p style="color: var(--text-secondary); font-size: 0.875rem;">
-            Enable or disable agents, edit model settings, and modify system prompts.
-        </p>
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">Agent Configuration</h2>
+            <p class="page-subtitle">Enable or disable agents, edit model settings, and modify system prompts.</p>
+        </div>
+        <div class="page-actions">
+            <span class="text-muted" x-text="agents.length + ' agents'"></span>
+        </div>
     </div>
 
     <div id="agents-list">
         <template x-if="loading">
-            <p style="color: var(--text-secondary);">Loading agents...</p>
+            <p class="text-muted">Loading agents...</p>
         </template>
         <template x-if="!loading && agents.length === 0">
-            <p style="color: var(--text-secondary);">No agents configured.</p>
+            <div class="empty-state">
+                <p>No agents configured.</p>
+            </div>
         </template>
         <template x-for="agent in agents" :key="agent.agent_id">
-            <div class="card" style="margin-bottom: 0.75rem;">
-                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;">
-                    <div>
+            <div class="card">
+                <div class="flex-between flex-wrap">
+                    <div class="flex-center">
+                        <span class="badge badge-dot" :class="agent.enabled == 1 ? 'badge-green' : 'badge-muted'" x-text="agent.enabled == 1 ? 'Enabled' : 'Disabled'"></span>
                         <strong x-text="agent.agent_id" class="mono"></strong>
-                        <span x-show="agent.description" x-text="' -- ' + agent.description" style="color: var(--text-secondary); font-size: 0.875rem;"></span>
+                        <span x-show="agent.description" class="text-muted" x-text="agent.description" style="font-size: 0.875rem;"></span>
                     </div>
-                    <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <div class="btn-group">
                         <label class="toggle">
                             <input type="checkbox" :checked="agent.enabled == 1" @change="toggleAgent(agent)">
                             <span class="toggle-slider"></span>
@@ -37,7 +44,7 @@
                 <!-- Inline config editor -->
                 <template x-if="agent._editing">
                     <div class="edit-panel">
-                        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.75rem;">
+                        <div class="form-grid">
                             <div class="form-group">
                                 <label class="form-label">Model</label>
                                 <input type="text" class="form-input" x-model="agent.model" placeholder="default">
@@ -55,9 +62,19 @@
                                 <label class="form-label">Max Tokens</label>
                                 <input type="number" class="form-input" x-model.number="agent.max_tokens" min="1">
                             </div>
+                            <div class="form-group">
+                                <label class="form-label">Max Iterations</label>
+                                <input type="number" class="form-input" x-model.number="agent.max_iterations" min="1" max="20">
+                            </div>
+                            <div class="form-group form-grid-full">
+                                <label class="form-label">Description</label>
+                                <input type="text" class="form-input" x-model="agent.description" placeholder="Agent description">
+                            </div>
                         </div>
-                        <button class="btn btn-primary btn-sm" style="margin-top: 0.5rem;" @click="saveAgent(agent)">Save</button>
-                        <span x-show="agent._saved" style="color: var(--green); font-size: 0.75rem; margin-left: 0.5rem;">Saved</span>
+                        <div class="form-actions">
+                            <button class="btn btn-primary btn-sm" @click="saveAgent(agent)">Save</button>
+                            <span x-show="agent._saved" class="save-feedback text-sage">Saved</span>
+                        </div>
                     </div>
                 </template>
 
@@ -68,8 +85,10 @@
                             <label class="form-label">System Prompt</label>
                             <textarea class="form-textarea" rows="10" x-model="agent._promptContent" :placeholder="agent._promptLoading ? 'Loading...' : 'No prompt file found'"></textarea>
                         </div>
-                        <button class="btn btn-primary btn-sm" @click="savePrompt(agent)">Save Prompt</button>
-                        <span x-show="agent._promptSaved" style="color: var(--green); font-size: 0.75rem; margin-left: 0.5rem;">Saved</span>
+                        <div class="form-actions">
+                            <button class="btn btn-primary btn-sm" @click="savePrompt(agent)">Save Prompt</button>
+                            <span x-show="agent._promptSaved" class="save-feedback text-sage">Saved</span>
+                        </div>
                     </div>
                 </template>
             </div>
@@ -124,7 +143,9 @@ function agentsPage() {
                         model: agent.model || null,
                         timeout: agent.timeout,
                         temperature: agent.temperature,
-                        max_tokens: agent.max_tokens
+                        max_tokens: agent.max_tokens,
+                        max_iterations: agent.max_iterations,
+                        description: agent.description || null
                     })
                 });
                 agent._saved = true;

@@ -4,32 +4,41 @@
 {% block header_title %}System Health{% endblock %}
 {% block page_content %}
 <div x-data="healthPage()" x-init="loadHealth()">
-    <div class="health-grid" id="health-cards" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
+
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">System Health</h2>
+            <p class="page-subtitle">Subsystem status overview. Auto-refreshes every 15s.</p>
+        </div>
+    </div>
+
+    <div class="stat-grid-3" id="health-cards">
         <template x-if="!health">
-            <div class="card">
-                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
-                    <span class="status-dot status-unknown"></span>
+            <div class="stat-card">
+                <div class="flex-center" style="gap: 0.5rem; margin-bottom: 0.5rem;">
+                    <span class="badge badge-dot" style="--dot-color: var(--soft-amber);"></span>
                     <strong>Loading...</strong>
                 </div>
-                <p style="color: var(--text-secondary); font-size: 0.875rem;">Checking subsystem status...</p>
+                <p class="text-muted" style="font-size: 0.875rem;">Checking subsystem status...</p>
             </div>
         </template>
         <template x-if="health">
             <template x-for="c in components" :key="c.key">
-                <div class="card">
-                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
-                        <div style="display: flex; align-items: center; gap: 0.5rem;">
-                            <span class="status-dot" :class="getStatusClass(health[c.key])"></span>
+                <div class="stat-card">
+                    <div class="flex-between" style="margin-bottom: 0.5rem;">
+                        <div class="flex-center" style="gap: 0.5rem;">
+                            <span class="badge badge-dot" :style="'--dot-color: ' + getDotColor(health[c.key])"></span>
                             <strong x-text="c.label"></strong>
                         </div>
                         <span class="badge" :class="getBadgeClass(health[c.key])" x-text="(health[c.key] || {status:'unknown'}).status"></span>
                     </div>
-                    <p style="color: var(--text-secondary); font-size: 0.875rem;" x-text="getDetail(c.key, health[c.key])"></p>
+                    <p class="stat-card-detail" x-text="getDetail(c.key, health[c.key])"></p>
                 </div>
             </template>
         </template>
     </div>
-    <p x-show="error" style="color: var(--red); margin-top: 1rem;" x-text="error"></p>
+
+    <div x-show="error" class="alert alert-error mt-md" x-text="error"></div>
 </div>
 
 <script>
@@ -64,6 +73,10 @@ function healthPage() {
         getStatusClass(comp) {
             if (!comp) return "status-unknown";
             return comp.status === "healthy" ? "status-healthy" : (comp.status === "error" ? "status-error" : "status-unknown");
+        },
+        getDotColor(comp) {
+            if (!comp) return "var(--soft-amber)";
+            return comp.status === "healthy" ? "var(--sage)" : (comp.status === "error" ? "var(--coral)" : "var(--soft-amber)");
         },
         getBadgeClass(comp) {
             if (!comp) return "badge-yellow";

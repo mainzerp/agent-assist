@@ -7,21 +7,28 @@
 {% block page_content %}
 <div x-data="presencePage()">
 
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">Presence Detection</h2>
+            <p class="page-subtitle">Room occupancy tracking and sensor configuration. Auto-refreshes every 10s.</p>
+        </div>
+    </div>
+
     <!-- Configuration -->
-    <div class="card" style="margin-bottom: 1.5rem;">
-        <h2 class="card-title">Presence Configuration</h2>
+    <div class="card mb-lg">
+        <h3 class="card-title mb-md">Configuration</h3>
         <form @submit.prevent="saveConfig()">
-            <div style="display: flex; gap: 2rem; align-items: center; flex-wrap: wrap;">
-                <div class="form-group" style="margin-bottom: 0;">
+            <div class="form-row">
+                <div class="form-group mb-0">
                     <label class="form-label">Enabled</label>
                     <label class="toggle">
                         <input type="checkbox" x-model="config.enabled">
                         <span class="toggle-slider"></span>
                     </label>
                 </div>
-                <div class="form-group" style="margin-bottom: 0; flex: 1; min-width: 200px;">
+                <div class="form-group mb-0" style="flex: 1; min-width: 200px;">
                     <label class="form-label">Decay Timeout: <span x-text="config.decay_timeout + 's'"></span></label>
-                    <input type="range" class="form-range" x-model.number="config.decay_timeout"
+                    <input type="range" x-model.number="config.decay_timeout"
                            min="30" max="600" step="10">
                 </div>
                 <button type="submit" class="btn btn-primary" style="align-self: flex-end;">Save</button>
@@ -31,61 +38,64 @@
 
     <!-- Status Message -->
     <div x-show="message" x-transition class="alert" :class="messageType === 'error' ? 'alert-error' : 'alert-success'"
-         style="margin-bottom: 1rem;" x-text="message"></div>
+         x-text="message"></div>
 
     <!-- Room Confidence Grid -->
-    <div class="card" style="margin-bottom: 1.5rem;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-            <h2 class="card-title">Room Occupancy</h2>
-            <span class="text-muted" x-text="'Auto-refresh every 10s'"></span>
+    <div class="section-header">
+        <div>
+            <h2 class="section-title mt-0 mb-0">Room Occupancy</h2>
         </div>
+        <span class="text-muted" style="font-size: 0.875rem;">Auto-refresh every 10s</span>
+    </div>
 
-        <template x-if="Object.keys(roomConfidence).length === 0">
-            <p class="text-muted">No room data available. Ensure presence detection is enabled and sensors are configured.</p>
-        </template>
+    <template x-if="Object.keys(roomConfidence).length === 0">
+        <div class="empty-state mb-lg">
+            <p>No room data available. Ensure presence detection is enabled and sensors are configured.</p>
+        </div>
+    </template>
 
-        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem;">
-            <template x-for="[room, confidence] in sortedRooms" :key="room">
-                <div class="card" style="padding: 1rem;">
-                    <h4 style="margin: 0 0 0.5rem 0;" x-text="room"></h4>
-                    <div style="font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem;"
-                         :style="'color: ' + confidenceColor(confidence)"
-                         x-text="Math.round(confidence * 100) + '%'"></div>
-                    <div style="background: #334155; border-radius: 4px; height: 8px; overflow: hidden;">
-                        <div style="height: 100%; border-radius: 4px; transition: width 0.3s;"
-                             :style="'width: ' + (confidence * 100) + '%; background: ' + confidenceColor(confidence)">
-                        </div>
+    <div class="stat-grid mb-lg">
+        <template x-for="[room, confidence] in sortedRooms" :key="room">
+            <div class="stat-card">
+                <div class="stat-card-label" style="text-transform: none; font-size: 0.875rem; font-weight: 600; color: var(--color-light);" x-text="room"></div>
+                <div class="stat-card-value" :style="'color: ' + confidenceColor(confidence)"
+                     x-text="Math.round(confidence * 100) + '%'"></div>
+                <div class="progress-bar mt-sm">
+                    <div class="progress-fill"
+                         :style="'width: ' + (confidence * 100) + '%; background: ' + confidenceColor(confidence)">
                     </div>
                 </div>
-            </template>
-        </div>
+            </div>
+        </template>
     </div>
 
     <!-- Sensors Table -->
     <div class="card">
-        <h2 class="card-title">Presence Sensors</h2>
+        <h3 class="card-title mb-md">Presence Sensors</h3>
         <template x-if="sensors.length === 0">
             <p class="text-muted">No sensors discovered.</p>
         </template>
         <template x-if="sensors.length > 0">
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>Entity ID</th>
-                        <th>Type</th>
-                        <th>Area</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <template x-for="sensor in sensors" :key="sensor.entity_id">
+            <div class="table-container-flush">
+                <table class="data-table">
+                    <thead>
                         <tr>
-                            <td class="text-mono" x-text="sensor.entity_id"></td>
-                            <td><span class="badge" x-text="sensor.sensor_type"></span></td>
-                            <td x-text="sensor.area || '-'"></td>
+                            <th>Entity ID</th>
+                            <th>Type</th>
+                            <th>Area</th>
                         </tr>
-                    </template>
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                        <template x-for="sensor in sensors" :key="sensor.entity_id">
+                            <tr>
+                                <td class="text-mono" x-text="sensor.entity_id"></td>
+                                <td><span class="badge badge-teal" x-text="sensor.sensor_type"></span></td>
+                                <td x-text="sensor.area || '-'"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
         </template>
     </div>
 </div>

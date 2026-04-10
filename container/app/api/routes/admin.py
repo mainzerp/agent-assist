@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, Depends
 
 from app.security.auth import require_admin_session
-from app.db.repository import AgentConfigRepository, SettingsRepository
+from app.db.repository import AgentConfigRepository, SettingsRepository, EntityMatchingConfigRepository
 
 logger = logging.getLogger(__name__)
 
@@ -71,3 +71,25 @@ async def update_single_setting(key: str, payload: dict):
     description = payload.get("description")
     await SettingsRepository.set(key, str(value), value_type, category, description)
     return {"status": "ok", "key": key}
+
+
+@router.get("/entity-matching-weights")
+async def get_entity_matching_weights():
+    """Get all entity matching signal weights."""
+    rows = await EntityMatchingConfigRepository.get_all()
+    return {"weights": {row["key"]: row["value"] for row in rows}}
+
+
+@router.put("/entity-matching-weights")
+async def update_entity_matching_weights(payload: dict):
+    """Update entity matching signal weights. Payload: {key: value, ...}."""
+    allowed_keys = {
+        "weight.levenshtein", "weight.jaro_winkler", "weight.phonetic",
+        "weight.embedding", "weight.alias",
+    }
+    items = payload.get("items", payload)
+    if isinstance(items, dict):
+        for key, value in items.items():
+            if key in allowed_keys:
+                await EntityMatchingConfigRepository.set(key, str(value))
+    return {"status": "ok"}

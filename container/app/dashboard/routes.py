@@ -192,3 +192,12 @@ async def plugins_page(
 ):
     """Plugin management page."""
     return templates.TemplateResponse(request, "plugins.html")
+
+
+@router.get("/settings", response_class=HTMLResponse)
+async def settings_page(
+    request: Request,
+    _session: dict = Depends(require_admin_session_redirect),
+):
+    """Unified settings page for all advanced configuration."""
+    return templates.TemplateResponse(request, "settings.html")

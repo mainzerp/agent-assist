@@ -15,14 +15,12 @@
     <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
         <button type="button" class="btn-secondary"
             hx-post="/setup/test/llm"
-            hx-vals='{"provider": "openrouter", "api_key": ""}'
-            hx-include="#openrouter_key"
+            hx-vals='js:{"provider": "openrouter", "api_key": document.getElementById("openrouter_key").value}'
             hx-target="#test-llm-result"
             hx-swap="innerHTML">Test OpenRouter</button>
         <button type="button" class="btn-secondary"
             hx-post="/setup/test/llm"
-            hx-vals='{"provider": "groq", "api_key": ""}'
-            hx-include="#groq_key"
+            hx-vals='js:{"provider": "groq", "api_key": document.getElementById("groq_key").value}'
             hx-target="#test-llm-result"
             hx-swap="innerHTML">Test Groq</button>
     </div>
