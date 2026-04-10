@@ -1,0 +1,110 @@
+{% extends "dashboard_base.html" %}
+{% block page_title %}Entity Index{% endblock %}
+{% block nav_entity_index %}active{% endblock %}
+{% block header_title %}Entity Index{% endblock %}
+{% block page_content %}
+<div x-data="entityIndexPage()" x-init="loadStats()">
+
+    <!-- Stats overview -->
+    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+        <div class="card">
+            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Total Entities</h3>
+            <div style="font-size: 1.5rem; font-weight: 600;" x-text="stats.count ?? '-'"></div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary);">
+                Last refresh: <span x-text="stats.last_refresh || 'never'"></span>
+            </div>
+        </div>
+        <div class="card">
+            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Domains</h3>
+            <div style="font-size: 1.5rem; font-weight: 600;" x-text="Object.keys(stats.domains || {}).length"></div>
+        </div>
+        <div class="card">
+            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Actions</h3>
+            <button class="btn btn-primary btn-sm" @click="refreshIndex()" :disabled="refreshing">
+                <span x-show="!refreshing">Refresh from HA</span>
+                <span x-show="refreshing">Refreshing...</span>
+            </button>
+            <div x-show="refreshMessage" style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--green);" x-text="refreshMessage"></div>
+        </div>
+    </div>
+
+    <!-- Per-domain breakdown -->
+    <div class="card">
+        <h3 style="margin-bottom: 1rem;">Domain Breakdown</h3>
+        <template x-if="!stats.domains || Object.keys(stats.domains).length === 0">
+            <p style="color: var(--text-secondary);">No entities indexed.</p>
+        </template>
+        <table class="data-table" x-show="stats.domains && Object.keys(stats.domains).length > 0">
+            <thead>
+                <tr>
+                    <th>Domain</th>
+                    <th>Count</th>
+                    <th>Percentage</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="[domain, count] in sortedDomains()" :key="domain">
+                    <tr>
+                        <td class="mono" x-text="domain"></td>
+                        <td x-text="count"></td>
+                        <td>
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <div style="background: var(--card-bg); border-radius: 4px; width: 100px; height: 12px; overflow: hidden;">
+                                    <div style="background: var(--blue); height: 100%; border-radius: 4px;"
+                                         :style="'width: ' + (stats.count > 0 ? Math.round(count / stats.count * 100) : 0) + '%'"></div>
+                                </div>
+                                <span class="mono" style="font-size: 0.75rem;"
+                                      x-text="stats.count > 0 ? (count / stats.count * 100).toFixed(1) + '%' : '0%'"></span>
+                            </div>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+function entityIndexPage() {
+    return {
+        stats: {},
+        refreshing: false,
+        refreshMessage: '',
+
+        async loadStats() {
+            try {
+                const resp = await fetch('/api/admin/entity-index/stats');
+                this.stats = await resp.json();
+            } catch (e) {
+                console.error('Failed to load entity index stats', e);
+            }
+        },
+
+        async refreshIndex() {
+            this.refreshing = true;
+            this.refreshMessage = '';
+            try {
+                const resp = await fetch('/api/admin/entity-index/refresh', { method: 'POST' });
+                const data = await resp.json();
+                if (data.status === 'ok') {
+                    this.refreshMessage = 'Refreshed ' + data.count + ' entities';
+                    this.loadStats();
+                } else {
+                    this.refreshMessage = 'Error: ' + (data.detail || 'Unknown error');
+                }
+            } catch (e) {
+                this.refreshMessage = 'Failed to refresh';
+                console.error('Failed to refresh entity index', e);
+            }
+            this.refreshing = false;
+            setTimeout(() => { this.refreshMessage = ''; }, 5000);
+        },
+
+        sortedDomains() {
+            if (!this.stats.domains) return [];
+            return Object.entries(this.stats.domains).sort((a, b) => b[1] - a[1]);
+        }
+    };
+}
+</script>
+{% endblock %}

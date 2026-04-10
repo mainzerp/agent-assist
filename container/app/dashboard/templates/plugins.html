@@ -1,0 +1,100 @@
+{% extends "dashboard_base.html" %}
+
+{% block page_title %}Plugins{% endblock %}
+{% block header_title %}Plugins{% endblock %}
+{% block nav_plugins %}active{% endblock %}
+
+{% block page_content %}
+<div x-data="pluginsPage()">
+
+    <div class="card" style="margin-bottom: 1.5rem;">
+        <h2 class="card-title">Installed Plugins</h2>
+        <p class="text-muted">Plugins are loaded from the <code>container/plugins/</code> directory at startup. Enable or disable them here.</p>
+    </div>
+
+    <!-- Status Message -->
+    <div x-show="message" x-transition class="alert" :class="messageType === 'error' ? 'alert-error' : 'alert-success'"
+         style="margin-bottom: 1rem;" x-text="message"></div>
+
+    <!-- Plugin List -->
+    <template x-for="plugin in plugins" :key="plugin.name">
+        <div class="card" style="margin-bottom: 1rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <h3 class="card-title" style="margin-bottom: 0.25rem;" x-text="plugin.name"></h3>
+                    <p class="text-muted" style="margin-bottom: 0.25rem;" x-text="plugin.description || 'No description'"></p>
+                    <div style="font-size: 0.8rem;">
+                        <span class="text-muted">Version:</span>
+                        <span x-text="plugin.version || '-'"></span>
+                        <span class="text-muted" style="margin-left: 1rem;">File:</span>
+                        <span class="text-mono" x-text="plugin.file_path"></span>
+                        <span class="text-muted" style="margin-left: 1rem;">Loaded:</span>
+                        <span x-text="plugin.loaded_at || '-'"></span>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <span class="status-badge"
+                          :class="plugin.loaded ? 'status-healthy' : (plugin.enabled ? 'status-warning' : 'status-muted')"
+                          x-text="plugin.loaded ? 'Loaded' : (plugin.enabled ? 'Error' : 'Disabled')"></span>
+                    <label class="toggle">
+                        <input type="checkbox" :checked="plugin.enabled"
+                               @change="togglePlugin(plugin.name, $event.target.checked)">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <template x-if="plugins.length === 0 && !loading">
+        <div class="card">
+            <p class="text-muted">No plugins found. Place <code>.py</code> files in <code>container/plugins/</code> and restart the container.</p>
+        </div>
+    </template>
+
+    <template x-if="loading">
+        <div class="card"><p class="text-muted">Loading plugins...</p></div>
+    </template>
+</div>
+
+<script>
+function pluginsPage() {
+    return {
+        plugins: [],
+        message: '',
+        messageType: 'success',
+        loading: true,
+        init() { this.loadPlugins(); },
+        async loadPlugins() {
+            this.loading = true;
+            try {
+                const resp = await fetch('/api/admin/plugins');
+                if (resp.ok) this.plugins = await resp.json();
+            } catch (e) { console.error('Failed to load plugins', e); }
+            this.loading = false;
+        },
+        async togglePlugin(name, enabled) {
+            const action = enabled ? 'enable' : 'disable';
+            try {
+                const resp = await fetch('/api/admin/plugins/' + encodeURIComponent(name) + '/' + action, {
+                    method: 'POST',
+                });
+                if (resp.ok) {
+                    this.message = 'Plugin ' + name + ' ' + action + 'd';
+                    this.messageType = 'success';
+                    await this.loadPlugins();
+                } else {
+                    const err = await resp.json();
+                    this.message = err.detail || 'Failed to ' + action + ' plugin';
+                    this.messageType = 'error';
+                    await this.loadPlugins();
+                }
+            } catch (e) {
+                this.message = 'Network error';
+                this.messageType = 'error';
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

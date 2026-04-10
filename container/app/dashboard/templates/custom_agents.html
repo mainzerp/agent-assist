@@ -1,0 +1,236 @@
+{% extends "dashboard_base.html" %}
+
+{% block page_title %}Custom Agents{% endblock %}
+{% block header_title %}Custom Agents{% endblock %}
+{% block nav_custom_agents %}active{% endblock %}
+
+{% block page_content %}
+<div x-data="customAgents()">
+
+    <!-- Header -->
+    <div class="card" style="margin-bottom: 1.5rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h2 class="card-title">Runtime Agent Builder</h2>
+            <button class="btn btn-primary" @click="showCreateForm = !showCreateForm"
+                    x-text="showCreateForm ? 'Cancel' : 'Create Agent'"></button>
+        </div>
+
+        <!-- Create Form -->
+        <div x-show="showCreateForm" x-transition style="margin-top: 1rem;">
+            <form @submit.prevent="createAgent()">
+                <div class="form-group">
+                    <label class="form-label">Name (slug)</label>
+                    <input type="text" class="form-input" x-model="newAgent.name" required
+                           placeholder="my-agent" pattern="[a-z0-9\-]+">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Description</label>
+                    <input type="text" class="form-input" x-model="newAgent.description"
+                           placeholder="What this agent does">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">System Prompt</label>
+                    <textarea class="form-input" x-model="newAgent.system_prompt" rows="6" required
+                              placeholder="You are an assistant that..."></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Model Override (optional)</label>
+                    <input type="text" class="form-input" x-model="newAgent.model_override"
+                           placeholder="gpt-4o-mini">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Intent Patterns (one per line)</label>
+                    <textarea class="form-input" x-model="newAgent.intent_patterns_text" rows="3"
+                              placeholder="control the garden&#10;water the plants"></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">MCP Tools (JSON array, optional)</label>
+                    <textarea class="form-input" x-model="newAgent.mcp_tools_json" rows="3"
+                              placeholder='[{"server": "name", "tool": "tool_name"}]'></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">Create</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Status Message -->
+    <div x-show="message" x-transition class="alert" :class="messageType === 'error' ? 'alert-error' : 'alert-success'"
+         style="margin-bottom: 1rem;" x-text="message"></div>
+
+    <!-- Agent List -->
+    <template x-for="agent in agents" :key="agent.name">
+        <div class="card" style="margin-bottom: 1rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <h3 class="card-title" style="margin-bottom: 0.25rem;" x-text="'custom-' + agent.name"></h3>
+                    <p class="text-muted" x-text="agent.description || 'No description'"></p>
+                </div>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <span class="status-badge"
+                          :class="agent.enabled ? 'status-healthy' : 'status-warning'"
+                          x-text="agent.enabled ? 'Enabled' : 'Disabled'"></span>
+                    <button class="btn btn-sm" @click="editAgent(agent)">Edit</button>
+                    <button class="btn btn-sm btn-danger" @click="deleteAgent(agent.name)">Delete</button>
+                </div>
+            </div>
+
+            <!-- Inline Details -->
+            <div style="margin-top: 0.75rem; font-size: 0.875rem;">
+                <span class="text-muted">Model:</span>
+                <span x-text="agent.model_override || 'default'"></span>
+                <span class="text-muted" style="margin-left: 1rem;">Patterns:</span>
+                <span x-text="(agent.intent_patterns || []).length"></span>
+                <span class="text-muted" style="margin-left: 1rem;">MCP Tools:</span>
+                <span x-text="(agent.mcp_tools || []).length"></span>
+            </div>
+
+            <!-- Edit Form (inline) -->
+            <div x-show="editingAgent === agent.name" x-transition style="margin-top: 1rem; border-top: 1px solid #334155; padding-top: 1rem;">
+                <form @submit.prevent="updateAgent(agent.name)">
+                    <div class="form-group">
+                        <label class="form-label">Description</label>
+                        <input type="text" class="form-input" x-model="editData.description">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">System Prompt</label>
+                        <textarea class="form-input" x-model="editData.system_prompt" rows="6"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Model Override</label>
+                        <input type="text" class="form-input" x-model="editData.model_override">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Intent Patterns (one per line)</label>
+                        <textarea class="form-input" x-model="editData.intent_patterns_text" rows="3"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Enabled</label>
+                        <label class="toggle">
+                            <input type="checkbox" x-model="editData.enabled">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button type="submit" class="btn btn-primary">Save</button>
+                        <button type="button" class="btn" @click="editingAgent = null">Cancel</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </template>
+
+    <template x-if="agents.length === 0 && !showCreateForm">
+        <div class="card">
+            <p class="text-muted">No custom agents defined. Click "Create Agent" to build one.</p>
+        </div>
+    </template>
+</div>
+
+<script>
+function customAgents() {
+    return {
+        agents: [],
+        showCreateForm: false,
+        editingAgent: null,
+        message: '',
+        messageType: 'success',
+        newAgent: {
+            name: '', description: '', system_prompt: '', model_override: '',
+            intent_patterns_text: '', mcp_tools_json: '',
+        },
+        editData: {},
+        init() { this.loadAgents(); },
+        async loadAgents() {
+            try {
+                const resp = await fetch('/api/admin/custom-agents');
+                if (resp.ok) this.agents = await resp.json();
+            } catch (e) { console.error('Failed to load agents', e); }
+        },
+        async createAgent() {
+            let mcp_tools = null;
+            if (this.newAgent.mcp_tools_json.trim()) {
+                try { mcp_tools = JSON.parse(this.newAgent.mcp_tools_json); }
+                catch (e) { this.message = 'Invalid MCP tools JSON'; this.messageType = 'error'; return; }
+            }
+            const patterns = this.newAgent.intent_patterns_text.split('\n').map(s => s.trim()).filter(Boolean);
+            try {
+                const resp = await fetch('/api/admin/custom-agents', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        name: this.newAgent.name,
+                        description: this.newAgent.description,
+                        system_prompt: this.newAgent.system_prompt,
+                        model_override: this.newAgent.model_override || null,
+                        mcp_tools: mcp_tools,
+                        intent_patterns: patterns.length > 0 ? patterns : null,
+                    }),
+                });
+                if (resp.ok) {
+                    this.message = 'Agent created and hot-reloaded';
+                    this.messageType = 'success';
+                    this.showCreateForm = false;
+                    this.newAgent = {name:'', description:'', system_prompt:'', model_override:'', intent_patterns_text:'', mcp_tools_json:''};
+                    await this.loadAgents();
+                } else {
+                    const err = await resp.json();
+                    this.message = err.detail || 'Failed to create agent';
+                    this.messageType = 'error';
+                }
+            } catch (e) { this.message = 'Network error'; this.messageType = 'error'; }
+        },
+        editAgent(agent) {
+            this.editingAgent = agent.name;
+            this.editData = {
+                description: agent.description || '',
+                system_prompt: agent.system_prompt || '',
+                model_override: agent.model_override || '',
+                intent_patterns_text: (agent.intent_patterns || []).join('\n'),
+                enabled: !!agent.enabled,
+            };
+        },
+        async updateAgent(name) {
+            const patterns = this.editData.intent_patterns_text.split('\n').map(s => s.trim()).filter(Boolean);
+            try {
+                const resp = await fetch('/api/admin/custom-agents/' + encodeURIComponent(name), {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        description: this.editData.description,
+                        system_prompt: this.editData.system_prompt,
+                        model_override: this.editData.model_override || null,
+                        intent_patterns: patterns.length > 0 ? patterns : null,
+                        enabled: this.editData.enabled,
+                    }),
+                });
+                if (resp.ok) {
+                    this.message = 'Agent updated and hot-reloaded';
+                    this.messageType = 'success';
+                    this.editingAgent = null;
+                    await this.loadAgents();
+                } else {
+                    const err = await resp.json();
+                    this.message = err.detail || 'Update failed';
+                    this.messageType = 'error';
+                }
+            } catch (e) { this.message = 'Network error'; this.messageType = 'error'; }
+        },
+        async deleteAgent(name) {
+            if (!confirm('Delete custom agent "' + name + '"? This cannot be undone.')) return;
+            try {
+                const resp = await fetch('/api/admin/custom-agents/' + encodeURIComponent(name), {method: 'DELETE'});
+                if (resp.ok) {
+                    this.message = 'Agent deleted';
+                    this.messageType = 'success';
+                    await this.loadAgents();
+                } else {
+                    const err = await resp.json();
+                    this.message = err.detail || 'Delete failed';
+                    this.messageType = 'error';
+                }
+            } catch (e) { this.message = 'Network error'; this.messageType = 'error'; }
+        },
+    };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,33 @@
+{% extends "base_setup.html" %}
+{% block content %}
+<h2>LLM Provider Configuration</h2>
+<p style="color: #94a3b8; margin-bottom: 1rem;">Configure at least one LLM provider. You can add more later in the dashboard.</p>
+<form method="post" action="/setup/step/4" id="llm-form">
+    <label for="openrouter_key">OpenRouter API Key (optional)</label>
+    <input type="password" id="openrouter_key" name="openrouter_key">
+
+    <label for="groq_key">Groq API Key (optional)</label>
+    <input type="password" id="groq_key" name="groq_key">
+
+    <label for="ollama_url">Ollama URL (optional)</label>
+    <input type="url" id="ollama_url" name="ollama_url" placeholder="http://localhost:11434">
+
+    <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+        <button type="button" class="btn-secondary"
+            hx-post="/setup/test/llm"
+            hx-vals='{"provider": "openrouter", "api_key": ""}'
+            hx-include="#openrouter_key"
+            hx-target="#test-llm-result"
+            hx-swap="innerHTML">Test OpenRouter</button>
+        <button type="button" class="btn-secondary"
+            hx-post="/setup/test/llm"
+            hx-vals='{"provider": "groq", "api_key": ""}'
+            hx-include="#groq_key"
+            hx-target="#test-llm-result"
+            hx-swap="innerHTML">Test Groq</button>
+    </div>
+    <div id="test-llm-result"></div>
+    <br>
+    <button type="submit" class="btn-primary">Next</button>
+</form>
+{% endblock %}

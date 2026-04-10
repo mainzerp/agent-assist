@@ -1,0 +1,229 @@
+{% extends "dashboard_base.html" %}
+
+{% block page_title %}MCP Servers{% endblock %}
+{% block header_title %}MCP Servers{% endblock %}
+{% block nav_mcp_servers %}active{% endblock %}
+
+{% block page_content %}
+<div x-data="mcpServers()">
+
+    <!-- Add Server Form Toggle -->
+    <div class="card" style="margin-bottom: 1.5rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h2 class="card-title">MCP Server Management</h2>
+            <button class="btn btn-primary" @click="showAddForm = !showAddForm"
+                    x-text="showAddForm ? 'Cancel' : 'Add Server'"></button>
+        </div>
+
+        <!-- Add Server Form -->
+        <div x-show="showAddForm" x-transition style="margin-top: 1rem;">
+            <form @submit.prevent="addServer()">
+                <div class="form-group">
+                    <label class="form-label">Name</label>
+                    <input type="text" class="form-input" x-model="newServer.name" required
+                           placeholder="my-mcp-server">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Transport</label>
+                    <select class="form-input" x-model="newServer.transport">
+                        <option value="stdio">stdio</option>
+                        <option value="http">http</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Command or URL</label>
+                    <input type="text" class="form-input" x-model="newServer.command_or_url" required
+                           placeholder="npx @example/mcp-server or http://localhost:3000">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Environment Variables (JSON)</label>
+                    <textarea class="form-input" x-model="newServer.env_vars_json" rows="3"
+                              placeholder='{"API_KEY": "value"}'></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Timeout (seconds)</label>
+                    <input type="number" class="form-input" x-model.number="newServer.timeout"
+                           min="5" max="300" value="30">
+                </div>
+                <button type="submit" class="btn btn-primary">Add Server</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Status Message -->
+    <div x-show="message" x-transition class="alert" :class="messageType === 'error' ? 'alert-error' : 'alert-success'"
+         style="margin-bottom: 1rem;" x-text="message"></div>
+
+    <!-- Server List -->
+    <div class="card">
+        <div id="server-list">
+            <template x-if="servers.length === 0">
+                <p class="text-muted">No servers configured.</p>
+            </template>
+        </div>
+    </div>
+
+    <!-- Server Table (rendered by Alpine after HTMX loads data) -->
+    <template x-if="servers.length > 0">
+        <div class="card" style="margin-top: 1rem;">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Transport</th>
+                        <th>Command / URL</th>
+                        <th>Status</th>
+                        <th>Timeout</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="server in servers" :key="server.name">
+                        <tr>
+                            <td x-text="server.name"></td>
+                            <td><span class="badge" x-text="server.transport"></span></td>
+                            <td class="text-mono" x-text="server.command_or_url"></td>
+                            <td>
+                                <span class="status-badge"
+                                      :class="server.connected ? 'status-healthy' : 'status-error'"
+                                      x-text="server.connected ? 'Connected' : 'Disconnected'"></span>
+                            </td>
+                            <td x-text="server.timeout + 's'"></td>
+                            <td>
+                                <button class="btn btn-sm" @click="showTools(server.name)">Tools</button>
+                                <button class="btn btn-sm btn-danger" @click="removeServer(server.name)">Remove</button>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </template>
+
+    <!-- Tools Modal -->
+    <div x-show="toolsServer" x-transition class="card" style="margin-top: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h3 class="card-title" x-text="'Tools for ' + toolsServer"></h3>
+            <button class="btn btn-sm" @click="toolsServer = null; toolsList = []">Close</button>
+        </div>
+        <div style="margin-top: 1rem;">
+            <template x-if="toolsList.length === 0">
+                <p class="text-muted">No tools discovered or server not connected.</p>
+            </template>
+            <template x-if="toolsList.length > 0">
+                <table class="table">
+                    <thead>
+                        <tr><th>Tool Name</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="tool in toolsList" :key="tool.name">
+                            <tr>
+                                <td class="text-mono" x-text="tool.name"></td>
+                                <td x-text="tool.description || '-'"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </template>
+        </div>
+    </div>
+</div>
+
+<script>
+function mcpServers() {
+    return {
+        servers: [],
+        showAddForm: false,
+        message: '',
+        messageType: 'success',
+        toolsServer: null,
+        toolsList: [],
+        newServer: {
+            name: '',
+            transport: 'stdio',
+            command_or_url: '',
+            env_vars_json: '',
+            timeout: 30,
+        },
+        init() {
+            this.loadServers();
+        },
+        async loadServers() {
+            try {
+                const resp = await fetch('/api/admin/mcp-servers');
+                if (resp.ok) this.servers = await resp.json();
+            } catch (e) {
+                console.error('Failed to load MCP servers', e);
+            }
+        },
+        async addServer() {
+            let env_vars = null;
+            if (this.newServer.env_vars_json.trim()) {
+                try {
+                    env_vars = JSON.parse(this.newServer.env_vars_json);
+                } catch (e) {
+                    this.message = 'Invalid JSON for environment variables';
+                    this.messageType = 'error';
+                    return;
+                }
+            }
+            try {
+                const resp = await fetch('/api/admin/mcp-servers', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        name: this.newServer.name,
+                        transport: this.newServer.transport,
+                        command_or_url: this.newServer.command_or_url,
+                        env_vars: env_vars,
+                        timeout: this.newServer.timeout,
+                    }),
+                });
+                if (resp.ok) {
+                    this.message = 'Server added successfully';
+                    this.messageType = 'success';
+                    this.showAddForm = false;
+                    this.newServer = {name:'', transport:'stdio', command_or_url:'', env_vars_json:'', timeout:30};
+                    await this.loadServers();
+                } else {
+                    const err = await resp.json();
+                    this.message = err.detail || 'Failed to add server';
+                    this.messageType = 'error';
+                }
+            } catch (e) {
+                this.message = 'Network error';
+                this.messageType = 'error';
+            }
+        },
+        async removeServer(name) {
+            if (!confirm('Remove MCP server "' + name + '"?')) return;
+            try {
+                const resp = await fetch('/api/admin/mcp-servers/' + encodeURIComponent(name), {method: 'DELETE'});
+                if (resp.ok) {
+                    this.message = 'Server removed';
+                    this.messageType = 'success';
+                    await this.loadServers();
+                } else {
+                    const err = await resp.json();
+                    this.message = err.detail || 'Failed to remove server';
+                    this.messageType = 'error';
+                }
+            } catch (e) {
+                this.message = 'Network error';
+                this.messageType = 'error';
+            }
+        },
+        async showTools(name) {
+            this.toolsServer = name;
+            this.toolsList = [];
+            try {
+                const resp = await fetch('/api/admin/mcp-servers/' + encodeURIComponent(name) + '/tools');
+                if (resp.ok) this.toolsList = await resp.json();
+            } catch (e) {
+                console.error('Failed to load tools', e);
+            }
+        },
+    };
+}
+</script>
+{% endblock %}

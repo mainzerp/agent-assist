@@ -1,0 +1,98 @@
+"""MCP server registry."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from app.db.repository import McpServerRepository
+from app.mcp.client import MCPClient
+
+logger = logging.getLogger(__name__)
+
+
+class MCPServerRegistry:
+    """Manages MCP server connections backed by the DB."""
+
+    def __init__(self) -> None:
+        self._clients: dict[str, MCPClient] = {}
+
+    async def load_from_db(self) -> None:
+        """Read enabled MCP servers from DB, create clients, and connect."""
+        servers = await McpServerRepository.list_enabled()
+        for row in servers:
+            name = row["name"]
+            try:
+                client = MCPClient(
+                    name=name,
+                    transport=row["transport"],
+                    command_or_url=row["command_or_url"],
+                    env_vars=row.get("env_vars"),
+                    timeout=row.get("timeout", 30),
+                )
+                connected = await client.connect()
+                self._clients[name] = client
+                if not connected:
+                    logger.warning("MCP server '%s' registered but not connected", name)
+            except Exception:
+                logger.error("Failed to load MCP server '%s'", name, exc_info=True)
+        logger.info(
+            "MCP registry loaded %d servers (%d connected)",
+            len(self._clients),
+            sum(1 for c in self._clients.values() if c.connected),
+        )
+
+    async def add_server(
+        self,
+        name: str,
+        transport: str,
+        command_or_url: str,
+        env_vars: dict[str, str] | None = None,
+        timeout: int = 30,
+    ) -> bool:
+        """Add a new MCP server to DB and connect."""
+        await McpServerRepository.upsert(
+            name=name,
+            transport=transport,
+            command_or_url=command_or_url,
+            env_vars=env_vars,
+            timeout=timeout,
+        )
+        client = MCPClient(
+            name=name,
+            transport=transport,
+            command_or_url=command_or_url,
+            env_vars=env_vars,
+            timeout=timeout,
+        )
+        connected = await client.connect()
+        self._clients[name] = client
+        return connected
+
+    async def remove_server(self, name: str) -> None:
+        """Disconnect and remove an MCP server."""
+        client = self._clients.pop(name, None)
+        if client:
+            await client.disconnect()
+        await McpServerRepository.delete(name)
+
+    def list_servers(self) -> list[dict[str, Any]]:
+        """Return all server info with connection status."""
+        return [
+            {"name": name, "connected": client.connected}
+            for name, client in self._clients.items()
+        ]
+
+    def get_client(self, name: str) -> MCPClient | None:
+        """Return an MCP client by server name."""
+        return self._clients.get(name)
+
+    async def disconnect_all(self) -> None:
+        """Disconnect all MCP clients. Called on shutdown."""
+        for name, client in self._clients.items():
+            try:
+                await client.disconnect()
+            except Exception:
+                logger.warning("Error disconnecting MCP server '%s'", name, exc_info=True)
+        self._clients.clear()
+        logger.info("All MCP servers disconnected")

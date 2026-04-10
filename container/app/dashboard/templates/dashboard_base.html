@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block page_title %}Dashboard{% endblock %} - agent-assist</title>
+    <link rel="stylesheet" href="/dashboard/static/style.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+" crossorigin="anonymous"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+</head>
+<body x-data="{ sidebarOpen: true }" class="dashboard-body">
+
+    <!-- Mobile hamburger -->
+    <button class="sidebar-toggle" @click="sidebarOpen = !sidebarOpen" aria-label="Toggle sidebar">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="6" x2="21" y2="6"/>
+            <line x1="3" y1="12" x2="21" y2="12"/>
+            <line x1="3" y1="18" x2="21" y2="18"/>
+        </svg>
+    </button>
+
+    <!-- Sidebar -->
+    <aside class="sidebar" :class="{ 'sidebar-open': sidebarOpen }">
+        <div class="sidebar-header">
+            <a href="/dashboard/" class="sidebar-brand">agent-assist</a>
+        </div>
+        <nav class="sidebar-nav">
+            <a href="/dashboard/" class="nav-link {% block nav_overview %}{% endblock %}">Overview</a>
+            <a href="/dashboard/agents" class="nav-link {% block nav_agents %}{% endblock %}">Agents</a>
+            <a href="/dashboard/custom-agents" class="nav-link {% block nav_custom_agents %}{% endblock %}">Custom Agents</a>
+            <a href="/dashboard/mcp-servers" class="nav-link {% block nav_mcp_servers %}{% endblock %}">MCP Servers</a>
+            <a href="/dashboard/entity-visibility" class="nav-link {% block nav_entity_visibility %}{% endblock %}">Entity Visibility</a>
+            <a href="/dashboard/entity-index" class="nav-link {% block nav_entity_index %}{% endblock %}">Entity Index</a>
+            <a href="/dashboard/presence" class="nav-link {% block nav_presence %}{% endblock %}">Presence</a>
+            <a href="/dashboard/rewrite" class="nav-link {% block nav_rewrite %}{% endblock %}">Rewrite</a>
+            <a href="/dashboard/conversations" class="nav-link {% block nav_conversations %}{% endblock %}">Conversations</a>
+            <a href="/dashboard/cache" class="nav-link {% block nav_cache %}{% endblock %}">Cache</a>
+            <a href="/dashboard/analytics" class="nav-link {% block nav_analytics %}{% endblock %}">Analytics</a>
+            <a href="/dashboard/traces" class="nav-link {% block nav_traces %}{% endblock %}">Traces</a>
+            <a href="/dashboard/system-health" class="nav-link {% block nav_system_health %}{% endblock %}">System Health</a>
+            <a href="/dashboard/plugins" class="nav-link {% block nav_plugins %}{% endblock %}">Plugins</a>
+        </nav>
+    </aside>
+
+    <!-- Main content -->
+    <div class="main-content" :class="{ 'main-content-expanded': !sidebarOpen }">
+        <header class="top-bar">
+            <h1 class="page-title">{% block header_title %}Dashboard{% endblock %}</h1>
+            <div class="top-bar-actions">
+                <a href="/dashboard/logout" class="logout-link">Logout</a>
+            </div>
+        </header>
+        <main class="page-content">
+            {% block page_content %}{% endblock %}
+        </main>
+    </div>
+
+</body>
+</html>

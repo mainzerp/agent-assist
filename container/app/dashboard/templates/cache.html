@@ -1,0 +1,155 @@
+{% extends "dashboard_base.html" %}
+{% block page_title %}Cache{% endblock %}
+{% block nav_cache %}active{% endblock %}
+{% block header_title %}Cache Management{% endblock %}
+{% block page_content %}
+<div x-data="cachePage()" x-init="loadStats(); loadEntries()">
+
+    <!-- Stats cards -->
+    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+        <div class="card">
+            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Routing Cache</h3>
+            <div style="font-size: 1.5rem; font-weight: 600;" x-text="stats.routing?.count ?? '-'"></div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary);">
+                max: <span x-text="stats.routing?.max_entries ?? '-'"></span>
+                | threshold: <span x-text="stats.routing?.threshold ?? '-'"></span>
+            </div>
+        </div>
+        <div class="card">
+            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Response Cache</h3>
+            <div style="font-size: 1.5rem; font-weight: 600;" x-text="stats.response?.count ?? '-'"></div>
+            <div style="font-size: 0.75rem; color: var(--text-secondary);">
+                max: <span x-text="stats.response?.max_entries ?? '-'"></span>
+                | hit: <span x-text="stats.response?.hit_threshold ?? '-'"></span>
+                | partial: <span x-text="stats.response?.partial_threshold ?? '-'"></span>
+            </div>
+        </div>
+        <div class="card">
+            <h3 style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Actions</h3>
+            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem;">
+                <button class="btn btn-sm btn-secondary" @click="flushCache('routing')">Flush Routing</button>
+                <button class="btn btn-sm btn-secondary" @click="flushCache('response')">Flush Response</button>
+                <button class="btn btn-sm" style="background: var(--red); color: white;" @click="flushCache(null)">Flush All</button>
+            </div>
+            <div x-show="flushMessage" style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--green);" x-text="flushMessage"></div>
+        </div>
+    </div>
+
+    <!-- Browse entries -->
+    <div class="card">
+        <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin-bottom: 1rem;">
+            <div class="form-group" style="margin-bottom: 0;">
+                <label class="form-label">Tier</label>
+                <select class="form-input" x-model="tier" @change="page = 1; loadEntries()">
+                    <option value="routing">Routing</option>
+                    <option value="response">Response</option>
+                </select>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+                <label class="form-label">Search</label>
+                <input type="text" class="form-input" x-model="search" placeholder="Search entries..." style="width: 200px;">
+            </div>
+            <button class="btn btn-primary btn-sm" @click="page = 1; loadEntries()">Search</button>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+            <span style="color: var(--text-secondary); font-size: 0.875rem;" x-text="'Showing ' + entries.length + ' of ' + entryTotal"></span>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                <button class="btn btn-sm btn-secondary" :disabled="page <= 1" @click="page--; loadEntries()">Prev</button>
+                <span class="mono" style="font-size: 0.875rem;" x-text="page + ' / ' + entryPages"></span>
+                <button class="btn btn-sm btn-secondary" :disabled="page >= entryPages" @click="page++; loadEntries()">Next</button>
+            </div>
+        </div>
+
+        <template x-if="loadingEntries">
+            <p style="color: var(--text-secondary);">Loading...</p>
+        </template>
+
+        <table class="data-table" x-show="!loadingEntries && entries.length > 0">
+            <thead>
+                <tr>
+                    <th>Document</th>
+                    <th>Agent</th>
+                    <th>Hits</th>
+                    <th>Last Accessed</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="e in entries" :key="e.id">
+                    <tr>
+                        <td style="max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" x-text="e.document"></td>
+                        <td><span class="badge badge-blue" x-text="e.agent_id || '-'"></span></td>
+                        <td class="mono" x-text="e.hit_count || '0'"></td>
+                        <td class="mono" style="font-size: 0.75rem;" x-text="e.last_accessed || '-'"></td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+
+        <template x-if="!loadingEntries && entries.length === 0">
+            <p style="color: var(--text-secondary);">No cache entries found.</p>
+        </template>
+    </div>
+</div>
+
+<script>
+function cachePage() {
+    return {
+        stats: {},
+        entries: [],
+        loadingEntries: false,
+        tier: 'routing',
+        search: '',
+        page: 1,
+        entryTotal: 0,
+        entryPages: 1,
+        flushMessage: '',
+
+        async loadStats() {
+            try {
+                const resp = await fetch('/api/admin/cache/stats');
+                this.stats = await resp.json();
+            } catch (e) {
+                console.error('Failed to load cache stats', e);
+            }
+        },
+
+        async loadEntries() {
+            this.loadingEntries = true;
+            const params = new URLSearchParams();
+            params.set('tier', this.tier);
+            params.set('page', this.page);
+            params.set('per_page', '50');
+            if (this.search) params.set('search', this.search);
+            try {
+                const resp = await fetch('/api/admin/cache/entries?' + params.toString());
+                const data = await resp.json();
+                this.entries = data.entries || [];
+                this.entryTotal = data.total || 0;
+                this.entryPages = data.pages || 1;
+            } catch (e) {
+                console.error('Failed to load cache entries', e);
+            }
+            this.loadingEntries = false;
+        },
+
+        async flushCache(tier) {
+            try {
+                const resp = await fetch('/api/admin/cache/flush', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tier: tier })
+                });
+                const data = await resp.json();
+                this.flushMessage = 'Flushed: ' + (data.flushed || 'unknown');
+                this.loadStats();
+                this.loadEntries();
+                setTimeout(() => { this.flushMessage = ''; }, 3000);
+            } catch (e) {
+                console.error('Failed to flush cache', e);
+            }
+        }
+    };
+}
+</script>
+{% endblock %}

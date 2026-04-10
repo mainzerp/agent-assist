@@ -1,0 +1,16 @@
+{% extends "base_setup.html" %}
+{% block content %}
+<h2>Container API Key</h2>
+{% if generated %}
+<p style="color: #fbbf24; margin-bottom: 1rem;">Save this API key now. It will not be shown again.</p>
+<div class="api-key-display">{{ api_key }}</div>
+<form method="get" action="/setup/step/4">
+    <button type="submit" class="btn-primary">Next</button>
+</form>
+{% else %}
+<p style="color: #94a3b8; margin-bottom: 1rem;">Generate an API key for authenticating requests to this container.</p>
+<form method="post" action="/setup/step/3">
+    <button type="submit" class="btn-primary">Generate API Key</button>
+</form>
+{% endif %}
+{% endblock %}

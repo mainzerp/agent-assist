@@ -1,0 +1,204 @@
+# Deployment Guide
+
+## Prerequisites
+
+- **Docker Engine** 20.10+ and **Docker Compose** v2
+- **Home Assistant** 2024.1.0 or later
+- An LLM API key from at least one provider:
+  - [OpenRouter](https://openrouter.ai/) (recommended -- access to multiple models)
+  - [Groq](https://groq.com/) (fast inference)
+  - [Ollama](https://ollama.com/) (local/self-hosted)
+- Network connectivity between the Docker host and your Home Assistant instance
+
+## Docker Compose Deployment
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/<owner>/agent-assist.git
+cd agent-assist/container
+```
+
+### 2. Review `docker-compose.yml`
+
+The default configuration in `container/docker-compose.yml`:
+
+```yaml
+version: "3.8"
+
+services:
+  agent-assist:
+    build: .
+    container_name: agent-assist
+    restart: unless-stopped
+    ports:
+      - "${CONTAINER_PORT:-8080}:8080"
+    volumes:
+      - agent-assist-data:/data
+    environment:
+      - CONTAINER_HOST=${CONTAINER_HOST:-0.0.0.0}
+      - CONTAINER_PORT=${CONTAINER_PORT:-8080}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CHROMADB_PERSIST_DIR=${CHROMADB_PERSIST_DIR:-/data/chromadb}
+      - SQLITE_DB_PATH=${SQLITE_DB_PATH:-/data/agent_assist.db}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  agent-assist-data:
+    driver: local
+```
+
+Key points:
+- The `agent-assist-data` volume persists the SQLite database and ChromaDB data across container restarts.
+- Only infrastructure environment variables are set here. All other configuration (HA connection, LLM keys, agent settings) is done through the setup wizard and stored in SQLite.
+
+### 3. Optional: Create `.env` File
+
+If you need to override defaults, create a `.env` file in the `container/` directory:
+
+```env
+CONTAINER_PORT=8080
+LOG_LEVEL=INFO
+```
+
+### 4. Start the Container
+
+```bash
+docker-compose up -d
+```
+
+Verify the container is running:
+
+```bash
+docker-compose logs -f agent-assist
+```
+
+The health check endpoint is available at `http://<host>:8080/api/health`.
+
+## First-Launch Setup Wizard
+
+On first launch, all routes redirect to the setup wizard at `http://<host>:8080/setup/`.
+
+### Step 1: Admin Password
+
+Create the admin account used to access the dashboard. The password is stored as a bcrypt hash in SQLite.
+
+### Step 2: Home Assistant Connection
+
+Enter your Home Assistant URL and a Long-Lived Access Token:
+
+- **HA URL**: The URL of your HA instance as reachable from the container (e.g., `http://192.168.1.100:8123` or `http://homeassistant.local:8123`).
+- **HA Token**: Generate a Long-Lived Access Token in HA under Profile > Security > Long-Lived Access Tokens.
+
+Use the "Test Connection" button to verify connectivity before proceeding. The token is stored encrypted (Fernet) in SQLite.
+
+### Step 3: Container API Key
+
+An API key is auto-generated for securing communication between the HA integration and the container. Copy and save this key -- it is shown only once. The key is stored encrypted in SQLite.
+
+### Step 4: LLM Provider Configuration
+
+Enter API keys for one or more LLM providers:
+
+- **OpenRouter API Key** -- For access to GPT-4o-mini, Claude, and other models via a unified API.
+- **Groq API Key** -- For fast inference with Llama models (used by default for the orchestrator).
+- **Ollama URL** -- For local model inference (e.g., `http://localhost:11434`).
+
+Use the "Test" button for each provider to verify the key works. Keys are stored encrypted in SQLite.
+
+### Step 5: Review and Complete
+
+Review your configuration and complete the setup. The container initializes all components (entity index, cache, agents) and redirects to the admin dashboard.
+
+## Home Assistant Integration Installation
+
+### Method 1: HACS (Recommended)
+
+1. Install [HACS](https://hacs.xyz/) in your Home Assistant instance if not already installed.
+2. In HACS, go to Integrations > three-dot menu > Custom repositories.
+3. Add the repository URL: `https://github.com/<owner>/agent-assist`
+4. Category: Integration
+5. Click "Add", then find "Agent Assist" in HACS and install it.
+6. Restart Home Assistant.
+
+### Method 2: Manual Installation
+
+1. Copy the `custom_components/agent_assist/` directory to your Home Assistant `config/custom_components/` directory.
+2. Restart Home Assistant.
+
+### Configure the Integration
+
+1. In Home Assistant, go to Settings > Devices & Services > Add Integration.
+2. Search for "Agent Assist".
+3. Enter the container URL (e.g., `http://<docker-host>:8080`) and the API key from setup step 3.
+4. The integration registers as a conversation agent. You can select it as the default assistant in Settings > Voice Assistants.
+
+## Networking
+
+### Container-to-HA Connectivity
+
+The container must be able to reach your Home Assistant instance over HTTP. Common configurations:
+
+- **Same host**: Use `http://host.docker.internal:8123` (Docker Desktop) or `http://172.17.0.1:8123` (Linux Docker with default bridge).
+- **Same network**: Use the HA machine's LAN IP (e.g., `http://192.168.1.100:8123`).
+- **Docker network**: If HA runs in Docker on the same host, use a shared Docker network and reference the HA container name.
+
+### HA-to-Container Connectivity
+
+Home Assistant must be able to reach the container on the configured port (default: 8080). If running on the same host, use `http://localhost:8080`. If on a different host, use the Docker host's IP.
+
+### Reverse Proxy
+
+If placing the container behind a reverse proxy (e.g., Nginx, Caddy, Traefik):
+
+- Proxy to `http://localhost:8080`
+- WebSocket support is required for streaming (`/ws/conversation`)
+- Forward the `Authorization` header for API key authentication
+
+## Updating
+
+```bash
+cd agent-assist/container
+git pull
+docker-compose up -d --build
+```
+
+Database migrations run automatically on startup. The schema uses `CREATE TABLE IF NOT EXISTS` and `INSERT OR IGNORE` for idempotent initialization.
+
+## Backup
+
+### SQLite Database
+
+The SQLite database contains all configuration, secrets, conversation history, and analytics. Back up the file at the configured `SQLITE_DB_PATH` (default: `/data/agent_assist.db` inside the container, mapped to the `agent-assist-data` Docker volume).
+
+To back up from the volume:
+
+```bash
+docker cp agent-assist:/data/agent_assist.db ./backup_agent_assist.db
+```
+
+### ChromaDB Data
+
+ChromaDB vector data is stored at `CHROMADB_PERSIST_DIR` (default: `/data/chromadb`). Back up this directory for faster restarts (avoids re-indexing entities).
+
+```bash
+docker cp agent-assist:/data/chromadb ./backup_chromadb
+```
+
+The entity index and cache can be rebuilt from scratch if the ChromaDB data is lost, but backing it up avoids a cold start.
+
+### Restore
+
+To restore from backup, stop the container, copy the files back into the volume, and restart:
+
+```bash
+docker-compose down
+docker cp ./backup_agent_assist.db agent-assist:/data/agent_assist.db
+docker cp ./backup_chromadb agent-assist:/data/chromadb
+docker-compose up -d
+```

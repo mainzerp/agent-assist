@@ -1,0 +1,18 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Agent Assist",
+        "description": "Configure connection to the agent-assist container.",
+        "data": {
+          "url": "Container URL",
+          "api_key": "API Key"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to the container. Check the URL and that the container is running.",
+      "invalid_auth": "Invalid API key. Check the key and try again."
+    }
+  }
+}

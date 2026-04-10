@@ -1,0 +1,168 @@
+{% extends "dashboard_base.html" %}
+{% block page_title %}Agents{% endblock %}
+{% block nav_agents %}active{% endblock %}
+{% block header_title %}Agent Configuration{% endblock %}
+{% block page_content %}
+<div x-data="agentsPage()" x-init="loadAgents()">
+    <div class="card" style="margin-bottom: 1.5rem;">
+        <p style="color: var(--text-secondary); font-size: 0.875rem;">
+            Enable or disable agents, edit model settings, and modify system prompts.
+        </p>
+    </div>
+
+    <div id="agents-list">
+        <template x-if="loading">
+            <p style="color: var(--text-secondary);">Loading agents...</p>
+        </template>
+        <template x-if="!loading && agents.length === 0">
+            <p style="color: var(--text-secondary);">No agents configured.</p>
+        </template>
+        <template x-for="agent in agents" :key="agent.agent_id">
+            <div class="card" style="margin-bottom: 0.75rem;">
+                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;">
+                    <div>
+                        <strong x-text="agent.agent_id" class="mono"></strong>
+                        <span x-show="agent.description" x-text="' -- ' + agent.description" style="color: var(--text-secondary); font-size: 0.875rem;"></span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.75rem;">
+                        <label class="toggle">
+                            <input type="checkbox" :checked="agent.enabled == 1" @change="toggleAgent(agent)">
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <button class="btn btn-sm btn-secondary" @click="agent._editing = !agent._editing">Edit</button>
+                        <button class="btn btn-sm btn-secondary" @click="agent._editingPrompt = !agent._editingPrompt; if(agent._editingPrompt) loadPrompt(agent)">Prompt</button>
+                    </div>
+                </div>
+
+                <!-- Inline config editor -->
+                <template x-if="agent._editing">
+                    <div class="edit-panel">
+                        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.75rem;">
+                            <div class="form-group">
+                                <label class="form-label">Model</label>
+                                <input type="text" class="form-input" x-model="agent.model" placeholder="default">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Timeout (s)</label>
+                                <input type="number" class="form-input" x-model.number="agent.timeout" min="1" max="120">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Temperature</label>
+                                <input type="range" min="0" max="2" step="0.1" x-model.number="agent.temperature">
+                                <span class="mono" x-text="agent.temperature" style="font-size: 0.75rem;"></span>
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Max Tokens</label>
+                                <input type="number" class="form-input" x-model.number="agent.max_tokens" min="1">
+                            </div>
+                        </div>
+                        <button class="btn btn-primary btn-sm" style="margin-top: 0.5rem;" @click="saveAgent(agent)">Save</button>
+                        <span x-show="agent._saved" style="color: var(--green); font-size: 0.75rem; margin-left: 0.5rem;">Saved</span>
+                    </div>
+                </template>
+
+                <!-- Inline prompt editor -->
+                <template x-if="agent._editingPrompt">
+                    <div class="edit-panel">
+                        <div class="form-group">
+                            <label class="form-label">System Prompt</label>
+                            <textarea class="form-textarea" rows="10" x-model="agent._promptContent" :placeholder="agent._promptLoading ? 'Loading...' : 'No prompt file found'"></textarea>
+                        </div>
+                        <button class="btn btn-primary btn-sm" @click="savePrompt(agent)">Save Prompt</button>
+                        <span x-show="agent._promptSaved" style="color: var(--green); font-size: 0.75rem; margin-left: 0.5rem;">Saved</span>
+                    </div>
+                </template>
+            </div>
+        </template>
+    </div>
+</div>
+
+<script>
+function agentsPage() {
+    return {
+        agents: [],
+        loading: true,
+        async loadAgents() {
+            try {
+                var resp = await fetch("/api/admin/agents", { credentials: "same-origin" });
+                var data = await resp.json();
+                this.agents = (data.agents || []).map(function(a) {
+                    a._editing = false;
+                    a._editingPrompt = false;
+                    a._promptContent = "";
+                    a._promptLoading = false;
+                    a._promptSaved = false;
+                    a._saved = false;
+                    return a;
+                });
+            } catch(e) {
+                console.error("Failed to load agents", e);
+            }
+            this.loading = false;
+        },
+        async toggleAgent(agent) {
+            var newEnabled = agent.enabled == 1 ? false : true;
+            try {
+                await fetch("/api/admin/agents/" + agent.agent_id, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    credentials: "same-origin",
+                    body: JSON.stringify({ enabled: newEnabled })
+                });
+                agent.enabled = newEnabled ? 1 : 0;
+            } catch(e) {
+                console.error("Failed to toggle agent", e);
+            }
+        },
+        async saveAgent(agent) {
+            try {
+                await fetch("/api/admin/agents/" + agent.agent_id, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    credentials: "same-origin",
+                    body: JSON.stringify({
+                        model: agent.model || null,
+                        timeout: agent.timeout,
+                        temperature: agent.temperature,
+                        max_tokens: agent.max_tokens
+                    })
+                });
+                agent._saved = true;
+                setTimeout(function() { agent._saved = false; }, 2000);
+            } catch(e) {
+                console.error("Failed to save agent config", e);
+            }
+        },
+        async loadPrompt(agent) {
+            agent._promptLoading = true;
+            try {
+                var resp = await fetch("/api/admin/agents/" + agent.agent_id + "/prompt", { credentials: "same-origin" });
+                if (resp.ok) {
+                    var data = await resp.json();
+                    agent._promptContent = data.content || "";
+                } else {
+                    agent._promptContent = "";
+                }
+            } catch(e) {
+                agent._promptContent = "";
+            }
+            agent._promptLoading = false;
+        },
+        async savePrompt(agent) {
+            try {
+                await fetch("/api/admin/agents/" + agent.agent_id + "/prompt", {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    credentials: "same-origin",
+                    body: JSON.stringify({ content: agent._promptContent })
+                });
+                agent._promptSaved = true;
+                setTimeout(function() { agent._promptSaved = false; }, 2000);
+            } catch(e) {
+                console.error("Failed to save prompt", e);
+            }
+        }
+    };
+}
+</script>
+{% endblock %}

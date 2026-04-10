@@ -1,0 +1,93 @@
+{% extends "dashboard_base.html" %}
+{% block page_title %}Overview{% endblock %}
+{% block nav_overview %}active{% endblock %}
+{% block header_title %}Overview{% endblock %}
+{% block page_content %}
+<div x-data="overviewPage()" x-init="loadOverview(); loadHealth()">
+    <div class="card-grid" id="overview-cards">
+        <div class="metric-card">
+            <div class="metric-label">Total Requests (24h)</div>
+            <div class="metric-value" x-text="metrics ? metrics.recent_requests : '--'">--</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Cache Hit Rate</div>
+            <div class="metric-value" x-text="metrics ? metrics.cache_hit_rate + '%' : '--'">--</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Active Agents</div>
+            <div class="metric-value" x-text="metrics ? metrics.agent_count : '--'">--</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Entity Count</div>
+            <div class="metric-value" x-text="metrics ? metrics.entity_count : '--'">--</div>
+        </div>
+    </div>
+
+<h2 class="section-title">System Status</h2>
+    <div class="health-grid" id="health-grid">
+        <template x-if="!health">
+            <div class="health-item">
+                <span class="status-dot status-unknown"></span>
+                <span>Loading...</span>
+            </div>
+        </template>
+        <template x-if="health">
+            <template x-for="comp in healthComponents" :key="comp.key">
+                <div class="health-item">
+                    <span class="status-dot" :class="getStatusClass(health[comp.key])"></span>
+                    <span x-text="comp.label + getDetail(comp.key, health[comp.key])"></span>
+                </div>
+            </template>
+        </template>
+    </div>
+</div>
+
+<script>
+function overviewPage() {
+    return {
+        metrics: null,
+        health: null,
+        healthComponents: [
+            { key: "ha_connection", label: "HA Connection" },
+            { key: "entity_index", label: "Entity Index" },
+            { key: "cache", label: "Cache" },
+            { key: "mcp_servers", label: "MCP Servers" },
+            { key: "uptime", label: "Uptime" }
+        ],
+        async loadOverview() {
+            var self = this;
+            async function doFetch() {
+                try {
+                    var resp = await fetch("/api/admin/overview", { credentials: "same-origin" });
+                    if (resp.ok) self.metrics = await resp.json();
+                } catch(e) { console.error("Failed to load overview", e); }
+            }
+            await doFetch();
+            setInterval(doFetch, 30000);
+        },
+        async loadHealth() {
+            var self = this;
+            async function doFetch() {
+                try {
+                    var resp = await fetch("/api/admin/health/extended", { credentials: "same-origin" });
+                    if (resp.ok) self.health = await resp.json();
+                } catch(e) { console.error("Failed to load health", e); }
+            }
+            await doFetch();
+            setInterval(doFetch, 30000);
+        },
+        getStatusClass(comp) {
+            if (!comp) return "status-unknown";
+            return comp.status === "healthy" ? "status-healthy" : (comp.status === "error" ? "status-error" : "status-unknown");
+        },
+        getDetail(key, comp) {
+            if (!comp) return "";
+            if (key === "uptime" && comp.display) return " (" + comp.display + ")";
+            if (key === "entity_index" && comp.count !== undefined) return " (" + comp.count + " entities)";
+            if (key === "mcp_servers" && comp.count !== undefined) return " (" + comp.count + " servers)";
+            return "";
+        }
+    };
+}
+</script>
+{% endblock %}

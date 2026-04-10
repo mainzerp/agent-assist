@@ -1,0 +1,41 @@
+# agent-assist core dependencies
+
+# Web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# LLM integration
+litellm>=1.40.0
+
+# Embeddings (local)
+sentence-transformers>=3.0.0
+
+# Vector database
+chromadb>=0.5.0
+
+# Entity matching
+rapidfuzz>=3.9.0
+pyphonetics>=0.5.3
+
+# HTTP clients (async)
+aiohttp>=3.9.0
+httpx>=0.27.0
+
+# Data validation
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+
+# MCP integration
+mcp>=1.0.0
+
+# Templates (admin dashboard)
+jinja2>=3.1.0
+
+# Database
+aiosqlite>=0.20.0
+
+# Security
+cryptography>=43.0.0
+bcrypt>=4.1.0
+python-multipart>=0.0.9
+itsdangerous>=2.1.0

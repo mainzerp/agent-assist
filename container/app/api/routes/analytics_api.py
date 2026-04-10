@@ -1,0 +1,268 @@
+"""Analytics admin API endpoints.
+
+Returns data in Chart.js-compatible format for dashboard charts.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, Query
+
+from app.security.auth import require_admin_session
+from app.db.repository import AnalyticsRepository, ConversationRepository
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(
+    prefix="/api/admin/analytics",
+    tags=["admin-analytics"],
+    dependencies=[Depends(require_admin_session)],
+)
+
+
+def _compute_percentiles(values: list[float], percentiles: list[int]) -> dict[str, float]:
+    """Compute percentiles from a list of values. Returns dict like {"p50": 12.3}."""
+    if not values:
+        return {f"p{p}": 0.0 for p in percentiles}
+    values_sorted = sorted(values)
+    n = len(values_sorted)
+    result = {}
+    for p in percentiles:
+        idx = int(n * p / 100)
+        idx = min(idx, n - 1)
+        result[f"p{p}"] = round(values_sorted[idx], 2)
+    return result
+
+
+@router.get("/overview")
+async def analytics_overview(
+    hours: int = Query(24, ge=1, le=720),
+):
+    """Summary metrics for the analytics dashboard."""
+    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+    requests = await AnalyticsRepository.query_by_range(
+        event_type="request", start=start, limit=100000,
+    )
+    cache_events = await AnalyticsRepository.query_by_range(
+        event_type=None, start=start, limit=100000,
+    )
+
+    total_requests = len(requests)
+    latencies = [
+        r["data"]["latency_ms"] for r in requests
+        if r.get("data") and isinstance(r["data"], dict) and "latency_ms" in r["data"]
+    ]
+    avg_latency = round(sum(latencies) / len(latencies), 1) if latencies else 0
+
+    # Cache hit rate
+    hits = sum(1 for e in cache_events if e.get("event_type") in ("routing_hit", "response_hit"))
+    misses = sum(1 for e in cache_events if e.get("event_type") == "miss")
+    total_cache = hits + misses
+    hit_rate = round(hits / total_cache * 100, 1) if total_cache > 0 else 0
+
+    # Total conversations
+    total_conversations = await ConversationRepository.count()
+
+    return {
+        "total_requests": total_requests,
+        "avg_latency_ms": avg_latency,
+        "cache_hit_rate": hit_rate,
+        "total_conversations": total_conversations,
+        "period_hours": hours,
+    }
+
+
+@router.get("/requests")
+async def analytics_requests(
+    hours: int = Query(24, ge=1, le=720),
+    bucket_minutes: int = Query(60, ge=5, le=1440),
+):
+    """Time-series request counts in Chart.js format."""
+    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    events = await AnalyticsRepository.query_by_range(
+        event_type="request", start=start, limit=100000,
+    )
+
+    # Bucket by time interval
+    buckets: dict[str, int] = defaultdict(int)
+    for e in events:
+        ts = e.get("created_at", "")
+        try:
+            dt = datetime.fromisoformat(ts)
+            # Truncate to bucket
+            bucket_secs = bucket_minutes * 60
+            ts_epoch = int(dt.timestamp())
+            bucket_start = ts_epoch - (ts_epoch % bucket_secs)
+            bucket_label = datetime.fromtimestamp(bucket_start, tz=timezone.utc).strftime("%H:%M")
+            buckets[bucket_label] += 1
+        except (ValueError, TypeError):
+            pass
+
+    labels = sorted(buckets.keys())
+    data = [buckets[lb] for lb in labels]
+
+    return {
+        "labels": labels,
+        "datasets": [
+            {"label": "Requests", "data": data}
+        ],
+    }
+
+
+@router.get("/agents")
+async def analytics_agents(
+    hours: int = Query(24, ge=1, le=720),
+):
+    """Per-agent metrics with p50/p95/p99 latencies."""
+    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    events = await AnalyticsRepository.query_by_range(
+        event_type="request", start=start, limit=100000,
+    )
+
+    agent_latencies: dict[str, list[float]] = defaultdict(list)
+    agent_counts: dict[str, int] = defaultdict(int)
+
+    for e in events:
+        agent = e.get("agent_id") or "unknown"
+        agent_counts[agent] += 1
+        data = e.get("data")
+        if isinstance(data, dict) and "latency_ms" in data:
+            agent_latencies[agent].append(data["latency_ms"])
+
+    agents = []
+    for agent_id in sorted(agent_counts.keys()):
+        latencies = agent_latencies.get(agent_id, [])
+        percentiles = _compute_percentiles(latencies, [50, 95, 99])
+        agents.append({
+            "agent_id": agent_id,
+            "request_count": agent_counts[agent_id],
+            "avg_latency_ms": round(sum(latencies) / len(latencies), 1) if latencies else 0,
+            **percentiles,
+        })
+
+    return {"agents": agents, "period_hours": hours}
+
+
+@router.get("/cache")
+async def analytics_cache(
+    hours: int = Query(24, ge=1, le=720),
+    bucket_minutes: int = Query(60, ge=5, le=1440),
+):
+    """Cache hit rate time-series in Chart.js format."""
+    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    events = await AnalyticsRepository.query_by_range(start=start, limit=100000)
+
+    hit_types = {"routing_hit", "response_hit", "response_partial"}
+    miss_types = {"miss"}
+
+    hits_per_bucket: dict[str, int] = defaultdict(int)
+    total_per_bucket: dict[str, int] = defaultdict(int)
+
+    for e in events:
+        et = e.get("event_type", "")
+        if et not in hit_types and et not in miss_types:
+            continue
+        ts = e.get("created_at", "")
+        try:
+            dt = datetime.fromisoformat(ts)
+            bucket_secs = bucket_minutes * 60
+            ts_epoch = int(dt.timestamp())
+            bucket_start = ts_epoch - (ts_epoch % bucket_secs)
+            bucket_label = datetime.fromtimestamp(bucket_start, tz=timezone.utc).strftime("%H:%M")
+            total_per_bucket[bucket_label] += 1
+            if et in hit_types:
+                hits_per_bucket[bucket_label] += 1
+        except (ValueError, TypeError):
+            pass
+
+    labels = sorted(total_per_bucket.keys())
+    data = [
+        round(hits_per_bucket.get(lb, 0) / total_per_bucket[lb] * 100, 1) if total_per_bucket[lb] > 0 else 0
+        for lb in labels
+    ]
+
+    return {
+        "labels": labels,
+        "datasets": [
+            {"label": "Cache Hit Rate (%)", "data": data}
+        ],
+    }
+
+
+@router.get("/tokens")
+async def analytics_tokens(
+    hours: int = Query(24, ge=1, le=720),
+):
+    """Token usage per agent/provider."""
+    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    events = await AnalyticsRepository.query_by_range(
+        event_type="token_usage", start=start, limit=100000,
+    )
+
+    by_agent: dict[str, dict] = defaultdict(lambda: {"tokens_in": 0, "tokens_out": 0, "calls": 0})
+    by_provider: dict[str, dict] = defaultdict(lambda: {"tokens_in": 0, "tokens_out": 0, "calls": 0})
+
+    for e in events:
+        data = e.get("data")
+        if not isinstance(data, dict):
+            continue
+        agent = e.get("agent_id") or "unknown"
+        provider = data.get("provider", "unknown")
+        tokens_in = data.get("tokens_in", 0)
+        tokens_out = data.get("tokens_out", 0)
+
+        by_agent[agent]["tokens_in"] += tokens_in
+        by_agent[agent]["tokens_out"] += tokens_out
+        by_agent[agent]["calls"] += 1
+
+        by_provider[provider]["tokens_in"] += tokens_in
+        by_provider[provider]["tokens_out"] += tokens_out
+        by_provider[provider]["calls"] += 1
+
+    return {
+        "by_agent": dict(by_agent),
+        "by_provider": dict(by_provider),
+        "period_hours": hours,
+    }
+
+
+@router.get("/rewrite")
+async def analytics_rewrite(
+    hours: int = Query(24, ge=1, le=720),
+):
+    """Rewrite invocation stats."""
+    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    events = await AnalyticsRepository.query_by_range(
+        event_type="rewrite_invocation", start=start, limit=100000,
+    )
+
+    total = len(events)
+    successes = 0
+    failures = 0
+    latencies = []
+
+    for e in events:
+        data = e.get("data")
+        if not isinstance(data, dict):
+            continue
+        if data.get("success"):
+            successes += 1
+        else:
+            failures += 1
+        if "latency_ms" in data:
+            latencies.append(data["latency_ms"])
+
+    avg_latency = round(sum(latencies) / len(latencies), 1) if latencies else 0
+
+    return {
+        "total": total,
+        "successes": successes,
+        "failures": failures,
+        "avg_latency_ms": avg_latency,
+        "period_hours": hours,
+    }

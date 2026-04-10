@@ -1,0 +1,149 @@
+{% extends "dashboard_base.html" %}
+
+{% block page_title %}Presence Detection{% endblock %}
+{% block header_title %}Presence Detection{% endblock %}
+{% block nav_presence %}active{% endblock %}
+
+{% block page_content %}
+<div x-data="presencePage()">
+
+    <!-- Configuration -->
+    <div class="card" style="margin-bottom: 1.5rem;">
+        <h2 class="card-title">Presence Configuration</h2>
+        <form @submit.prevent="saveConfig()">
+            <div style="display: flex; gap: 2rem; align-items: center; flex-wrap: wrap;">
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label class="form-label">Enabled</label>
+                    <label class="toggle">
+                        <input type="checkbox" x-model="config.enabled">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="form-group" style="margin-bottom: 0; flex: 1; min-width: 200px;">
+                    <label class="form-label">Decay Timeout: <span x-text="config.decay_timeout + 's'"></span></label>
+                    <input type="range" class="form-range" x-model.number="config.decay_timeout"
+                           min="30" max="600" step="10">
+                </div>
+                <button type="submit" class="btn btn-primary" style="align-self: flex-end;">Save</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Status Message -->
+    <div x-show="message" x-transition class="alert" :class="messageType === 'error' ? 'alert-error' : 'alert-success'"
+         style="margin-bottom: 1rem;" x-text="message"></div>
+
+    <!-- Room Confidence Grid -->
+    <div class="card" style="margin-bottom: 1.5rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <h2 class="card-title">Room Occupancy</h2>
+            <span class="text-muted" x-text="'Auto-refresh every 10s'"></span>
+        </div>
+
+        <template x-if="Object.keys(roomConfidence).length === 0">
+            <p class="text-muted">No room data available. Ensure presence detection is enabled and sensors are configured.</p>
+        </template>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem;">
+            <template x-for="[room, confidence] in sortedRooms" :key="room">
+                <div class="card" style="padding: 1rem;">
+                    <h4 style="margin: 0 0 0.5rem 0;" x-text="room"></h4>
+                    <div style="font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem;"
+                         :style="'color: ' + confidenceColor(confidence)"
+                         x-text="Math.round(confidence * 100) + '%'"></div>
+                    <div style="background: #334155; border-radius: 4px; height: 8px; overflow: hidden;">
+                        <div style="height: 100%; border-radius: 4px; transition: width 0.3s;"
+                             :style="'width: ' + (confidence * 100) + '%; background: ' + confidenceColor(confidence)">
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <!-- Sensors Table -->
+    <div class="card">
+        <h2 class="card-title">Presence Sensors</h2>
+        <template x-if="sensors.length === 0">
+            <p class="text-muted">No sensors discovered.</p>
+        </template>
+        <template x-if="sensors.length > 0">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Entity ID</th>
+                        <th>Type</th>
+                        <th>Area</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="sensor in sensors" :key="sensor.entity_id">
+                        <tr>
+                            <td class="text-mono" x-text="sensor.entity_id"></td>
+                            <td><span class="badge" x-text="sensor.sensor_type"></span></td>
+                            <td x-text="sensor.area || '-'"></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </template>
+    </div>
+</div>
+
+<script>
+function presencePage() {
+    return {
+        config: { enabled: true, decay_timeout: 300 },
+        roomConfidence: {},
+        sensors: [],
+        message: '',
+        messageType: 'success',
+        refreshInterval: null,
+        get sortedRooms() {
+            return Object.entries(this.roomConfidence)
+                .sort((a, b) => b[1] - a[1]);
+        },
+        init() {
+            this.loadStatus();
+            this.refreshInterval = setInterval(() => this.loadStatus(), 10000);
+        },
+        destroy() {
+            if (this.refreshInterval) clearInterval(this.refreshInterval);
+        },
+        confidenceColor(val) {
+            if (val >= 0.7) return '#22c55e';
+            if (val >= 0.3) return '#eab308';
+            return '#ef4444';
+        },
+        async loadStatus() {
+            try {
+                const resp = await fetch('/api/admin/presence/status');
+                if (resp.ok) {
+                    const data = await resp.json();
+                    this.config.enabled = data.enabled;
+                    this.config.decay_timeout = data.decay_timeout;
+                    this.roomConfidence = data.room_confidence || {};
+                    this.sensors = data.sensors || [];
+                }
+            } catch (e) { console.error('Failed to load presence status', e); }
+        },
+        async saveConfig() {
+            try {
+                const resp = await fetch('/api/admin/presence/config', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(this.config),
+                });
+                if (resp.ok) {
+                    this.message = 'Configuration saved';
+                    this.messageType = 'success';
+                } else {
+                    this.message = 'Failed to save configuration';
+                    this.messageType = 'error';
+                }
+            } catch (e) { this.message = 'Network error'; this.messageType = 'error'; }
+        },
+    };
+}
+</script>
+{% endblock %}
