@@ -66,6 +66,22 @@ class SpanCollector:
             return
         try:
             await TraceSpanRepository.insert_batch(self._spans)
+            # Compute and store total duration from spans
+            try:
+                from datetime import datetime, timedelta
+                starts = [datetime.fromisoformat(s["start_time"]) for s in self._spans if s.get("start_time")]
+                if starts:
+                    min_start = min(starts)
+                    max_end = max(
+                        datetime.fromisoformat(s["start_time"]) + timedelta(milliseconds=s.get("duration_ms", 0))
+                        for s in self._spans if s.get("start_time")
+                    )
+                    total_ms = round((max_end - min_start).total_seconds() * 1000, 2)
+                    await TraceSummaryRepository.update_duration(
+                        self.trace_id, total_ms
+                    )
+            except Exception:
+                logger.debug("Could not compute total duration for trace %s", self.trace_id, exc_info=True)
         except Exception:
             logger.warning("Failed to flush %d trace spans", len(self._spans), exc_info=True)
         finally:

@@ -14,6 +14,7 @@ from app.a2a.protocol import JsonRpcRequest
 from app.db.repository import SettingsRepository
 from app.analytics.collector import track_request, track_agent_timeout
 from app.models.agent import AgentCard, AgentTask, TaskContext
+from app.models.cache import ResponseCacheEntry, CachedAction
 
 logger = logging.getLogger(__name__)
 
@@ -159,13 +160,143 @@ class OrchestratorAgent(BaseAgent):
         # Get span collector from task context if available
         span_collector = getattr(task, "_span_collector", None)
 
+        # 0. Cache lookup (before classify)
+        cache_result = None
+        if _pre_classified is None and self._cache_manager:
+            if span_collector:
+                async with span_collector.start_span("cache_lookup", agent_id="orchestrator") as cache_span:
+                    try:
+                        cache_result = await self._cache_manager.process(user_text)
+                    except Exception:
+                        logger.warning("Cache lookup failed", exc_info=True)
+                        cache_result = None
+                    if cache_result:
+                        cache_span["metadata"]["hit_type"] = cache_result.hit_type
+                        cache_span["metadata"]["similarity"] = cache_result.similarity
+                        cache_span["metadata"]["cached_agent_id"] = cache_result.agent_id
+                        if cache_result.hit_type.startswith("response"):
+                            cache_span["metadata"]["cache_tier"] = "response"
+                        elif cache_result.hit_type == "routing_hit":
+                            cache_span["metadata"]["cache_tier"] = "routing"
+                        else:
+                            cache_span["metadata"]["cache_tier"] = "both_miss"
+                        if cache_result.entry:
+                            cache_span["metadata"]["hit_count"] = getattr(cache_result.entry, "hit_count", None)
+                            created = getattr(cache_result.entry, "created_at", None)
+                            if created:
+                                try:
+                                    from datetime import datetime, timezone
+                                    created_dt = datetime.fromisoformat(created)
+                                    age = (datetime.now(timezone.utc) - created_dt).total_seconds()
+                                    cache_span["metadata"]["entry_age_seconds"] = round(age, 1)
+                                except Exception:
+                                    pass
+                    else:
+                        cache_span["metadata"]["hit_type"] = "miss"
+                        cache_span["metadata"]["cache_tier"] = "both_miss"
+            else:
+                try:
+                    cache_result = await self._cache_manager.process(user_text)
+                except Exception:
+                    logger.warning("Cache lookup failed", exc_info=True)
+                    cache_result = None
+
+        # Response hit short-circuit: skip classify and dispatch entirely
+        if cache_result and cache_result.hit_type == "response_hit":
+            target_agent = cache_result.agent_id or "unknown"
+            action_executed = None
+
+            # Run HA action and rewrite concurrently for faster response
+            async def _do_ha():
+                if not cache_result.cached_action:
+                    return None
+                try:
+                    return await self._execute_cached_action(cache_result.cached_action)
+                except Exception:
+                    logger.warning("Cached action execution failed", exc_info=True)
+                    return None
+
+            async def _do_rewrite():
+                if self._cache_manager:
+                    await self._cache_manager.apply_rewrite(cache_result)
+
+            ha_result, _ = await asyncio.gather(_do_ha(), _do_rewrite())
+            action_executed = ha_result
+            speech = cache_result.response_text or ""
+
+            if span_collector:
+                # HA action span (retroactive, timed by HA client roundtrip)
+                if cache_result.cached_action:
+                    async with span_collector.start_span("ha_action", agent_id=target_agent) as ha_span:
+                        ha_span["metadata"]["action"] = cache_result.cached_action.service
+                        ha_span["metadata"]["entity"] = cache_result.cached_action.entity_id
+                        ha_span["metadata"]["success"] = action_executed is not None
+                        ha_span["metadata"]["cached"] = True
+                    # Align ha_action right after cache_lookup
+                    try:
+                        from datetime import datetime, timedelta
+                        _cs = datetime.fromisoformat(cache_span["start_time"])
+                        ha_span["start_time"] = (
+                            _cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))
+                        ).isoformat()
+                    except Exception:
+                        pass
+                # Rewrite span (retroactive, timed by LLM call)
+                if cache_result.rewrite_applied:
+                    async with span_collector.start_span("rewrite", agent_id="rewrite-agent") as rw_span:
+                        rw_span["metadata"]["original_text"] = (cache_result.original_response_text or "")[:500]
+                        rw_span["metadata"]["rewritten_text"] = speech[:500]
+                        rw_span["metadata"]["latency_ms"] = cache_result.rewrite_latency_ms
+                        rw_span["metadata"]["success"] = True
+                    if cache_result.rewrite_latency_ms is not None:
+                        rw_span["duration_ms"] = round(cache_result.rewrite_latency_ms, 2)
+                    # Align rewrite start_time to right after cache_lookup ends (concurrent with ha_action)
+                    try:
+                        from datetime import datetime, timedelta
+                        _cs = datetime.fromisoformat(cache_span["start_time"])
+                        rw_span["start_time"] = (
+                            _cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))
+                        ).isoformat()
+                    except Exception:
+                        pass
+                async with span_collector.start_span("return", agent_id="orchestrator") as ret_span:
+                    ret_span["metadata"]["from_agent"] = target_agent
+                    ret_span["metadata"]["agent_response"] = speech[:500]
+                    ret_span["metadata"]["final_response"] = speech[:500]
+                    ret_span["metadata"]["mediated"] = False
+                    ret_span["metadata"]["response_cache_hit"] = True
+                    self._store_turn(conversation_id, user_text, speech)
+                    try:
+                        from app.analytics.tracer import create_trace_summary
+                        await create_trace_summary(
+                            trace_id=span_collector.trace_id,
+                            conversation_id=conversation_id,
+                            user_input=user_text,
+                            final_response=speech,
+                            routing_agent=target_agent,
+                            routing_confidence=1.0,
+                            routing_duration_ms=None,
+                            condensed_task=user_text,
+                            agents=["orchestrator", target_agent],
+                            source=getattr(span_collector, "source", "api"),
+                        )
+                    except Exception:
+                        logger.warning("Failed to create trace summary", exc_info=True)
+            else:
+                self._store_turn(conversation_id, user_text, speech)
+            return {
+                "speech": speech,
+                "routed_to": target_agent,
+                "action_executed": action_executed,
+            }
+
         # 1. Classify intent (skip if pre-classified by handle_task_stream)
         if _pre_classified is not None:
             classifications, routing_cached = _pre_classified
             target_agent, condensed_task, confidence = classifications[0]
         elif span_collector:
             async with span_collector.start_span("classify", agent_id="orchestrator") as span:
-                classifications, routing_cached = await self._classify(user_text)
+                classifications, routing_cached = await self._classify(user_text, cache_result=cache_result)
                 target_agent, condensed_task, confidence = classifications[0]
                 span["metadata"]["target_agent"] = ", ".join(a for a, _, _ in classifications)
                 span["metadata"]["user_input"] = user_text[:500]
@@ -179,7 +310,7 @@ class OrchestratorAgent(BaseAgent):
                         for a, t, c in classifications
                     }
         else:
-            classifications, routing_cached = await self._classify(user_text)
+            classifications, routing_cached = await self._classify(user_text, cache_result=cache_result)
             target_agent, condensed_task, confidence = classifications[0]
         logger.info(
             "Routed to %s (%.0f%%): %s (conversation=%s)",
@@ -225,6 +356,8 @@ class OrchestratorAgent(BaseAgent):
 
         # 5. Mediate response, store turn, trace
         original_speech = speech
+        cache_stored_routing = False
+        cache_stored_response = False
         if span_collector:
             async with span_collector.start_span("return", agent_id="orchestrator") as ret_span:
                 ret_span["metadata"]["from_agent"] = routed_to
@@ -237,6 +370,40 @@ class OrchestratorAgent(BaseAgent):
                 # Multi-agent merging already applied personality in _merge_responses
                 ret_span["metadata"]["final_response"] = speech[:500]
                 ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1
+                # --- Store response cache (single-agent, non-fallback) ---
+                if (
+                    self._cache_manager
+                    and len(classifications) == 1
+                    and target_agent != _FALLBACK_AGENT
+                    and original_speech
+                ):
+                    try:
+                        cached_action = None
+                        entity_ids: list[str] = []
+                        if action_executed and action_executed.get("success"):
+                            entity_id_str = action_executed.get("entity_id", "")
+                            domain = entity_id_str.split(".")[0] if "." in entity_id_str else ""
+                            cached_action = CachedAction(
+                                service=f"{domain}/{action_executed['action']}",
+                                entity_id=entity_id_str,
+                                service_data={},
+                            )
+                            entity_ids = [entity_id_str] if entity_id_str else []
+                        entry = ResponseCacheEntry(
+                            query_text=user_text,
+                            response_text=original_speech,
+                            agent_id=target_agent,
+                            cached_action=cached_action,
+                            confidence=confidence,
+                            entity_ids=entity_ids,
+                        )
+                        self._cache_manager.store_response(entry)
+                        cache_stored_response = True
+                    except Exception:
+                        logger.warning("Failed to store response cache", exc_info=True)
+                # Cache store metadata
+                ret_span["metadata"]["cache_stored_routing"] = cache_stored_routing
+                ret_span["metadata"]["cache_stored_response"] = cache_stored_response
                 self._store_turn(conversation_id, user_text, speech)
                 try:
                     from app.analytics.tracer import create_trace_summary
@@ -269,6 +436,37 @@ class OrchestratorAgent(BaseAgent):
                 result = {"speech": speech}
             elif len(classifications) <= 1:
                 speech = await self._mediate_response(speech, user_text, target_agent)
+            # --- Store response cache (single-agent, non-fallback) ---
+            if (
+                self._cache_manager
+                and len(classifications) == 1
+                and target_agent != _FALLBACK_AGENT
+                and original_speech
+            ):
+                try:
+                    cached_action_obj = None
+                    entity_ids_list: list[str] = []
+                    if action_executed and action_executed.get("success"):
+                        entity_id_str = action_executed.get("entity_id", "")
+                        domain = entity_id_str.split(".")[0] if "." in entity_id_str else ""
+                        cached_action_obj = CachedAction(
+                            service=f"{domain}/{action_executed['action']}",
+                            entity_id=entity_id_str,
+                            service_data={},
+                        )
+                        entity_ids_list = [entity_id_str] if entity_id_str else []
+                    entry = ResponseCacheEntry(
+                        query_text=user_text,
+                        response_text=original_speech,
+                        agent_id=target_agent,
+                        cached_action=cached_action_obj,
+                        confidence=confidence,
+                        entity_ids=entity_ids_list,
+                    )
+                    self._cache_manager.store_response(entry)
+                    cache_stored_response = True
+                except Exception:
+                    logger.warning("Failed to store response cache", exc_info=True)
             self._store_turn(conversation_id, user_text, speech)
 
         return {
@@ -282,10 +480,128 @@ class OrchestratorAgent(BaseAgent):
         conversation_id = task.conversation_id
         span_collector = getattr(task, "_span_collector", None)
 
+        # 0. Cache lookup (before classify)
+        cache_result = None
+        if self._cache_manager:
+            if span_collector:
+                async with span_collector.start_span("cache_lookup", agent_id="orchestrator") as cache_span:
+                    try:
+                        cache_result = await self._cache_manager.process(user_text)
+                    except Exception:
+                        logger.warning("Cache lookup failed", exc_info=True)
+                        cache_result = None
+                    if cache_result:
+                        cache_span["metadata"]["hit_type"] = cache_result.hit_type
+                        cache_span["metadata"]["similarity"] = cache_result.similarity
+                        cache_span["metadata"]["cached_agent_id"] = cache_result.agent_id
+                        if cache_result.hit_type.startswith("response"):
+                            cache_span["metadata"]["cache_tier"] = "response"
+                        elif cache_result.hit_type == "routing_hit":
+                            cache_span["metadata"]["cache_tier"] = "routing"
+                        else:
+                            cache_span["metadata"]["cache_tier"] = "both_miss"
+                    else:
+                        cache_span["metadata"]["hit_type"] = "miss"
+                        cache_span["metadata"]["cache_tier"] = "both_miss"
+            else:
+                try:
+                    cache_result = await self._cache_manager.process(user_text)
+                except Exception:
+                    logger.warning("Cache lookup failed", exc_info=True)
+                    cache_result = None
+
+        # Response hit short-circuit for streaming
+        if cache_result and cache_result.hit_type == "response_hit":
+            target_agent = cache_result.agent_id or "unknown"
+            action_executed = None
+
+            # Run HA action and rewrite concurrently for faster response
+            async def _do_ha():
+                if not cache_result.cached_action:
+                    return None
+                try:
+                    return await self._execute_cached_action(cache_result.cached_action)
+                except Exception:
+                    logger.warning("Cached action execution failed", exc_info=True)
+                    return None
+
+            async def _do_rewrite():
+                if self._cache_manager:
+                    await self._cache_manager.apply_rewrite(cache_result)
+
+            ha_result, _ = await asyncio.gather(_do_ha(), _do_rewrite())
+            action_executed = ha_result
+            speech = cache_result.response_text or ""
+
+            if span_collector:
+                # HA action span (retroactive)
+                if cache_result.cached_action:
+                    async with span_collector.start_span("ha_action", agent_id=target_agent) as ha_span:
+                        ha_span["metadata"]["action"] = cache_result.cached_action.service
+                        ha_span["metadata"]["entity"] = cache_result.cached_action.entity_id
+                        ha_span["metadata"]["success"] = action_executed is not None
+                        ha_span["metadata"]["cached"] = True
+                    try:
+                        from datetime import datetime, timedelta
+                        _cs = datetime.fromisoformat(cache_span["start_time"])
+                        ha_span["start_time"] = (
+                            _cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))
+                        ).isoformat()
+                    except Exception:
+                        pass
+                # Rewrite span (retroactive)
+                if cache_result.rewrite_applied:
+                    async with span_collector.start_span("rewrite", agent_id="rewrite-agent") as rw_span:
+                        rw_span["metadata"]["original_text"] = (cache_result.original_response_text or "")[:500]
+                        rw_span["metadata"]["rewritten_text"] = speech[:500]
+                        rw_span["metadata"]["latency_ms"] = cache_result.rewrite_latency_ms
+                        rw_span["metadata"]["success"] = True
+                    if cache_result.rewrite_latency_ms is not None:
+                        rw_span["duration_ms"] = round(cache_result.rewrite_latency_ms, 2)
+                    try:
+                        from datetime import datetime, timedelta
+                        _cs = datetime.fromisoformat(cache_span["start_time"])
+                        rw_span["start_time"] = (
+                            _cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))
+                        ).isoformat()
+                    except Exception:
+                        pass
+                async with span_collector.start_span("return", agent_id="orchestrator") as ret_span:
+                    ret_span["metadata"]["from_agent"] = target_agent
+                    ret_span["metadata"]["agent_response"] = speech[:500]
+                    ret_span["metadata"]["final_response"] = speech[:500]
+                    ret_span["metadata"]["mediated"] = False
+                    ret_span["metadata"]["response_cache_hit"] = True
+                    self._store_turn(conversation_id, user_text, speech)
+                    try:
+                        from app.analytics.tracer import create_trace_summary
+                        await create_trace_summary(
+                            trace_id=span_collector.trace_id,
+                            conversation_id=conversation_id,
+                            user_input=user_text,
+                            final_response=speech,
+                            routing_agent=target_agent,
+                            routing_confidence=1.0,
+                            routing_duration_ms=None,
+                            condensed_task=user_text,
+                            agents=["orchestrator", target_agent],
+                            source=getattr(span_collector, "source", "api"),
+                        )
+                    except Exception:
+                        logger.warning("Failed to create trace summary", exc_info=True)
+            else:
+                self._store_turn(conversation_id, user_text, speech)
+            yield {
+                "token": speech,
+                "done": True,
+                "conversation_id": conversation_id,
+            }
+            return
+
         # 1. Classify (non-streaming -- fast via Groq)
         if span_collector:
             async with span_collector.start_span("classify", agent_id="orchestrator") as span:
-                classifications, routing_cached = await self._classify(user_text)
+                classifications, routing_cached = await self._classify(user_text, cache_result=cache_result)
                 target_agent, condensed_task, confidence = classifications[0]
                 span["metadata"]["target_agent"] = ", ".join(a for a, _, _ in classifications)
                 span["metadata"]["user_input"] = user_text[:500]
@@ -294,7 +610,7 @@ class OrchestratorAgent(BaseAgent):
                 span["metadata"]["routing_cached"] = routing_cached
                 span["metadata"]["multi_agent"] = len(classifications) > 1
         else:
-            classifications, routing_cached = await self._classify(user_text)
+            classifications, routing_cached = await self._classify(user_text, cache_result=cache_result)
             target_agent, condensed_task, confidence = classifications[0]
         logger.info(
             "Stream routed to %s: %s (conversation=%s)",
@@ -333,6 +649,7 @@ class OrchestratorAgent(BaseAgent):
         )
 
         collected_speech = []
+        action_executed = None
         if span_collector:
             async with span_collector.start_span("dispatch", agent_id=target_agent) as span:
                 async for chunk in self._dispatcher.dispatch_stream(request):
@@ -340,6 +657,8 @@ class OrchestratorAgent(BaseAgent):
                     done = chunk.result.get("done", False)
                     if token:
                         collected_speech.append(token)
+                    if done and chunk.result.get("action_executed"):
+                        action_executed = chunk.result["action_executed"]
                     yield {
                         "token": token,
                         "done": done,
@@ -353,6 +672,8 @@ class OrchestratorAgent(BaseAgent):
                 done = chunk.result.get("done", False)
                 if token:
                     collected_speech.append(token)
+                if done and chunk.result.get("action_executed"):
+                    action_executed = chunk.result["action_executed"]
                 yield {
                     "token": token,
                     "done": done,
@@ -361,6 +682,8 @@ class OrchestratorAgent(BaseAgent):
 
         # 4. Store conversation turn and create trace summary
         full_speech = "".join(collected_speech)
+        original_speech = full_speech
+        cache_stored_response = False
         if span_collector:
             async with span_collector.start_span("return", agent_id="orchestrator") as ret_span:
                 ret_span["metadata"]["from_agent"] = target_agent
@@ -368,6 +691,37 @@ class OrchestratorAgent(BaseAgent):
                 full_speech = await self._mediate_response(full_speech, user_text, target_agent)
                 ret_span["metadata"]["final_response"] = full_speech[:500]
                 ret_span["metadata"]["mediated"] = (full_speech != "".join(collected_speech))
+                # --- Store response cache (single-agent, non-fallback) ---
+                if (
+                    self._cache_manager
+                    and target_agent != _FALLBACK_AGENT
+                    and original_speech
+                ):
+                    try:
+                        cached_action = None
+                        entity_ids: list[str] = []
+                        if action_executed and action_executed.get("success"):
+                            entity_id_str = action_executed.get("entity_id", "")
+                            domain = entity_id_str.split(".")[0] if "." in entity_id_str else ""
+                            cached_action = CachedAction(
+                                service=f"{domain}/{action_executed['action']}",
+                                entity_id=entity_id_str,
+                                service_data={},
+                            )
+                            entity_ids = [entity_id_str] if entity_id_str else []
+                        entry = ResponseCacheEntry(
+                            query_text=user_text,
+                            response_text=original_speech,
+                            agent_id=target_agent,
+                            cached_action=cached_action,
+                            confidence=confidence,
+                            entity_ids=entity_ids,
+                        )
+                        self._cache_manager.store_response(entry)
+                        cache_stored_response = True
+                    except Exception:
+                        logger.warning("Failed to store response cache", exc_info=True)
+                ret_span["metadata"]["cache_stored_response"] = cache_stored_response
                 self._store_turn(conversation_id, user_text, full_speech)
                 try:
                     from app.analytics.tracer import create_trace_summary
@@ -395,9 +749,59 @@ class OrchestratorAgent(BaseAgent):
                     logger.warning("Failed to create trace summary", exc_info=True)
         else:
             full_speech = await self._mediate_response(full_speech, user_text, target_agent)
+            # --- Store response cache (single-agent, non-fallback) ---
+            if (
+                self._cache_manager
+                and target_agent != _FALLBACK_AGENT
+                and original_speech
+            ):
+                try:
+                    cached_action_obj = None
+                    entity_ids_list: list[str] = []
+                    if action_executed and action_executed.get("success"):
+                        entity_id_str = action_executed.get("entity_id", "")
+                        domain = entity_id_str.split(".")[0] if "." in entity_id_str else ""
+                        cached_action_obj = CachedAction(
+                            service=f"{domain}/{action_executed['action']}",
+                            entity_id=entity_id_str,
+                            service_data={},
+                        )
+                        entity_ids_list = [entity_id_str] if entity_id_str else []
+                    entry = ResponseCacheEntry(
+                        query_text=user_text,
+                        response_text=original_speech,
+                        agent_id=target_agent,
+                        cached_action=cached_action_obj,
+                        confidence=confidence,
+                        entity_ids=entity_ids_list,
+                    )
+                    self._cache_manager.store_response(entry)
+                except Exception:
+                    logger.warning("Failed to store response cache", exc_info=True)
             self._store_turn(conversation_id, user_text, full_speech)
 
-    async def _classify(self, user_text: str) -> tuple[list[tuple[str, str, float]], bool]:
+    async def _execute_cached_action(self, cached_action) -> dict | None:
+        """Execute a cached action via HA client. Returns action result or None."""
+        if not self._ha_client or not cached_action:
+            return None
+        try:
+            service = cached_action.service or ""
+            if "/" in service:
+                domain, action = service.split("/", 1)
+            else:
+                domain, action = service, ""
+            result = await self._ha_client.call_service(
+                domain,
+                action,
+                entity_id=cached_action.entity_id,
+                service_data=cached_action.service_data or None,
+            )
+            return result
+        except Exception:
+            logger.warning("Cached action execution failed", exc_info=True)
+            return None
+
+    async def _classify(self, user_text: str, *, cache_result=None) -> tuple[list[tuple[str, str, float]], bool]:
         """Classify user intent and produce a condensed task.
 
         The condensed task is a clear, actionable English description of
@@ -405,12 +809,22 @@ class OrchestratorAgent(BaseAgent):
         from the user's original text are preserved EXACTLY (verbatim,
         never translated or normalized).
 
+        Args:
+            user_text: The raw user input.
+            cache_result: Optional pre-computed CacheResult from handle_task.
+
         Returns:
             (classifications, routing_cached) where classifications is a list
             of (target_agent_id, condensed_task, confidence) tuples.
         """
-        # Check routing cache before calling LLM
-        if self._cache_manager:
+        # Use pre-computed cache result if available (avoids double lookup)
+        if cache_result is not None:
+            if cache_result.hit_type == "routing_hit" and cache_result.agent_id:
+                logger.info("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
+                condensed = cache_result.condensed_task or user_text
+                return [(cache_result.agent_id, condensed, 1.0)], True
+        elif self._cache_manager:
+            # Fallback: no pre-computed result (e.g. called without handle_task)
             try:
                 cache_result = await self._cache_manager.process(user_text)
                 if cache_result.hit_type == "routing_hit" and cache_result.agent_id:

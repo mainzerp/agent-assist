@@ -10,6 +10,8 @@ from app.models.entity_index import EntityIndexEntry
 
 logger = logging.getLogger(__name__)
 
+BATCH_SIZE = 500
+
 
 class EntityIndex:
     """Pre-embedded entity index backed by ChromaDB."""
@@ -17,6 +19,32 @@ class EntityIndex:
     def __init__(self, vector_store: VectorStore) -> None:
         self._store = vector_store
         self._last_refresh: str | None = None
+        self._status: dict = {
+            "state": "ready",
+            "progress": 0,
+            "total": 0,
+            "processed": 0,
+            "error": None,
+        }
+        self._sync_stats: dict = {
+            "added": 0,
+            "updated": 0,
+            "removed": 0,
+            "unchanged": 0,
+            "last_sync": None,
+            "last_sync_duration_ms": 0,
+        }
+
+    @staticmethod
+    def _build_metadata(entry: EntityIndexEntry) -> dict:
+        """Build ChromaDB metadata dict from an EntityIndexEntry."""
+        return {
+            "friendly_name": entry.friendly_name,
+            "domain": entry.domain,
+            "area": entry.area or "",
+            "device_class": entry.device_class or "",
+            "aliases": ",".join(entry.aliases) if entry.aliases else "",
+        }
 
     def populate(self, entities: list[EntityIndexEntry]) -> None:
         """Bulk upsert all HA entities into the entity_index collection.
@@ -25,26 +53,37 @@ class EntityIndex:
         """
         if not entities:
             return
-        ids = [e.entity_id for e in entities]
-        documents = [e.embedding_text for e in entities]
-        metadatas = [
-            {
-                "friendly_name": e.friendly_name,
-                "domain": e.domain,
-                "area": e.area or "",
-                "device_class": e.device_class or "",
-                "aliases": ",".join(e.aliases) if e.aliases else "",
-            }
-            for e in entities
-        ]
-        self._store.upsert(
-            COLLECTION_ENTITY_INDEX,
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas,
-        )
-        self._last_refresh = datetime.now(timezone.utc).isoformat()
-        logger.info("Entity index populated with %d entities", len(entities))
+        total = len(entities)
+        self._status = {
+            "state": "building",
+            "progress": 0,
+            "total": total,
+            "processed": 0,
+            "error": None,
+        }
+        try:
+            for start in range(0, total, BATCH_SIZE):
+                batch = entities[start : start + BATCH_SIZE]
+                ids = [e.entity_id for e in batch]
+                documents = [e.embedding_text for e in batch]
+                metadatas = [self._build_metadata(e) for e in batch]
+                self._store.upsert(
+                    COLLECTION_ENTITY_INDEX,
+                    ids=ids,
+                    documents=documents,
+                    metadatas=metadatas,
+                )
+                self._status["processed"] = min(start + len(batch), total)
+                self._status["progress"] = int(self._status["processed"] / total * 100)
+            self._last_refresh = datetime.now(timezone.utc).isoformat()
+            self._status["state"] = "ready"
+            self._status["progress"] = 100
+            logger.info("Entity index populated with %d entities", total)
+        except Exception as exc:
+            self._status["state"] = "error"
+            self._status["error"] = str(exc)
+            logger.error("Entity index populate failed: %s", exc)
+            raise
 
     def search(self, query: str, n_results: int = 5) -> list[tuple[EntityIndexEntry, float]]:
         """Vector similarity search. Returns list of (entry, distance) tuples.
@@ -81,13 +120,7 @@ class EntityIndex:
             COLLECTION_ENTITY_INDEX,
             ids=[entry.entity_id],
             documents=[entry.embedding_text],
-            metadatas=[{
-                "friendly_name": entry.friendly_name,
-                "domain": entry.domain,
-                "area": entry.area or "",
-                "device_class": entry.device_class or "",
-                "aliases": ",".join(entry.aliases) if entry.aliases else "",
-            }],
+            metadatas=[self._build_metadata(entry)],
         )
 
     def remove(self, entity_id: str) -> None:
@@ -125,12 +158,119 @@ class EntityIndex:
 
     def refresh(self, entities: list[EntityIndexEntry]) -> None:
         """Clear and re-populate from a fresh entity list."""
+        self._status["state"] = "building"
+        self._status["progress"] = 0
         self.clear()
         self.populate(entities)
+
+    def sync(self, entities: list[EntityIndexEntry]) -> dict:
+        """Smart diff sync: upsert changed/new, remove deleted, skip unchanged.
+
+        Returns dict with counts: added, updated, removed, unchanged.
+        """
+        import time as _time
+        start = _time.monotonic()
+
+        if not entities:
+            return {"added": 0, "updated": 0, "removed": 0, "unchanged": 0}
+
+        prev_state = self._status["state"]
+        self._status["state"] = "syncing"
+
+        try:
+            # Build map of incoming entities
+            ha_map: dict[str, EntityIndexEntry] = {e.entity_id: e for e in entities}
+
+            # Fetch all current entries from ChromaDB
+            current_data = self._store.get(
+                COLLECTION_ENTITY_INDEX,
+                include=["documents", "metadatas"],
+            )
+            current_ids = current_data.get("ids", [])
+            current_docs = current_data.get("documents", [])
+            current_metas = current_data.get("metadatas", [])
+
+            # Build lookup: entity_id -> (document, metadata)
+            chroma_map: dict[str, tuple[str, dict]] = {}
+            for i, eid in enumerate(current_ids):
+                chroma_map[eid] = (current_docs[i], current_metas[i])
+
+            to_upsert: list[EntityIndexEntry] = []
+            added = 0
+            updated = 0
+            unchanged = 0
+
+            for entity_id, entry in ha_map.items():
+                if entity_id in chroma_map:
+                    old_doc, old_meta = chroma_map[entity_id]
+                    new_doc = entry.embedding_text
+                    new_meta = self._build_metadata(entry)
+                    if new_doc != old_doc or new_meta != old_meta:
+                        to_upsert.append(entry)
+                        updated += 1
+                    else:
+                        unchanged += 1
+                else:
+                    to_upsert.append(entry)
+                    added += 1
+
+            # Find entities to remove (in ChromaDB but not in HA)
+            to_remove = [eid for eid in current_ids if eid not in ha_map]
+            removed = len(to_remove)
+
+            # Batch upsert changed/new entities
+            if to_upsert:
+                for start_idx in range(0, len(to_upsert), BATCH_SIZE):
+                    batch = to_upsert[start_idx : start_idx + BATCH_SIZE]
+                    ids = [e.entity_id for e in batch]
+                    documents = [e.embedding_text for e in batch]
+                    metadatas = [self._build_metadata(e) for e in batch]
+                    self._store.upsert(
+                        COLLECTION_ENTITY_INDEX,
+                        ids=ids,
+                        documents=documents,
+                        metadatas=metadatas,
+                    )
+
+            # Batch delete removed entities
+            if to_remove:
+                self._store.delete(COLLECTION_ENTITY_INDEX, ids=to_remove)
+
+            elapsed_ms = int((_time.monotonic() - start) * 1000)
+
+            self._last_refresh = datetime.now(timezone.utc).isoformat()
+            self._status["state"] = "ready"
+
+            self._sync_stats = {
+                "added": added,
+                "updated": updated,
+                "removed": removed,
+                "unchanged": unchanged,
+                "last_sync": self._last_refresh,
+                "last_sync_duration_ms": elapsed_ms,
+            }
+
+            logger.info(
+                "Entity sync complete: +%d ~%d -%d =%d (%dms)",
+                added, updated, removed, unchanged, elapsed_ms,
+            )
+            return {"added": added, "updated": updated, "removed": removed, "unchanged": unchanged}
+
+        except Exception as exc:
+            self._status["state"] = prev_state if prev_state != "syncing" else "ready"
+            self._status["error"] = str(exc)
+            logger.error("Entity sync failed: %s", exc)
+            raise
+
+    def get_embedding_status(self) -> dict:
+        """Return current embedding status."""
+        return dict(self._status)
 
     def get_stats(self) -> dict:
         """Return index statistics."""
         return {
             "count": self._store.count(COLLECTION_ENTITY_INDEX),
             "last_refresh": self._last_refresh,
+            "embedding_status": dict(self._status),
+            "sync": dict(self._sync_stats),
         }

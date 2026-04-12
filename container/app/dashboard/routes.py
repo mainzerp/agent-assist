@@ -89,28 +89,10 @@ async def system_health_page(
     return templates.TemplateResponse(request, "system_health.html")
 
 
-@router.get("/rewrite", response_class=HTMLResponse)
-async def rewrite_config_page(
-    request: Request,
-    _session: dict = Depends(require_admin_session_redirect),
-):
-    """Rewrite agent configuration page."""
-    return templates.TemplateResponse(request, "rewrite_config.html")
-
-
 @router.get("/health", response_class=RedirectResponse)
 async def health_redirect():
     """Redirect to API health endpoint."""
     return RedirectResponse(url="/api/health")
-
-
-@router.get("/conversations", response_class=HTMLResponse)
-async def conversations_page(
-    request: Request,
-    _session: dict = Depends(require_admin_session_redirect),
-):
-    """Conversation history page."""
-    return templates.TemplateResponse(request, "conversations.html")
 
 
 @router.get("/chat", response_class=HTMLResponse)

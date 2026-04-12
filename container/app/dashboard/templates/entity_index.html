@@ -45,6 +45,101 @@
         </div>
     </div>
 
+    <!-- Sync Status -->
+    <div class="card mb-md" x-show="stats.sync && stats.sync.last_sync">
+        <h3 class="card-title mb-md">Last Sync</h3>
+        <div class="stat-grid-3">
+            <div class="stat-card">
+                <div class="stat-card-header">
+                    <span class="stat-card-label">Last Sync</span>
+                </div>
+                <div class="stat-card-value" style="font-size: 1rem;" x-text="stats.sync?.last_sync || 'never'"></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-header">
+                    <span class="stat-card-label">Duration</span>
+                </div>
+                <div class="stat-card-value" x-text="(stats.sync?.last_sync_duration_ms || 0) + 'ms'"></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-header">
+                    <span class="stat-card-label">Changes</span>
+                </div>
+                <div class="stat-card-value" style="font-size: 0.9rem;"
+                     x-text="'+' + (stats.sync?.added || 0) + ' ~' + (stats.sync?.updated || 0) + ' -' + (stats.sync?.removed || 0) + ' =' + (stats.sync?.unchanged || 0)">
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="text-dim mb-md" x-show="stats.sync?.last_sync"
+         x-text="'Next sync in ~' + syncCountdown() + ' minutes'"></div>
+
+    <!-- Embedding Status -->
+    <div class="card mb-md">
+        <h3 class="card-title mb-md">Embedding Status</h3>
+        <template x-if="!stats.embedding">
+            <div class="empty-state"><p>Embedding info not available.</p></div>
+        </template>
+        <div x-show="stats.embedding" class="stat-grid-3">
+            <div class="stat-card">
+                <div class="stat-card-header">
+                    <span class="stat-card-label">Model</span>
+                </div>
+                <div class="stat-card-value" style="font-size: 0.95rem;" x-text="stats.embedding?.model || '-'"></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-header">
+                    <span class="stat-card-label">Provider</span>
+                </div>
+                <div class="stat-card-value">
+                    <span class="badge"
+                          :class="stats.embedding?.provider === 'local' ? 'badge-teal' : 'badge-blue'"
+                          x-text="stats.embedding?.provider || '-'"></span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-header">
+                    <span class="stat-card-label">Dimensions</span>
+                </div>
+                <div class="stat-card-value" x-text="stats.embedding?.dimensions || '-'"></div>
+            </div>
+        </div>
+
+        <!-- Status row -->
+        <div x-show="stats.embedding" class="mt-md">
+            <div class="flex-center gap-sm">
+                <span class="text-dim">Status:</span>
+                <span class="badge badge-dot"
+                      :class="{
+                          'badge-green': stats.embedding?.state === 'ready',
+                          'badge-yellow': stats.embedding?.state === 'building',
+                          'badge-red': stats.embedding?.state === 'error'
+                      }"
+                      x-text="stats.embedding?.state || 'unknown'"></span>
+                <template x-if="stats.embedding?.state === 'ready'">
+                    <span class="text-dim" x-text="stats.embedding.processed + ' / ' + stats.embedding.total + ' entities embedded'"></span>
+                </template>
+            </div>
+
+            <!-- Progress bar (visible during building) -->
+            <template x-if="stats.embedding?.state === 'building'">
+                <div class="mt-sm">
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="background: var(--soft-amber); transition: width 0.3s;"
+                             :style="'width: ' + (stats.embedding.progress || 0) + '%'"></div>
+                    </div>
+                    <div class="text-dim mt-xs" style="font-size: 0.75rem;"
+                         x-text="stats.embedding.processed + ' / ' + stats.embedding.total + ' (' + stats.embedding.progress + '%)'"></div>
+                </div>
+            </template>
+
+            <!-- Error message -->
+            <template x-if="stats.embedding?.state === 'error'">
+                <div class="alert alert-error mt-sm" x-text="stats.embedding.error"></div>
+            </template>
+        </div>
+    </div>
+
     <!-- Per-domain breakdown -->
     <div class="card">
         <h3 class="card-title mb-md">Domain Breakdown</h3>
@@ -90,13 +185,31 @@ function entityIndexPage() {
         stats: {},
         refreshing: false,
         refreshMessage: '',
+        pollInterval: null,
 
         async loadStats() {
             try {
                 const resp = await fetch('/api/admin/entity-index/stats');
                 this.stats = await resp.json();
+                if (this.stats.embedding?.state === 'building') {
+                    this.startPolling();
+                } else {
+                    this.stopPolling();
+                }
             } catch (e) {
                 console.error('Failed to load entity index stats', e);
+            }
+        },
+
+        startPolling() {
+            if (this.pollInterval) return;
+            this.pollInterval = setInterval(() => this.loadStats(), 1000);
+        },
+
+        stopPolling() {
+            if (this.pollInterval) {
+                clearInterval(this.pollInterval);
+                this.pollInterval = null;
             }
         },
 
@@ -123,6 +236,15 @@ function entityIndexPage() {
         sortedDomains() {
             if (!this.stats.domains) return [];
             return Object.entries(this.stats.domains).sort((a, b) => b[1] - a[1]);
+        },
+
+        syncCountdown() {
+            if (!this.stats.sync?.last_sync) return '?';
+            const lastSync = new Date(this.stats.sync.last_sync).getTime();
+            const intervalMs = (this.stats.sync_interval_minutes || 30) * 60 * 1000;
+            const nextSync = lastSync + intervalMs;
+            const remaining = Math.max(0, Math.round((nextSync - Date.now()) / 60000));
+            return remaining;
         }
     };
 }

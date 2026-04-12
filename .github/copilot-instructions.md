@@ -47,7 +47,7 @@ SUBAGENT #3: Implementation (FRESH context)
     - Implements/codes based on plan
     - Returns completion summary
     ↓
-ORCHESTRATOR: Confirm with user via ask_user tool
+ORCHESTRATOR: Confirm with user via ask_user tool UNTIL user confirms task completion
 ```
 
 ## Subagent Prompts

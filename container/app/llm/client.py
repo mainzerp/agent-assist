@@ -60,6 +60,11 @@ async def complete(
             )
             content = response.choices[0].message.content
 
+        if not content:
+            raise ValueError(
+                f"Empty LLM response for agent={agent_id} after retry "
+                f"(finish_reason={response.choices[0].finish_reason})"
+            )
         return content
     except litellm.exceptions.AuthenticationError:
         logger.error("Authentication failed for agent=%s model=%s -- check API key",

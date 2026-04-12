@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends, Request
 
 from app.security.auth import require_admin_session
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX
+from app.cache.embedding import get_embedding_info
+from app.db.repository import SettingsRepository
 from app.models.entity_index import EntityIndexEntry
 
 logger = logging.getLogger(__name__)
@@ -24,7 +26,7 @@ async def get_entity_index_stats(request: Request):
     """Entity index stats with per-domain breakdown."""
     entity_index = request.app.state.entity_index
     if not entity_index:
-        return {"count": 0, "status": "not_initialized", "domains": {}}
+        return {"count": 0, "status": "not_initialized", "domains": {}, "embedding": None, "sync": {}}
 
     try:
         stats = entity_index.get_stats()
@@ -42,14 +44,27 @@ async def get_entity_index_stats(request: Request):
                 domain = meta.get("domain", "unknown")
                 domains[domain] = domains.get(domain, 0) + 1
 
+        embedding_info = await get_embedding_info()
+
+        sync_stats = stats.get("sync", {})
+        sync_interval = await SettingsRepository.get_value(
+            "entity_sync.interval_minutes", "30"
+        )
+
         return {
             "count": count,
             "last_refresh": stats.get("last_refresh"),
             "domains": domains,
+            "embedding": {
+                **embedding_info,
+                **stats.get("embedding_status", {}),
+            },
+            "sync": sync_stats,
+            "sync_interval_minutes": int(sync_interval or 30),
         }
     except Exception as exc:
         logger.warning("Failed to get entity index stats", exc_info=True)
-        return {"count": 0, "error": str(exc)}
+        return {"count": 0, "error": str(exc), "embedding": None, "sync": {}}
 
 
 @router.post("/refresh")

@@ -44,11 +44,12 @@ class ResponseCache:
         """Reload thresholds from DB without restart."""
         await self.load_config()
 
-    def lookup(self, query_text: str) -> tuple[str, ResponseCacheEntry | None]:
+    def lookup(self, query_text: str) -> tuple[str, ResponseCacheEntry | None, float | None]:
         """Query response cache.
 
         Returns:
-            (hit_type, entry) where hit_type is "hit", "partial", or "miss".
+            (hit_type, entry, similarity) where hit_type is "hit", "partial", or "miss".
+            similarity is the best score found, even on a miss.
         """
         result = self._store.query(
             COLLECTION_RESPONSE_CACHE,
@@ -57,13 +58,13 @@ class ResponseCache:
             include=["metadatas", "distances", "documents"],
         )
         if not result["ids"] or not result["ids"][0]:
-            return ("miss", None)
+            return ("miss", None, None)
 
         distance = result["distances"][0][0]
         similarity = 1.0 - distance
 
         if similarity < self._partial_threshold:
-            return ("miss", None)
+            return ("miss", None, similarity)
 
         meta = result["metadatas"][0][0]
         entry_id = result["ids"][0][0]
@@ -101,7 +102,7 @@ class ResponseCache:
         )
 
         hit_type = "hit" if similarity >= self._hit_threshold else "partial"
-        return (hit_type, entry)
+        return (hit_type, entry, similarity)
 
     def store(self, entry: ResponseCacheEntry) -> None:
         """Store a new response cache entry."""

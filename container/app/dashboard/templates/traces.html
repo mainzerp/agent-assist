@@ -12,7 +12,6 @@
     <div class="page-header">
         <div class="page-header-text">
             <h2 class="section-title mt-0 mb-0">Request Traces</h2>
-            <p class="page-subtitle">Lucia-style distributed tracing with search, labels, and span-level Gantt visualization.</p>
         </div>
     </div>
 
@@ -491,6 +490,7 @@ const _agentColors = {
     'general-agent': '#6b7280',
     'multi-agent': '#a855f7',
     'user': '#94a3b8',
+    'rewrite-agent': '#f97316',
 };
 
 function tracesPage() {
@@ -641,11 +641,13 @@ function tracesPage() {
             };
 
             const colorMap = {
+                'cache_lookup': '#06b6d4',
                 'classify': '#8b5cf6',
                 'dispatch': '#3b82f6',
                 'llm_call': '#f59e0b',
                 'ha_action': '#10b981',
                 'return': '#ec4899',
+                'rewrite': '#f97316',
             };
 
             const items = this.ganttSpans.map((span, idx) => {

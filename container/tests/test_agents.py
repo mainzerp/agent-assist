@@ -405,6 +405,28 @@ class TestBaseAgentStream:
         assert chunks[0]["token"] == "All done."
         assert chunks[0]["done"] is True
 
+    async def test_handle_task_stream_includes_action_executed(self):
+        agent = LightAgent()
+        agent.handle_task = AsyncMock(return_value={
+            "speech": "Light is on.",
+            "action_executed": {"action": "turn_on", "entity_id": "light.kitchen", "success": True},
+        })
+        task = _make_task("turn on kitchen light")
+        chunks = [c async for c in agent.handle_task_stream(task)]
+        assert len(chunks) == 1
+        assert chunks[0]["done"] is True
+        assert chunks[0]["action_executed"]["entity_id"] == "light.kitchen"
+
+    async def test_handle_task_stream_omits_action_executed_when_absent(self):
+        agent = LightAgent()
+        agent.handle_task = AsyncMock(return_value={
+            "speech": "No action needed.",
+        })
+        task = _make_task("what lights are on")
+        chunks = [c async for c in agent.handle_task_stream(task)]
+        assert len(chunks) == 1
+        assert "action_executed" not in chunks[0]
+
 
 # ---------------------------------------------------------------------------
 # RewriteAgent
@@ -435,6 +457,18 @@ class TestRewriteAgent:
         assert agent.agent_card.agent_id == "rewrite-agent"
         assert "rewrite" in agent.agent_card.skills
 
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="")
+    async def test_rewrite_fallback_on_empty_response(self, mock_complete):
+        agent = RewriteAgent()
+        result = await agent.rewrite("Done, kitchen light is on.")
+        assert result == "Done, kitchen light is on."
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value=None)
+    async def test_rewrite_fallback_on_none_response(self, mock_complete):
+        agent = RewriteAgent()
+        result = await agent.rewrite("Done, kitchen light is on.")
+        assert result == "Done, kitchen light is on."
+
 
 # ---------------------------------------------------------------------------
 # OrchestratorAgent
@@ -446,7 +480,8 @@ class TestOrchestratorAgent:
         dispatcher = AsyncMock()
         registry = AsyncMock()
         cache_manager = MagicMock()
-        cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None))
+        cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
+        cache_manager.apply_rewrite = AsyncMock()
 
         # Mock dispatch response
         response_mock = MagicMock()
@@ -582,7 +617,7 @@ class TestOrchestratorAgent:
         orch, *_ = self._make_orchestrator()
         # Configure cache to return a routing hit
         orch._cache_manager.process = AsyncMock(
-            return_value=MagicMock(hit_type="routing_hit", agent_id="light-agent")
+            return_value=MagicMock(hit_type="routing_hit", agent_id="light-agent", similarity=0.96, condensed_task="Turn on light")
         )
         classifications, routing_cached = await orch._classify("turn on kitchen light")
         assert classifications[0][0] == "light-agent"
@@ -955,6 +990,272 @@ class TestOrchestratorAgent:
         assert len(dispatch_spans) == 1
         assert "condensed_task" in dispatch_spans[0]["metadata"]
         assert dispatch_spans[0]["metadata"]["condensed_task"]
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_cache_lookup_span_on_miss(self, mock_complete, mock_track, mock_settings):
+        """cache_lookup span is created with hit_type=miss and similarity score."""
+        from app.analytics.tracer import SpanCollector
+        orch, *_ = self._make_orchestrator()
+        mock_complete.return_value = "light-agent: Turn on light"
+        mock_settings.get_value = AsyncMock(return_value="")
+        collector = SpanCollector("trace-cache-miss")
+        task = _make_task("turn on light")
+        task._span_collector = collector
+        task.conversation_id = "conv-cache-miss"
+        with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
+            await orch.handle_task(task)
+        cache_spans = [s for s in collector._spans if s["span_name"] == "cache_lookup"]
+        assert len(cache_spans) == 1
+        assert cache_spans[0]["metadata"]["hit_type"] == "miss"
+        assert cache_spans[0]["metadata"]["similarity"] is not None
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_cache_lookup_span_on_routing_hit(self, mock_complete, mock_track, mock_settings):
+        """cache_lookup span shows routing_hit; classify span should show routing_cached=True."""
+        from app.analytics.tracer import SpanCollector
+        from app.cache.cache_manager import CacheResult
+        orch, *_ = self._make_orchestrator()
+        orch._cache_manager.process = AsyncMock(
+            return_value=CacheResult(
+                hit_type="routing_hit",
+                agent_id="light-agent",
+                condensed_task="Turn on light",
+                similarity=0.96,
+            )
+        )
+        mock_complete.return_value = "light-agent: Turn on light"
+        mock_settings.get_value = AsyncMock(return_value="")
+        collector = SpanCollector("trace-cache-routing")
+        task = _make_task("turn on light")
+        task._span_collector = collector
+        task.conversation_id = "conv-cache-routing"
+        with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
+            await orch.handle_task(task)
+        cache_spans = [s for s in collector._spans if s["span_name"] == "cache_lookup"]
+        assert len(cache_spans) == 1
+        assert cache_spans[0]["metadata"]["hit_type"] == "routing_hit"
+        assert cache_spans[0]["metadata"]["similarity"] == pytest.approx(0.96)
+        classify_spans = [s for s in collector._spans if s["span_name"] == "classify"]
+        assert len(classify_spans) == 1
+        assert classify_spans[0]["metadata"]["routing_cached"] is True
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    async def test_handle_task_response_hit_short_circuit(self, mock_track, mock_settings):
+        """response_hit creates cache_lookup + return spans only (no classify/dispatch)."""
+        from app.analytics.tracer import SpanCollector
+        from app.cache.cache_manager import CacheResult
+        orch, *_ = self._make_orchestrator()
+        orch._cache_manager.process = AsyncMock(
+            return_value=CacheResult(
+                hit_type="response_hit",
+                agent_id="light-agent",
+                response_text="Light is on.",
+                similarity=0.99,
+            )
+        )
+        mock_settings.get_value = AsyncMock(return_value="")
+        collector = SpanCollector("trace-resp-hit")
+        task = _make_task("turn on light")
+        task._span_collector = collector
+        task.conversation_id = "conv-resp-hit"
+        with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
+            result = await orch.handle_task(task)
+        assert result["speech"] == "Light is on."
+        span_names = [s["span_name"] for s in collector._spans]
+        assert "cache_lookup" in span_names
+        assert "return" in span_names
+        assert "classify" not in span_names
+        assert "dispatch" not in span_names
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    async def test_handle_task_response_hit_creates_rewrite_span(self, mock_track, mock_settings):
+        """response_hit with rewrite_applied creates a rewrite span between cache_lookup and return."""
+        from app.analytics.tracer import SpanCollector
+        from app.cache.cache_manager import CacheResult
+        orch, *_ = self._make_orchestrator()
+        orch._cache_manager.process = AsyncMock(
+            return_value=CacheResult(
+                hit_type="response_hit",
+                agent_id="light-agent",
+                response_text="Rewritten.",
+                similarity=0.99,
+                rewrite_applied=True,
+                rewrite_latency_ms=42.5,
+                original_response_text="Original.",
+            )
+        )
+        mock_settings.get_value = AsyncMock(return_value="")
+        collector = SpanCollector("trace-rewrite-span")
+        task = _make_task("turn on light")
+        task._span_collector = collector
+        task.conversation_id = "conv-rewrite"
+        with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
+            result = await orch.handle_task(task)
+        assert result["speech"] == "Rewritten."
+        span_names = [s["span_name"] for s in collector._spans]
+        assert "rewrite" in span_names
+        rw_span = [s for s in collector._spans if s["span_name"] == "rewrite"][0]
+        assert rw_span["agent_id"] == "rewrite-agent"
+        assert rw_span["metadata"]["original_text"] == "Original."
+        assert rw_span["metadata"]["rewritten_text"] == "Rewritten."
+        assert rw_span["metadata"]["latency_ms"] == 42.5
+        assert rw_span["metadata"]["success"] is True
+        # Verify order: cache_lookup before rewrite before return
+        assert span_names.index("cache_lookup") < span_names.index("rewrite") < span_names.index("return")
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    async def test_handle_task_response_hit_no_rewrite_span_when_not_applied(self, mock_track, mock_settings):
+        """response_hit without rewrite_applied should NOT create a rewrite span."""
+        from app.analytics.tracer import SpanCollector
+        from app.cache.cache_manager import CacheResult
+        orch, *_ = self._make_orchestrator()
+        orch._cache_manager.process = AsyncMock(
+            return_value=CacheResult(
+                hit_type="response_hit",
+                agent_id="light-agent",
+                response_text="Cached text.",
+                similarity=0.99,
+                rewrite_applied=False,
+            )
+        )
+        mock_settings.get_value = AsyncMock(return_value="")
+        collector = SpanCollector("trace-no-rewrite")
+        task = _make_task("turn on light")
+        task._span_collector = collector
+        task.conversation_id = "conv-no-rewrite"
+        with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
+            result = await orch.handle_task(task)
+        span_names = [s["span_name"] for s in collector._spans]
+        assert "rewrite" not in span_names
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_no_cache_manager(self, mock_complete, mock_track, mock_settings):
+        """handle_task works when cache_manager is None (no cache_lookup span)."""
+        from app.analytics.tracer import SpanCollector
+        orch, *_ = self._make_orchestrator()
+        orch._cache_manager = None
+        mock_complete.return_value = "general-agent: answer"
+        mock_settings.get_value = AsyncMock(return_value="")
+        collector = SpanCollector("trace-no-cache")
+        task = _make_task("hello")
+        task._span_collector = collector
+        task.conversation_id = "conv-no-cache"
+        with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
+            result = await orch.handle_task(task)
+        assert result["speech"]
+        span_names = [s["span_name"] for s in collector._spans]
+        assert "cache_lookup" not in span_names
+        assert "classify" in span_names
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_single_agent_stores_response(self, mock_complete, mock_track, mock_settings):
+        """Single-agent dispatch should call store_response with ResponseCacheEntry."""
+        orch, dispatcher, _, cache_manager = self._make_orchestrator(
+            dispatch_result={"speech": "Light is on.", "action_executed": {
+                "action": "turn_on", "entity_id": "light.kitchen", "success": True,
+            }},
+        )
+        mock_complete.return_value = "light-agent (95%): turn on kitchen light"
+        mock_settings.get_value = AsyncMock(return_value="")
+        task = _make_task("turn on kitchen light")
+        result = await orch.handle_task(task)
+        assert result["speech"]
+        cache_manager.store_response.assert_called_once()
+        entry = cache_manager.store_response.call_args[0][0]
+        assert entry.agent_id == "light-agent"
+        assert entry.query_text == "turn on kitchen light"
+        assert entry.cached_action is not None
+        assert entry.cached_action.service == "light/turn_on"
+        assert entry.cached_action.entity_id == "light.kitchen"
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_multi_agent_skips_response_store(self, mock_complete, mock_track, mock_settings):
+        """Multi-agent dispatch should NOT call store_response."""
+        orch, dispatcher, _, cache_manager = self._make_orchestrator()
+        mock_complete.side_effect = [
+            "light-agent (95%): on\nmusic-agent (90%): play",
+            "Both done.",
+        ]
+        mock_settings.get_value = AsyncMock(return_value="")
+        r1 = MagicMock(error=None, result={"speech": "On."})
+        r2 = MagicMock(error=None, result={"speech": "Playing."})
+        dispatcher.dispatch = AsyncMock(side_effect=[r1, r2])
+        task = _make_task("turn on light and play music")
+        await orch.handle_task(task)
+        cache_manager.store_response.assert_not_called()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_fallback_skips_response_store(self, mock_complete, mock_track, mock_settings):
+        """Fallback agent dispatch should NOT call store_response."""
+        orch, dispatcher, _, cache_manager = self._make_orchestrator()
+        mock_complete.return_value = "general-agent (60%): answer the question"
+        mock_settings.get_value = AsyncMock(return_value="")
+        task = _make_task("what is the meaning of life")
+        await orch.handle_task(task)
+        cache_manager.store_response.assert_not_called()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_stream_stores_response_cache(self, mock_complete, mock_track, mock_settings):
+        """Streaming single-agent dispatch should store response cache entry."""
+        orch, dispatcher, _, cache_manager = self._make_orchestrator()
+        mock_complete.return_value = "light-agent (95%): turn on kitchen light"
+        mock_settings.get_value = AsyncMock(return_value="")
+
+        async def mock_stream(request):
+            yield MagicMock(result={"token": "Light ", "done": False})
+            yield MagicMock(result={
+                "token": "is on.",
+                "done": True,
+                "action_executed": {"action": "turn_on", "entity_id": "light.kitchen", "success": True},
+            })
+        dispatcher.dispatch_stream = mock_stream
+
+        task = _make_task("turn on kitchen light")
+        task.conversation_id = "conv-stream-cache"
+        chunks = [c async for c in orch.handle_task_stream(task)]
+        assert any(c["done"] for c in chunks)
+        cache_manager.store_response.assert_called_once()
+        entry = cache_manager.store_response.call_args[0][0]
+        assert entry.agent_id == "light-agent"
+        assert entry.query_text == "turn on kitchen light"
+        assert entry.cached_action is not None
+        assert entry.cached_action.service == "light/turn_on"
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_stream_fallback_skips_response_store(self, mock_complete, mock_track, mock_settings):
+        """Streaming fallback dispatch should NOT store response cache."""
+        orch, dispatcher, _, cache_manager = self._make_orchestrator()
+        mock_complete.return_value = "general-agent (60%): answer question"
+        mock_settings.get_value = AsyncMock(return_value="")
+
+        async def mock_stream(request):
+            yield MagicMock(result={"token": "42.", "done": True})
+        dispatcher.dispatch_stream = mock_stream
+
+        task = _make_task("what is the meaning of life")
+        task.conversation_id = "conv-stream-fallback"
+        chunks = [c async for c in orch.handle_task_stream(task)]
+        assert any(c["done"] for c in chunks)
+        cache_manager.store_response.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

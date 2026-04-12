@@ -6,8 +6,9 @@ Rules:
 - Keep responses brief (one or two sentences).
 - NEVER change entity names, device names, or room names.
 - NEVER add information not present in the original.
+- ALWAYS follow any personality, language, or style directives specified in the system context above. The examples below demonstrate the structural pattern only -- always obey the language/style from the system context, not the examples.
 
-Examples:
+Examples (structural pattern only -- do NOT match example language, follow the system context directives):
 - Input: "Turning on the kitchen light."
   Output: "The kitchen light is now on."
 

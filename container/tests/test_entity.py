@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -539,3 +540,315 @@ class TestVisibilityRules:
         assert "light.bedroom" in entity_ids
         assert "media_player.sonos" in entity_ids
         assert "switch.hallway" not in entity_ids
+
+
+# ---------------------------------------------------------------------------
+# Entity index status tracking
+# ---------------------------------------------------------------------------
+
+class TestEntityIndexStatus:
+
+    def test_initial_status_is_ready(self):
+        store = MagicMock()
+        idx = EntityIndex(store)
+        status = idx.get_embedding_status()
+        assert status["state"] == "ready"
+        assert status["progress"] == 0
+
+    def test_populate_sets_building_then_ready(self):
+        store = MagicMock()
+        idx = EntityIndex(store)
+        entities = [make_entity_index_entry(f"light.test_{i}") for i in range(10)]
+        idx.populate(entities)
+        status = idx.get_embedding_status()
+        assert status["state"] == "ready"
+        assert status["progress"] == 100
+        assert status["total"] == 10
+        assert status["processed"] == 10
+
+    def test_populate_empty_keeps_ready(self):
+        store = MagicMock()
+        idx = EntityIndex(store)
+        idx.populate([])
+        status = idx.get_embedding_status()
+        assert status["state"] == "ready"
+
+    def test_populate_error_sets_error_state(self):
+        store = MagicMock()
+        store.upsert.side_effect = RuntimeError("ChromaDB error")
+        idx = EntityIndex(store)
+        entities = [make_entity_index_entry("light.test")]
+        with pytest.raises(RuntimeError):
+            idx.populate(entities)
+        status = idx.get_embedding_status()
+        assert status["state"] == "error"
+        assert "ChromaDB error" in status["error"]
+
+    def test_get_stats_includes_embedding_status(self):
+        store = MagicMock()
+        store.count.return_value = 5
+        idx = EntityIndex(store)
+        stats = idx.get_stats()
+        assert "embedding_status" in stats
+        assert stats["embedding_status"]["state"] == "ready"
+
+    def test_populate_batches_upserts(self):
+        """With BATCH_SIZE=500, 1200 entities should produce 3 upsert calls."""
+        store = MagicMock()
+        idx = EntityIndex(store)
+        entities = [make_entity_index_entry(f"light.test_{i}") for i in range(1200)]
+        idx.populate(entities)
+        assert store.upsert.call_count == 3  # 500 + 500 + 200
+
+
+# ---------------------------------------------------------------------------
+# Entity index sync
+# ---------------------------------------------------------------------------
+
+class TestEntityIndexSync:
+    """Tests for EntityIndex.sync() smart diff."""
+
+    def _make_index(self) -> tuple[EntityIndex, MagicMock]:
+        mock_store = MagicMock()
+        index = EntityIndex(mock_store)
+        return index, mock_store
+
+    def test_sync_adds_new_entities(self):
+        """New entities not in ChromaDB are added."""
+        index, store = self._make_index()
+        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
+
+        entities = [
+            make_entity_index_entry("light.kitchen", "Kitchen Light"),
+            make_entity_index_entry("light.bedroom", "Bedroom Light"),
+        ]
+        result = index.sync(entities)
+
+        assert result["added"] == 2
+        assert result["updated"] == 0
+        assert result["removed"] == 0
+        assert result["unchanged"] == 0
+        store.upsert.assert_called_once()
+
+    def test_sync_removes_deleted_entities(self):
+        """Entities in ChromaDB but not in HA list are removed."""
+        index, store = self._make_index()
+        store.get.return_value = {
+            "ids": ["light.kitchen", "light.old_deleted"],
+            "documents": ["Kitchen Light light", "Old Light light"],
+            "metadatas": [
+                {"friendly_name": "Kitchen Light", "domain": "light", "area": "", "device_class": "", "aliases": ""},
+                {"friendly_name": "Old Light", "domain": "light", "area": "", "device_class": "", "aliases": ""},
+            ],
+        }
+
+        entities = [make_entity_index_entry("light.kitchen", "Kitchen Light")]
+        result = index.sync(entities)
+
+        assert result["removed"] == 1
+        store.delete.assert_called_once_with(COLLECTION_ENTITY_INDEX, ids=["light.old_deleted"])
+
+    def test_sync_updates_changed_entities(self):
+        """Entities with changed embedding_text are re-upserted."""
+        index, store = self._make_index()
+        store.get.return_value = {
+            "ids": ["light.kitchen"],
+            "documents": ["Old Kitchen Light light"],
+            "metadatas": [
+                {"friendly_name": "Old Kitchen Light", "domain": "light", "area": "", "device_class": "", "aliases": ""},
+            ],
+        }
+
+        entities = [make_entity_index_entry("light.kitchen", "New Kitchen Light")]
+        result = index.sync(entities)
+
+        assert result["updated"] == 1
+        assert result["unchanged"] == 0
+        store.upsert.assert_called_once()
+
+    def test_sync_skips_unchanged_entities(self):
+        """Entities with identical doc + metadata are skipped (no upsert)."""
+        index, store = self._make_index()
+        entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
+        store.get.return_value = {
+            "ids": ["light.kitchen"],
+            "documents": [entry.embedding_text],
+            "metadatas": [EntityIndex._build_metadata(entry)],
+        }
+
+        result = index.sync([entry])
+
+        assert result["unchanged"] == 1
+        assert result["added"] == 0
+        assert result["updated"] == 0
+        store.upsert.assert_not_called()
+        store.delete.assert_not_called()
+
+    def test_sync_empty_list_noop(self):
+        """Syncing with an empty list returns all zeros."""
+        index, store = self._make_index()
+        result = index.sync([])
+        assert result == {"added": 0, "updated": 0, "removed": 0, "unchanged": 0}
+        store.get.assert_not_called()
+
+    def test_sync_updates_status(self):
+        """sync() sets state to 'syncing' during operation and 'ready' after."""
+        index, store = self._make_index()
+        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
+
+        states_seen = []
+        def capture_state(*args, **kwargs):
+            states_seen.append(index._status["state"])
+        store.upsert.side_effect = capture_state
+
+        entities = [make_entity_index_entry("light.kitchen", "Kitchen Light")]
+        index.sync(entities)
+
+        assert "syncing" in states_seen
+        assert index._status["state"] == "ready"
+
+    def test_sync_updates_sync_stats(self):
+        """sync() updates _sync_stats with counts and timestamp."""
+        index, store = self._make_index()
+        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
+
+        entities = [make_entity_index_entry("light.kitchen", "Kitchen Light")]
+        index.sync(entities)
+
+        stats = index._sync_stats
+        assert stats["added"] == 1
+        assert stats["last_sync"] is not None
+        assert stats["last_sync_duration_ms"] >= 0
+
+    def test_sync_error_restores_state(self):
+        """If sync fails, state is restored and error is logged."""
+        index, store = self._make_index()
+        store.get.side_effect = Exception("ChromaDB down")
+
+        with pytest.raises(Exception, match="ChromaDB down"):
+            index.sync([make_entity_index_entry()])
+
+        assert index._status["state"] == "ready"
+        assert "ChromaDB down" in index._status["error"]
+
+    def test_sync_mixed_operations(self):
+        """Full scenario: 1 unchanged, 1 updated, 1 removed, 1 added."""
+        index, store = self._make_index()
+
+        existing_unchanged = make_entity_index_entry("light.kitchen", "Kitchen Light")
+        existing_changed = make_entity_index_entry("light.bedroom", "Old Bedroom")
+
+        store.get.return_value = {
+            "ids": ["light.kitchen", "light.bedroom", "light.deleted"],
+            "documents": [
+                existing_unchanged.embedding_text,
+                "Old Bedroom light",
+                "Deleted light",
+            ],
+            "metadatas": [
+                EntityIndex._build_metadata(existing_unchanged),
+                {"friendly_name": "Old Bedroom", "domain": "light", "area": "", "device_class": "", "aliases": ""},
+                {"friendly_name": "Deleted", "domain": "light", "area": "", "device_class": "", "aliases": ""},
+            ],
+        }
+
+        new_entities = [
+            existing_unchanged,  # unchanged
+            make_entity_index_entry("light.bedroom", "New Bedroom"),  # updated
+            make_entity_index_entry("light.new_one", "New One"),  # added
+            # light.deleted is absent -> removed
+        ]
+        result = index.sync(new_entities)
+
+        assert result["unchanged"] == 1
+        assert result["updated"] == 1
+        assert result["added"] == 1
+        assert result["removed"] == 1
+
+    def test_get_stats_includes_sync(self):
+        """get_stats() includes sync stats."""
+        index, store = self._make_index()
+        store.count.return_value = 10
+        stats = index.get_stats()
+        assert "sync" in stats
+        assert stats["sync"]["last_sync"] is None  # No sync yet
+
+
+# ---------------------------------------------------------------------------
+# Periodic entity sync task
+# ---------------------------------------------------------------------------
+
+class TestPeriodicEntitySync:
+    """Tests for _periodic_entity_sync background task."""
+
+    async def test_periodic_sync_calls_sync(self):
+        """Task fetches states, parses, and calls entity_index.sync()."""
+        from unittest.mock import AsyncMock, patch
+        from app.main import _periodic_entity_sync
+
+        mock_app = MagicMock()
+        mock_app.state.ha_client = AsyncMock()
+        mock_app.state.ha_client.get_states = AsyncMock(return_value=[
+            {"entity_id": "light.kitchen", "attributes": {"friendly_name": "Kitchen"}},
+        ])
+        mock_app.state.entity_index = MagicMock()
+        mock_app.state.entity_index.sync.return_value = {
+            "added": 1, "updated": 0, "removed": 0, "unchanged": 0,
+        }
+
+        with patch("app.main.SettingsRepository") as mock_settings, \
+             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+            mock_settings.get_value = AsyncMock(return_value="1")
+            with pytest.raises(asyncio.CancelledError):
+                await _periodic_entity_sync(mock_app)
+
+        mock_app.state.entity_index.sync.assert_called_once()
+
+    async def test_periodic_sync_disabled_when_zero(self):
+        """Interval=0 skips sync and re-checks after 5 min."""
+        from unittest.mock import AsyncMock, patch
+        from app.main import _periodic_entity_sync
+
+        mock_app = MagicMock()
+        mock_app.state.ha_client = AsyncMock()
+        mock_app.state.entity_index = MagicMock()
+
+        sleep_calls = []
+        async def fake_sleep(duration):
+            sleep_calls.append(duration)
+            if len(sleep_calls) >= 2:
+                raise asyncio.CancelledError
+
+        with patch("app.main.SettingsRepository") as mock_settings, \
+             patch("asyncio.sleep", side_effect=fake_sleep):
+            mock_settings.get_value = AsyncMock(return_value="0")
+            with pytest.raises(asyncio.CancelledError):
+                await _periodic_entity_sync(mock_app)
+
+        assert sleep_calls[0] == 300  # 5 min fallback when disabled
+
+    async def test_periodic_sync_handles_errors_gracefully(self):
+        """Errors are logged but do not crash the task."""
+        from unittest.mock import AsyncMock, patch
+        from app.main import _periodic_entity_sync
+
+        mock_app = MagicMock()
+        mock_app.state.ha_client = AsyncMock()
+        mock_app.state.ha_client.get_states = AsyncMock(side_effect=Exception("HA down"))
+        mock_app.state.entity_index = MagicMock()
+
+        call_count = 0
+        async def fake_sleep(duration):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                raise asyncio.CancelledError
+
+        with patch("app.main.SettingsRepository") as mock_settings, \
+             patch("asyncio.sleep", side_effect=fake_sleep):
+            mock_settings.get_value = AsyncMock(return_value="1")
+            with pytest.raises(asyncio.CancelledError):
+                await _periodic_entity_sync(mock_app)
+
+        # sync was NOT called because get_states failed
+        mock_app.state.entity_index.sync.assert_not_called()

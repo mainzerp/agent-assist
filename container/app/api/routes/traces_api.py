@@ -128,8 +128,8 @@ async def get_trace_detail(trace_id: str):
     # Build agent_executions from spans
     agent_executions = []
     for span in spans:
-        if span.get("agent_id") and span["span_name"] in ("dispatch", "classify", "return"):
-            response_key = "final_response" if span["span_name"] == "return" else "agent_response"
+        if span.get("agent_id") and span["span_name"] in ("dispatch", "classify", "return", "rewrite", "ha_action"):
+            response_key = "final_response" if span["span_name"] == "return" else ("rewritten_text" if span["span_name"] == "rewrite" else ("result_speech" if span["span_name"] == "ha_action" else "agent_response"))
             agent_executions.append({
                 "agent_id": span["agent_id"],
                 "span_name": span["span_name"],
@@ -157,7 +157,54 @@ async def get_trace_detail(trace_id: str):
     user_input = summary.get("user_input", "")
     final_response = summary.get("final_response", "")
 
-    if classify_span:
+    # Detect response_cache_hit (no classify span, return span has response_cache_hit)
+    response_cache_hit = False
+    if return_span and not classify_span:
+        ret_meta = return_span.get("metadata") or {}
+        response_cache_hit = ret_meta.get("response_cache_hit", False)
+
+    if response_cache_hit:
+        # Response cache hit short-circuit
+        target = (return_span.get("metadata") or {}).get("from_agent", "")
+        routing_cached = True
+        agent_communication.append({
+            "from_agent": "user",
+            "to_agent": "orchestrator",
+            "task": user_input,
+            "response": "",
+        })
+        # Find ha_action and rewrite spans for the cached path
+        ha_action_span = None
+        rewrite_span = None
+        for span in spans:
+            if span.get("span_name") == "ha_action":
+                ha_action_span = span
+            elif span.get("span_name") == "rewrite":
+                rewrite_span = span
+        if ha_action_span:
+            ha_meta = ha_action_span.get("metadata") or {}
+            agent_communication.append({
+                "from_agent": "orchestrator (cached action)",
+                "to_agent": ha_meta.get("entity", "Home Assistant"),
+                "task": ha_meta.get("action", ""),
+                "response": "success" if ha_meta.get("success") else "failed",
+            })
+        if rewrite_span:
+            rw_meta = rewrite_span.get("metadata") or {}
+            agent_communication.append({
+                "from_agent": "response cache",
+                "to_agent": "rewrite-agent",
+                "task": (rw_meta.get("original_text") or "")[:200],
+                "response": (rw_meta.get("rewritten_text") or "")[:200],
+            })
+        agent_communication.append({
+            "from_agent": "orchestrator (response cache)",
+            "to_agent": "user",
+            "task": "",
+            "response": final_response,
+            "response_cache_hit": True,
+        })
+    elif classify_span:
         meta = classify_span.get("metadata") or {}
         target = meta.get("target_agent", "")
 
@@ -240,11 +287,27 @@ async def get_trace_detail(trace_id: str):
             routing["all_agents"] = cls_meta.get("target_agent", "")
             routing["agent_instructions"] = summary.get("agent_instructions") or {}
 
+    # Compute total duration from spans if not stored
+    total_duration_ms = summary.get("total_duration_ms")
+    if not total_duration_ms and spans:
+        try:
+            from datetime import datetime, timedelta
+            starts = [datetime.fromisoformat(s["start_time"]) for s in spans if s.get("start_time")]
+            if starts:
+                min_start = min(starts)
+                max_end = max(
+                    datetime.fromisoformat(s["start_time"]) + timedelta(milliseconds=s.get("duration_ms", 0))
+                    for s in spans if s.get("start_time")
+                )
+                total_duration_ms = round((max_end - min_start).total_seconds() * 1000, 2)
+        except Exception:
+            pass
+
     return {
         "trace_id": trace_id,
         "conversation_id": summary.get("conversation_id"),
         "timestamp": summary.get("created_at"),
-        "duration_ms": summary.get("total_duration_ms"),
+        "duration_ms": total_duration_ms,
         "user_input": summary.get("user_input"),
         "final_response": summary.get("final_response"),
         "routing": routing,

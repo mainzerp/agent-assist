@@ -244,6 +244,6 @@ class TestLLMComplete:
         mock_acompletion.side_effect = [empty_response, empty_response]
 
         from app.llm.client import complete
-        result = await complete("light-agent", [{"role": "user", "content": "turn on light"}])
-        assert result == ""
+        with pytest.raises(ValueError, match="Empty LLM response"):
+            await complete("light-agent", [{"role": "user", "content": "turn on light"}])
         assert mock_acompletion.await_count == 2

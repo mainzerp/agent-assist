@@ -34,10 +34,11 @@ class RoutingCache:
         """Reload thresholds from DB without restart."""
         await self.load_config()
 
-    def lookup(self, query_text: str) -> RoutingCacheEntry | None:
-        """Query routing cache. Returns entry if cosine similarity > threshold.
+    def lookup(self, query_text: str) -> tuple[RoutingCacheEntry | None, float | None]:
+        """Query routing cache. Returns (entry, similarity).
 
         ChromaDB returns distance (0=identical). Similarity = 1 - distance.
+        Returns the best similarity score even on a miss.
         """
         result = self._store.query(
             COLLECTION_ROUTING_CACHE,
@@ -46,13 +47,13 @@ class RoutingCache:
             include=["metadatas", "distances", "documents"],
         )
         if not result["ids"] or not result["ids"][0]:
-            return None
+            return (None, None)
 
         distance = result["distances"][0][0]
         similarity = 1.0 - distance
 
         if similarity < self._threshold:
-            return None
+            return (None, similarity)
 
         meta = result["metadatas"][0][0]
         # Update last_accessed and hit_count
@@ -66,7 +67,7 @@ class RoutingCache:
             metadatas=[{**meta, "last_accessed": now, "hit_count": str(hit_count)}],
         )
 
-        return RoutingCacheEntry(
+        return (RoutingCacheEntry(
             query_text=result["documents"][0][0],
             agent_id=meta["agent_id"],
             confidence=similarity,
@@ -74,7 +75,7 @@ class RoutingCache:
             condensed_task=meta.get("condensed_task"),
             created_at=meta.get("created_at"),
             last_accessed=now,
-        )
+        ), similarity)
 
     def store(self, query_text: str, agent_id: str, confidence: float, condensed_task: str = "") -> None:
         """Store a new routing decision in the cache."""

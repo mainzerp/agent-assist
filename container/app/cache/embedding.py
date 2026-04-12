@@ -44,6 +44,20 @@ class EmbeddingEngine:
         """Load config from DB. Must call before embed/embed_batch."""
         await self._load_config()
 
+    def get_info(self) -> dict:
+        """Return embedding model configuration info."""
+        dimensions = None
+        if self._provider == "local" and self._local_model is not None:
+            dimensions = self._local_model.get_sentence_embedding_dimension()
+        elif self._provider == "local":
+            defaults = {"all-MiniLM-L6-v2": 384, "all-mpnet-base-v2": 768}
+            dimensions = defaults.get(self._model_name)
+        return {
+            "provider": self._provider or "unknown",
+            "model": self._model_name or "unknown",
+            "dimensions": dimensions,
+        }
+
     def embed(self, text: str) -> list[float]:
         """Embed a single text string. Returns 384-dim float list for local model."""
         return self.embed_batch([text])[0]
@@ -87,3 +101,9 @@ async def get_embedding_engine() -> EmbeddingEngine:
         _engine = EmbeddingEngine()
         await _engine.initialize()
     return _engine
+
+
+async def get_embedding_info() -> dict:
+    """Return embedding config info from the singleton engine."""
+    engine = await get_embedding_engine()
+    return engine.get_info()

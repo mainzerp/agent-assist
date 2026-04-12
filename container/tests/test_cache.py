@@ -46,10 +46,11 @@ class TestRoutingCache:
                 "last_accessed": "2025-01-01T00:00:00",
             }]],
         }
-        entry = cache.lookup("turn on kitchen light")
+        entry, similarity = cache.lookup("turn on kitchen light")
         assert entry is not None
         assert entry.agent_id == "light-agent"
         assert entry.hit_count == 3  # incremented from 2
+        assert similarity == pytest.approx(0.95)
 
     def test_lookup_miss_below_threshold(self):
         cache, store = self._make_cache()
@@ -60,14 +61,16 @@ class TestRoutingCache:
             "metadatas": [[{"agent_id": "general-agent", "confidence": "0.85",
                            "hit_count": "0", "created_at": "", "last_accessed": ""}]],
         }
-        entry = cache.lookup("different query")
+        entry, similarity = cache.lookup("different query")
         assert entry is None
+        assert similarity == pytest.approx(0.85)
 
     def test_lookup_empty_results(self):
         cache, store = self._make_cache()
         store.query.return_value = {"ids": [[]], "distances": [[]], "documents": [[]], "metadatas": [[]]}
-        entry = cache.lookup("anything")
+        entry, similarity = cache.lookup("anything")
         assert entry is None
+        assert similarity is None
 
     def test_store_upserts_entry(self):
         cache, store = self._make_cache()
@@ -143,10 +146,11 @@ class TestResponseCache:
                 "last_accessed": "2025-01-01T00:00:00",
             }]],
         }
-        hit_type, entry = cache.lookup("turn on kitchen light")
+        hit_type, entry, similarity = cache.lookup("turn on kitchen light")
         assert hit_type == "hit"
         assert entry is not None
         assert entry.response_text == "Done, light is on."
+        assert similarity == pytest.approx(0.98)
 
     def test_lookup_partial_match(self):
         cache, store = self._make_cache()
@@ -164,9 +168,10 @@ class TestResponseCache:
                 "created_at": "", "last_accessed": "",
             }]],
         }
-        hit_type, entry = cache.lookup("switch on kitchen light")
+        hit_type, entry, similarity = cache.lookup("switch on kitchen light")
         assert hit_type == "partial"
         assert entry is not None
+        assert similarity == pytest.approx(0.88)
 
     def test_lookup_miss_below_partial(self):
         cache, store = self._make_cache()
@@ -184,15 +189,17 @@ class TestResponseCache:
                 "created_at": "", "last_accessed": "",
             }]],
         }
-        hit_type, entry = cache.lookup("totally different")
+        hit_type, entry, similarity = cache.lookup("totally different")
         assert hit_type == "miss"
         assert entry is None
+        assert similarity == pytest.approx(0.70)
 
     def test_lookup_empty_results(self):
         cache, store = self._make_cache()
         store.query.return_value = {"ids": [[]], "distances": [[]], "documents": [[]], "metadatas": [[]]}
-        hit_type, entry = cache.lookup("anything")
+        hit_type, entry, similarity = cache.lookup("anything")
         assert hit_type == "miss"
+        assert similarity is None
 
     def test_lookup_with_cached_action(self):
         cache, store = self._make_cache()
@@ -211,7 +218,7 @@ class TestResponseCache:
                 "created_at": "", "last_accessed": "",
             }]],
         }
-        hit_type, entry = cache.lookup("turn on kitchen")
+        hit_type, entry, similarity = cache.lookup("turn on kitchen")
         assert hit_type == "hit"
         assert entry.cached_action is not None
         assert entry.cached_action.service == "light/turn_on"
@@ -425,9 +432,10 @@ class TestCacheManager:
                 "last_accessed": "2025-01-01T00:00:00",
             }]],
         }
-        entry = cache.lookup("turn on light")
+        entry, similarity = cache.lookup("turn on light")
         assert entry is not None
         assert entry.condensed_task == "Turn on the light"
+        assert similarity == pytest.approx(0.95)
 
     def test_cache_result_carries_condensed_task(self):
         """CacheResult should propagate condensed_task from routing entry."""
@@ -453,6 +461,116 @@ class TestCacheManager:
         result = manager._process_inner("turn on light")
         assert result.hit_type == "routing_hit"
         assert result.condensed_task == "Turn on the light"
+
+    def test_store_response_disabled_skips_store(self):
+        """store_response should no-op when _response_cache_enabled is False."""
+        manager, store = self._make_manager()
+        manager._response_cache_enabled = False
+        entry = make_response_cache_entry()
+        manager.store_response(entry)
+        store.upsert.assert_not_called()
+
+    def test_store_response_enabled_delegates(self):
+        """store_response should delegate when _response_cache_enabled is True."""
+        manager, store = self._make_manager()
+        manager._response_cache_enabled = True
+        store.count.return_value = 0
+        entry = make_response_cache_entry()
+        manager.store_response(entry)
+        store.upsert.assert_called()
+
+    async def test_process_response_hit_preserves_text_on_empty_rewrite(self):
+        manager, store = self._make_manager()
+        rewrite_agent = AsyncMock()
+        rewrite_agent.rewrite = AsyncMock(return_value="")
+        manager._rewrite_agent = rewrite_agent
+        with patch.object(manager, "_process_inner") as mock_inner, \
+             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock), \
+             patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+            mock_inner.return_value = CacheResult(
+                hit_type="response_hit",
+                agent_id="light-agent",
+                response_text="Original cached text.",
+            )
+            result = await manager.process("turn on light")
+            await manager.apply_rewrite(result)
+        assert result.response_text == "Original cached text."
+
+    async def test_process_response_hit_applies_rewrite(self):
+        manager, store = self._make_manager()
+        rewrite_agent = AsyncMock()
+        rewrite_agent.rewrite = AsyncMock(return_value="Rephrased text.")
+        manager._rewrite_agent = rewrite_agent
+        with patch.object(manager, "_process_inner") as mock_inner, \
+             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock), \
+             patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+            mock_inner.return_value = CacheResult(
+                hit_type="response_hit",
+                agent_id="light-agent",
+                response_text="Original text.",
+            )
+            result = await manager.process("turn on light")
+            await manager.apply_rewrite(result)
+        assert result.response_text == "Rephrased text."
+
+    async def test_process_response_hit_sets_rewrite_metadata(self):
+        manager, store = self._make_manager()
+        rewrite_agent = AsyncMock()
+        rewrite_agent.rewrite = AsyncMock(return_value="Rephrased.")
+        manager._rewrite_agent = rewrite_agent
+        with patch.object(manager, "_process_inner") as mock_inner, \
+             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock), \
+             patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+            mock_inner.return_value = CacheResult(
+                hit_type="response_hit",
+                agent_id="light-agent",
+                response_text="Original.",
+            )
+            result = await manager.process("turn on light")
+            await manager.apply_rewrite(result)
+        assert result.rewrite_applied is True
+        assert result.rewrite_latency_ms is not None
+        assert result.rewrite_latency_ms > 0
+        assert result.original_response_text == "Original."
+        assert result.response_text == "Rephrased."
+
+    async def test_process_response_hit_no_rewrite_metadata_on_empty(self):
+        manager, store = self._make_manager()
+        rewrite_agent = AsyncMock()
+        rewrite_agent.rewrite = AsyncMock(return_value="")
+        manager._rewrite_agent = rewrite_agent
+        with patch.object(manager, "_process_inner") as mock_inner, \
+             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock), \
+             patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+            mock_inner.return_value = CacheResult(
+                hit_type="response_hit",
+                agent_id="light-agent",
+                response_text="Original.",
+            )
+            result = await manager.process("turn on light")
+            await manager.apply_rewrite(result)
+        assert result.rewrite_applied is False
+        assert result.original_response_text is None
+        assert result.response_text == "Original."
+
+    async def test_process_response_hit_no_rewrite_metadata_on_exception(self):
+        manager, store = self._make_manager()
+        rewrite_agent = AsyncMock()
+        rewrite_agent.rewrite = AsyncMock(side_effect=RuntimeError("LLM error"))
+        manager._rewrite_agent = rewrite_agent
+        with patch.object(manager, "_process_inner") as mock_inner, \
+             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock), \
+             patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+            mock_inner.return_value = CacheResult(
+                hit_type="response_hit",
+                agent_id="light-agent",
+                response_text="Original.",
+            )
+            result = await manager.process("turn on light")
+            await manager.apply_rewrite(result)
+        assert result.rewrite_applied is False
+        assert result.original_response_text is None
+        assert result.rewrite_latency_ms is not None
 
 
 # ---------------------------------------------------------------------------
@@ -577,3 +695,108 @@ class TestVectorStore:
         store._collections = {}
         with pytest.raises(KeyError):
             store.get_collection("nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# Cache trace visibility -- similarity propagation tests
+# ---------------------------------------------------------------------------
+
+class TestCacheTraceSimilarity:
+
+    def test_cache_result_includes_similarity_on_routing_hit(self):
+        """CacheResult.similarity is populated on a routing cache hit."""
+        store = MagicMock(spec=VectorStore)
+        manager = CacheManager(store)
+        # Response cache miss
+        store.query.side_effect = [
+            {"ids": [[]], "distances": [[]], "documents": [[]], "metadatas": [[]]},
+            # Routing cache hit  (distance 0.05 = similarity 0.95)
+            {
+                "ids": [["r-1"]],
+                "distances": [[0.05]],
+                "documents": [["turn on light"]],
+                "metadatas": [[{
+                    "agent_id": "light-agent",
+                    "confidence": "0.95",
+                    "hit_count": "0",
+                    "condensed_task": "Turn on",
+                    "created_at": "2025-01-01T00:00:00",
+                    "last_accessed": "2025-01-01T00:00:00",
+                }]],
+            },
+        ]
+        result = manager._process_inner("turn on light")
+        assert result.hit_type == "routing_hit"
+        assert result.similarity == pytest.approx(0.95)
+
+    def test_cache_result_includes_similarity_on_miss(self):
+        """CacheResult.similarity is populated even on a complete miss."""
+        store = MagicMock(spec=VectorStore)
+        manager = CacheManager(store)
+        # Response cache miss with similarity 0.70
+        store.query.side_effect = [
+            {
+                "ids": [["resp-1"]],
+                "distances": [[0.30]],
+                "documents": [["unrelated"]],
+                "metadatas": [[{
+                    "response_text": "x", "agent_id": "gen", "confidence": "0.7",
+                    "hit_count": "0", "entity_ids": "", "cached_action": "",
+                    "created_at": "", "last_accessed": "",
+                }]],
+            },
+            # Routing cache miss with similarity 0.80
+            {
+                "ids": [["r-1"]],
+                "distances": [[0.20]],
+                "documents": [["other"]],
+                "metadatas": [[{
+                    "agent_id": "general-agent", "confidence": "0.80",
+                    "hit_count": "0", "created_at": "", "last_accessed": "",
+                }]],
+            },
+        ]
+        result = manager._process_inner("some query")
+        assert result.hit_type == "miss"
+        assert result.similarity == pytest.approx(0.80)
+
+    def test_routing_cache_lookup_returns_similarity_tuple(self):
+        """routing_cache.lookup() returns (entry, similarity) tuple."""
+        store = MagicMock(spec=VectorStore)
+        cache = RoutingCache(store)
+        cache._threshold = 0.92
+        store.query.return_value = {
+            "ids": [["e-1"]],
+            "distances": [[0.03]],
+            "documents": [["test"]],
+            "metadatas": [[{
+                "agent_id": "light-agent", "confidence": "0.97",
+                "hit_count": "0", "created_at": "2025-01-01T00:00:00",
+                "last_accessed": "2025-01-01T00:00:00",
+            }]],
+        }
+        entry, sim = cache.lookup("test")
+        assert entry is not None
+        assert sim == pytest.approx(0.97)
+
+    def test_response_cache_lookup_returns_similarity_tuple(self):
+        """response_cache.lookup() returns (hit_type, entry, similarity) tuple."""
+        store = MagicMock(spec=VectorStore)
+        cache = ResponseCache(store)
+        cache._hit_threshold = 0.95
+        cache._partial_threshold = 0.80
+        store.query.return_value = {
+            "ids": [["r-1"]],
+            "distances": [[0.01]],
+            "documents": [["test"]],
+            "metadatas": [[{
+                "response_text": "Done.", "agent_id": "light-agent",
+                "confidence": "0.99", "hit_count": "0",
+                "entity_ids": "", "cached_action": "",
+                "created_at": "", "last_accessed": "",
+            }]],
+        }
+        hit_type, entry, sim = cache.lookup("test")
+        assert hit_type == "hit"
+        assert entry is not None
+        assert sim == pytest.approx(0.99)

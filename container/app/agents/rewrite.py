@@ -45,7 +45,11 @@ class RewriteAgent(BaseAgent):
             {"role": "user", "content": cached_text},
         ]
         try:
-            return await self._call_llm(messages)
+            result = await self._call_llm(messages)
+            if not result:
+                logger.warning("Rewrite LLM returned empty, using cached text")
+                return cached_text
+            return result
         except Exception:
             logger.warning("Rewrite failed, returning cached text verbatim", exc_info=True)
             return cached_text

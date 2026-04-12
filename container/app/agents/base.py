@@ -58,11 +58,14 @@ class BaseAgent(ABC):
             conversation_id.
         """
         result = await self.handle_task(task)
-        yield {
+        chunk = {
             "token": result.get("speech", ""),
             "done": True,
             "conversation_id": task.conversation_id,
         }
+        if result.get("action_executed"):
+            chunk["action_executed"] = result["action_executed"]
+        yield chunk
 
     def _load_prompt(self, name: str) -> str:
         """Load a prompt file from the prompts/ directory.

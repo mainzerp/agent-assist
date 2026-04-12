@@ -701,3 +701,45 @@ class TestMigrationV4:
         rules = await EntityVisibilityRepository.get_rules("test-agent")
         assert len(rules) == 1
         assert rules[0]["rule_type"] == "area_include"
+
+
+# ---------------------------------------------------------------------------
+# Schema migration v5 -- rewrite-agent max_tokens bump
+# ---------------------------------------------------------------------------
+
+class TestMigrationV5:
+
+    async def test_migration_v5_bumps_rewrite_agent_max_tokens(self, db_repository):
+        """Migration v5 should increase rewrite-agent max_tokens from 128 to 512."""
+        from app.db.schema import _run_migrations
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            # Simulate pre-migration state
+            await db.execute(
+                "UPDATE agent_configs SET max_tokens = 128 WHERE agent_id = 'rewrite-agent'"
+            )
+            await db.execute("DELETE FROM schema_version WHERE version >= 5")
+            await db.commit()
+            await _run_migrations(db)
+            await db.commit()
+
+        row = await AgentConfigRepository.get("rewrite-agent")
+        assert row["max_tokens"] == 512
+
+    async def test_migration_v5_skips_user_modified_max_tokens(self, db_repository):
+        """Migration v5 should not overwrite user-customized max_tokens."""
+        from app.db.schema import _run_migrations
+
+        async with aiosqlite.connect(str(db_repository)) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                "UPDATE agent_configs SET max_tokens = 1024 WHERE agent_id = 'rewrite-agent'"
+            )
+            await db.execute("DELETE FROM schema_version WHERE version >= 5")
+            await db.commit()
+            await _run_migrations(db)
+            await db.commit()
+
+        row = await AgentConfigRepository.get("rewrite-agent")
+        assert row["max_tokens"] == 1024  # preserved

@@ -298,6 +298,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("cache.response.threshold", "0.95", "float", "cache", "Response cache hit threshold"),
         ("cache.response.partial_threshold", "0.80", "float", "cache", "Response cache partial match threshold"),
         ("cache.response.max_entries", "20000", "int", "cache", "Response cache max entries (LRU eviction)"),
+        ("cache.response.enabled", "true", "bool", "cache", "Enable response cache storage"),
         # Embedding settings
         ("embedding.provider", "local", "string", "embedding", "Embedding provider: local, openrouter, groq, anthropic, or ollama"),
         ("embedding.local_model", "all-MiniLM-L6-v2", "string", "embedding", "Local embedding model name"),
@@ -343,7 +344,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("scene-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Scene activation"),
         ("automation-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Automation management"),
         ("security-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Security system control"),
-        ("rewrite-agent", 0, "groq/llama-3.1-8b-instant", 2, 1, 0.8, 128, "Cached response phrasing variation"),
+        ("rewrite-agent", 0, "groq/llama-3.1-8b-instant", 2, 1, 0.8, 512, "Cached response phrasing variation"),
     ]
 
     await db.executemany(
@@ -501,4 +502,16 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
 
         await db.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (4)"
+        )
+
+    if current_version < 5:
+        # Migration 5: Increase rewrite-agent max_tokens from 128 to 512
+        await db.execute("""
+            UPDATE agent_configs
+            SET max_tokens = 512
+            WHERE agent_id = 'rewrite-agent'
+            AND max_tokens IN (128, 256)
+        """)
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (5)"
         )

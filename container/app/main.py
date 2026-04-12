@@ -72,6 +72,42 @@ def _parse_ha_states(states: list[dict[str, Any]]) -> list[EntityIndexEntry]:
     return entries
 
 
+async def _periodic_entity_sync(app: FastAPI) -> None:
+    """Periodically sync entity index with Home Assistant state."""
+    while True:
+        try:
+            raw = await SettingsRepository.get_value(
+                "entity_sync.interval_minutes", "30"
+            )
+            interval_minutes = int(raw)
+        except (TypeError, ValueError):
+            interval_minutes = 30
+
+        if interval_minutes <= 0:
+            # Disabled -- check again in 5 minutes in case setting changes
+            await asyncio.sleep(300)
+            continue
+
+        await asyncio.sleep(interval_minutes * 60)
+
+        try:
+            ha_client = app.state.ha_client
+            entity_index = app.state.entity_index
+            if not ha_client or not entity_index:
+                continue
+
+            states = await ha_client.get_states()
+            entities = _parse_ha_states(states)
+            result = entity_index.sync(entities)
+            logger.info(
+                "Periodic entity sync: +%d ~%d -%d =%d",
+                result["added"], result["updated"],
+                result["removed"], result["unchanged"],
+            )
+        except Exception:
+            logger.warning("Periodic entity sync failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
@@ -79,6 +115,17 @@ async def lifespan(app: FastAPI):
     _configure_logging()
     logger.info("Starting agent-assist container")
     await init_db()
+
+    # Register default sync interval setting if not already set
+    existing = await SettingsRepository.get_value("entity_sync.interval_minutes")
+    if existing is None:
+        await SettingsRepository.set(
+            "entity_sync.interval_minutes",
+            "30",
+            value_type="number",
+            category="sync",
+            description="Minutes between periodic entity index syncs (0 = disabled)",
+        )
 
     # Check if setup is complete before initializing HA-dependent components
     setup_complete = await SetupStateRepository.is_complete()
@@ -254,6 +301,11 @@ async def lifespan(app: FastAPI):
 
         ws_task = asyncio.create_task(ws_client.run())
 
+    # Start periodic entity sync task
+    sync_task = None
+    if setup_complete and entity_index is not None:
+        sync_task = asyncio.create_task(_periodic_entity_sync(app))
+
     # Store on app.state for access elsewhere if needed
     app.state.startup_time = time.time()
     app.state.registry = registry
@@ -268,6 +320,7 @@ async def lifespan(app: FastAPI):
     app.state.mcp_tool_manager = mcp_tool_manager
     app.state.ws_client = ws_client
     app.state.presence_detector = presence_detector
+    app.state.sync_task = sync_task
 
     # --- Plugin System (Batch F) ---
     from app.plugins.base import PluginContext
@@ -298,6 +351,8 @@ async def lifespan(app: FastAPI):
         await ws_client.disconnect()
     if ws_task and not ws_task.done():
         ws_task.cancel()
+    if sync_task and not sync_task.done():
+        sync_task.cancel()
     await mcp_registry.disconnect_all()
     if ha_client:
         await ha_client.close()
