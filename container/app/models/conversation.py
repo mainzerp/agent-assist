@@ -38,3 +38,4 @@ class StreamToken(BaseModel):
     token: str
     done: bool = False
     conversation_id: str | None = None
+    mediated_speech: str | None = None

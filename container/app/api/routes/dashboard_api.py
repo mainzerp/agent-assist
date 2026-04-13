@@ -86,6 +86,7 @@ class RewriteConfigUpdate(BaseModel):
 
 class PersonalityConfigUpdate(BaseModel):
     prompt: str | None = None
+    mediation_temperature: float | None = None
 
 
 # --- Overview ---
@@ -507,18 +508,24 @@ async def update_rewrite_config(payload: RewriteConfigUpdate):
 
 @router.get("/personality/config")
 async def get_personality_config():
-    """Get current personality prompt."""
+    """Get current personality prompt and mediation temperature."""
     prompt = await SettingsRepository.get_value("personality.prompt", "")
-    return {"prompt": prompt}
+    temperature = await SettingsRepository.get_value("mediation.temperature", "0.3")
+    return {"prompt": prompt, "mediation_temperature": float(temperature)}
 
 
 @router.put("/personality/config")
 async def update_personality_config(payload: PersonalityConfigUpdate):
-    """Save personality prompt."""
+    """Save personality prompt and mediation temperature."""
     if payload.prompt is not None:
         await SettingsRepository.set(
             "personality.prompt", payload.prompt,
             "string", "personality", "Personality system prompt for response mediation",
+        )
+    if payload.mediation_temperature is not None:
+        await SettingsRepository.set(
+            "mediation.temperature", str(payload.mediation_temperature),
+            "float", "mediation", "Temperature for personality mediation LLM calls",
         )
     return {"status": "ok"}
 
@@ -600,6 +607,7 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
                     token=chunk.result.get("token", ""),
                     done=chunk.done,
                     conversation_id=chunk.result.get("conversation_id") if chunk.done else None,
+                    mediated_speech=chunk.result.get("mediated_speech") if chunk.done else None,
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:

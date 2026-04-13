@@ -8,6 +8,7 @@ import litellm
 from app.db.repository import AgentConfigRepository
 from app.llm.providers import resolve_provider_params
 from app.models.agent import AgentConfig
+from app.analytics.collector import track_token_usage
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,11 @@ async def complete(
             temperature=temperature,
             **provider_params,
         )
+        if response.choices and response.choices[0].finish_reason == "length":
+            logger.warning(
+                "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
+                agent_id, model, max_tokens,
+            )
         content = response.choices[0].message.content
 
         # Single retry on empty response (e.g. rate limiting)
@@ -60,12 +66,24 @@ async def complete(
                 temperature=temperature,
                 **provider_params,
             )
+            if response.choices and response.choices[0].finish_reason == "length":
+                logger.warning(
+                    "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
+                    agent_id, model, max_tokens,
+                )
             content = response.choices[0].message.content
 
         if not content:
             raise ValueError(
                 f"Empty LLM response for agent={agent_id} after retry "
                 f"(finish_reason={response.choices[0].finish_reason})"
+            )
+        if hasattr(response, 'usage') and response.usage:
+            await track_token_usage(
+                agent_id=agent_id,
+                provider=model.split('/')[0] if '/' in model else 'unknown',
+                tokens_in=response.usage.prompt_tokens or 0,
+                tokens_out=response.usage.completion_tokens or 0,
             )
         return content
     except litellm.exceptions.AuthenticationError:
@@ -128,11 +146,23 @@ async def complete_with_tools(
             temperature=temperature,
             **provider_params,
         )
+        if hasattr(response, 'usage') and response.usage:
+            await track_token_usage(
+                agent_id=agent_id,
+                provider=model.split('/')[0] if '/' in model else 'unknown',
+                tokens_in=response.usage.prompt_tokens or 0,
+                tokens_out=response.usage.completion_tokens or 0,
+            )
         msg = response.choices[0].message
         tool_calls = getattr(msg, "tool_calls", None)
 
         if not tool_calls:
             # No tool calls -- return the text content
+            if response.choices and response.choices[0].finish_reason == "length":
+                logger.warning(
+                    "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
+                    agent_id, model, max_tokens,
+                )
             content = msg.content
             if not content:
                 logger.warning(
@@ -180,5 +210,17 @@ async def complete_with_tools(
         temperature=temperature,
         **provider_params,
     )
+    if hasattr(response, 'usage') and response.usage:
+        await track_token_usage(
+            agent_id=agent_id,
+            provider=model.split('/')[0] if '/' in model else 'unknown',
+            tokens_in=response.usage.prompt_tokens or 0,
+            tokens_out=response.usage.completion_tokens or 0,
+        )
+    if response.choices and response.choices[0].finish_reason == "length":
+        logger.warning(
+            "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
+            agent_id, model, max_tokens,
+        )
     content = response.choices[0].message.content
     return content or ""

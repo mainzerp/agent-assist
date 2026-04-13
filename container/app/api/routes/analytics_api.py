@@ -43,7 +43,7 @@ async def analytics_overview(
     hours: int = Query(24, ge=1, le=720),
 ):
     """Summary metrics for the analytics dashboard."""
-    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
 
     requests = await AnalyticsRepository.query_by_range(
         event_type="request", start=start, limit=100000,
@@ -83,7 +83,7 @@ async def analytics_requests(
     bucket_minutes: int = Query(60, ge=5, le=1440),
 ):
     """Time-series request counts in Chart.js format."""
-    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
     events = await AnalyticsRepository.query_by_range(
         event_type="request", start=start, limit=100000,
     )
@@ -119,7 +119,7 @@ async def analytics_agents(
     hours: int = Query(24, ge=1, le=720),
 ):
     """Per-agent metrics with p50/p95/p99 latencies."""
-    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
     events = await AnalyticsRepository.query_by_range(
         event_type="request", start=start, limit=100000,
     )
@@ -154,7 +154,7 @@ async def analytics_cache(
     bucket_minutes: int = Query(60, ge=5, le=1440),
 ):
     """Cache hit rate time-series in Chart.js format."""
-    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
     events = await AnalyticsRepository.query_by_range(start=start, limit=100000)
 
     hit_types = {"routing_hit", "response_hit", "response_partial"}
@@ -199,7 +199,7 @@ async def analytics_tokens(
     hours: int = Query(24, ge=1, le=720),
 ):
     """Token usage per agent/provider."""
-    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
     events = await AnalyticsRepository.query_by_range(
         event_type="token_usage", start=start, limit=100000,
     )
@@ -236,7 +236,7 @@ async def analytics_rewrite(
     hours: int = Query(24, ge=1, le=720),
 ):
     """Rewrite invocation stats."""
-    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
     events = await AnalyticsRepository.query_by_range(
         event_type="rewrite_invocation", start=start, limit=100000,
     )

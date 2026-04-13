@@ -686,6 +686,7 @@ class OrchestratorAgent(BaseAgent):
             id=conversation_id or "orchestrator-stream",
         )
 
+        t0_dispatch = time.perf_counter()
         collected_speech = []
         action_executed = None
         if span_collector:
@@ -693,30 +694,45 @@ class OrchestratorAgent(BaseAgent):
                 async for chunk in self._dispatcher.dispatch_stream(request):
                     token = chunk.result.get("token", "")
                     done = chunk.result.get("done", False)
+                    error = chunk.result.get("error")
+                    if error:
+                        logger.warning("Agent streaming error: %s", error)
                     if token:
                         collected_speech.append(token)
                     if done and chunk.result.get("action_executed"):
                         action_executed = chunk.result["action_executed"]
-                    yield {
-                        "token": token,
-                        "done": done,
-                        "conversation_id": conversation_id if done else None,
-                    }
+                    # Always forward non-empty tokens (even from done=True chunks);
+                    # never propagate done=True from agent -- we yield our own after mediation
+                    if token:
+                        yield {
+                            "token": token,
+                            "done": False,
+                            "conversation_id": None,
+                        }
                 span["metadata"]["token_count"] = len(collected_speech)
                 span["metadata"]["agent_response"] = "".join(collected_speech)[:500]
         else:
             async for chunk in self._dispatcher.dispatch_stream(request):
                 token = chunk.result.get("token", "")
                 done = chunk.result.get("done", False)
+                error = chunk.result.get("error")
+                if error:
+                    logger.warning("Agent streaming error: %s", error)
                 if token:
                     collected_speech.append(token)
                 if done and chunk.result.get("action_executed"):
                     action_executed = chunk.result["action_executed"]
-                yield {
-                    "token": token,
-                    "done": done,
-                    "conversation_id": conversation_id if done else None,
-                }
+                # Always forward non-empty tokens (even from done=True chunks);
+                # never propagate done=True from agent -- we yield our own after mediation
+                if token:
+                    yield {
+                        "token": token,
+                        "done": False,
+                        "conversation_id": None,
+                    }
+
+        latency_ms = (time.perf_counter() - t0_dispatch) * 1000
+        await track_request(target_agent, cache_hit=False, latency_ms=latency_ms)
 
         # 4. Store conversation turn and create trace summary
         full_speech = "".join(collected_speech)
@@ -818,6 +834,18 @@ class OrchestratorAgent(BaseAgent):
                 except Exception:
                     logger.warning("Failed to store response cache", exc_info=True)
             self._store_turn(conversation_id, user_text, full_speech, agent_id=target_agent)
+
+        # Yield final done chunk with optional mediated_speech
+        mediated_text = strip_markdown(full_speech)
+        raw_text = "".join(collected_speech)
+        final_chunk = {
+            "token": "",
+            "done": True,
+            "conversation_id": conversation_id,
+        }
+        if mediated_text != strip_markdown(raw_text):
+            final_chunk["mediated_speech"] = mediated_text
+        yield final_chunk
 
     async def _execute_cached_action(self, cached_action) -> dict | None:
         """Execute a cached action via HA client. Returns action result or None."""
@@ -1105,8 +1133,8 @@ class OrchestratorAgent(BaseAgent):
             ]
 
             model = await SettingsRepository.get_value("rewrite.model", "groq/llama-3.1-8b-instant")
-            temp = float(await SettingsRepository.get_value("rewrite.temperature", "0.3"))
-            result = await llm_client.complete("orchestrator", messages, model=model, temperature=temp)
+            temp = float(await SettingsRepository.get_value("mediation.temperature", "0.3"))
+            result = await llm_client.complete("orchestrator", messages, model=model, temperature=temp, max_tokens=2048)
             return result.strip() if result and result.strip() else self._format_fallback(agent_responses)
         except Exception:
             logger.warning("Multi-agent response merge failed, using fallback format", exc_info=True)
@@ -1144,12 +1172,12 @@ class OrchestratorAgent(BaseAgent):
                 {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
-                    "content": f"User asked: {user_text}\nAgent ({agent_id}) responded: {agent_speech}\n\nReformulate:",
+                    "content": f"User asked: {user_text}\nAgent ({agent_id}) responded: {agent_speech}\n\nRephrase:",
                 },
             ]
             model = await SettingsRepository.get_value("rewrite.model", "groq/llama-3.1-8b-instant")
-            temp = float(await SettingsRepository.get_value("rewrite.temperature", "0.3"))
-            result = await llm_client.complete("orchestrator", messages, model=model, temperature=temp)
+            temp = float(await SettingsRepository.get_value("mediation.temperature", "0.3"))
+            result = await llm_client.complete("orchestrator", messages, model=model, temperature=temp, max_tokens=2048)
             return result.strip() if result and result.strip() else agent_speech
         except Exception:
             logger.warning("Response mediation failed, using original speech", exc_info=True)

@@ -1,7 +1,7 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Overview{% endblock %}
 {% block nav_overview %}active{% endblock %}
-{% block header_title %}Overview{% endblock %}
+{% block header_title %}System Overview{% endblock %}
 {% block page_content %}
 <div x-data="overviewPage()" x-init="loadAll()">
 
@@ -39,7 +39,6 @@
     <!-- Page header -->
     <div class="page-header">
         <div class="page-header-text">
-            <h2 class="section-title mt-0 mb-0">System Overview</h2>
             <p class="page-subtitle">Key metrics from the last 24 hours. Auto-refreshes every 30s.</p>
         </div>
     </div>

@@ -174,6 +174,8 @@ class VectorStore:
         ids: list[str] | None = None,
         where: dict | None = None,
         include: list[str] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> dict:
         """Get entries by ID or filter from a collection."""
         col = self.get_collection(collection_name)
@@ -184,6 +186,10 @@ class VectorStore:
             kwargs["where"] = where
         if include is not None:
             kwargs["include"] = include
+        if limit is not None:
+            kwargs["limit"] = limit
+        if offset is not None:
+            kwargs["offset"] = offset
         try:
             return col.get(**kwargs)
         except Exception as exc:

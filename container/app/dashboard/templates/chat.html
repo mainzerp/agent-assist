@@ -1,13 +1,12 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Chat{% endblock %}
 {% block nav_chat %}active{% endblock %}
-{% block header_title %}Chat{% endblock %}
+{% block header_title %}Chat Test Interface{% endblock %}
 {% block page_content %}
 <div x-data="chatPage()" x-init="init()">
 
     <div class="page-header">
         <div class="page-header-text">
-            <h2 class="section-title mt-0 mb-0">Chat Test Interface</h2>
             <p class="page-subtitle">Send messages and see real-time streamed responses from the agent pipeline.</p>
         </div>
         <div style="display: flex; gap: 0.5rem; align-items: center;">
@@ -146,6 +145,9 @@ function chatPage() {
                             if (data.done) {
                                 if (data.conversation_id) {
                                     this.conversationId = data.conversation_id;
+                                }
+                                if (data.mediated_speech) {
+                                    this.streamBuffer = data.mediated_speech;
                                 }
                             }
                         } catch (e) {

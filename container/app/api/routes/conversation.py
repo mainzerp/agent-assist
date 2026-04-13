@@ -108,6 +108,7 @@ async def conversation_sse(
                     token=chunk.result.get("token", ""),
                     done=chunk.done,
                     conversation_id=chunk.result.get("conversation_id") if chunk.done else None,
+                    mediated_speech=chunk.result.get("mediated_speech") if chunk.done else None,
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
@@ -136,6 +137,7 @@ async def ws_conversation(
             conv_request = ConversationRequest(**data)
             trace_id = uuid.uuid4().hex[:16]
             span_collector = SpanCollector(trace_id)
+            span_collector.source = "ha"
             a2a_request, _ = _build_a2a_request(conv_request, "message/stream", span_collector)
 
             try:
@@ -144,6 +146,7 @@ async def ws_conversation(
                         token=chunk.result.get("token", ""),
                         done=chunk.done,
                         conversation_id=chunk.result.get("conversation_id") if chunk.done else None,
+                        mediated_speech=chunk.result.get("mediated_speech") if chunk.done else None,
                     )
                     await websocket.send_json(token.model_dump())
             finally:

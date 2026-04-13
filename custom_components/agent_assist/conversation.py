@@ -232,6 +232,9 @@ class AgentAssistConversationEntity(
                     speech_parts.append(token_text)
                 if data.get("done", False):
                     final_conversation_id = data.get("conversation_id", final_conversation_id)
+                    mediated = data.get("mediated_speech")
+                    if mediated:
+                        speech_parts = [mediated]
                     break
             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                 break

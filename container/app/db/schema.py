@@ -92,7 +92,7 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             timeout INTEGER NOT NULL DEFAULT 5,
             max_iterations INTEGER NOT NULL DEFAULT 3,
             temperature REAL NOT NULL DEFAULT 0.2,
-            max_tokens INTEGER NOT NULL DEFAULT 256,
+            max_tokens INTEGER NOT NULL DEFAULT 1024,
             description TEXT,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
@@ -371,17 +371,17 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
 
     # Default agent configs
     default_agents = [
-        ("orchestrator", 1, "groq/llama-3.1-8b-instant", 10, 3, 0.3, 256, "Intent classification and task routing"),
-        ("light-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 512, "Lighting control"),
-        ("music-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 512, "Music and media playback"),
-        ("general-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.5, 512, "Fallback and general Q&A"),
-        ("timer-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 512, "Timers and alarms"),
-        ("climate-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Climate and HVAC control"),
-        ("media-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 512, "Media player control"),
-        ("scene-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 512, "Scene activation"),
-        ("automation-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 512, "Automation management"),
-        ("security-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Security system control"),
-        ("rewrite-agent", 0, "groq/llama-3.1-8b-instant", 2, 1, 0.8, 512, "Cached response phrasing variation"),
+        ("orchestrator", 1, "groq/llama-3.1-8b-instant", 10, 3, 0.3, 1024, "Intent classification and task routing"),
+        ("light-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Lighting control"),
+        ("music-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Music and media playback"),
+        ("general-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.5, 1024, "Fallback and general Q&A"),
+        ("timer-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Timers and alarms"),
+        ("climate-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Climate and HVAC control"),
+        ("media-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Media player control"),
+        ("scene-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Scene activation"),
+        ("automation-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Automation management"),
+        ("security-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Security system control"),
+        ("rewrite-agent", 0, "groq/llama-3.1-8b-instant", 2, 1, 0.8, 1024, "Cached response phrasing variation"),
     ]
 
     await db.executemany(
@@ -648,4 +648,14 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             pass  # Column may already exist
         await db.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (9)"
+        )
+
+    if current_version < 10:
+        # Migration 10: Increase max_tokens to prevent response truncation
+        await db.execute("""
+            UPDATE agent_configs SET max_tokens = 1024
+            WHERE max_tokens IN (256, 512)
+        """)
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (10)"
         )

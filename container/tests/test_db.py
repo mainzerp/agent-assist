@@ -713,7 +713,7 @@ class TestMigrationV4:
 class TestMigrationV5:
 
     async def test_migration_v5_bumps_rewrite_agent_max_tokens(self, db_repository):
-        """Migration v5 should increase rewrite-agent max_tokens from 128 to 512."""
+        """Migration v5 should increase rewrite-agent max_tokens from 128 to 512 (then migration 10 to 1024)."""
         from app.db.schema import _run_migrations
 
         async with aiosqlite.connect(str(db_repository)) as db:
@@ -728,7 +728,7 @@ class TestMigrationV5:
             await db.commit()
 
         row = await AgentConfigRepository.get("rewrite-agent")
-        assert row["max_tokens"] == 512
+        assert row["max_tokens"] == 1024
 
     async def test_migration_v5_skips_user_modified_max_tokens(self, db_repository):
         """Migration v5 should not overwrite user-customized max_tokens."""

@@ -1,13 +1,12 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Personality{% endblock %}
 {% block nav_personality %}active{% endblock %}
-{% block header_title %}Personality{% endblock %}
+{% block header_title %}Personality Configuration{% endblock %}
 {% block page_content %}
 <div x-data="personalityPage()" x-init="loadConfig()">
 
     <div class="page-header">
         <div class="page-header-text">
-            <h2 class="section-title mt-0 mb-0">Personality Configuration</h2>
             <p class="page-subtitle">Define the assistant personality. When set, all responses are mediated through this prompt.</p>
         </div>
     </div>
@@ -25,6 +24,20 @@
                 style="resize: vertical; min-height: 120px;"
             ></textarea>
             <span class="form-hint">When this prompt is non-empty, all agent responses will be mediated through an LLM call that applies this personality. Leave empty to disable mediation.</span>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Mediation Temperature: <span x-text="config.mediation_temperature"></span></label>
+            <input
+                type="range"
+                class="form-input"
+                min="0"
+                max="1"
+                step="0.1"
+                x-model.number="config.mediation_temperature"
+                style="width: 100%;"
+            />
+            <span class="form-hint">Controls creativity of personality rephrasing. Lower = more accurate, higher = more creative. Default: 0.3</span>
         </div>
 
         <div class="form-actions">
@@ -51,7 +64,7 @@
 <script>
 function personalityPage() {
     return {
-        config: { prompt: "" },
+        config: { prompt: "", mediation_temperature: 0.3 },
         saved: false,
         error: "",
         async loadConfig() {

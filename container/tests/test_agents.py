@@ -43,6 +43,7 @@ from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
 from app.agents.custom_loader import DynamicAgent, CustomAgentLoader  # noqa: E402
 from app.agents.sanitize import strip_markdown  # noqa: E402
 from app.models.agent import AgentCard, AgentTask, TaskContext  # noqa: E402
+from app.models.conversation import StreamToken  # noqa: E402
 import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
 
 from tests.helpers import make_agent_task
@@ -2844,4 +2845,99 @@ class TestStripMarkdown:
         assert "- " not in result
         assert "Weather in Berlin" in result
         assert "15C" in result
+
+
+class TestStreamMediatedSpeech:
+    """Tests for streaming mediated_speech in handle_task_stream."""
+
+    def _make_orchestrator(self):
+        dispatcher = AsyncMock()
+        registry = AsyncMock()
+        cache_manager = MagicMock()
+        cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
+        cache_manager.apply_rewrite = AsyncMock()
+
+        registry.list_agents = AsyncMock(return_value=[
+            AgentCard(agent_id="light-agent", name="Light Agent", description="", skills=["light"]),
+            AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"]),
+        ])
+
+        orchestrator = OrchestratorAgent(
+            dispatcher=dispatcher,
+            registry=registry,
+            cache_manager=cache_manager,
+        )
+        return orchestrator, dispatcher, cache_manager
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_yields_mediated_speech_when_changed(self, mock_complete, mock_track, mock_settings):
+        """Final done chunk includes mediated_speech when mediation changes the text."""
+        orch, dispatcher, _ = self._make_orchestrator()
+        # First call: classify. Second call: mediation.
+        mock_complete.side_effect = [
+            "light-agent (95%): Turn on light",
+            "Hey! The light is now on for you!",
+        ]
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {
+            "personality.prompt": "You are a friendly assistant.",
+            "rewrite.model": "groq/llama-3.1-8b-instant",
+            "rewrite.temperature": "0.3",
+        }.get(k, d))
+
+        async def mock_stream(request):
+            yield MagicMock(result={"token": "Light ", "done": False})
+            yield MagicMock(result={"token": "is on.", "done": True})
+        dispatcher.dispatch_stream = mock_stream
+
+        task = _make_task("turn on light")
+        task.conversation_id = "conv-mediated"
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        # Intermediate chunks should NOT have done=True
+        intermediate = [c for c in chunks if not c["done"]]
+        assert len(intermediate) >= 1
+
+        # Final chunk should have done=True and mediated_speech
+        final = [c for c in chunks if c["done"]]
+        assert len(final) == 1
+        assert final[0]["conversation_id"] == "conv-mediated"
+        assert final[0].get("mediated_speech") is not None
+        assert "friendly" in final[0]["mediated_speech"] or "Hey" in final[0]["mediated_speech"]
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_no_mediated_speech_when_no_mediation(self, mock_complete, mock_track, mock_settings):
+        """Final done chunk does NOT include mediated_speech when personality is empty."""
+        orch, dispatcher, _ = self._make_orchestrator()
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        mock_settings.get_value = AsyncMock(return_value="")
+
+        async def mock_stream(request):
+            yield MagicMock(result={"token": "Light is on.", "done": True})
+        dispatcher.dispatch_stream = mock_stream
+
+        task = _make_task("turn on light")
+        task.conversation_id = "conv-no-mediation"
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        final = [c for c in chunks if c["done"]]
+        assert len(final) == 1
+        assert final[0].get("mediated_speech") is None
+
+    def test_stream_token_model_with_mediated_speech(self):
+        """StreamToken accepts and serializes mediated_speech field."""
+        token = StreamToken(token="", done=True, conversation_id="c1", mediated_speech="Hello!")
+        data = token.model_dump()
+        assert data["mediated_speech"] == "Hello!"
+        assert data["done"] is True
+        assert data["conversation_id"] == "c1"
+
+    def test_stream_token_model_without_mediated_speech(self):
+        """StreamToken mediated_speech defaults to None."""
+        token = StreamToken(token="hi", done=False)
+        data = token.model_dump()
+        assert data["mediated_speech"] is None
 
