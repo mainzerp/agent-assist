@@ -541,6 +541,119 @@ class TestVisibilityRules:
         assert "media_player.sonos" in entity_ids
         assert "switch.hallway" not in entity_ids
 
+    async def test_device_class_include_filters_sensor_by_device_class(self):
+        matcher, mock_index, _ = self._make_matcher()
+        temp_entry = make_entity_index_entry("sensor.temp", "Temperature", device_class="temperature")
+        humidity_entry = make_entity_index_entry("sensor.humidity", "Humidity", device_class="humidity")
+        power_entry = make_entity_index_entry("sensor.power", "Power", device_class="power")
+
+        def get_by_id(eid):
+            return {"sensor.temp": temp_entry, "sensor.humidity": humidity_entry, "sensor.power": power_entry}.get(eid)
+        mock_index.get_by_id.side_effect = get_by_id
+        results = self._make_results("sensor.temp", "sensor.humidity", "sensor.power")
+
+        with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
+            mock_repo.get_rules = AsyncMock(return_value=[
+                {"rule_type": "domain_include", "rule_value": "sensor"},
+                {"rule_type": "device_class_include", "rule_value": "temperature"},
+                {"rule_type": "device_class_include", "rule_value": "humidity"},
+            ])
+            filtered = await matcher._apply_visibility_rules("climate-agent", results)
+
+        entity_ids = {r.entity_id for r in filtered}
+        assert "sensor.temp" in entity_ids
+        assert "sensor.humidity" in entity_ids
+        assert "sensor.power" not in entity_ids
+
+    async def test_device_class_include_does_not_filter_non_sensor_domains(self):
+        matcher, mock_index, _ = self._make_matcher()
+        climate_entry = make_entity_index_entry("climate.thermostat", "Thermostat", domain="climate")
+        temp_entry = make_entity_index_entry("sensor.temp", "Temperature", device_class="temperature")
+
+        def get_by_id(eid):
+            return {"climate.thermostat": climate_entry, "sensor.temp": temp_entry}.get(eid)
+        mock_index.get_by_id.side_effect = get_by_id
+        results = self._make_results("climate.thermostat", "sensor.temp")
+
+        with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
+            mock_repo.get_rules = AsyncMock(return_value=[
+                {"rule_type": "domain_include", "rule_value": "climate"},
+                {"rule_type": "domain_include", "rule_value": "sensor"},
+                {"rule_type": "device_class_include", "rule_value": "temperature"},
+            ])
+            filtered = await matcher._apply_visibility_rules("climate-agent", results)
+
+        entity_ids = {r.entity_id for r in filtered}
+        assert "climate.thermostat" in entity_ids
+        assert "sensor.temp" in entity_ids
+
+    async def test_device_class_exclude_removes_matching(self):
+        matcher, mock_index, _ = self._make_matcher()
+        temp_entry = make_entity_index_entry("sensor.temp", "Temperature", device_class="temperature")
+        power_entry = make_entity_index_entry("sensor.power", "Power", device_class="power")
+
+        def get_by_id(eid):
+            return {"sensor.temp": temp_entry, "sensor.power": power_entry}.get(eid)
+        mock_index.get_by_id.side_effect = get_by_id
+        results = self._make_results("sensor.temp", "sensor.power")
+
+        with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
+            mock_repo.get_rules = AsyncMock(return_value=[
+                {"rule_type": "domain_include", "rule_value": "sensor"},
+                {"rule_type": "device_class_exclude", "rule_value": "power"},
+            ])
+            filtered = await matcher._apply_visibility_rules("climate-agent", results)
+
+        entity_ids = {r.entity_id for r in filtered}
+        assert "sensor.temp" in entity_ids
+        assert "sensor.power" not in entity_ids
+
+    async def test_entity_include_overrides_device_class_exclusion(self):
+        matcher, mock_index, _ = self._make_matcher()
+        power_entry = make_entity_index_entry("sensor.power", "Power", device_class="power")
+        temp_entry = make_entity_index_entry("sensor.temp", "Temperature", device_class="temperature")
+
+        def get_by_id(eid):
+            return {"sensor.power": power_entry, "sensor.temp": temp_entry}.get(eid)
+        mock_index.get_by_id.side_effect = get_by_id
+        results = self._make_results("sensor.temp", "sensor.power")
+
+        with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
+            mock_repo.get_rules = AsyncMock(return_value=[
+                {"rule_type": "domain_include", "rule_value": "sensor"},
+                {"rule_type": "device_class_include", "rule_value": "temperature"},
+                {"rule_type": "entity_include", "rule_value": "sensor.power"},
+            ])
+            filtered = await matcher._apply_visibility_rules("climate-agent", results)
+
+        entity_ids = {r.entity_id for r in filtered}
+        assert "sensor.temp" in entity_ids
+        assert "sensor.power" in entity_ids
+
+    async def test_combined_domain_and_device_class_include(self):
+        matcher, mock_index, _ = self._make_matcher()
+        light_entry = make_entity_index_entry("light.kitchen", "Kitchen Light", domain="light")
+        illum_entry = make_entity_index_entry("sensor.illum", "Illuminance", device_class="illuminance")
+        temp_entry = make_entity_index_entry("sensor.temp", "Temperature", device_class="temperature")
+
+        def get_by_id(eid):
+            return {"light.kitchen": light_entry, "sensor.illum": illum_entry, "sensor.temp": temp_entry}.get(eid)
+        mock_index.get_by_id.side_effect = get_by_id
+        results = self._make_results("light.kitchen", "sensor.illum", "sensor.temp")
+
+        with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
+            mock_repo.get_rules = AsyncMock(return_value=[
+                {"rule_type": "domain_include", "rule_value": "light"},
+                {"rule_type": "domain_include", "rule_value": "sensor"},
+                {"rule_type": "device_class_include", "rule_value": "illuminance"},
+            ])
+            filtered = await matcher._apply_visibility_rules("light-agent", results)
+
+        entity_ids = {r.entity_id for r in filtered}
+        assert "light.kitchen" in entity_ids
+        assert "sensor.illum" in entity_ids
+        assert "sensor.temp" not in entity_ids
+
 
 # ---------------------------------------------------------------------------
 # Entity index status tracking

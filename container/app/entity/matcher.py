@@ -13,6 +13,9 @@ from app.models.entity_index import EntityIndexEntry
 
 logger = logging.getLogger(__name__)
 
+# Domains where device_class filtering applies (sensor-like domains)
+DEVICE_CLASS_DOMAINS = {"sensor", "binary_sensor", "cover", "number"}
+
 
 @dataclass
 class MatchResult:
@@ -164,7 +167,8 @@ class EntityMatcher:
     ) -> list[MatchResult]:
         """Filter match results by agent entity visibility rules.
 
-        Rule types: domain_include, domain_exclude, area_include, area_exclude.
+        Rule types: domain_include, domain_exclude, area_include, area_exclude,
+        device_class_include, device_class_exclude.
         No rules = no filtering (full access).
         """
         rules = await EntityVisibilityRepository.get_rules(agent_id)
@@ -176,6 +180,8 @@ class EntityMatcher:
         area_include = set()
         area_exclude = set()
         entity_include = set()
+        device_class_include = set()
+        device_class_exclude = set()
         for rule in rules:
             rt = rule["rule_type"]
             rv = rule["rule_value"]
@@ -189,6 +195,10 @@ class EntityMatcher:
                 area_exclude.add(rv)
             elif rt == "entity_include":
                 entity_include.add(rv)
+            elif rt == "device_class_include":
+                device_class_include.add(rv)
+            elif rt == "device_class_exclude":
+                device_class_exclude.add(rv)
 
         filtered = []
         for result in results:
@@ -200,13 +210,23 @@ class EntityMatcher:
             if domain_exclude and domain in domain_exclude:
                 continue
 
-            # Area filtering requires entity index lookup
+            # Entity index lookup for area and device_class checks
             entry = self._entity_index.get_by_id(entity_id)
             area = entry.area if entry else None
             if area_include and (area is None or area not in area_include):
                 continue
             if area_exclude and area is not None and area in area_exclude:
                 continue
+
+            # Device class filtering (only for sensor-like domains)
+            if device_class_include and domain in DEVICE_CLASS_DOMAINS:
+                entity_dc = entry.device_class if entry else None
+                if not entity_dc or entity_dc not in device_class_include:
+                    continue
+            if device_class_exclude:
+                entity_dc = entry.device_class if entry else None
+                if entity_dc and entity_dc in device_class_exclude:
+                    continue
 
             filtered.append(result)
 

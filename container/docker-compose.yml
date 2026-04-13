@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   agent-assist:
     build: .
@@ -9,6 +7,13 @@ services:
       - "${CONTAINER_PORT:-8080}:8080"
     volumes:
       - agent-assist-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '4.0'
+        reservations:
+          memory: 1G
     environment:
       - CONTAINER_HOST=${CONTAINER_HOST:-0.0.0.0}
       - CONTAINER_PORT=${CONTAINER_PORT:-8080}

@@ -199,3 +199,112 @@ class TestSecurityAuth:
         with pytest.raises(HTTPException) as exc_info:
             await require_api_key(request)
         assert exc_info.value.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.2: Admin session tests
+# ---------------------------------------------------------------------------
+
+class TestAdminSession:
+
+    @patch("app.security.auth.get_fernet_key", return_value=b"0" * 32)
+    async def test_valid_session_accepted(self, _mock_key):
+        """A valid session cookie should be accepted."""
+        from app.security.auth import (
+            create_session_cookie,
+            require_admin_session,
+            SESSION_COOKIE_NAME,
+        )
+        import app.security.auth as auth_mod
+        auth_mod._session_serializer = None
+        cookie_value = create_session_cookie({"username": "admin"})
+        request = MagicMock()
+        request.cookies = {SESSION_COOKIE_NAME: cookie_value}
+        data = await require_admin_session(request)
+        assert data["username"] == "admin"
+        auth_mod._session_serializer = None
+
+    @patch("app.security.auth.get_fernet_key", return_value=b"0" * 32)
+    async def test_missing_cookie_rejected(self, _mock_key):
+        """Missing session cookie should raise 401."""
+        from app.security.auth import require_admin_session
+        from fastapi import HTTPException
+        import app.security.auth as auth_mod
+        auth_mod._session_serializer = None
+        request = MagicMock()
+        request.cookies = {}
+        with pytest.raises(HTTPException) as exc_info:
+            await require_admin_session(request)
+        assert exc_info.value.status_code == 401
+        auth_mod._session_serializer = None
+
+    @patch("app.security.auth.get_fernet_key", return_value=b"0" * 32)
+    async def test_tampered_cookie_rejected(self, _mock_key):
+        """A tampered session cookie should raise 401."""
+        from app.security.auth import require_admin_session, SESSION_COOKIE_NAME
+        from fastapi import HTTPException
+        import app.security.auth as auth_mod
+        auth_mod._session_serializer = None
+        request = MagicMock()
+        request.cookies = {SESSION_COOKIE_NAME: "tampered.invalid.cookie"}
+        with pytest.raises(HTTPException) as exc_info:
+            await require_admin_session(request)
+        assert exc_info.value.status_code == 401
+        auth_mod._session_serializer = None
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.2: Admin settings allowlist test (fix 1.9)
+# ---------------------------------------------------------------------------
+
+class TestSettingsAllowlist:
+
+    async def test_update_unknown_key_rejected(self, db_repository):
+        """Updating a non-existent settings key should return 400."""
+        from contextlib import asynccontextmanager
+        from app.main import create_app
+        from app.security.auth import require_admin_session, require_api_key
+
+        app = create_app()
+
+        @asynccontextmanager
+        async def _noop_lifespan(a):
+            yield
+
+        app.router.lifespan_context = _noop_lifespan
+        app.state.startup_time = 0
+        app.state.registry = MagicMock()
+        app.state.dispatcher = MagicMock()
+        app.state.ha_client = MagicMock()
+        app.state.entity_index = None
+        app.state.cache_manager = None
+        app.state.entity_matcher = None
+        app.state.alias_resolver = None
+        app.state.custom_loader = None
+        app.state.mcp_registry = MagicMock()
+        app.state.mcp_registry.list_servers.return_value = []
+        app.state.mcp_tool_manager = MagicMock()
+        app.state.ws_client = None
+        app.state.presence_detector = None
+        app.state.plugin_loader = MagicMock()
+        app.state.plugin_loader.loaded_plugins = {}
+        app.dependency_overrides[require_admin_session] = lambda: {"username": "admin"}
+        app.dependency_overrides[require_api_key] = lambda: "test-key"
+
+        import httpx
+
+        with patch(
+            "app.db.repository.SetupStateRepository.is_complete",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver"
+            ) as client:
+                resp = await client.put(
+                    "/api/admin/settings",
+                    json={"items": {"nonexistent_key": "value"}},
+                )
+                assert resp.status_code == 400
+                assert "Unknown setting key" in resp.json().get("detail", "")

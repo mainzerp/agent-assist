@@ -42,6 +42,7 @@ class TracingMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
             status_code = response.status_code
+            response.headers["X-Trace-Id"] = trace_id
         except Exception:
             status_code = 500
             raise
@@ -77,7 +78,6 @@ class TracingMiddleware(BaseHTTPMiddleware):
             except Exception:
                 pass
 
-        response.headers["X-Trace-Id"] = trace_id
         logger.info(
             "[%s] %s %s -> %d (%.1fms)",
             trace_id, method, path, response.status_code, duration_ms,

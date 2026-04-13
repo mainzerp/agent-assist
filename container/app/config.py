@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     chromadb_persist_dir: str = "/data/chromadb"
     sqlite_db_path: str = "/data/agent_assist.db"
+    cookie_secure: bool = False  # Set True when behind HTTPS
 
     model_config = SettingsConfigDict(
         env_prefix="",

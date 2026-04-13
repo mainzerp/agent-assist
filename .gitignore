@@ -40,5 +40,17 @@ Thumbs.db
 .coverage
 htmlcov/
 
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+
+# Runtime artifacts
+*.log
+*.sqlite3
+
+# Local environment overrides
+.env.local
+.env.*.local
+
 # Docs/SubAgent working files
 docs/SubAgent/

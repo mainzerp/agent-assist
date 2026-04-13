@@ -1,0 +1,12 @@
+tests/
+data/
+__pycache__/
+.pytest_cache/
+.env
+*.pyc
+.git
+*.md
+conftest.py
+pyproject.toml
+requirements-dev.txt
+check_config.py

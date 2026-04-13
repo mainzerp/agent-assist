@@ -166,7 +166,7 @@ class AdminAccountRepository:
     async def create(username: str, password_hash: str) -> None:
         async with get_db() as db:
             await db.execute(
-                "INSERT INTO admin_accounts (username, password_hash, created_at) "
+                "INSERT OR REPLACE INTO admin_accounts (username, password_hash, created_at) "
                 "VALUES (?, ?, ?)",
                 (username, password_hash, _now()),
             )
@@ -498,6 +498,70 @@ class EntityVisibilityRepository:
                 "SELECT agent_id, rule_type, rule_value FROM entity_visibility_rules"
             )
             return [dict(row) for row in await cursor.fetchall()]
+
+    @staticmethod
+    async def list_domain_include_rules() -> list[dict[str, Any]]:
+        """Return all domain_include rules: [{agent_id, rule_value}]."""
+        async with get_db() as db:
+            cursor = await db.execute(
+                "SELECT agent_id, rule_value FROM entity_visibility_rules "
+                "WHERE rule_type = 'domain_include'"
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    @staticmethod
+    async def list_device_class_include_rules() -> list[dict[str, Any]]:
+        """Return all device_class_include rules: [{agent_id, rule_value}]."""
+        async with get_db() as db:
+            cursor = await db.execute(
+                "SELECT agent_id, rule_value FROM entity_visibility_rules "
+                "WHERE rule_type = 'device_class_include'"
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    @staticmethod
+    async def set_domain_agents(domain: str, agent_ids: list[str]) -> None:
+        """Set which agents have domain_include for a given domain."""
+        async with get_db() as db:
+            await db.execute(
+                "DELETE FROM entity_visibility_rules "
+                "WHERE rule_type = 'domain_include' AND rule_value = ?",
+                (domain,),
+            )
+            for agent_id in agent_ids:
+                await db.execute(
+                    "INSERT OR IGNORE INTO entity_visibility_rules "
+                    "(agent_id, rule_type, rule_value) VALUES (?, 'domain_include', ?)",
+                    (agent_id, domain),
+                )
+            await db.commit()
+
+    @staticmethod
+    async def set_device_class_agents(device_class: str, agent_ids: list[str]) -> None:
+        """Set which agents have device_class_include for a given device_class.
+
+        Also ensures each agent has domain_include:sensor so the matcher
+        can reach the device_class filter stage.
+        """
+        async with get_db() as db:
+            await db.execute(
+                "DELETE FROM entity_visibility_rules "
+                "WHERE rule_type = 'device_class_include' AND rule_value = ?",
+                (device_class,),
+            )
+            for agent_id in agent_ids:
+                await db.execute(
+                    "INSERT OR IGNORE INTO entity_visibility_rules "
+                    "(agent_id, rule_type, rule_value) VALUES (?, 'device_class_include', ?)",
+                    (agent_id, device_class),
+                )
+                # Ensure agent has domain_include:sensor so matcher passes domain filter
+                await db.execute(
+                    "INSERT OR IGNORE INTO entity_visibility_rules "
+                    "(agent_id, rule_type, rule_value) VALUES (?, 'domain_include', 'sensor')",
+                    (agent_id,),
+                )
+            await db.commit()
 
 
 class PluginRepository:

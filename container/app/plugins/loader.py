@@ -41,7 +41,15 @@ class PluginLoader:
             logger.info("Plugin directory does not exist: %s", self._plugin_dir)
             return
 
-        for py_file in sorted(self._plugin_dir.glob("*.py")):
+        plugin_files = sorted(self._plugin_dir.glob("*.py"))
+        if plugin_files:
+            names = [f.name for f in plugin_files if not f.name.startswith("_")]
+            if names:
+                logger.warning(
+                    "Loading %d plugin file(s) from %s: %s",
+                    len(names), self._plugin_dir, ", ".join(names),
+                )
+        for py_file in plugin_files:
             if py_file.name.startswith("_"):
                 continue
             try:

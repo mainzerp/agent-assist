@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 
@@ -17,6 +18,9 @@ from app.security.auth import require_api_key, require_api_key_ws
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["conversation"])
+
+# Maximum allowed WebSocket message size in bytes (10 KB)
+_MAX_WS_MESSAGE_SIZE = 10_000
 
 # The dispatcher is set by main.py during startup
 _dispatcher = None
@@ -117,7 +121,11 @@ async def ws_conversation(
     await websocket.accept()
     try:
         while True:
-            data = await websocket.receive_json()
+            raw = await websocket.receive_text()
+            if len(raw) > _MAX_WS_MESSAGE_SIZE:
+                await websocket.send_json({"error": "Message too large", "max_bytes": _MAX_WS_MESSAGE_SIZE})
+                continue
+            data = json.loads(raw)
             conv_request = ConversationRequest(**data)
             trace_id = uuid.uuid4().hex[:16]
             span_collector = SpanCollector(trace_id)

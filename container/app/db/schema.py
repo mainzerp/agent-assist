@@ -4,6 +4,8 @@ Manages the SQLite database schema for all structured data: configuration,
 secrets, user accounts, conversation history, and analytics.
 """
 
+import asyncio
+
 import aiosqlite
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -11,20 +13,41 @@ from typing import AsyncGenerator
 
 from app.config import settings
 
+_db_pool: aiosqlite.Connection | None = None
+_db_lock = asyncio.Lock()
+
+
+async def _get_or_create_connection() -> aiosqlite.Connection:
+    """Get or create the shared database connection."""
+    global _db_pool
+    if _db_pool is None:
+        db_path = Path(settings.sqlite_db_path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        _db_pool = await aiosqlite.connect(str(db_path))
+        _db_pool.row_factory = aiosqlite.Row
+        await _db_pool.execute("PRAGMA journal_mode=WAL")
+        await _db_pool.execute("PRAGMA foreign_keys=ON")
+    return _db_pool
+
 
 @asynccontextmanager
 async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
-    """Async context manager for database connections."""
-    db_path = Path(settings.sqlite_db_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    db = await aiosqlite.connect(str(db_path))
-    db.row_factory = aiosqlite.Row
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA foreign_keys=ON")
-    try:
+    """Async context manager returning the shared database connection.
+
+    Uses WAL mode which allows concurrent readers with one writer.
+    The connection is not closed -- it lives for the process lifetime.
+    """
+    async with _db_lock:
+        db = await _get_or_create_connection()
         yield db
-    finally:
-        await db.close()
+
+
+async def close_db() -> None:
+    """Close the shared connection. Call on shutdown."""
+    global _db_pool
+    if _db_pool is not None:
+        await _db_pool.close()
+        _db_pool = None
 
 
 async def init_db() -> None:
@@ -338,11 +361,11 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("light-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 512, "Lighting control"),
         ("music-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 512, "Music and media playback"),
         ("general-agent", 1, "openrouter/openai/gpt-4o-mini", 5, 3, 0.5, 512, "Fallback and general Q&A"),
-        ("timer-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Timers and alarms"),
+        ("timer-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 512, "Timers and alarms"),
         ("climate-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Climate and HVAC control"),
-        ("media-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Media player control"),
-        ("scene-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Scene activation"),
-        ("automation-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Automation management"),
+        ("media-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 512, "Media player control"),
+        ("scene-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 512, "Scene activation"),
+        ("automation-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 512, "Automation management"),
         ("security-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 256, "Security system control"),
         ("rewrite-agent", 0, "groq/llama-3.1-8b-instant", 2, 1, 0.8, 512, "Cached response phrasing variation"),
     ]
@@ -397,8 +420,40 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("media-agent", "domain_include", "media_player"),
         ("scene-agent", "domain_include", "scene"),
         ("automation-agent", "domain_include", "automation"),
+        ("timer-agent", "domain_include", "timer"),
+        ("timer-agent", "domain_include", "input_datetime"),
+        ("timer-agent", "domain_include", "persistent_notification"),
+        ("timer-agent", "domain_include", "media_player"),
+        ("timer-agent", "domain_include", "calendar"),
         ("security-agent", "domain_include", "alarm_control_panel"),
         ("security-agent", "domain_include", "lock"),
+        # Sensor device_class rules for specialist agents
+        ("climate-agent", "domain_include", "sensor"),
+        ("climate-agent", "device_class_include", "temperature"),
+        ("climate-agent", "device_class_include", "humidity"),
+        ("climate-agent", "device_class_include", "pressure"),
+        ("climate-agent", "device_class_include", "dew_point"),
+        ("climate-agent", "device_class_include", "atmospheric_pressure"),
+        ("climate-agent", "device_class_include", "moisture"),
+        ("climate-agent", "device_class_include", "precipitation_intensity"),
+        ("climate-agent", "device_class_include", "wind_speed"),
+        ("climate-agent", "device_class_include", "wind_direction"),
+        ("security-agent", "domain_include", "sensor"),
+        ("security-agent", "domain_include", "binary_sensor"),
+        ("security-agent", "device_class_include", "motion"),
+        ("security-agent", "device_class_include", "occupancy"),
+        ("security-agent", "device_class_include", "door"),
+        ("security-agent", "device_class_include", "window"),
+        ("security-agent", "device_class_include", "tamper"),
+        ("security-agent", "device_class_include", "vibration"),
+        ("security-agent", "device_class_include", "smoke"),
+        ("security-agent", "device_class_include", "gas"),
+        ("security-agent", "device_class_include", "carbon_monoxide"),
+        ("security-agent", "device_class_include", "doorbell"),
+        ("security-agent", "device_class_include", "opening"),
+        ("security-agent", "device_class_include", "safety"),
+        ("light-agent", "domain_include", "sensor"),
+        ("light-agent", "device_class_include", "illuminance"),
     ]
 
     await db.executemany(
@@ -514,4 +569,57 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         """)
         await db.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (5)"
+        )
+
+    if current_version < 6:
+        # Migration 6: Upgrade timer/scene/automation agents to ActionableAgent
+        # Increase max_tokens from 256 to 512
+        await db.execute("""
+            UPDATE agent_configs
+            SET max_tokens = 512
+            WHERE agent_id IN ('timer-agent', 'scene-agent', 'automation-agent')
+            AND max_tokens = 256
+        """)
+        # Add timer-agent visibility rules
+        await db.execute(
+            "INSERT OR IGNORE INTO entity_visibility_rules "
+            "(agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            ("timer-agent", "domain_include", "timer"),
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO entity_visibility_rules "
+            "(agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            ("timer-agent", "domain_include", "input_datetime"),
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (6)"
+        )
+
+    if current_version < 7:
+        # Migration 7: Upgrade media-agent to ActionableAgent
+        # Increase max_tokens from 256 to 512
+        await db.execute("""
+            UPDATE agent_configs
+            SET max_tokens = 512
+            WHERE agent_id = 'media-agent'
+            AND max_tokens = 256
+        """)
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (7)"
+        )
+
+    if current_version < 8:
+        # Migration 8: Timer agent extensions -- add visibility for notification, media_player, calendar
+        new_rules = [
+            ("timer-agent", "domain_include", "persistent_notification"),
+            ("timer-agent", "domain_include", "media_player"),
+            ("timer-agent", "domain_include", "calendar"),
+        ]
+        await db.executemany(
+            "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) "
+            "VALUES (?, ?, ?)",
+            new_rules,
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (8)"
         )

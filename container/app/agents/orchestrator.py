@@ -6,7 +6,7 @@ import asyncio
 import logging
 import re
 import time
-from collections import defaultdict
+from collections import OrderedDict
 from typing import AsyncGenerator
 
 from app.agents.base import BaseAgent
@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 # Max conversation turns to keep per conversation
 _MAX_TURNS = 3
 
+# Conversation memory limits
+_MAX_CONVERSATIONS = 1000
+_CONVERSATION_TTL_SECONDS = 1800  # 30 minutes
+
 # Fallback agent when classification fails
 _FALLBACK_AGENT = "general-agent"
 
@@ -34,7 +38,7 @@ class OrchestratorAgent(BaseAgent):
         self._registry = registry
         self._cache_manager = cache_manager
         self._presence_detector = presence_detector
-        self._conversations: dict[str, list[dict]] = defaultdict(list)
+        self._conversations: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
         self._default_timeout: int = 5
         self._max_iterations: int = 3
 
@@ -151,6 +155,16 @@ class OrchestratorAgent(BaseAgent):
 
         result = response.result or {}
         speech = result.get("speech", "")
+
+        # Log structured errors from agents for observability
+        error = result.get("error")
+        if error:
+            error_code = error.get("code", "unknown")
+            logger.info(
+                "Agent %s returned error: %s (recoverable=%s)",
+                target_agent, error_code, error.get("recoverable", True),
+            )
+
         return target_agent, speech, result
 
     async def handle_task(self, task: AgentTask, *, _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None) -> dict:
@@ -158,7 +172,7 @@ class OrchestratorAgent(BaseAgent):
         conversation_id = task.conversation_id
 
         # Get span collector from task context if available
-        span_collector = getattr(task, "_span_collector", None)
+        span_collector = task.span_collector
 
         # 0. Cache lookup (before classify)
         cache_result = None
@@ -478,7 +492,7 @@ class OrchestratorAgent(BaseAgent):
     async def handle_task_stream(self, task: AgentTask) -> AsyncGenerator[dict, None]:
         user_text = task.user_text or task.description
         conversation_id = task.conversation_id
-        span_collector = getattr(task, "_span_collector", None)
+        span_collector = task.span_collector
 
         # 0. Cache lookup (before classify)
         cache_result = None
@@ -801,6 +815,27 @@ class OrchestratorAgent(BaseAgent):
             logger.warning("Cached action execution failed", exc_info=True)
             return None
 
+    async def _build_agent_descriptions(self) -> str:
+        """Build agent list for classification prompt from registered AgentCards."""
+        if not self._registry:
+            return "- general-agent: fallback for general questions and unroutable requests"
+
+        cards = await self._registry.list_agents()
+        lines = []
+        for card in cards:
+            if card.agent_id == "orchestrator":
+                continue
+            if card.agent_id == "rewrite-agent":
+                continue
+            skills_str = ", ".join(card.skills) if card.skills else ""
+            if skills_str:
+                lines.append(f"- {card.agent_id}: {card.description} (skills: {skills_str})")
+            else:
+                lines.append(f"- {card.agent_id}: {card.description}")
+        if not lines:
+            lines.append("- general-agent: fallback for general questions and unroutable requests")
+        return "\n".join(lines)
+
     async def _classify(self, user_text: str, *, cache_result=None) -> tuple[list[tuple[str, str, float]], bool]:
         """Classify user intent and produce a condensed task.
 
@@ -834,7 +869,9 @@ class OrchestratorAgent(BaseAgent):
             except Exception:
                 logger.warning("Routing cache check failed, proceeding with LLM", exc_info=True)
 
-        system_prompt = self._load_prompt("orchestrator")
+        system_prompt_template = self._load_prompt("orchestrator")
+        agent_descriptions = await self._build_agent_descriptions()
+        system_prompt = system_prompt_template.replace("{agent_descriptions}", agent_descriptions)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
@@ -927,19 +964,45 @@ class OrchestratorAgent(BaseAgent):
         """Get recent conversation turns for context."""
         if not conversation_id:
             return []
-        return list(self._conversations.get(conversation_id, []))
+        entry = self._conversations.get(conversation_id)
+        if entry is None:
+            return []
+        ts, turns = entry
+        if time.monotonic() - ts > _CONVERSATION_TTL_SECONDS:
+            self._conversations.pop(conversation_id, None)
+            return []
+        return list(turns)
 
     def _store_turn(self, conversation_id: str | None, user_text: str, assistant_text: str) -> None:
         """Store a conversation turn, keeping last _MAX_TURNS exchanges."""
         if not conversation_id:
             return
-        turns = self._conversations[conversation_id]
+        self._evict_stale_conversations()
+        now = time.monotonic()
+        if conversation_id in self._conversations:
+            self._conversations.move_to_end(conversation_id)
+            _, turns = self._conversations[conversation_id]
+        else:
+            turns = []
         turns.append({"role": "user", "content": user_text})
         turns.append({"role": "assistant", "content": assistant_text})
-        # Keep only the last _MAX_TURNS * 2 messages (user+assistant pairs)
         max_messages = _MAX_TURNS * 2
         if len(turns) > max_messages:
-            self._conversations[conversation_id] = turns[-max_messages:]
+            turns = turns[-max_messages:]
+        self._conversations[conversation_id] = (now, turns)
+
+    def _evict_stale_conversations(self) -> None:
+        """Remove conversations older than TTL and enforce max count."""
+        now = time.monotonic()
+        while self._conversations:
+            oldest_key = next(iter(self._conversations))
+            ts, _ = self._conversations[oldest_key]
+            if now - ts > _CONVERSATION_TTL_SECONDS:
+                self._conversations.pop(oldest_key)
+            else:
+                break
+        while len(self._conversations) > _MAX_CONVERSATIONS:
+            self._conversations.popitem(last=False)
 
     async def _merge_responses(
         self,
@@ -978,18 +1041,9 @@ class OrchestratorAgent(BaseAgent):
             except Exception:
                 pass
 
-            system_content = (
-                "You are combining responses from multiple smart home agents into one "
-                "natural, cohesive answer for the user. Rules:\n"
-                "- Merge all useful information into a single flowing response\n"
-                "- If an agent failed or had no useful response, acknowledge it briefly\n"
-                "- If an agent's status is [no action executed], do NOT claim that action was completed\n"
-                "- Keep all factual content and entity names exactly as they are\n"
-                "- Never add information that was not in an agent's response\n"
-                "- Keep it concise and natural"
-            )
-            if personality and personality.strip():
-                system_content = f"{personality.strip()}\n\n{system_content}"
+            system_content = self._load_prompt("merge")
+            personality_text = personality.strip() if personality and personality.strip() else ""
+            system_content = system_content.replace("{personality}", personality_text).strip()
 
             messages = [
                 {"role": "system", "content": system_content},
@@ -1036,17 +1090,11 @@ class OrchestratorAgent(BaseAgent):
 
         try:
             from app.llm import client as llm_client
+            system_prompt = self._load_prompt("mediate")
+            personality_text = personality.strip() if personality.strip() else ""
+            system_prompt = system_prompt.replace("{personality}", personality_text).strip()
             messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        f"{personality.strip()}\n\n"
-                        "You are reformulating a smart home assistant response to match "
-                        "this personality. Keep all factual content and entity names "
-                        "exactly as they are. Never add information that was not in the "
-                        "original response. Keep it concise."
-                    ),
-                },
+                {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
                     "content": f"User asked: {user_text}\nAgent ({agent_id}) responded: {agent_speech}\n\nReformulate:",

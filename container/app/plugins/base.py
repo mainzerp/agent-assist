@@ -15,9 +15,8 @@ if TYPE_CHECKING:
 class PluginContext:
     """Context object passed to plugin lifecycle hooks.
 
-    Provides access to core system components so plugins can register
-    agents, interact with MCP servers, read/write settings, and add
-    routes to the FastAPI application.
+    Provides a restricted API surface. Plugins should NOT have
+    unrestricted access to the full FastAPI application.
     """
 
     def __init__(
@@ -30,7 +29,26 @@ class PluginContext:
         self.agent_registry = agent_registry
         self.mcp_registry = mcp_registry
         self.settings = settings_repo
-        self.app = app
+        self._app = app
+
+    def add_api_route(self, path: str, endpoint, **kwargs):
+        """Add an API route to the application (restricted interface)."""
+        self._app.add_api_route(path, endpoint, **kwargs)
+
+    def include_router(self, router, **kwargs):
+        """Include an APIRouter in the application (restricted interface)."""
+        self._app.include_router(router, **kwargs)
+
+    @property
+    def app(self):
+        """Deprecated: use add_api_route() or include_router() instead."""
+        import warnings
+        warnings.warn(
+            "PluginContext.app is deprecated. Use add_api_route() or include_router().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self._app
 
 
 class BasePlugin(ABC):

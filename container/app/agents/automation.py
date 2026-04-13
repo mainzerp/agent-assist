@@ -1,17 +1,17 @@
-"""Automation management agent."""
+"""Automation management agent with direct HA REST API execution."""
 
-from __future__ import annotations
-
-import logging
-
-from app.agents.base import BaseAgent
-from app.models.agent import AgentCard, AgentTask
-
-logger = logging.getLogger(__name__)
+from app.agents.actionable import ActionableAgent
+from app.agents.automation_executor import execute_automation_action
+from app.models.agent import AgentCard
 
 
-class AutomationAgent(BaseAgent):
+class AutomationAgent(ActionableAgent):
     """Manages Home Assistant automations via HA REST API."""
+
+    _prompt_name = "automation"
+
+    async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id):
+        return await execute_automation_action(action, ha_client, entity_index, entity_matcher, agent_id=agent_id)
 
     @property
     def agent_card(self) -> AgentCard:
@@ -22,18 +22,3 @@ class AutomationAgent(BaseAgent):
             skills=["automation_enable", "automation_disable", "automation_trigger"],
             endpoint="local://automation-agent",
         )
-
-    async def handle_task(self, task: AgentTask) -> dict:
-        system_prompt = self._load_prompt("automation")
-        messages = [{"role": "system", "content": system_prompt}]
-
-        if task.context and task.context.conversation_turns:
-            for turn in task.context.conversation_turns:
-                messages.append({
-                    "role": turn.get("role", "user"),
-                    "content": turn.get("content", ""),
-                })
-
-        messages.append({"role": "user", "content": task.description})
-        response = await self._call_llm(messages)
-        return {"speech": response, "action_executed": None}

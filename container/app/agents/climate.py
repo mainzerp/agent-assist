@@ -1,39 +1,24 @@
-"""Climate and HVAC control agent."""
+"""Climate and HVAC control agent with direct HA REST API execution."""
 
-from __future__ import annotations
-
-import logging
-
-from app.agents.base import BaseAgent
-from app.models.agent import AgentCard, AgentTask
-
-logger = logging.getLogger(__name__)
+from app.agents.actionable import ActionableAgent
+from app.agents.climate_executor import execute_climate_action
+from app.models.agent import AgentCard
 
 
-class ClimateAgent(BaseAgent):
+class ClimateAgent(ActionableAgent):
     """Controls climate and HVAC devices via HA REST API."""
+
+    _prompt_name = "climate"
+
+    async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id):
+        return await execute_climate_action(action, ha_client, entity_index, entity_matcher, agent_id=agent_id)
 
     @property
     def agent_card(self) -> AgentCard:
         return AgentCard(
             agent_id="climate-agent",
             name="Climate Agent",
-            description="Controls climate and HVAC: temperature, mode, fan speed, humidity.",
-            skills=["temperature", "hvac_mode", "fan_speed", "humidity"],
+            description="Controls climate and HVAC: temperature, mode, fan speed, humidity. Reads climate sensor data (temperature, humidity, pressure, dew point).",
+            skills=["temperature", "hvac_mode", "fan_speed", "humidity", "sensor_reading"],
             endpoint="local://climate-agent",
         )
-
-    async def handle_task(self, task: AgentTask) -> dict:
-        system_prompt = self._load_prompt("climate")
-        messages = [{"role": "system", "content": system_prompt}]
-
-        if task.context and task.context.conversation_turns:
-            for turn in task.context.conversation_turns:
-                messages.append({
-                    "role": turn.get("role", "user"),
-                    "content": turn.get("content", ""),
-                })
-
-        messages.append({"role": "user", "content": task.description})
-        response = await self._call_llm(messages)
-        return {"speech": response, "action_executed": None}

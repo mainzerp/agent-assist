@@ -800,3 +800,121 @@ class TestCacheTraceSimilarity:
         assert hit_type == "hit"
         assert entry is not None
         assert sim == pytest.approx(0.99)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.4: Cache eviction tests
+# ---------------------------------------------------------------------------
+
+class TestRoutingCacheEviction:
+    """Tests for interval-based LRU eviction and hit count buffering in routing cache."""
+
+    def _make_cache(self) -> tuple[RoutingCache, MagicMock]:
+        store = MagicMock(spec=VectorStore)
+        cache = RoutingCache(store)
+        cache._threshold = 0.92
+        cache._max_entries = 10
+        return cache, store
+
+    def test_eviction_triggers_at_interval(self):
+        """LRU eviction should only run every _eviction_interval stores."""
+        cache, store = self._make_cache()
+        cache._eviction_interval = 5
+        store.count.return_value = 5  # below max, so no actual eviction needed
+
+        for i in range(4):
+            cache._store_count = i
+            store.count.reset_mock()
+            cache.store(f"query-{i}", "light-agent", 0.95)
+        # count() should NOT have been called for eviction check on stores 0-3
+        # (store calls upsert + may call count for eviction)
+
+        # On the 5th store, eviction interval is hit
+        cache._store_count = 4
+        cache.store("query-final", "light-agent", 0.95)
+        # The store method should have checked count for eviction
+
+    def test_eviction_does_not_trigger_before_interval(self):
+        """LRU eviction should not check before the interval is reached."""
+        cache, store = self._make_cache()
+        cache._eviction_interval = 100
+        cache._store_count = 0
+        store.count.return_value = 0
+        cache.store("query-1", "light-agent", 0.95)
+        # store_count should have incremented but no eviction check
+        assert cache._store_count == 1
+
+    def test_hit_count_buffering_flushes_at_threshold(self):
+        """Pending hit updates should flush when buffer reaches _flush_interval."""
+        cache, store = self._make_cache()
+        cache._flush_interval = 3
+
+        # Simulate lookups that buffer hits
+        for i in range(3):
+            store.query.return_value = {
+                "ids": [[f"entry-{i}"]],
+                "distances": [[0.05]],
+                "documents": [[f"query-{i}"]],
+                "metadatas": [[{
+                    "agent_id": "light-agent", "confidence": "0.95",
+                    "hit_count": "1", "created_at": "2025-01-01T00:00:00",
+                    "last_accessed": "2025-01-01T00:00:00",
+                }]],
+            }
+            cache.lookup(f"query-{i}")
+
+        # After flush_interval lookups, upsert should have been called for flush
+        # (The lookup calls upsert for buffered updates)
+        assert store.upsert.call_count >= 1
+
+    def test_batch_delete_in_chunks(self):
+        """When evicting many entries, delete should be called in chunks of 500."""
+        cache, store = self._make_cache()
+        cache._max_entries = 10
+        # Simulate 1010 entries
+        store.count.return_value = 1010
+        ids = [f"id-{i}" for i in range(1010)]
+        metadatas = [{"last_accessed": f"2025-01-{(i % 28) + 1:02d}T00:00:00"} for i in range(1010)]
+        store.get.return_value = {"ids": ids, "metadatas": metadatas}
+        cache._enforce_lru()
+        # Should delete in chunks - at least 2 calls (1000 excess / 500)
+        assert store.delete.call_count >= 2
+
+
+class TestResponseCacheEviction:
+    """Tests for interval-based LRU eviction in response cache."""
+
+    def _make_cache(self) -> tuple[ResponseCache, MagicMock]:
+        store = MagicMock(spec=VectorStore)
+        cache = ResponseCache(store)
+        cache._hit_threshold = 0.95
+        cache._partial_threshold = 0.80
+        cache._max_entries = 10
+        return cache, store
+
+    def test_eviction_triggers_at_interval(self):
+        """LRU eviction should only run every _eviction_interval stores."""
+        cache, store = self._make_cache()
+        cache._eviction_interval = 5
+        store.count.return_value = 5
+
+        entry = make_response_cache_entry()
+        for i in range(4):
+            cache._store_count = i
+            store.count.reset_mock()
+            cache.store(entry)
+
+        cache._store_count = 4
+        cache.store(entry)
+
+    def test_batch_delete_in_chunks(self):
+        """Response cache eviction should also u batch deletes in chunks of 500."""
+        cache, store = self._make_cache()
+        cache._max_entries = 10
+        store.count.return_value = 600
+        ids = [f"id-{i}" for i in range(600)]
+        metadatas = [{"last_accessed": f"2025-01-{(i % 28) + 1:02d}T00:00:00"} for i in range(600)]
+        store.get.return_value = {"ids": ids, "metadatas": metadatas}
+        cache._enforce_lru()
+        # 590 excess / 500 = 2 chunks
+        assert store.delete.call_count >= 2

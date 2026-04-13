@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from app.agents.base import BaseAgent
-from app.models.agent import AgentCard, AgentTask
+from app.models.agent import AgentCard, AgentTask, TaskResult
 from app.a2a.registry import AgentRegistry
 from app.db.repository import CustomAgentRepository
 
@@ -41,7 +41,7 @@ class DynamicAgent(BaseAgent):
             endpoint=f"local://custom-{self._name}",
         )
 
-    async def handle_task(self, task: AgentTask) -> dict:
+    async def handle_task(self, task: AgentTask) -> TaskResult:
         prompt = self._system_prompt + "\nNEVER translate or normalize entity/room names."
         messages = [{"role": "system", "content": prompt}]
 
@@ -54,7 +54,7 @@ class DynamicAgent(BaseAgent):
 
         messages.append({"role": "user", "content": task.description})
         response = await self._call_llm(messages)
-        return {"speech": response, "action_executed": None}
+        return TaskResult(speech=response)
 
 
 class CustomAgentLoader:

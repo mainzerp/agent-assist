@@ -61,7 +61,31 @@ async def browse_cache_entries(
         if total == 0:
             return {"entries": [], "total": 0, "page": page, "per_page": per_page}
 
-        # Fetch all entries (ChromaDB does not support offset natively)
+        # When not searching, use limit/offset to avoid loading all entries
+        if not search:
+            offset_val = (page - 1) * per_page
+            data = vector_store.get(
+                collection_name,
+                include=["metadatas", "documents"],
+                limit=per_page,
+                offset=offset_val,
+            )
+            entries = []
+            for i, doc_id in enumerate(data["ids"]):
+                meta = data["metadatas"][i]
+                document = data["documents"][i] if data.get("documents") else ""
+                entry = {"id": doc_id, "document": document, **meta}
+                entries.append(entry)
+
+            return {
+                "entries": entries,
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+                "pages": (total + per_page - 1) // per_page if per_page else 0,
+            }
+
+        # Search requires loading all entries for text filtering
         data = vector_store.get(
             collection_name,
             include=["metadatas", "documents"],

@@ -202,3 +202,45 @@ docker cp ./backup_agent_assist.db agent-assist:/data/agent_assist.db
 docker cp ./backup_chromadb agent-assist:/data/chromadb
 docker-compose up -d
 ```
+
+## Production Deployment with HTTPS
+
+For production use, you should run agent-assist behind a reverse proxy with TLS termination.
+
+### Nginx Example
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name agent-assist.example.com;
+
+    ssl_certificate /etc/ssl/certs/your-cert.pem;
+    ssl_certificate_key /etc/ssl/private/your-key.pem;
+
+    location / {
+        proxy_pass http://localhost:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /ws/ {
+        proxy_pass http://localhost:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+### Enable Secure Cookies
+
+When running behind HTTPS, set the environment variable:
+
+```yaml
+environment:
+  - COOKIE_SECURE=true
+```
+
+This ensures session cookies are only sent over HTTPS.

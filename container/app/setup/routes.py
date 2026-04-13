@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import secrets
 from pathlib import Path
@@ -157,7 +158,7 @@ async def test_llm_endpoint(provider: str = Form(...), api_key: str = Form(...))
             model = "ollama/llama3"
         else:
             return HTMLResponse(
-                f'<div class="test-result test-error">Unknown provider: {provider}</div>'
+                f'<div class="test-result test-error">Unknown provider: {html.escape(provider)}</div>'
             )
 
         response = await litellm.acompletion(
@@ -167,9 +168,10 @@ async def test_llm_endpoint(provider: str = Form(...), api_key: str = Form(...))
             max_tokens=10,
         )
         return HTMLResponse(
-            f'<div class="test-result test-success">Connected to {provider}!</div>'
+            f'<div class="test-result test-success">Connected to {html.escape(provider)}!</div>'
         )
     except Exception as e:
+        safe_msg = html.escape(str(e))
         return HTMLResponse(
-            f'<div class="test-result test-error">Error: {e}</div>'
+            f'<div class="test-result test-error">Error: {safe_msg}</div>'
         )

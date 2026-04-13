@@ -6,7 +6,7 @@ import logging
 
 from app.agents.base import BaseAgent
 from app.db.repository import SettingsRepository
-from app.models.agent import AgentCard, AgentTask
+from app.models.agent import AgentCard, AgentTask, TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +36,10 @@ class RewriteAgent(BaseAgent):
         system_prompt = self._load_prompt("rewrite")
         try:
             personality = await SettingsRepository.get_value("personality.prompt", "")
-            if personality.strip():
-                system_prompt = f"{personality.strip()}\n\n{system_prompt}"
+            personality_text = personality.strip() if personality.strip() else ""
+            system_prompt = system_prompt.replace("{personality}", personality_text).strip()
         except Exception:
-            pass
+            system_prompt = system_prompt.replace("{personality}", "").strip()
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": cached_text},
@@ -54,7 +54,7 @@ class RewriteAgent(BaseAgent):
             logger.warning("Rewrite failed, returning cached text verbatim", exc_info=True)
             return cached_text
 
-    async def handle_task(self, task: AgentTask) -> dict:
+    async def handle_task(self, task: AgentTask) -> TaskResult:
         """A2A-compatible interface. Rewrites task.description."""
         result = await self.rewrite(task.description)
-        return {"speech": result}
+        return TaskResult(speech=result)

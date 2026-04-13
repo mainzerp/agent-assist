@@ -352,3 +352,60 @@ class TestLLMTest:
             assert resp.status_code == 200
             assert "test-error" in resp.text
             assert "Unknown provider" in resp.text
+
+
+# ===================================================================
+# Phase 4.1: Additional setup wizard tests
+# ===================================================================
+
+
+@pytest.mark.integration
+class TestSetupDuplicateAdmin:
+    """Test that submitting step 1 twice (duplicate admin) does not crash (fix 1.4)."""
+
+    async def test_duplicate_admin_submission_succeeds(self, setup_client: httpx.AsyncClient):
+        """Submitting admin credentials a second time should use INSERT OR REPLACE."""
+        with patch(
+            "app.setup.routes.AdminAccountRepository.create",
+            new_callable=AsyncMock,
+        ) as mock_create, patch(
+            "app.setup.routes.SetupStateRepository.set_step_completed",
+            new_callable=AsyncMock,
+        ):
+            # First submission
+            resp1 = await setup_client.post(
+                "/setup/step/1",
+                data={"username": "admin", "password": "first-password"},
+            )
+            assert resp1.status_code == 303
+            # Second submission (same username, different password)
+            resp2 = await setup_client.post(
+                "/setup/step/1",
+                data={"username": "admin", "password": "second-password"},
+            )
+            assert resp2.status_code == 303
+            assert mock_create.await_count == 2
+
+
+@pytest.mark.integration
+class TestSetupXSSPrevention:
+    """Test XSS prevention in the LLM test endpoint (fix 1.3)."""
+
+    async def test_llm_test_provider_xss_escaped(self, setup_client: httpx.AsyncClient):
+        """Provider name containing script tags should be HTML-escaped in the response."""
+        mock_litellm_mod = MagicMock()
+        mock_litellm_mod.acompletion = AsyncMock(side_effect=Exception("fail"))
+        with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
+            resp = await setup_client.post(
+                "/setup/test/llm",
+                data={
+                    "provider": '<script>alert("xss")</script>',
+                    "api_key": "test-key",
+                },
+            )
+            assert resp.status_code == 200
+            body = resp.text
+            # Raw script tag must NOT appear in the response
+            assert "<script>" not in body
+            # Escaped version should be present
+            assert "&lt;script&gt;" in body or "Unknown provider" in body

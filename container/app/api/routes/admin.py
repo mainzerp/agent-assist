@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.security.auth import require_admin_session
 from app.security.encryption import store_secret, retrieve_secret, delete_secret
@@ -40,6 +41,21 @@ class ProviderTestRequest(BaseModel):
     provider: str
     api_key: str | None = None
 
+
+class SettingsUpdatePayload(BaseModel):
+    """Validated settings update payload."""
+    items: dict[str, Any]
+
+    @field_validator("items")
+    @classmethod
+    def validate_items(cls, v):
+        if not v:
+            raise ValueError("items must not be empty")
+        for key in v:
+            if not isinstance(key, str) or len(key) > 128:
+                raise ValueError(f"Invalid setting key: {key}")
+        return v
+
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin_session)])
 
 # The registry is set by main.py during startup
@@ -54,8 +70,9 @@ def set_registry(reg) -> None:
 
 @router.get("/agents")
 async def list_agents():
-    """List all registered agents."""
+    """List all agents (registered + disabled from DB)."""
     agents = await _registry.list_agents()
+    seen_ids = set()
     result = []
     for a in agents:
         card = a.model_dump()
@@ -63,6 +80,31 @@ async def list_agents():
         if config:
             card.update(config)
         result.append(card)
+        seen_ids.add(a.agent_id)
+
+    # Known built-in agent IDs (from seed data)
+    _BUILTIN_AGENTS = {
+        "orchestrator", "general-agent", "light-agent", "music-agent",
+        "timer-agent", "climate-agent", "media-agent", "scene-agent",
+        "automation-agent", "security-agent", "rewrite-agent",
+    }
+
+    # Include disabled built-in agents from DB that are not yet registered
+    all_configs = await AgentConfigRepository.list_all()
+    for config in all_configs:
+        aid = config["agent_id"]
+        if aid not in seen_ids and aid in _BUILTIN_AGENTS:
+            entry = {
+                "agent_id": aid,
+                "name": aid.replace("-", " ").title(),
+                "description": config.get("description", ""),
+                "skills": [],
+                "input_types": ["text/plain"],
+                "output_types": ["text/plain", "application/json"],
+                "endpoint": f"local://{aid}",
+            }
+            entry.update(config)
+            result.append(entry)
     return {"agents": result}
 
 
@@ -78,14 +120,28 @@ async def get_settings():
 
 
 @router.put("/settings")
-async def update_settings(payload: dict):
-    """Update multiple settings. Payload: {key: value, ...}."""
-    items = payload.get("items", payload)
-    if isinstance(items, dict):
-        for key, value in items.items():
-            if key == "items":
-                continue
-            await SettingsRepository.set(key, str(value))
+async def update_settings(payload: SettingsUpdatePayload):
+    """Update multiple settings. Payload: {"items": {key: value, ...}}."""
+    for key, value in payload.items.items():
+        existing = await SettingsRepository.get(key)
+        if existing is None:
+            raise HTTPException(status_code=400, detail=f"Unknown setting key: {key}")
+        # Validate value type against stored type
+        value_type = existing.get("value_type", "str")
+        try:
+            if value_type == "int":
+                int(value)
+            elif value_type == "float":
+                float(value)
+            elif value_type == "bool":
+                if str(value).lower() not in ("true", "false", "1", "0"):
+                    raise ValueError("Expected boolean")
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid value for '{key}': expected {value_type}",
+            )
+        await SettingsRepository.set(key, str(value))
     return {"status": "ok"}
 
 
@@ -257,6 +313,8 @@ async def get_all_agents_visibility_summary():
     for agent_id, rules in agent_rules.items():
         domains: set[str] = set()
         excluded_domains: set[str] = set()
+        device_classes: set[str] = set()
+        excluded_device_classes: set[str] = set()
         for r in rules:
             if r["rule_type"] == "domain_include":
                 domains.add(r["rule_value"])
@@ -266,9 +324,28 @@ async def get_all_agents_visibility_summary():
                 domains.add("area:" + r["rule_value"])
             elif r["rule_type"] == "area_exclude":
                 excluded_domains.add("area:" + r["rule_value"])
+            elif r["rule_type"] == "entity_include":
+                domain_part = r["rule_value"].split(".")[0] if "." in r["rule_value"] else r["rule_value"]
+                domains.add(domain_part)
+            elif r["rule_type"] == "entity_exclude":
+                domain_part = r["rule_value"].split(".")[0] if "." in r["rule_value"] else r["rule_value"]
+                excluded_domains.add(domain_part)
+            elif r["rule_type"] == "device_class_include":
+                device_classes.add(r["rule_value"])
+            elif r["rule_type"] == "device_class_exclude":
+                excluded_device_classes.add(r["rule_value"])
         summary[agent_id] = {
             "domains": sorted(domains),
             "excluded_domains": sorted(excluded_domains),
+            "device_classes": sorted(device_classes),
+            "excluded_device_classes": sorted(excluded_device_classes),
             "has_rules": True,
         }
     return {"summary": summary}
+
+
+@router.get("/fernet-key-backup")
+async def get_fernet_key_backup():
+    """Export the Fernet key for backup. Handle with extreme care."""
+    from app.security.encryption import export_fernet_key
+    return {"key": export_fernet_key(), "warning": "Store this key securely. Loss of this key makes all encrypted secrets unrecoverable."}

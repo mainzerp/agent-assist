@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time as _time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,6 +29,10 @@ from app.agents.timer import TimerAgent  # noqa: E402
 from app.agents.scene import SceneAgent  # noqa: E402
 from app.agents.automation import AutomationAgent  # noqa: E402
 from app.agents.security import SecurityAgent  # noqa: E402
+from app.agents.timer_executor import execute_timer_action  # noqa: E402
+from app.agents.scene_executor import execute_scene_action  # noqa: E402
+from app.agents.automation_executor import execute_automation_action  # noqa: E402
+from app.agents.media_executor import execute_media_action  # noqa: E402
 from app.agents.general import GeneralAgent  # noqa: E402
 from app.agents.rewrite import RewriteAgent  # noqa: E402
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
@@ -130,7 +135,7 @@ class TestLightAgent:
     async def test_handle_task_returns_speech(self, mock_complete):
         agent = LightAgent(ha_client=MagicMock(), entity_index=MagicMock())
         result = await agent.handle_task(_make_task("Turn on the kitchen light"))
-        assert result["speech"] == "Turned on the kitchen light."
+        assert result.speech == "Turned on the kitchen light."
         mock_complete.assert_awaited_once()
 
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Brightness set to 50%.")
@@ -139,7 +144,7 @@ class TestLightAgent:
         task = _make_task("Set bedroom light brightness to 50%", context=ctx)
         agent = LightAgent()
         result = await agent.handle_task(task)
-        assert "Brightness" in result["speech"] or "50" in result["speech"]
+        assert "Brightness" in result.speech or "50" in result.speech
         # Should have system + conversation turn + user message
         call_messages = mock_complete.call_args[0][1]
         assert len(call_messages) >= 3
@@ -157,9 +162,9 @@ class TestLightAgent:
         """When ha_client is None but LLM returns a valid action, return a friendly error."""
         agent = LightAgent(ha_client=None, entity_index=MagicMock())
         result = await agent.handle_task(_make_task("Turn on the kitchen light"))
-        assert "unavailable" in result["speech"].lower()
-        assert result["action_executed"] is None
-        assert "json" not in result["speech"].lower()
+        assert "unavailable" in result.speech.lower()
+        assert result.action_executed is None
+        assert "json" not in result.speech.lower()
 
     @patch("app.agents.light.execute_action", new_callable=AsyncMock,
            side_effect=Exception("HA connection lost"))
@@ -169,18 +174,18 @@ class TestLightAgent:
         """When execute_action raises, return a friendly error instead of propagating."""
         agent = LightAgent(ha_client=MagicMock(), entity_index=MagicMock())
         result = await agent.handle_task(_make_task("Turn on the bedroom lamp"))
-        assert "sorry" in result["speech"].lower()
-        assert result["action_executed"] is None
+        assert "sorry" in result.speech.lower()
+        assert result.action_executed is None
 
     @patch("app.llm.client.complete", new_callable=AsyncMock,
            return_value='Here is some info about lights. {"action": "turn_on", "entity": "x", "parameters": {}} All done.')
     async def test_handle_task_strips_json_from_fallback(self, mock_complete):
         """When no action is parsed (parse_action returns None), JSON should be stripped from speech."""
-        with patch("app.agents.light.parse_action", return_value=None):
+        with patch("app.agents.actionable.parse_action", return_value=None):
             agent = LightAgent()
             result = await agent.handle_task(_make_task("tell me about lights"))
-            assert "{" not in result["speech"]
-            assert "action" not in result["speech"]
+            assert "{" not in result.speech
+            assert "action" not in result.speech
 
     @patch("app.agents.light.execute_action", new_callable=AsyncMock,
            return_value={"success": True, "entity_id": "light.kitchen", "new_state": "on", "speech": "Done."})
@@ -200,20 +205,20 @@ class TestMusicAgent:
     async def test_handle_task_play_command(self, mock_complete):
         agent = MusicAgent()
         result = await agent.handle_task(_make_task("play some jazz music"))
-        assert result["speech"] == "Playing jazz."
+        assert result.speech == "Playing jazz."
 
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Volume set to 30.")
     async def test_handle_task_volume_command(self, mock_complete):
         agent = MusicAgent()
         result = await agent.handle_task(_make_task("set volume to 30"))
-        assert "Volume" in result["speech"] or "30" in result["speech"]
+        assert "Volume" in result.speech or "30" in result.speech
 
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="")
     async def test_handle_task_empty_llm_response(self, mock_complete):
         agent = MusicAgent()
         result = await agent.handle_task(_make_task("play jazz"))
-        assert "did not return a response" in result["speech"]
-        assert result["action_executed"] is None
+        assert "did not return a response" in result.speech
+        assert result.action_executed is None
 
     @patch("app.agents.music.execute_music_action", new_callable=AsyncMock,
            return_value={"success": True, "entity_id": "media_player.ma_kitchen", "new_state": "playing", "speech": "Done, Kitchen Speaker is now playing."})
@@ -222,16 +227,16 @@ class TestMusicAgent:
     async def test_handle_task_action_parsed_executes(self, mock_complete, mock_exec):
         agent = MusicAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
         result = await agent.handle_task(_make_task("play jazz on kitchen speaker"))
-        assert result["action_executed"]["success"] is True
-        assert result["action_executed"]["entity_id"] == "media_player.ma_kitchen"
+        assert result.action_executed.success is True
+        assert result.action_executed.entity_id == "media_player.ma_kitchen"
 
     @patch("app.llm.client.complete", new_callable=AsyncMock,
            return_value='```json\n{"action": "play_media", "entity": "kitchen speaker", "parameters": {"media_id": "jazz"}}\n```\nPlaying jazz.')
     async def test_handle_task_no_ha_client_returns_friendly_error(self, mock_complete):
         agent = MusicAgent(ha_client=None, entity_index=MagicMock())
         result = await agent.handle_task(_make_task("play jazz on kitchen speaker"))
-        assert "unavailable" in result["speech"].lower()
-        assert result["action_executed"] is None
+        assert "unavailable" in result.speech.lower()
+        assert result.action_executed is None
 
     @patch("app.agents.music.execute_music_action", new_callable=AsyncMock,
            side_effect=Exception("HA connection lost"))
@@ -240,17 +245,17 @@ class TestMusicAgent:
     async def test_handle_task_execute_action_exception(self, mock_complete, mock_exec):
         agent = MusicAgent(ha_client=MagicMock(), entity_index=MagicMock())
         result = await agent.handle_task(_make_task("pause the living room"))
-        assert "sorry" in result["speech"].lower()
-        assert result["action_executed"] is None
+        assert "sorry" in result.speech.lower()
+        assert result.action_executed is None
 
     @patch("app.llm.client.complete", new_callable=AsyncMock,
            return_value='Currently playing "Bohemian Rhapsody" on the kitchen speaker. {"action": "media_play", "entity": "x", "parameters": {}} Enjoy!')
     async def test_handle_task_strips_json_from_informational(self, mock_complete):
-        with patch("app.agents.music.parse_action", return_value=None):
+        with patch("app.agents.actionable.parse_action", return_value=None):
             agent = MusicAgent()
             result = await agent.handle_task(_make_task("what's playing?"))
-            assert "{" not in result["speech"]
-            assert "action" not in result["speech"]
+            assert "{" not in result.speech
+            assert "action" not in result.speech
 
     @patch("app.agents.music.execute_music_action", new_callable=AsyncMock,
            return_value={"success": True, "entity_id": "media_player.ma_kitchen", "new_state": "playing", "speech": "Done."})
@@ -278,92 +283,556 @@ class TestMusicAgent:
 
 class TestClimateAgent:
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Temperature set to 72F.")
-    async def test_handle_task_set_temperature(self, mock_complete):
-        agent = ClimateAgent()
-        result = await agent.handle_task(_make_task("set thermostat to 72"))
-        assert "72" in result["speech"]
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="The temperature is 72F.")
+    async def test_handle_task_returns_speech(self, mock_complete):
+        agent = ClimateAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("what's the temperature?"))
+        assert "72" in result.speech
+        mock_complete.assert_awaited_once()
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Switched to cool mode.")
-    async def test_handle_task_set_mode(self, mock_complete):
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "set_temperature", "entity": "living room thermostat", "parameters": {"temperature": 72}}\n```\nSetting thermostat to 72.')
+    async def test_handle_task_no_ha_client_returns_friendly_error(self, mock_complete):
+        agent = ClimateAgent(ha_client=None, entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("set thermostat to 72"))
+        assert "unavailable" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch("app.agents.climate.execute_climate_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "climate.living_room", "new_state": "heat", "speech": "Done, Living Room is now heat."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "set_temperature", "entity": "living room thermostat", "parameters": {"temperature": 72}}\n```\nSetting to 72.')
+    async def test_handle_task_action_parsed_executes(self, mock_complete, mock_exec):
+        agent = ClimateAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("set thermostat to 72"))
+        assert result.action_executed.success is True
+        assert result.action_executed.entity_id == "climate.living_room"
+
+    @patch("app.agents.climate.execute_climate_action", new_callable=AsyncMock,
+           side_effect=Exception("HA connection lost"))
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "turn_off", "entity": "bedroom AC", "parameters": {}}\n```\nTurning off.')
+    async def test_handle_task_execute_action_exception(self, mock_complete, mock_exec):
+        agent = ClimateAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("turn off bedroom AC"))
+        assert "sorry" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='Here is some info. {"action": "turn_on", "entity": "x", "parameters": {}} All done.')
+    async def test_handle_task_strips_json_from_fallback(self, mock_complete):
+        with patch("app.agents.actionable.parse_action", return_value=None):
+            agent = ClimateAgent()
+            result = await agent.handle_task(_make_task("tell me about the AC"))
+            assert "{" not in result.speech
+            assert "action" not in result.speech
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="")
+    async def test_handle_task_empty_llm_response(self, mock_complete):
         agent = ClimateAgent()
-        result = await agent.handle_task(_make_task("set mode to cool"))
-        assert "cool" in result["speech"]
+        result = await agent.handle_task(_make_task("set temperature"))
+        assert "did not return a response" in result.speech
+        assert result.action_executed is None
+
+    @patch("app.agents.climate.execute_climate_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "climate.living_room", "new_state": "heat", "speech": "Done."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "set_temperature", "entity": "thermostat", "parameters": {"temperature": 72}}\n```\nDone.')
+    async def test_handle_task_passes_agent_id(self, mock_complete, mock_exec):
+        agent = ClimateAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        await agent.handle_task(_make_task("set thermostat to 72"))
+        mock_exec.assert_awaited_once()
+        _, kwargs = mock_exec.call_args
+        assert kwargs.get("agent_id") == "climate-agent"
 
 
 class TestMediaAgent:
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Playing on TV.")
-    async def test_handle_task_playback(self, mock_complete):
-        agent = MediaAgent()
-        result = await agent.handle_task(_make_task("play on the TV"))
-        assert result["speech"] == "Playing on TV."
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="The TV is currently playing Netflix.")
+    async def test_handle_task_returns_speech(self, mock_complete):
+        agent = MediaAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("what's playing on the TV?"))
+        assert "Netflix" in result.speech
+        mock_complete.assert_awaited_once()
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Casting started.")
-    async def test_handle_task_casting(self, mock_complete):
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "turn_on", "entity": "living room TV", "parameters": {}}\n```\nTurning on the living room TV.')
+    async def test_handle_task_no_ha_client_returns_friendly_error(self, mock_complete):
+        agent = MediaAgent(ha_client=None, entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("turn on the living room TV"))
+        assert "unavailable" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch("app.agents.media.execute_media_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "media_player.living_room_tv", "new_state": "on", "speech": "Done, Living Room TV is now on."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "turn_on", "entity": "living room TV", "parameters": {}}\n```\nTurning on the TV.')
+    async def test_handle_task_action_parsed_executes(self, mock_complete, mock_exec):
+        agent = MediaAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("turn on the living room TV"))
+        assert result.action_executed.success is True
+        assert result.action_executed.entity_id == "media_player.living_room_tv"
+
+    @patch("app.agents.media.execute_media_action", new_callable=AsyncMock,
+           side_effect=Exception("HA connection lost"))
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "pause", "entity": "TV", "parameters": {}}\n```\nPausing.')
+    async def test_handle_task_execute_action_exception(self, mock_complete, mock_exec):
+        agent = MediaAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("pause the TV"))
+        assert "sorry" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='TV is playing. {"action": "play", "entity": "x", "parameters": {}} All set.')
+    async def test_handle_task_strips_json_from_fallback(self, mock_complete):
+        with patch("app.agents.actionable.parse_action", return_value=None):
+            agent = MediaAgent()
+            result = await agent.handle_task(_make_task("what's playing on the TV?"))
+            assert "{" not in result.speech
+            assert "action" not in result.speech
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="")
+    async def test_handle_task_empty_llm_response(self, mock_complete):
         agent = MediaAgent()
-        result = await agent.handle_task(_make_task("cast to living room speaker"))
-        assert result["speech"] == "Casting started."
+        result = await agent.handle_task(_make_task("turn on the TV"))
+        assert "did not return a response" in result.speech
+        assert result.action_executed is None
+
+    @patch("app.agents.media.execute_media_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "media_player.living_room_tv", "new_state": "on", "speech": "Done."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "turn_on", "entity": "living room TV", "parameters": {}}\n```\nDone.')
+    async def test_handle_task_passes_agent_id(self, mock_complete, mock_exec):
+        agent = MediaAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        await agent.handle_task(_make_task("turn on the living room TV"))
+        mock_exec.assert_awaited_once()
+        _, kwargs = mock_exec.call_args
+        assert kwargs.get("agent_id") == "media-agent"
+
+    @patch("app.agents.media.execute_media_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "media_player.tv", "new_state": "on", "speech": "Done, TV volume set."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "set_volume", "entity": "TV", "parameters": {"volume_level": 0.5}}\n```\nSetting volume.')
+    async def test_handle_task_set_volume_action(self, mock_complete, mock_exec):
+        agent = MediaAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("set TV volume to 50%"))
+        assert result.action_executed.success is True
+        mock_exec.assert_awaited_once()
 
 
 class TestTimerAgent:
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Timer set for 5 minutes.")
-    async def test_handle_task_set_timer(self, mock_complete):
-        agent = TimerAgent()
-        result = await agent.handle_task(_make_task("set a timer for 5 minutes"))
-        assert "5 minutes" in result["speech"]
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="The timer has 3 minutes left.")
+    async def test_handle_task_returns_speech(self, mock_complete):
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("how much time is left?"))
+        assert "3 minutes" in result.speech
+        mock_complete.assert_awaited_once()
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Timer cancelled.")
-    async def test_handle_task_cancel_timer(self, mock_complete):
-        agent = TimerAgent()
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "start_timer", "entity": "kitchen timer", "parameters": {"duration": "00:05:00"}}\n```\nStarting a 5 minute timer.')
+    async def test_handle_task_no_ha_client_returns_friendly_error(self, mock_complete):
+        agent = TimerAgent(ha_client=None, entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("set a timer for 5 minutes"))
+        assert "unavailable" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch("app.agents.timer.execute_timer_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "timer.kitchen", "new_state": "active", "speech": "Done, Kitchen Timer is now active."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "start_timer", "entity": "kitchen timer", "parameters": {"duration": "00:05:00"}}\n```\nStarting timer.')
+    async def test_handle_task_action_parsed_executes(self, mock_complete, mock_exec):
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("set a timer for 5 minutes"))
+        assert result.action_executed.success is True
+        assert result.action_executed.entity_id == "timer.kitchen"
+
+    @patch("app.agents.timer.execute_timer_action", new_callable=AsyncMock,
+           side_effect=Exception("HA connection lost"))
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "cancel_timer", "entity": "kitchen timer", "parameters": {}}\n```\nCancelling.')
+    async def test_handle_task_execute_action_exception(self, mock_complete, mock_exec):
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock())
         result = await agent.handle_task(_make_task("cancel the timer"))
-        assert "cancelled" in result["speech"]
+        assert "sorry" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='Timer is running. {"action": "start_timer", "entity": "x", "parameters": {}} All set.')
+    async def test_handle_task_strips_json_from_fallback(self, mock_complete):
+        with patch("app.agents.actionable.parse_action", return_value=None):
+            agent = TimerAgent()
+            result = await agent.handle_task(_make_task("how much time is left?"))
+            assert "{" not in result.speech
+            assert "action" not in result.speech
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="")
+    async def test_handle_task_empty_llm_response(self, mock_complete):
+        agent = TimerAgent()
+        result = await agent.handle_task(_make_task("set a timer"))
+        assert "did not return a response" in result.speech
+        assert result.action_executed is None
+
+    @patch("app.agents.timer.execute_timer_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "timer.kitchen", "new_state": "active", "speech": "Done."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "start_timer", "entity": "kitchen timer", "parameters": {"duration": "00:05:00"}}\n```\nDone.')
+    async def test_handle_task_passes_agent_id(self, mock_complete, mock_exec):
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        await agent.handle_task(_make_task("set a timer for 5 minutes"))
+        mock_exec.assert_awaited_once()
+        _, kwargs = mock_exec.call_args
+        assert kwargs.get("agent_id") == "timer-agent"
+
+    # --- Extension 1: Query Timer ---
+
+    @patch("app.agents.timer.execute_timer_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "timer.kitchen", "new_state": "active",
+                         "speech": "Kitchen Timer is active with 3 minutes and 30 seconds remaining."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "query_timer", "entity": "kitchen timer"}\n```\nChecking timer.')
+    async def test_query_timer(self, _llm, _exec):
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("how much time is left?"))
+        assert result.action_executed.action == "query_timer"
+        assert result.action_executed.success
+
+    # --- Extension 2: List Timers ---
+
+    @patch("app.agents.timer.execute_timer_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "", "new_state": None,
+                         "speech": "Active: Kitchen Timer (3 minutes remaining). Idle: Sleep Timer."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "list_timers", "entity": ""}\n```\nListing timers.')
+    async def test_list_timers(self, _llm, _exec):
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("what timers are running?"))
+        assert result.action_executed.action == "list_timers"
+
+    # --- Extension 3: Snooze ---
+
+    @patch("app.agents.timer.execute_timer_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "timer.kitchen", "new_state": "active",
+                         "speech": "Snoozed Kitchen Timer for 5 minutes."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "snooze_timer", "entity": "kitchen timer"}\n```\nSnoozing.')
+    async def test_snooze_timer(self, _llm, _exec):
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("snooze the kitchen timer"))
+        assert result.action_executed.action == "snooze_timer"
+        assert result.action_executed.success
+
+    # --- Extension 4: List Alarms ---
+
+    @patch("app.agents.timer.execute_timer_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "", "new_state": None,
+                         "speech": "Alarms: Morning Alarm: 07:00:00."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "list_alarms", "entity": ""}\n```\nListing alarms.')
+    async def test_list_alarms(self, _llm, _exec):
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("what alarms do I have?"))
+        assert result.action_executed.action == "list_alarms"
+
+    # --- Extension 7: Timer with Notification ---
+
+    @patch("app.agents.timer.execute_timer_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "timer.kitchen", "new_state": "active",
+                         "speech": 'Started timer for 10 minutes with notification: "Check oven!".'})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "start_timer_with_notification", "entity": "kitchen timer", "parameters": {"duration": "00:10:00", "notification_message": "Check oven!"}}\n```\nSetting timer with notification.')
+    async def test_timer_with_notification(self, _llm, _exec):
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("set a 10 minute timer and remind me to check the oven"))
+        assert result.action_executed.action == "start_timer_with_notification"
+        assert result.action_executed.success
+
+
+class TestTimerExecutor:
+    """Unit tests for timer_executor functions."""
+
+    async def test_query_timer_active(self):
+        """query_timer returns remaining time for active timer."""
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(return_value={
+            "state": "active",
+            "attributes": {"friendly_name": "Kitchen Timer", "remaining": "0:03:30"}
+        })
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="timer.kitchen", friendly_name="Kitchen Timer")])
+
+        result = await execute_timer_action(
+            {"action": "query_timer", "entity": "kitchen timer"},
+            ha, None, matcher, agent_id="timer-agent",
+        )
+        assert result["success"]
+        assert "3 minutes" in result["speech"]
+
+    async def test_query_timer_idle(self):
+        """query_timer returns idle status."""
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(return_value={
+            "state": "idle",
+            "attributes": {"friendly_name": "Kitchen Timer"}
+        })
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="timer.kitchen", friendly_name="Kitchen Timer")])
+
+        result = await execute_timer_action(
+            {"action": "query_timer", "entity": "kitchen timer"},
+            ha, None, matcher, agent_id="timer-agent",
+        )
+        assert result["success"]
+        assert "idle" in result["speech"]
+
+    async def test_list_timers_empty(self):
+        """list_timers returns message when no timers exist."""
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[])
+
+        result = await execute_timer_action(
+            {"action": "list_timers", "entity": ""},
+            ha, None, None, agent_id="timer-agent",
+        )
+        assert result["success"]
+        assert "No timer" in result["speech"]
+
+    async def test_list_timers_with_active(self):
+        """list_timers returns active timer info."""
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[
+            {"entity_id": "timer.kitchen", "state": "active",
+             "attributes": {"friendly_name": "Kitchen Timer", "remaining": "0:05:00"}},
+            {"entity_id": "timer.sleep", "state": "idle",
+             "attributes": {"friendly_name": "Sleep Timer"}},
+        ])
+
+        result = await execute_timer_action(
+            {"action": "list_timers", "entity": ""},
+            ha, None, None, agent_id="timer-agent",
+        )
+        assert result["success"]
+        assert "Kitchen Timer" in result["speech"]
+
+    async def test_snooze_timer(self):
+        """snooze_timer cancels and restarts."""
+        ha = AsyncMock()
+        ha.call_service = AsyncMock(return_value={})
+        ha.get_state = AsyncMock(return_value={"state": "active"})
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="timer.kitchen", friendly_name="Kitchen Timer")])
+
+        result = await execute_timer_action(
+            {"action": "snooze_timer", "entity": "kitchen timer", "parameters": {"duration": "00:05:00"}},
+            ha, None, matcher, agent_id="timer-agent",
+        )
+        assert result["success"]
+        assert ha.call_service.call_count == 2  # cancel + start
+
+    async def test_unknown_action(self):
+        """Unknown action returns error."""
+        result = await execute_timer_action(
+            {"action": "bogus_action", "entity": "timer"},
+            AsyncMock(), None, None, agent_id="timer-agent",
+        )
+        assert not result["success"]
+        assert "Unknown" in result["speech"]
 
 
 class TestSceneAgent:
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Movie scene activated.")
-    async def test_handle_task_activate_scene(self, mock_complete):
-        agent = SceneAgent()
-        result = await agent.handle_task(_make_task("activate movie scene"))
-        assert "activated" in result["speech"]
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Here are your available scenes: Movie Night, Bedtime, Romantic Dinner.")
+    async def test_handle_task_returns_speech(self, mock_complete):
+        agent = SceneAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("what scenes are available?"))
+        assert "scenes" in result.speech.lower()
+        mock_complete.assert_awaited_once()
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Scene turned off.")
-    async def test_handle_task_deactivate_scene(self, mock_complete):
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "activate_scene", "entity": "movie scene", "parameters": {}}\n```\nActivating the movie scene.')
+    async def test_handle_task_no_ha_client_returns_friendly_error(self, mock_complete):
+        agent = SceneAgent(ha_client=None, entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("activate movie scene"))
+        assert "unavailable" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch("app.agents.scene.execute_scene_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "scene.movie_night", "new_state": "scening", "speech": "Done, Movie Night has been activated."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "activate_scene", "entity": "movie scene", "parameters": {}}\n```\nActivating.')
+    async def test_handle_task_action_parsed_executes(self, mock_complete, mock_exec):
+        agent = SceneAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("activate movie scene"))
+        assert result.action_executed.success is True
+        assert result.action_executed.entity_id == "scene.movie_night"
+
+    @patch("app.agents.scene.execute_scene_action", new_callable=AsyncMock,
+           side_effect=Exception("HA connection lost"))
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "activate_scene", "entity": "bedtime", "parameters": {}}\n```\nActivating.')
+    async def test_handle_task_execute_action_exception(self, mock_complete, mock_exec):
+        agent = SceneAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("activate bedtime scene"))
+        assert "sorry" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='Available scenes listed. {"action": "activate_scene", "entity": "x", "parameters": {}} Enjoy!')
+    async def test_handle_task_strips_json_from_fallback(self, mock_complete):
+        with patch("app.agents.actionable.parse_action", return_value=None):
+            agent = SceneAgent()
+            result = await agent.handle_task(_make_task("list scenes"))
+            assert "{" not in result.speech
+            assert "action" not in result.speech
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="")
+    async def test_handle_task_empty_llm_response(self, mock_complete):
         agent = SceneAgent()
-        result = await agent.handle_task(_make_task("turn off the scene"))
-        assert result["speech"] == "Scene turned off."
+        result = await agent.handle_task(_make_task("activate scene"))
+        assert "did not return a response" in result.speech
+        assert result.action_executed is None
+
+    @patch("app.agents.scene.execute_scene_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "scene.movie_night", "new_state": "scening", "speech": "Done."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "activate_scene", "entity": "movie scene", "parameters": {}}\n```\nDone.')
+    async def test_handle_task_passes_agent_id(self, mock_complete, mock_exec):
+        agent = SceneAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        await agent.handle_task(_make_task("activate movie scene"))
+        mock_exec.assert_awaited_once()
+        _, kwargs = mock_exec.call_args
+        assert kwargs.get("agent_id") == "scene-agent"
 
 
 class TestAutomationAgent:
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Automation enabled.")
-    async def test_handle_task_enable_automation(self, mock_complete):
-        agent = AutomationAgent()
-        result = await agent.handle_task(_make_task("enable morning routine automation"))
-        assert "enabled" in result["speech"].lower() or "Automation" in result["speech"]
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="The morning routine automation is currently enabled.")
+    async def test_handle_task_returns_speech(self, mock_complete):
+        agent = AutomationAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("is the morning routine enabled?"))
+        assert "enabled" in result.speech.lower()
+        mock_complete.assert_awaited_once()
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Automation triggered.")
-    async def test_handle_task_trigger_automation(self, mock_complete):
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "enable_automation", "entity": "morning routine", "parameters": {}}\n```\nEnabling the morning routine.')
+    async def test_handle_task_no_ha_client_returns_friendly_error(self, mock_complete):
+        agent = AutomationAgent(ha_client=None, entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("enable morning routine"))
+        assert "unavailable" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch("app.agents.automation.execute_automation_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "automation.morning_routine", "new_state": "on", "speech": "Done, Morning Routine is now on."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "enable_automation", "entity": "morning routine", "parameters": {}}\n```\nEnabling.')
+    async def test_handle_task_action_parsed_executes(self, mock_complete, mock_exec):
+        agent = AutomationAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("enable morning routine"))
+        assert result.action_executed.success is True
+        assert result.action_executed.entity_id == "automation.morning_routine"
+
+    @patch("app.agents.automation.execute_automation_action", new_callable=AsyncMock,
+           side_effect=Exception("HA connection lost"))
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "disable_automation", "entity": "motion sensor", "parameters": {}}\n```\nDisabling.')
+    async def test_handle_task_execute_action_exception(self, mock_complete, mock_exec):
+        agent = AutomationAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("disable motion sensor automation"))
+        assert "sorry" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='The automation is active. {"action": "enable_automation", "entity": "x", "parameters": {}} All good.')
+    async def test_handle_task_strips_json_from_fallback(self, mock_complete):
+        with patch("app.agents.actionable.parse_action", return_value=None):
+            agent = AutomationAgent()
+            result = await agent.handle_task(_make_task("is the automation active?"))
+            assert "{" not in result.speech
+            assert "action" not in result.speech
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="")
+    async def test_handle_task_empty_llm_response(self, mock_complete):
         agent = AutomationAgent()
-        result = await agent.handle_task(_make_task("trigger the nighttime automation"))
-        assert "triggered" in result["speech"].lower()
+        result = await agent.handle_task(_make_task("enable automation"))
+        assert "did not return a response" in result.speech
+        assert result.action_executed is None
+
+    @patch("app.agents.automation.execute_automation_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "automation.morning_routine", "new_state": "on", "speech": "Done."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "enable_automation", "entity": "morning routine", "parameters": {}}\n```\nDone.')
+    async def test_handle_task_passes_agent_id(self, mock_complete, mock_exec):
+        agent = AutomationAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        await agent.handle_task(_make_task("enable morning routine"))
+        mock_exec.assert_awaited_once()
+        _, kwargs = mock_exec.call_args
+        assert kwargs.get("agent_id") == "automation-agent"
 
 
 class TestSecurityAgentHandler:
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Front door locked.")
-    async def test_handle_task_lock(self, mock_complete):
-        agent = SecurityAgent()
-        result = await agent.handle_task(_make_task("lock the front door"))
-        assert "locked" in result["speech"].lower()
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="The front door is locked.")
+    async def test_handle_task_returns_speech(self, mock_complete):
+        agent = SecurityAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("is the front door locked?"))
+        assert "locked" in result.speech.lower()
+        mock_complete.assert_awaited_once()
 
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Alarm armed in away mode.")
-    async def test_handle_task_alarm_arm(self, mock_complete):
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "lock", "entity": "front door", "parameters": {}}\n```\nLocking the front door.')
+    async def test_handle_task_no_ha_client_returns_friendly_error(self, mock_complete):
+        agent = SecurityAgent(ha_client=None, entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("lock the front door"))
+        assert "unavailable" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch("app.agents.security.execute_security_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "lock.front_door", "new_state": "locked", "speech": "Done, Front Door is now locked."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "lock", "entity": "front door", "parameters": {}}\n```\nLocking.')
+    async def test_handle_task_action_parsed_executes(self, mock_complete, mock_exec):
+        agent = SecurityAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("lock the front door"))
+        assert result.action_executed.success is True
+        assert result.action_executed.entity_id == "lock.front_door"
+
+    @patch("app.agents.security.execute_security_action", new_callable=AsyncMock,
+           side_effect=Exception("HA connection lost"))
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "unlock", "entity": "back door", "parameters": {}}\n```\nUnlocking.')
+    async def test_handle_task_execute_action_exception(self, mock_complete, mock_exec):
+        agent = SecurityAgent(ha_client=MagicMock(), entity_index=MagicMock())
+        result = await agent.handle_task(_make_task("unlock the back door"))
+        assert "sorry" in result.speech.lower()
+        assert result.action_executed is None
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='Motion detected in hallway. {"action": "lock", "entity": "x", "parameters": {}} Stay safe.')
+    async def test_handle_task_strips_json_from_fallback(self, mock_complete):
+        with patch("app.agents.actionable.parse_action", return_value=None):
+            agent = SecurityAgent()
+            result = await agent.handle_task(_make_task("any motion detected?"))
+            assert "{" not in result.speech
+            assert "action" not in result.speech
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="")
+    async def test_handle_task_empty_llm_response(self, mock_complete):
         agent = SecurityAgent()
-        result = await agent.handle_task(_make_task("arm the alarm in away mode"))
-        assert "armed" in result["speech"].lower()
+        result = await agent.handle_task(_make_task("lock the door"))
+        assert "did not return a response" in result.speech
+        assert result.action_executed is None
+
+    @patch("app.agents.security.execute_security_action", new_callable=AsyncMock,
+           return_value={"success": True, "entity_id": "lock.front_door", "new_state": "locked", "speech": "Done."})
+    @patch("app.llm.client.complete", new_callable=AsyncMock,
+           return_value='```json\n{"action": "lock", "entity": "front door", "parameters": {}}\n```\nDone.')
+    async def test_handle_task_passes_agent_id(self, mock_complete, mock_exec):
+        agent = SecurityAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        await agent.handle_task(_make_task("lock the front door"))
+        mock_exec.assert_awaited_once()
+        _, kwargs = mock_exec.call_args
+        assert kwargs.get("agent_id") == "security-agent"
 
 
 class TestGeneralAgent:
@@ -372,13 +841,13 @@ class TestGeneralAgent:
     async def test_handle_task_freeform_qa(self, mock_complete):
         agent = GeneralAgent()
         result = await agent.handle_task(_make_task("what is the weather like?"))
-        assert "weather" in result["speech"].lower()
+        assert "weather" in result.speech.lower()
 
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="That is an interesting question.")
     async def test_handle_task_no_action_executed(self, mock_complete):
         agent = GeneralAgent()
         result = await agent.handle_task(_make_task("tell me a joke"))
-        assert "action_executed" not in result or result.get("action_executed") is None
+        assert result.action_executed is None
 
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Done.")
     async def test_handle_task_uses_system_prompt(self, mock_complete):
@@ -450,7 +919,7 @@ class TestRewriteAgent:
     async def test_handle_task_a2a_interface(self, mock_complete):
         agent = RewriteAgent()
         result = await agent.handle_task(_make_task("Original cached text"))
-        assert result["speech"] == "Rephrased text."
+        assert result.speech == "Rephrased text."
 
     def test_rewrite_agent_card(self):
         agent = RewriteAgent()
@@ -594,7 +1063,9 @@ class TestOrchestratorAgent:
         task = _make_task("turn on kitchen light")
         task.conversation_id = "conv-test"
         await orch.handle_task(task)
-        turns = orch._conversations.get("conv-test", [])
+        entry = orch._conversations.get("conv-test")
+        assert entry is not None
+        _, turns = entry
         assert len(turns) == 2  # user + assistant
 
     @patch("app.agents.orchestrator.SettingsRepository")
@@ -607,7 +1078,9 @@ class TestOrchestratorAgent:
             task = _make_task(f"Question {i}")
             task.conversation_id = "conv-limit"
             await orch.handle_task(task)
-        turns = orch._conversations.get("conv-limit", [])
+        entry = orch._conversations.get("conv-limit")
+        assert entry is not None
+        _, turns = entry
         # _MAX_TURNS = 3, so max 6 messages (3 pairs)
         assert len(turns) <= 6
 
@@ -790,7 +1263,7 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(return_value="false")
         collector = SpanCollector("trace-return-test")
         task = _make_task("turn on light")
-        task._span_collector = collector
+        task.span_collector = collector
         task.conversation_id = "conv-ret"
         with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
             await orch.handle_task(task)
@@ -982,7 +1455,7 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(return_value="")
         collector = SpanCollector("trace-cond-test")
         task = _make_task("turn on kitchen light")
-        task._span_collector = collector
+        task.span_collector = collector
         task.conversation_id = "conv-cond"
         with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
             await orch.handle_task(task)
@@ -1002,7 +1475,7 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(return_value="")
         collector = SpanCollector("trace-cache-miss")
         task = _make_task("turn on light")
-        task._span_collector = collector
+        task.span_collector = collector
         task.conversation_id = "conv-cache-miss"
         with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
             await orch.handle_task(task)
@@ -1031,7 +1504,7 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(return_value="")
         collector = SpanCollector("trace-cache-routing")
         task = _make_task("turn on light")
-        task._span_collector = collector
+        task.span_collector = collector
         task.conversation_id = "conv-cache-routing"
         with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
             await orch.handle_task(task)
@@ -1061,7 +1534,7 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(return_value="")
         collector = SpanCollector("trace-resp-hit")
         task = _make_task("turn on light")
-        task._span_collector = collector
+        task.span_collector = collector
         task.conversation_id = "conv-resp-hit"
         with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
             result = await orch.handle_task(task)
@@ -1093,7 +1566,7 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(return_value="")
         collector = SpanCollector("trace-rewrite-span")
         task = _make_task("turn on light")
-        task._span_collector = collector
+        task.span_collector = collector
         task.conversation_id = "conv-rewrite"
         with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
             result = await orch.handle_task(task)
@@ -1128,7 +1601,7 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(return_value="")
         collector = SpanCollector("trace-no-rewrite")
         task = _make_task("turn on light")
-        task._span_collector = collector
+        task.span_collector = collector
         task.conversation_id = "conv-no-rewrite"
         with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
             result = await orch.handle_task(task)
@@ -1147,7 +1620,7 @@ class TestOrchestratorAgent:
         mock_settings.get_value = AsyncMock(return_value="")
         collector = SpanCollector("trace-no-cache")
         task = _make_task("hello")
-        task._span_collector = collector
+        task.span_collector = collector
         task.conversation_id = "conv-no-cache"
         with patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
             result = await orch.handle_task(task)
@@ -1268,15 +1741,15 @@ class TestLightAgentEmptyResponse:
     async def test_empty_string_response(self, mock_complete):
         agent = LightAgent()
         result = await agent.handle_task(_make_task("turn on light"))
-        assert "did not return a response" in result["speech"]
-        assert result["action_executed"] is None
+        assert "did not return a response" in result.speech
+        assert result.action_executed is None
 
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value=None)
     async def test_none_response(self, mock_complete):
         agent = LightAgent()
         result = await agent.handle_task(_make_task("turn on light"))
-        assert "did not return a response" in result["speech"]
-        assert result["action_executed"] is None
+        assert "did not return a response" in result.speech
+        assert result.action_executed is None
 
 
 # ---------------------------------------------------------------------------
@@ -1305,7 +1778,7 @@ class TestDynamicAgent:
             skills=["help"],
         )
         result = await agent.handle_task(_make_task("help me"))
-        assert result["speech"] == "Custom response."
+        assert result.speech == "Custom response."
         call_messages = mock_complete.call_args[0][1]
         assert "custom helper" in call_messages[0]["content"]
 
@@ -1441,3 +1914,205 @@ class TestAgentConfigDefaultTemperature:
         from app.models.agent import AgentConfig
         config = AgentConfig(agent_id="test-agent")
         assert config.temperature == 0.2
+
+
+# ---------------------------------------------------------------------------
+# Climate Executor
+# ---------------------------------------------------------------------------
+
+from app.agents.climate_executor import execute_climate_action  # noqa: E402
+
+
+class TestClimateExecutor:
+
+    async def test_unknown_action_returns_failure(self):
+        result = await execute_climate_action(
+            {"action": "unknown", "entity": "thermostat"},
+            MagicMock(), MagicMock(), MagicMock()
+        )
+        assert result["success"] is False
+        assert "Unknown action" in result["speech"]
+
+    async def test_entity_not_found(self):
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        index = MagicMock()
+        index.search = MagicMock(return_value=[])
+        result = await execute_climate_action(
+            {"action": "set_temperature", "entity": "nonexistent", "parameters": {"temperature": 72}},
+            MagicMock(), index, matcher
+        )
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+
+    async def test_set_temperature_calls_service(self):
+        matcher = AsyncMock()
+        match_obj = MagicMock(entity_id="climate.living_room", friendly_name="Living Room")
+        matcher.match = AsyncMock(return_value=[match_obj])
+        ha = AsyncMock()
+        ha.call_service = AsyncMock()
+        ha.get_state = AsyncMock(return_value={"state": "heat"})
+        result = await execute_climate_action(
+            {"action": "set_temperature", "entity": "thermostat", "parameters": {"temperature": 72}},
+            ha, MagicMock(), matcher
+        )
+        assert result["success"] is True
+        ha.call_service.assert_awaited_once_with("climate", "set_temperature", "climate.living_room", {"temperature": 72.0})
+
+    async def test_service_call_failure(self):
+        matcher = AsyncMock()
+        match_obj = MagicMock(entity_id="climate.living_room", friendly_name="Living Room")
+        matcher.match = AsyncMock(return_value=[match_obj])
+        ha = AsyncMock()
+        ha.call_service = AsyncMock(side_effect=Exception("Connection refused"))
+        result = await execute_climate_action(
+            {"action": "turn_off", "entity": "thermostat", "parameters": {}},
+            ha, MagicMock(), matcher
+        )
+        assert result["success"] is False
+        assert "Failed" in result["speech"]
+
+
+# ---------------------------------------------------------------------------
+# Security Executor
+# ---------------------------------------------------------------------------
+
+from app.agents.security_executor import execute_security_action  # noqa: E402
+
+
+class TestSecurityExecutor:
+
+    async def test_unknown_action_returns_failure(self):
+        result = await execute_security_action(
+            {"action": "unknown", "entity": "door"},
+            MagicMock(), MagicMock(), MagicMock()
+        )
+        assert result["success"] is False
+
+    async def test_lock_calls_correct_service(self):
+        matcher = AsyncMock()
+        match_obj = MagicMock(entity_id="lock.front_door", friendly_name="Front Door")
+        matcher.match = AsyncMock(return_value=[match_obj])
+        ha = AsyncMock()
+        ha.call_service = AsyncMock()
+        ha.get_state = AsyncMock(return_value={"state": "locked"})
+        result = await execute_security_action(
+            {"action": "lock", "entity": "front door", "parameters": {}},
+            ha, MagicMock(), matcher
+        )
+        assert result["success"] is True
+        ha.call_service.assert_awaited_once_with("lock", "lock", "lock.front_door", None)
+
+    async def test_alarm_arm_away_calls_correct_service(self):
+        matcher = AsyncMock()
+        match_obj = MagicMock(entity_id="alarm_control_panel.home", friendly_name="Home Alarm")
+        matcher.match = AsyncMock(return_value=[match_obj])
+        ha = AsyncMock()
+        ha.call_service = AsyncMock()
+        ha.get_state = AsyncMock(return_value={"state": "armed_away"})
+        result = await execute_security_action(
+            {"action": "alarm_arm_away", "entity": "house alarm", "parameters": {}},
+            ha, MagicMock(), matcher
+        )
+        assert result["success"] is True
+        ha.call_service.assert_awaited_once_with("alarm_control_panel", "alarm_arm_away", "alarm_control_panel.home", None)
+
+    async def test_unlock_with_code(self):
+        matcher = AsyncMock()
+        match_obj = MagicMock(entity_id="lock.front_door", friendly_name="Front Door")
+        matcher.match = AsyncMock(return_value=[match_obj])
+        ha = AsyncMock()
+        ha.call_service = AsyncMock()
+        ha.get_state = AsyncMock(return_value={"state": "unlocked"})
+        result = await execute_security_action(
+            {"action": "unlock", "entity": "front door", "parameters": {"code": "1234"}},
+            ha, MagicMock(), matcher
+        )
+        assert result["success"] is True
+        ha.call_service.assert_awaited_once_with("lock", "unlock", "lock.front_door", {"code": "1234"})
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.3: Conversation memory eviction tests
+# ---------------------------------------------------------------------------
+
+class TestConversationMemoryEviction:
+    """Tests for TTL eviction and max-count enforcement in OrchestratorAgent._conversations."""
+
+    def _make_orchestrator(self):
+        dispatcher = AsyncMock()
+        registry = AsyncMock()
+        cache_manager = MagicMock()
+        cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
+        cache_manager.apply_rewrite = AsyncMock()
+
+        response_mock = MagicMock()
+        response_mock.error = None
+        response_mock.result = {"speech": "Done!"}
+        dispatcher.dispatch = AsyncMock(return_value=response_mock)
+
+        registry.list_agents = AsyncMock(return_value=[
+            AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"]),
+        ])
+
+        orchestrator = OrchestratorAgent(
+            dispatcher=dispatcher,
+            registry=registry,
+            cache_manager=cache_manager,
+        )
+        return orchestrator
+
+    def test_conversations_evicted_after_ttl(self):
+        """Conversations older than TTL should be evicted on next _store_turn."""
+        import app.agents.orchestrator as orch_mod
+        orch = self._make_orchestrator()
+        # Seed a conversation with old timestamp
+        old_ts = _time.monotonic() - orch_mod._CONVERSATION_TTL_SECONDS - 1
+        orch._conversations["old-conv"] = (old_ts, [{"role": "user", "content": "hi"}])
+        # Store a new turn triggers eviction
+        orch._store_turn("new-conv", "hello", "world")
+        assert "old-conv" not in orch._conversations
+        assert "new-conv" in orch._conversations
+
+    def test_get_turns_returns_empty_for_expired(self):
+        """_get_turns should return empty for TTL-expired conversations."""
+        import app.agents.orchestrator as orch_mod
+        orch = self._make_orchestrator()
+        old_ts = _time.monotonic() - orch_mod._CONVERSATION_TTL_SECONDS - 1
+        orch._conversations["expired-conv"] = (old_ts, [{"role": "user", "content": "hi"}])
+        turns = orch._get_turns("expired-conv")
+        assert turns == []
+        # Should also be removed from dict
+        assert "expired-conv" not in orch._conversations
+
+    def test_active_conversations_preserved(self):
+        """Active conversations (within TTL) should be preserved during eviction."""
+        import app.agents.orchestrator as orch_mod
+        orch = self._make_orchestrator()
+        now = _time.monotonic()
+        # Add one old (expired) and one fresh
+        old_ts = now - orch_mod._CONVERSATION_TTL_SECONDS - 1
+        orch._conversations["stale"] = (old_ts, [{"role": "user", "content": "old"}])
+        orch._conversations["fresh"] = (now, [{"role": "user", "content": "new"}])
+        orch._evict_stale_conversations()
+        assert "stale" not in orch._conversations
+        assert "fresh" in orch._conversations
+
+    def test_max_conversation_count_enforced(self):
+        """When conversation count exceeds _MAX_CONVERSATIONS, oldest are evicted."""
+        import app.agents.orchestrator as orch_mod
+        orch = self._make_orchestrator()
+        now = _time.monotonic()
+        original_max = orch_mod._MAX_CONVERSATIONS
+        try:
+            orch_mod._MAX_CONVERSATIONS = 5
+            for i in range(7):
+                orch._conversations[f"conv-{i}"] = (now + i, [{"role": "user", "content": f"msg-{i}"}])
+            orch._evict_stale_conversations()
+            assert len(orch._conversations) <= 5
+            # Oldest (conv-0, conv-1) should be gone; newest should remain
+            assert "conv-6" in orch._conversations
+            assert "conv-5" in orch._conversations
+        finally:
+            orch_mod._MAX_CONVERSATIONS = original_max
+

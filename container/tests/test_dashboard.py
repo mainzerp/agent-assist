@@ -44,6 +44,7 @@ def _build_dashboard_app(*, override_session: bool = True):
     # Set state directly
     app.state.startup_time = 0
     app.state.registry = MagicMock()
+    app.state.registry.list_agents = AsyncMock(return_value=[])
     app.state.dispatcher = MagicMock()
     app.state.ha_client = MagicMock()
     app.state.entity_index = None
@@ -149,10 +150,19 @@ class TestDashboardPageAccessibility:
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
 
-    async def test_entity_visibility_page(self, dashboard_client: httpx.AsyncClient):
-        resp = await dashboard_client.get("/dashboard/entity-visibility")
-        assert resp.status_code == 200
-        assert "text/html" in resp.headers.get("content-type", "")
+    async def test_entity_visibility_redirects(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get(
+            "/dashboard/entity-visibility", follow_redirects=False
+        )
+        assert resp.status_code == 301
+        assert "/dashboard/entity-index" in resp.headers.get("location", "")
+
+    async def test_entity_visibility_redirect_preserves_agent(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get(
+            "/dashboard/entity-visibility?agent=light-agent", follow_redirects=False
+        )
+        assert resp.status_code == 301
+        assert "agent=light-agent" in resp.headers.get("location", "")
 
     async def test_analytics_page(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/analytics")
@@ -236,3 +246,51 @@ class TestPersonalityPage:
         assert resp.status_code == 200
         resp2 = await dashboard_client.get("/api/admin/personality/config")
         assert resp2.json()["prompt"] == ""
+
+
+# ===================================================================
+# Overview extended endpoint
+# ===================================================================
+
+
+@pytest.mark.integration
+class TestOverviewExtended:
+
+    async def test_overview_extended_returns_all_fields(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/api/admin/overview/extended")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        expected_keys = {
+            "recent_requests", "cache_hit_rate", "agent_count",
+            "entity_count", "mcp_server_count", "presence_rooms",
+            "avg_latency_ms", "total_conversations",
+            "agent_distribution", "cache_tier", "request_trend",
+            "recent_traces", "warnings",
+        }
+        assert expected_keys.issubset(data.keys())
+
+        assert isinstance(data["agent_distribution"], list)
+        assert isinstance(data["cache_tier"], dict)
+        assert "routing_hits" in data["cache_tier"]
+        assert "response_hits" in data["cache_tier"]
+        assert "misses" in data["cache_tier"]
+        assert isinstance(data["request_trend"], dict)
+        assert "labels" in data["request_trend"]
+        assert "data" in data["request_trend"]
+        assert isinstance(data["recent_traces"], list)
+        assert isinstance(data["warnings"], dict)
+        assert "agent_timeouts" in data["warnings"]
+        assert "rewrite_failures" in data["warnings"]
+
+    async def test_overview_extended_numeric_types(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/api/admin/overview/extended")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert isinstance(data["recent_requests"], int)
+        assert isinstance(data["cache_hit_rate"], (int, float))
+        assert isinstance(data["agent_count"], int)
+        assert isinstance(data["entity_count"], int)
+        assert isinstance(data["avg_latency_ms"], (int, float))
+        assert isinstance(data["total_conversations"], int)

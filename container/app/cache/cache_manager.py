@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -73,7 +74,7 @@ class CacheManager:
         Rewrite is NOT applied here; call apply_rewrite() separately.
         """
         try:
-            result = self._process_inner(query_text)
+            result = await asyncio.to_thread(self._process_inner, query_text)
             # Track cache event
             await track_cache_event(
                 tier="response" if result.hit_type.startswith("response") else "routing",

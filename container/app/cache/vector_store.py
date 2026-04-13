@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import chromadb
@@ -42,6 +43,26 @@ class VectorStore:
             settings.chromadb_persist_dir,
         )
 
+    def _is_alive(self) -> bool:
+        """Check if the ChromaDB client is still responsive."""
+        try:
+            self._client.heartbeat()
+            return True
+        except Exception:
+            return False
+
+    def _reinitialize_sync(self) -> None:
+        """Re-create the PersistentClient and re-fetch all collections."""
+        logger.warning("ChromaDB client dead, reinitializing VectorStore")
+        self._client = chromadb.PersistentClient(path=settings.chromadb_persist_dir)
+        for name in (COLLECTION_ENTITY_INDEX, COLLECTION_ROUTING_CACHE, COLLECTION_RESPONSE_CACHE):
+            self._collections[name] = self._client.get_or_create_collection(
+                name=name,
+                embedding_function=self._embedding_fn,
+                metadata={"hnsw:space": "cosine"},
+            )
+        logger.info("VectorStore reinitialized successfully")
+
     def get_collection(self, name: str) -> Collection:
         """Return a named collection. Must call initialize() first."""
         return self._collections[name]
@@ -63,7 +84,14 @@ class VectorStore:
             kwargs["embeddings"] = embeddings
         if metadatas is not None:
             kwargs["metadatas"] = metadatas
-        col.add(**kwargs)
+        try:
+            col.add(**kwargs)
+        except Exception as exc:
+            if "closed" in str(exc).lower():
+                self._reinitialize_sync()
+                self.get_collection(collection_name).add(**kwargs)
+            else:
+                raise
 
     def upsert(
         self,
@@ -82,7 +110,14 @@ class VectorStore:
             kwargs["embeddings"] = embeddings
         if metadatas is not None:
             kwargs["metadatas"] = metadatas
-        col.upsert(**kwargs)
+        try:
+            col.upsert(**kwargs)
+        except Exception as exc:
+            if "closed" in str(exc).lower():
+                self._reinitialize_sync()
+                self.get_collection(collection_name).upsert(**kwargs)
+            else:
+                raise
 
     def query(
         self,
@@ -104,15 +139,34 @@ class VectorStore:
             kwargs["where"] = where
         if include is not None:
             kwargs["include"] = include
-        return col.query(**kwargs)
+        try:
+            return col.query(**kwargs)
+        except Exception as exc:
+            if "closed" in str(exc).lower():
+                self._reinitialize_sync()
+                return self.get_collection(collection_name).query(**kwargs)
+            raise
 
     def delete(self, collection_name: str, ids: list[str]) -> None:
         """Delete entries by ID from a collection."""
-        self.get_collection(collection_name).delete(ids=ids)
+        try:
+            self.get_collection(collection_name).delete(ids=ids)
+        except Exception as exc:
+            if "closed" in str(exc).lower():
+                self._reinitialize_sync()
+                self.get_collection(collection_name).delete(ids=ids)
+            else:
+                raise
 
     def count(self, collection_name: str) -> int:
         """Return the number of entries in a collection."""
-        return self.get_collection(collection_name).count()
+        try:
+            return self.get_collection(collection_name).count()
+        except Exception as exc:
+            if "closed" in str(exc).lower():
+                self._reinitialize_sync()
+                return self.get_collection(collection_name).count()
+            raise
 
     def get(
         self,
@@ -130,7 +184,39 @@ class VectorStore:
             kwargs["where"] = where
         if include is not None:
             kwargs["include"] = include
-        return col.get(**kwargs)
+        try:
+            return col.get(**kwargs)
+        except Exception as exc:
+            if "closed" in str(exc).lower():
+                self._reinitialize_sync()
+                return self.get_collection(collection_name).get(**kwargs)
+            raise
+
+    # --- Async wrappers (run blocking ChromaDB ops in thread executor) ---
+
+    async def aquery(self, collection_name: str, **kwargs):
+        """Async wrapper for query()."""
+        return await asyncio.to_thread(self.query, collection_name, **kwargs)
+
+    async def aupsert(self, collection_name: str, **kwargs):
+        """Async wrapper for upsert()."""
+        return await asyncio.to_thread(self.upsert, collection_name, **kwargs)
+
+    async def aadd(self, collection_name: str, **kwargs):
+        """Async wrapper for add()."""
+        return await asyncio.to_thread(self.add, collection_name, **kwargs)
+
+    async def adelete(self, collection_name: str, **kwargs):
+        """Async wrapper for delete()."""
+        return await asyncio.to_thread(self.delete, collection_name, **kwargs)
+
+    async def acount(self, collection_name: str):
+        """Async wrapper for count()."""
+        return await asyncio.to_thread(self.count, collection_name)
+
+    async def aget(self, collection_name: str, **kwargs):
+        """Async wrapper for get()."""
+        return await asyncio.to_thread(self.get, collection_name, **kwargs)
 
 
 _store: VectorStore | None = None
@@ -139,6 +225,9 @@ _store: VectorStore | None = None
 async def get_vector_store() -> VectorStore:
     """Return the singleton VectorStore, initializing on first call."""
     global _store
+    if _store is not None and not _store._is_alive():
+        logger.warning("VectorStore singleton has dead client, resetting")
+        _store = None
     if _store is None:
         _store = VectorStore()
         await _store.initialize()

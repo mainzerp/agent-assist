@@ -8,9 +8,9 @@ from pydantic import BaseModel, Field
 class ConversationRequest(BaseModel):
     """Incoming conversation request from HA integration."""
 
-    text: str = Field(..., description="User input text")
-    conversation_id: str | None = Field(None, description="Conversation ID for multi-turn")
-    language: str = Field("en", description="User language code")
+    text: str = Field(..., description="User input text", max_length=5000)
+    conversation_id: str | None = Field(None, description="Conversation ID for multi-turn", max_length=64)
+    language: str = Field("en", description="User language code", max_length=10)
 
 
 class ConversationResponse(BaseModel):

@@ -485,10 +485,13 @@ class TestAdminAccountRepository:
         assert "u1" in usernames
         assert "u2" in usernames
 
-    async def test_duplicate_username_raises(self, db_repository):
+    async def test_duplicate_username_replaces(self, db_repository):
+        """INSERT OR REPLACE allows re-creating an admin with the same username."""
         await AdminAccountRepository.create("dupuser", "$2b$12$h")
-        with pytest.raises(Exception):
-            await AdminAccountRepository.create("dupuser", "$2b$12$h2")
+        await AdminAccountRepository.create("dupuser", "$2b$12$h2")
+        account = await AdminAccountRepository.get("dupuser")
+        assert account is not None
+        assert account["password_hash"] == "$2b$12$h2"
 
 
 # ---------------------------------------------------------------------------

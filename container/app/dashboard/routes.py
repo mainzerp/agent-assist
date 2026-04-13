@@ -13,6 +13,7 @@ from app.security.auth import (
     require_admin_session_redirect,
     SESSION_COOKIE_NAME,
 )
+from app.config import settings as app_settings
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ async def login_submit(
         httponly=True,
         samesite="lax",
         max_age=86400,
-        # secure=True should be added in production behind HTTPS
+        secure=app_settings.cookie_secure,
     )
     return response
 
@@ -170,8 +171,13 @@ async def entity_visibility_page(
     request: Request,
     _session: dict = Depends(require_admin_session_redirect),
 ):
-    """Entity visibility management page."""
-    return templates.TemplateResponse(request, "entity_visibility.html")
+    """Redirect to entity index (entity visibility merged into entity index)."""
+    from starlette.responses import RedirectResponse
+    agent = request.query_params.get("agent", "")
+    url = "/dashboard/entity-index"
+    if agent:
+        url += f"?agent={agent}"
+    return RedirectResponse(url=url, status_code=301)
 
 
 @router.get("/presence", response_class=HTMLResponse)

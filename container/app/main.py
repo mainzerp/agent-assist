@@ -116,6 +116,13 @@ async def lifespan(app: FastAPI):
     logger.info("Starting agent-assist container")
     await init_db()
 
+    from app.security.encryption import is_fernet_key_present
+    if is_fernet_key_present():
+        logger.warning(
+            "IMPORTANT: Back up your Fernet key at /data/.fernet_key. "
+            "Loss of this file makes all encrypted secrets (HA token, LLM keys, API key) unrecoverable."
+        )
+
     # Register default sync interval setting if not already set
     existing = await SettingsRepository.get_value("entity_sync.interval_minutes")
     if existing is None:
@@ -222,10 +229,14 @@ async def lifespan(app: FastAPI):
             ("automation-agent", AutomationAgent),
             ("security-agent", SecurityAgent),
         ]
+        _PHASE2_AGENTS_WITH_MATCHER = {"climate-agent", "security-agent", "timer-agent", "scene-agent", "automation-agent", "media-agent"}
         for agent_id, agent_cls in _PHASE2_AGENTS:
             config = await AgentConfigRepository.get(agent_id)
             if config and config.get("enabled"):
-                agent = agent_cls(ha_client=ha_client, entity_index=entity_index)
+                if agent_id in _PHASE2_AGENTS_WITH_MATCHER:
+                    agent = agent_cls(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
+                else:
+                    agent = agent_cls(ha_client=ha_client, entity_index=entity_index)
                 await registry.register(agent)
 
         # Register rewrite agent (internal use, not routable by orchestrator)
@@ -346,23 +357,41 @@ async def lifespan(app: FastAPI):
 
     # --- Shutdown ---
     logger.info("Shutting down agent-assist container")
-    await plugin_loader.run_lifecycle(LifecyclePhase.SHUTDOWN)
+
+    # Plugin shutdown (isolated -- errors must not block remaining cleanup)
+    try:
+        await plugin_loader.run_lifecycle(LifecyclePhase.SHUTDOWN)
+    except Exception:
+        logger.warning("Plugin shutdown error (continuing cleanup)", exc_info=True)
+
     if ws_client:
         await ws_client.disconnect()
+
+    # Cancel background tasks and await them to ensure cleanup completes
+    tasks_to_cancel = []
     if ws_task and not ws_task.done():
         ws_task.cancel()
+        tasks_to_cancel.append(ws_task)
     if sync_task and not sync_task.done():
         sync_task.cancel()
+        tasks_to_cancel.append(sync_task)
+    if tasks_to_cancel:
+        await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+
     await mcp_registry.disconnect_all()
     if ha_client:
         await ha_client.close()
+    from app.db.schema import close_db
+    await close_db()
+    logger.info("Shutdown complete")
 
 
 def create_app() -> FastAPI:
     """Application factory."""
+    from app import __version__
     app = FastAPI(
         title="agent-assist",
-        version="0.1.0",
+        version=__version__,
         lifespan=lifespan,
     )
 
@@ -402,11 +431,13 @@ def create_app() -> FastAPI:
     from app.api.routes import custom_agents_api as custom_agents_api_routes
     from app.api.routes import entity_visibility_api as entity_visibility_api_routes
     from app.api.routes import presence_api as presence_api_routes
+    from app.api.routes import domain_agent_map_api as domain_agent_map_api_routes
     app.include_router(mcp_api_routes.router)
     app.include_router(custom_agents_api_routes.router)
     app.include_router(entity_visibility_api_routes.router)
     app.include_router(entity_visibility_api_routes.entities_router)
     app.include_router(presence_api_routes.router)
+    app.include_router(domain_agent_map_api_routes.router)
 
     # Batch F routers
     from app.api.routes import plugins_api as plugins_api_routes

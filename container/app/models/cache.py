@@ -17,6 +17,14 @@ class RoutingCacheEntry(BaseModel):
     last_accessed: str | None = None
 
 
+class CachedAction(BaseModel):
+    """A cached HA service call for direct execution on cache hit."""
+
+    service: str = Field(..., description="HA service (e.g., light/turn_on)")
+    entity_id: str
+    service_data: dict = Field(default_factory=dict)
+
+
 class ResponseCacheEntry(BaseModel):
     """Entry in the response cache tier."""
 
@@ -29,11 +37,3 @@ class ResponseCacheEntry(BaseModel):
     entity_ids: list[str] = Field(default_factory=list)
     created_at: str | None = None
     last_accessed: str | None = None
-
-
-class CachedAction(BaseModel):
-    """A cached HA service call for direct execution on cache hit."""
-
-    service: str = Field(..., description="HA service (e.g., light/turn_on)")
-    entity_id: str
-    service_data: dict = Field(default_factory=dict)

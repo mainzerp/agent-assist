@@ -3,8 +3,40 @@
 {% block nav_overview %}active{% endblock %}
 {% block header_title %}Overview{% endblock %}
 {% block page_content %}
-<div x-data="overviewPage()" x-init="loadOverview(); loadHealth()">
+<div x-data="overviewPage()" x-init="loadAll()">
 
+    <!-- Warning banners (conditional) -->
+    <template x-if="data && (data.warnings.agent_timeouts > 0 || data.warnings.rewrite_failures > 0)">
+        <div class="alert-banner">
+            <svg class="alert-banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            <span>
+                <template x-if="data.warnings.agent_timeouts > 0">
+                    <span x-text="data.warnings.agent_timeouts + ' agent timeout(s)'"></span>
+                </template>
+                <template x-if="data.warnings.agent_timeouts > 0 && data.warnings.rewrite_failures > 0">
+                    <span> | </span>
+                </template>
+                <template x-if="data.warnings.rewrite_failures > 0">
+                    <span x-text="data.warnings.rewrite_failures + ' rewrite failure(s)'"></span>
+                </template>
+                <span> in the last 24h</span>
+            </span>
+        </div>
+    </template>
+
+    <template x-if="healthErrors.length > 0">
+        <div class="alert-banner">
+            <svg class="alert-banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+            </svg>
+            <span>Subsystem error: <span x-text="healthErrors.join(', ')"></span></span>
+        </div>
+    </template>
+
+    <!-- Page header -->
     <div class="page-header">
         <div class="page-header-text">
             <h2 class="section-title mt-0 mb-0">System Overview</h2>
@@ -12,67 +44,146 @@
         </div>
     </div>
 
-    <div class="stat-grid" id="overview-cards">
+    <!-- Stat cards (6) -->
+    <div class="stat-grid-6" id="overview-cards">
         <div class="stat-card">
             <div class="stat-card-header">
                 <svg class="stat-card-icon text-teal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
                 <span class="stat-card-label">Total Requests (24h)</span>
             </div>
-            <div class="stat-card-value" x-text="metrics ? metrics.recent_requests : '--'">--</div>
+            <div class="stat-card-value" x-text="data ? data.recent_requests : '--'">--</div>
         </div>
         <div class="stat-card">
             <div class="stat-card-header">
                 <svg class="stat-card-icon text-sage" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
                 <span class="stat-card-label">Cache Hit Rate</span>
             </div>
-            <div class="stat-card-value text-sage" x-text="metrics ? metrics.cache_hit_rate + '%' : '--'">--</div>
+            <div class="stat-card-value text-sage" x-text="data ? data.cache_hit_rate + '%' : '--'">--</div>
         </div>
         <div class="stat-card">
             <div class="stat-card-header">
                 <svg class="stat-card-icon text-blue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                 <span class="stat-card-label">Active Agents</span>
             </div>
-            <div class="stat-card-value text-teal" x-text="metrics ? metrics.agent_count : '--'">--</div>
+            <div class="stat-card-value text-teal" x-text="data ? data.agent_count : '--'">--</div>
         </div>
         <div class="stat-card">
             <div class="stat-card-header">
                 <svg class="stat-card-icon text-amber" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
                 <span class="stat-card-label">Entity Count</span>
             </div>
-            <div class="stat-card-value" x-text="metrics ? metrics.entity_count : '--'">--</div>
+            <div class="stat-card-value" x-text="data ? data.entity_count : '--'">--</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-header">
+                <svg class="stat-card-icon text-amber" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <span class="stat-card-label">Avg Latency</span>
+            </div>
+            <div class="stat-card-value" x-text="data ? data.avg_latency_ms + 'ms' : '--'">--</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-card-header">
+                <svg class="stat-card-icon text-blue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                <span class="stat-card-label">Conversations</span>
+            </div>
+            <div class="stat-card-value text-blue" x-text="data ? data.total_conversations : '--'">--</div>
         </div>
     </div>
 
+    <!-- System Status (health badges) -->
     <div class="section-header">
         <div>
             <h2 class="section-title mt-0 mb-0">System Status</h2>
-            <p class="section-description">Health of connected subsystems</p>
+        </div>
+    </div>
+    <div class="health-bar" x-show="health">
+        <template x-for="comp in healthComponents" :key="comp.key">
+            <div class="health-badge" :class="getBadgeClass(health[comp.key])">
+                <span class="status-dot" :class="getStatusClass(health[comp.key])"></span>
+                <span x-text="comp.label + getDetail(comp.key, health[comp.key])"></span>
+            </div>
+        </template>
+    </div>
+
+    <!-- Charts row: Request Trend + Agent Distribution -->
+    <div class="grid-2" style="margin-bottom: 1.5rem;">
+        <div class="chart-card">
+            <h3 class="chart-card-title">Requests (24h)</h3>
+            <div style="position: relative; height: 200px;">
+                <canvas id="requestTrendChart"></canvas>
+            </div>
+        </div>
+        <div class="chart-card">
+            <h3 class="chart-card-title">Agent Distribution</h3>
+            <div style="position: relative; height: 200px;">
+                <canvas id="agentDistChart"></canvas>
+            </div>
         </div>
     </div>
 
-    <div class="health-grid" id="health-grid">
-        <template x-if="!health">
-            <div class="health-item">
-                <span class="status-dot status-unknown"></span>
-                <span>Loading...</span>
+    <!-- Cache Performance + Recent Activity row -->
+    <div class="grid-2">
+        <div class="chart-card">
+            <h3 class="chart-card-title">Cache Performance</h3>
+            <div style="position: relative; height: 160px;">
+                <canvas id="cacheTierChart"></canvas>
             </div>
-        </template>
-        <template x-if="health">
-            <template x-for="comp in healthComponents" :key="comp.key">
-                <div class="health-item">
-                    <span class="status-dot" :class="getStatusClass(health[comp.key])"></span>
-                    <span x-text="comp.label + getDetail(comp.key, health[comp.key])"></span>
+            <div class="cache-breakdown">
+                <div class="cache-breakdown-item">
+                    <div class="cache-breakdown-value text-sage" x-text="data ? data.cache_tier.routing_hits : '-'"></div>
+                    <div class="cache-breakdown-label">Routing Hits</div>
                 </div>
+                <div class="cache-breakdown-item">
+                    <div class="cache-breakdown-value text-teal" x-text="data ? data.cache_tier.response_hits : '-'"></div>
+                    <div class="cache-breakdown-label">Response Hits</div>
+                </div>
+                <div class="cache-breakdown-item">
+                    <div class="cache-breakdown-value text-coral" x-text="data ? data.cache_tier.misses : '-'"></div>
+                    <div class="cache-breakdown-label">Misses</div>
+                </div>
+            </div>
+        </div>
+        <div class="chart-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+                <h3 class="chart-card-title" style="margin: 0;">Recent Activity</h3>
+                <a href="/dashboard/traces" class="section-link">View all</a>
+            </div>
+            <div class="table-container-flush">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Input</th>
+                            <th>Agent</th>
+                            <th>Latency</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="t in (data ? data.recent_traces : [])" :key="t.trace_id">
+                            <tr>
+                                <td class="text-muted" x-text="formatTimeAgo(t.created_at)"></td>
+                                <td x-text="t.user_input.length > 60 ? t.user_input.substring(0, 60) + '...' : t.user_input"></td>
+                                <td class="text-mono" x-text="t.routing_agent || '-'"></td>
+                                <td class="text-mono" x-text="t.total_duration_ms ? Math.round(t.total_duration_ms) + 'ms' : '-'"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+            <template x-if="data && data.recent_traces.length === 0">
+                <p class="text-muted" style="padding: 1rem 0;">No recent traces.</p>
             </template>
-        </template>
+        </div>
     </div>
+
 </div>
 
 <script>
 function overviewPage() {
     return {
-        metrics: null,
+        data: null,
         health: null,
+        healthErrors: [],
         healthComponents: [
             { key: "ha_connection", label: "HA Connection" },
             { key: "entity_index", label: "Entity Index" },
@@ -80,38 +191,174 @@ function overviewPage() {
             { key: "mcp_servers", label: "MCP Servers" },
             { key: "uptime", label: "Uptime" }
         ],
-        async loadOverview() {
-            var self = this;
-            async function doFetch() {
-                try {
-                    var resp = await fetch("/api/admin/overview", { credentials: "same-origin" });
-                    if (resp.ok) self.metrics = await resp.json();
-                } catch(e) { console.error("Failed to load overview", e); }
-            }
-            await doFetch();
-            setInterval(doFetch, 30000);
+        requestTrendChart: null,
+        agentDistChart: null,
+        cacheTierChart: null,
+
+        async loadAll() {
+            await Promise.all([this.loadExtended(), this.loadHealth()]);
+            this.$nextTick(() => this.initCharts());
+            setInterval(async () => {
+                await Promise.all([this.loadExtended(), this.loadHealth()]);
+                this.updateCharts();
+            }, 30000);
         },
+
+        async loadExtended() {
+            try {
+                var resp = await fetch("/api/admin/overview/extended", { credentials: "same-origin" });
+                if (resp.ok) this.data = await resp.json();
+            } catch(e) { console.error("Failed to load extended overview", e); }
+        },
+
         async loadHealth() {
-            var self = this;
-            async function doFetch() {
-                try {
-                    var resp = await fetch("/api/admin/health/extended", { credentials: "same-origin" });
-                    if (resp.ok) self.health = await resp.json();
-                } catch(e) { console.error("Failed to load health", e); }
-            }
-            await doFetch();
-            setInterval(doFetch, 30000);
+            try {
+                var resp = await fetch("/api/admin/health/extended", { credentials: "same-origin" });
+                if (resp.ok) {
+                    this.health = await resp.json();
+                    this.healthErrors = Object.entries(this.health)
+                        .filter(([k, v]) => v.status === "error" && k !== "uptime")
+                        .map(([k]) => this.healthComponents.find(c => c.key === k)?.label || k);
+                }
+            } catch(e) { console.error("Failed to load health", e); }
         },
+
+        initCharts() {
+            if (!this.data) return;
+            var rtCtx = document.getElementById("requestTrendChart");
+            if (rtCtx) {
+                this.requestTrendChart = new Chart(rtCtx, {
+                    type: "line",
+                    data: {
+                        labels: this.data.request_trend.labels,
+                        datasets: [{
+                            label: "Requests",
+                            data: this.data.request_trend.data,
+                            borderColor: "rgba(94, 234, 212, 0.9)",
+                            backgroundColor: "rgba(94, 234, 212, 0.15)",
+                            fill: true,
+                            borderWidth: 2,
+                            tension: 0.3
+                        }]
+                    },
+                    options: chartOptions()
+                });
+            }
+            var adCtx = document.getElementById("agentDistChart");
+            if (adCtx && this.data.agent_distribution.length) {
+                var palette = [
+                    "rgba(94,234,212,0.8)", "rgba(96,165,250,0.8)",
+                    "rgba(251,191,36,0.8)", "rgba(134,239,172,0.8)",
+                    "rgba(251,113,133,0.8)", "rgba(168,85,247,0.8)"
+                ];
+                this.agentDistChart = new Chart(adCtx, {
+                    type: "doughnut",
+                    data: {
+                        labels: this.data.agent_distribution.map(a => a.agent_id),
+                        datasets: [{
+                            data: this.data.agent_distribution.map(a => a.request_count),
+                            backgroundColor: this.data.agent_distribution.map((_, i) => palette[i % palette.length])
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { position: "right", labels: { color: "#e2e8f0", boxWidth: 12, padding: 12 } }
+                        }
+                    }
+                });
+            }
+            var ctCtx = document.getElementById("cacheTierChart");
+            if (ctCtx) {
+                var tier = this.data.cache_tier;
+                this.cacheTierChart = new Chart(ctCtx, {
+                    type: "doughnut",
+                    data: {
+                        labels: ["Routing Hits", "Response Hits", "Misses"],
+                        datasets: [{
+                            data: [tier.routing_hits, tier.response_hits, tier.misses],
+                            backgroundColor: [
+                                "rgba(134,239,172,0.8)",
+                                "rgba(94,234,212,0.8)",
+                                "rgba(251,113,133,0.8)"
+                            ]
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { position: "right", labels: { color: "#e2e8f0", boxWidth: 12, padding: 12 } }
+                        }
+                    }
+                });
+            }
+        },
+
+        updateCharts() {
+            if (!this.data) return;
+            if (this.requestTrendChart) {
+                this.requestTrendChart.data.labels = this.data.request_trend.labels;
+                this.requestTrendChart.data.datasets[0].data = this.data.request_trend.data;
+                this.requestTrendChart.update();
+            }
+            if (this.agentDistChart && this.data.agent_distribution.length) {
+                this.agentDistChart.data.labels = this.data.agent_distribution.map(a => a.agent_id);
+                this.agentDistChart.data.datasets[0].data = this.data.agent_distribution.map(a => a.request_count);
+                this.agentDistChart.update();
+            }
+            if (this.cacheTierChart) {
+                var tier = this.data.cache_tier;
+                this.cacheTierChart.data.datasets[0].data = [tier.routing_hits, tier.response_hits, tier.misses];
+                this.cacheTierChart.update();
+            }
+        },
+
         getStatusClass(comp) {
             if (!comp) return "status-unknown";
             return comp.status === "healthy" ? "status-healthy" : (comp.status === "error" ? "status-error" : "status-unknown");
         },
+
+        getBadgeClass(comp) {
+            if (!comp) return "";
+            if (comp.status === "healthy") return "health-badge--healthy";
+            if (comp.status === "error") return "health-badge--error";
+            if (comp.status === "warning") return "health-badge--warning";
+            return "";
+        },
+
         getDetail(key, comp) {
             if (!comp) return "";
             if (key === "uptime" && comp.display) return " (" + comp.display + ")";
             if (key === "entity_index" && comp.count !== undefined) return " (" + comp.count + " entities)";
             if (key === "mcp_servers" && comp.count !== undefined) return " (" + comp.count + " servers)";
             return "";
+        },
+
+        formatTimeAgo(ts) {
+            if (!ts) return "-";
+            var now = Date.now();
+            var then = new Date(ts).getTime();
+            var diffS = Math.floor((now - then) / 1000);
+            if (diffS < 60) return diffS + "s ago";
+            if (diffS < 3600) return Math.floor(diffS / 60) + "m ago";
+            if (diffS < 86400) return Math.floor(diffS / 3600) + "h ago";
+            return Math.floor(diffS / 86400) + "d ago";
+        }
+    };
+}
+
+function chartOptions() {
+    return {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+            y: { beginAtZero: true, grid: { color: "rgba(255,255,255,0.05)" }, ticks: { color: "#94a3b8" } },
+            x: { grid: { color: "rgba(255,255,255,0.05)" }, ticks: { color: "#94a3b8" } }
+        },
+        plugins: {
+            legend: { labels: { color: "#e2e8f0" } }
         }
     };
 }

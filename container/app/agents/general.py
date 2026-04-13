@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from app.agents.base import BaseAgent
-from app.models.agent import AgentCard, AgentTask
+from app.models.agent import AgentCard, AgentTask, TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class GeneralAgent(BaseAgent):
             endpoint="local://general-agent",
         )
 
-    async def handle_task(self, task: AgentTask) -> dict:
+    async def handle_task(self, task: AgentTask) -> TaskResult:
         system_prompt = self._load_prompt("general")
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -39,4 +39,4 @@ class GeneralAgent(BaseAgent):
         messages.append({"role": "user", "content": task.description})
 
         response = await self._call_llm(messages)
-        return {"speech": response}
+        return TaskResult(speech=response)

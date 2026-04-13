@@ -424,6 +424,159 @@ main {
 .badge-yellow { background: rgba(245, 158, 11, 0.15); color: var(--soft-amber); }
 .badge-blue { background: rgba(96, 165, 250, 0.15); color: var(--blue); }
 
+/* --- Overview: 6-column stat grid --- */
+
+.stat-grid-6 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+/* --- Overview: Warning/error banner --- */
+
+.alert-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    background: color-mix(in srgb, var(--red) 10%, var(--bg-basalt));
+    border: 1px solid color-mix(in srgb, var(--red) 30%, transparent);
+    border-radius: 0.75rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.875rem;
+    color: var(--color-light);
+}
+
+.alert-banner-icon {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    color: var(--red);
+}
+
+/* --- Overview: Health bar (horizontal badges) --- */
+
+.health-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+}
+
+.health-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.875rem;
+    background: color-mix(in srgb, var(--bg-basalt) 80%, transparent);
+    border: 1px solid color-mix(in srgb, var(--bg-stone) 60%, transparent);
+    border-radius: 2rem;
+    font-size: 0.8125rem;
+    color: var(--color-light);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.health-badge .status-dot {
+    width: 8px;
+    height: 8px;
+    box-shadow: 0 0 6px currentColor;
+}
+
+.health-badge--healthy {
+    border-color: color-mix(in srgb, var(--green) 35%, transparent);
+    background: color-mix(in srgb, var(--green) 8%, var(--bg-basalt));
+}
+
+.health-badge--healthy .status-dot {
+    box-shadow: 0 0 8px var(--green);
+}
+
+.health-badge--error {
+    border-color: color-mix(in srgb, var(--red) 35%, transparent);
+    background: color-mix(in srgb, var(--red) 8%, var(--bg-basalt));
+}
+
+.health-badge--error .status-dot {
+    box-shadow: 0 0 8px var(--red);
+}
+
+.health-badge--warning {
+    border-color: color-mix(in srgb, var(--yellow) 35%, transparent);
+    background: color-mix(in srgb, var(--yellow) 8%, var(--bg-basalt));
+}
+
+.health-badge--warning .status-dot {
+    box-shadow: 0 0 8px var(--yellow);
+}
+
+/* --- Overview: Chart card --- */
+
+.chart-card {
+    background: color-mix(in srgb, var(--bg-basalt) 80%, transparent);
+    border: 1px solid color-mix(in srgb, var(--bg-stone) 60%, transparent);
+    border-radius: 0.75rem;
+    padding: 1.25rem;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+
+.chart-card-title {
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--color-light);
+    margin: 0 0 0.75rem 0;
+}
+
+/* --- Overview: Cache tier breakdown --- */
+
+.cache-breakdown {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 0.75rem;
+}
+
+.cache-breakdown-item {
+    text-align: center;
+}
+
+.cache-breakdown-value {
+    font-family: 'Outfit', sans-serif;
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--color-light);
+}
+
+.cache-breakdown-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-dust);
+    margin-top: 0.125rem;
+}
+
+/* --- Overview: Section link --- */
+
+.section-link {
+    font-size: 0.8125rem;
+    color: var(--blue);
+    text-decoration: none;
+}
+
+.section-link:hover {
+    text-decoration: underline;
+}
+
+/* --- Overview: Table container flush --- */
+
+.table-container-flush {
+    overflow-x: auto;
+}
+
 /* --- Tables --- */
 
 .data-table {
@@ -1550,6 +1703,14 @@ details.card > .details-content {
 
     .stat-grid {
         grid-template-columns: repeat(2, 1fr);
+    }
+
+    .stat-grid-6 {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .health-bar {
+        flex-direction: column;
     }
 
     .page-header {

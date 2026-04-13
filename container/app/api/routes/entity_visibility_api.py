@@ -31,6 +31,7 @@ class SetRulesRequest(BaseModel):
 
 VALID_RULE_TYPES = {
     "domain_include", "domain_exclude", "area_include", "area_exclude", "entity_include",
+    "device_class_include", "device_class_exclude",
 }
 
 

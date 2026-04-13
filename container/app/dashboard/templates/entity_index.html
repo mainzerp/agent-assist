@@ -3,12 +3,12 @@
 {% block nav_entity_index %}active{% endblock %}
 {% block header_title %}Entity Index{% endblock %}
 {% block page_content %}
-<div x-data="entityIndexPage()" x-init="loadStats()">
+<div x-data="entityIndexPage()" x-init="init()">
 
     <div class="page-header">
         <div class="page-header-text">
             <h2 class="section-title mt-0 mb-0">Entity Index</h2>
-            <p class="page-subtitle">Indexed entities from Home Assistant, organized by domain.</p>
+            <p class="page-subtitle">Indexed entities from Home Assistant. Assign entity visibility per agent.</p>
         </div>
         <div class="page-actions">
             <button class="btn btn-primary btn-sm" @click="refreshIndex()" :disabled="refreshing">
@@ -140,36 +140,65 @@
         </div>
     </div>
 
-    <!-- Per-domain breakdown -->
-    <div class="card">
-        <h3 class="card-title mb-md">Domain Breakdown</h3>
-        <template x-if="!stats.domains || Object.keys(stats.domains).length === 0">
-            <div class="empty-state"><p>No entities indexed.</p></div>
+    <!-- ================================================================== -->
+    <!-- Domain Agent Mapping                                               -->
+    <!-- ================================================================== -->
+    <div class="card mb-lg">
+        <h3 class="card-title mb-md">Domain Agent Mapping</h3>
+        <p class="text-dim mb-md">Assign agents to handle specific entity domains.</p>
+        <div x-show="domainMapMessage" x-transition class="alert alert-success mb-md" x-text="domainMapMessage"></div>
+        <template x-if="domainMapLoading">
+            <p class="text-muted">Loading...</p>
         </template>
-        <div class="table-container-flush" x-show="stats.domains && Object.keys(stats.domains).length > 0">
+        <template x-if="!domainMapLoading && domainAgentMap.length === 0">
+            <div class="empty-state"><p>No domains found. Index entities first.</p></div>
+        </template>
+        <div x-show="!domainMapLoading && domainAgentMap.length > 0" class="table-container">
             <table class="data-table">
                 <thead>
                     <tr>
                         <th>Domain</th>
-                        <th>Count</th>
-                        <th>Percentage</th>
+                        <th>Assigned Agents</th>
+                        <th style="width: 120px;"></th>
                     </tr>
                 </thead>
                 <tbody>
-                    <template x-for="[domain, count] in sortedDomains()" :key="domain">
+                    <template x-for="item in domainAgentMap.filter(d => !['sensor', 'binary_sensor'].includes(d.domain))" :key="item.domain">
                         <tr>
-                            <td class="mono" x-text="domain"></td>
-                            <td x-text="count"></td>
+                            <td style="white-space: nowrap;">
+                                <span class="badge badge-teal" x-text="item.domain"></span>
+                                <span class="text-dim" style="font-size: 0.75rem; margin-left: 0.375rem;" x-text="item.entity_count + ' entities'"></span>
+                            </td>
                             <td>
-                                <div class="flex-center">
-                                    <div class="progress-bar" style="width: 100px;">
-                                        <div class="progress-fill"
-                                             style="background: var(--blue);"
-                                             :style="'width: ' + (stats.count > 0 ? Math.round(count / stats.count * 100) : 0) + '%'"></div>
-                                    </div>
-                                    <span class="mono text-dim" style="font-size: 0.75rem;"
-                                          x-text="stats.count > 0 ? (count / stats.count * 100).toFixed(1) + '%' : '0%'"></span>
+                                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem;">
+                                    <!-- Assigned agent badges -->
+                                    <template x-for="agent in item.selected_agents" :key="item.domain + '-' + agent">
+                                        <span class="badge badge-blue" style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                                            <span x-text="agent"></span>
+                                            <button type="button"
+                                                    style="background: none; border: none; color: inherit; cursor: pointer; padding: 0; margin: 0; line-height: 1; font-size: 0.85rem; opacity: 0.7;"
+                                                    @mouseenter="$el.style.opacity='1'" @mouseleave="$el.style.opacity='0.7'"
+                                                    @click="removeAgentFromDomain(item, agent)"
+                                                    title="Remove agent">&times;</button>
+                                        </span>
+                                    </template>
+                                    <!-- Add agent dropdown -->
+                                    <select class="form-input"
+                                            style="width: auto; min-width: 140px; max-width: 200px; padding: 0.2rem 0.5rem; font-size: 0.75rem; border-radius: 9999px; display: inline-block;"
+                                            @change="addAgentToDomain(item, $event.target.value); $event.target.value = ''"
+                                    >
+                                        <option value="">+ Add agent...</option>
+                                        <template x-for="agent in unassignedAgents(item)" :key="'add-' + item.domain + '-' + agent">
+                                            <option :value="agent" x-text="agent"></option>
+                                        </template>
+                                    </select>
                                 </div>
+                            </td>
+                            <td style="text-align: right;">
+                                <button class="btn btn-sm btn-primary"
+                                        @click="saveDomainAgent(item.domain, item.selected_agents)">
+                                    Save
+                                </button>
                             </td>
                         </tr>
                     </template>
@@ -177,15 +206,103 @@
             </table>
         </div>
     </div>
+
+    <!-- ================================================================== -->
+    <!-- Device Class Agent Mapping                                         -->
+    <!-- ================================================================== -->
+    <div class="card mb-lg">
+        <h3 class="card-title mb-md">Device Class Agent Mapping</h3>
+        <p class="text-dim mb-md">Assign agents to specific sensor device classes (e.g., temperature, motion, illuminance).</p>
+        <div x-show="dcMapMessage" x-transition class="alert alert-success mb-md" x-text="dcMapMessage"></div>
+        <template x-if="dcMapLoading">
+            <p class="text-muted">Loading...</p>
+        </template>
+        <template x-if="!dcMapLoading && deviceClassMap.length === 0">
+            <div class="empty-state"><p>No device classes found. Index entities first.</p></div>
+        </template>
+        <div x-show="!dcMapLoading && deviceClassMap.length > 0" class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Device Class</th>
+                        <th>Assigned Agents</th>
+                        <th style="width: 120px;"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="item in deviceClassMap" :key="item.device_class">
+                        <tr>
+                            <td style="white-space: nowrap;">
+                                <span class="badge" style="background:rgba(99,102,241,0.15); color:#818cf8;" x-text="item.device_class"></span>
+                                <span class="text-dim" style="font-size: 0.75rem; margin-left: 0.375rem;" x-text="item.entity_count + ' entities'"></span>
+                            </td>
+                            <td>
+                                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem;">
+                                    <!-- Assigned agent badges -->
+                                    <template x-for="agent in item.selected_agents" :key="item.device_class + '-' + agent">
+                                        <span class="badge badge-blue" style="display: inline-flex; align-items: center; gap: 0.25rem;">
+                                            <span x-text="agent"></span>
+                                            <button type="button"
+                                                    style="background: none; border: none; color: inherit; cursor: pointer; padding: 0; margin: 0; line-height: 1; font-size: 0.85rem; opacity: 0.7;"
+                                                    @mouseenter="$el.style.opacity='1'" @mouseleave="$el.style.opacity='0.7'"
+                                                    @click="removeAgentFromDeviceClass(item, agent)"
+                                                    title="Remove agent">&times;</button>
+                                        </span>
+                                    </template>
+                                    <!-- Add agent dropdown -->
+                                    <select class="form-input"
+                                            style="width: auto; min-width: 140px; max-width: 200px; padding: 0.2rem 0.5rem; font-size: 0.75rem; border-radius: 9999px; display: inline-block;"
+                                            @change="addAgentToDeviceClass(item, $event.target.value); $event.target.value = ''"
+                                    >
+                                        <option value="">+ Add agent...</option>
+                                        <template x-for="agent in unassignedDcAgents(item)" :key="'add-dc-' + item.device_class + '-' + agent">
+                                            <option :value="agent" x-text="agent"></option>
+                                        </template>
+                                    </select>
+                                </div>
+                            </td>
+                            <td style="text-align: right;">
+                                <button class="btn btn-sm btn-primary"
+                                        @click="saveDeviceClassAgent(item.device_class, item.selected_agents)">
+                                    Save
+                                </button>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+
 </div>
 
 <script>
 function entityIndexPage() {
     return {
+        // --- Entity Index state ---
         stats: {},
         refreshing: false,
         refreshMessage: '',
         pollInterval: null,
+
+        // --- Domain Agent Mapping state ---
+        domainAgentMap: [],
+        allAgents: [],
+        domainMapLoading: false,
+        domainMapMessage: '',
+
+        // --- Device Class Agent Mapping state ---
+        deviceClassMap: [],
+        dcMapLoading: false,
+        dcMapMessage: '',
+
+        init() {
+            this.loadStats();
+            this.loadDomainAgentMap();
+        },
+
+        // --- Entity Index methods ---
 
         async loadStats() {
             try {
@@ -233,11 +350,6 @@ function entityIndexPage() {
             setTimeout(() => { this.refreshMessage = ''; }, 5000);
         },
 
-        sortedDomains() {
-            if (!this.stats.domains) return [];
-            return Object.entries(this.stats.domains).sort((a, b) => b[1] - a[1]);
-        },
-
         syncCountdown() {
             if (!this.stats.sync?.last_sync) return '?';
             const lastSync = new Date(this.stats.sync.last_sync).getTime();
@@ -245,7 +357,98 @@ function entityIndexPage() {
             const nextSync = lastSync + intervalMs;
             const remaining = Math.max(0, Math.round((nextSync - Date.now()) / 60000));
             return remaining;
-        }
+        },
+
+        // --- Entity Visibility methods ---
+
+        async loadDomainAgentMap() {
+            this.domainMapLoading = true;
+            this.dcMapLoading = true;
+            try {
+                const resp = await fetch('/api/admin/domain-agent-map');
+                if (resp.ok) {
+                    const data = await resp.json();
+                    this.allAgents = data.all_agents || [];
+                    this.domainAgentMap = (data.domains || []).map(d => ({
+                        ...d,
+                        selected_agents: d.agents || [],
+                    }));
+                    this.deviceClassMap = (data.device_classes || []).map(dc => ({
+                        ...dc,
+                        selected_agents: dc.agents || [],
+                    }));
+                }
+            } catch (e) { console.error('Failed to load domain-agent map', e); }
+            this.domainMapLoading = false;
+            this.dcMapLoading = false;
+        },
+
+        addAgentToDomain(item, agent) {
+            if (!agent || item.selected_agents.includes(agent)) return;
+            item.selected_agents.push(agent);
+        },
+
+        removeAgentFromDomain(item, agent) {
+            const idx = item.selected_agents.indexOf(agent);
+            if (idx >= 0) item.selected_agents.splice(idx, 1);
+        },
+
+        unassignedAgents(item) {
+            return this.allAgents.filter(a => !item.selected_agents.includes(a));
+        },
+
+        async saveDomainAgent(domain, agentIds) {
+            this.domainMapMessage = '';
+            try {
+                const resp = await fetch('/api/admin/domain-agent-map', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({domain: domain, agent_ids: agentIds}),
+                });
+                if (resp.ok) {
+                    this.domainMapMessage = 'Saved agents for ' + domain;
+                } else {
+                    const err = await resp.json();
+                    this.domainMapMessage = 'Error: ' + (err.detail || 'Failed to save');
+                }
+            } catch (e) { this.domainMapMessage = 'Network error'; }
+            setTimeout(() => { this.domainMapMessage = ''; }, 5000);
+        },
+
+        // --- Device Class Agent Mapping methods ---
+
+        addAgentToDeviceClass(item, agent) {
+            if (!agent || item.selected_agents.includes(agent)) return;
+            item.selected_agents.push(agent);
+        },
+
+        removeAgentFromDeviceClass(item, agent) {
+            const idx = item.selected_agents.indexOf(agent);
+            if (idx >= 0) item.selected_agents.splice(idx, 1);
+        },
+
+        unassignedDcAgents(item) {
+            return this.allAgents.filter(a => !item.selected_agents.includes(a));
+        },
+
+        async saveDeviceClassAgent(deviceClass, agentIds) {
+            this.dcMapMessage = '';
+            try {
+                const resp = await fetch('/api/admin/domain-agent-map/device-class', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({device_class: deviceClass, agent_ids: agentIds}),
+                });
+                if (resp.ok) {
+                    this.dcMapMessage = 'Saved agents for ' + deviceClass;
+                } else {
+                    const err = await resp.json();
+                    this.dcMapMessage = 'Error: ' + (err.detail || 'Failed to save');
+                }
+            } catch (e) { this.dcMapMessage = 'Network error'; }
+            setTimeout(() => { this.dcMapMessage = ''; }, 5000);
+        },
+
     };
 }
 </script>

@@ -20,6 +20,11 @@ class RoutingCache:
         self._store = vector_store
         self._threshold: float = 0.92
         self._max_entries: int = 50000
+        self._store_count: int = 0
+        self._eviction_interval: int = 100
+        self._pending_updates: dict[str, tuple[str, dict]] = {}
+        self._flush_interval: int = 50
+        self._hit_since_flush: int = 0
 
     async def load_config(self) -> None:
         """Load thresholds from settings table."""
@@ -56,16 +61,17 @@ class RoutingCache:
             return (None, similarity)
 
         meta = result["metadatas"][0][0]
-        # Update last_accessed and hit_count
+        # Buffer hit count update instead of immediate upsert
         entry_id = result["ids"][0][0]
         now = datetime.now(timezone.utc).isoformat()
         hit_count = int(meta.get("hit_count", 0)) + 1
-        self._store.upsert(
-            COLLECTION_ROUTING_CACHE,
-            ids=[entry_id],
-            documents=[result["documents"][0][0]],
-            metadatas=[{**meta, "last_accessed": now, "hit_count": str(hit_count)}],
+        self._pending_updates[entry_id] = (
+            result["documents"][0][0],
+            {**meta, "last_accessed": now, "hit_count": str(hit_count)},
         )
+        self._hit_since_flush += 1
+        if self._hit_since_flush >= self._flush_interval:
+            self._flush_pending_updates()
 
         return (RoutingCacheEntry(
             query_text=result["documents"][0][0],
@@ -79,7 +85,10 @@ class RoutingCache:
 
     def store(self, query_text: str, agent_id: str, confidence: float, condensed_task: str = "") -> None:
         """Store a new routing decision in the cache."""
-        self._enforce_lru()
+        self._store_count += 1
+        if self._store_count >= self._eviction_interval:
+            self._store_count = 0
+            self._enforce_lru()
         now = datetime.now(timezone.utc).isoformat()
         entry_id = str(uuid.uuid4())
         self._store.upsert(
@@ -98,10 +107,10 @@ class RoutingCache:
 
     def _enforce_lru(self) -> None:
         """Evict oldest entries if collection exceeds max_entries."""
+        self._flush_pending_updates()
         count = self._store.count(COLLECTION_ROUTING_CACHE)
-        if count < self._max_entries:
+        if count <= self._max_entries:
             return
-        # Fetch all entries sorted by last_accessed, delete oldest 10%
         overage = count - self._max_entries + int(self._max_entries * 0.1)
         all_data = self._store.get(
             COLLECTION_ROUTING_CACHE,
@@ -109,13 +118,27 @@ class RoutingCache:
         )
         if not all_data["ids"]:
             return
-        # Sort by last_accessed ascending
         paired = list(zip(all_data["ids"], all_data["metadatas"]))
         paired.sort(key=lambda p: p[1].get("last_accessed", ""))
         to_delete = [p[0] for p in paired[:overage]]
         if to_delete:
-            self._store.delete(COLLECTION_ROUTING_CACHE, ids=to_delete)
+            for i in range(0, len(to_delete), 500):
+                self._store.delete(COLLECTION_ROUTING_CACHE, ids=to_delete[i:i+500])
             logger.info("Routing cache LRU evicted %d entries", len(to_delete))
+
+    def _flush_pending_updates(self) -> None:
+        """Batch-flush pending hit count updates to ChromaDB."""
+        if not self._pending_updates:
+            return
+        ids = list(self._pending_updates.keys())
+        docs = [self._pending_updates[i][0] for i in ids]
+        metas = [self._pending_updates[i][1] for i in ids]
+        try:
+            self._store.upsert(COLLECTION_ROUTING_CACHE, ids=ids, documents=docs, metadatas=metas)
+        except Exception:
+            logger.warning("Failed to flush routing cache hit updates", exc_info=True)
+        self._pending_updates.clear()
+        self._hit_since_flush = 0
 
     def get_stats(self) -> dict:
         """Return routing cache stats."""

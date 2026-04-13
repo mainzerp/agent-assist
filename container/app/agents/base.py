@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import AsyncGenerator
 
-from app.models.agent import AgentCard, AgentTask
+from app.models.agent import AgentCard, AgentTask, TaskResult, AgentError, AgentErrorCode
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +37,11 @@ class BaseAgent(ABC):
         ...
 
     @abstractmethod
-    async def handle_task(self, task: AgentTask) -> dict:
+    async def handle_task(self, task: AgentTask) -> dict | TaskResult:
         """Process a task and return the full result.
 
         Returns:
-            dict with at least {"speech": str}. May include
-            {"action_executed": {...}} for HA action results.
+            TaskResult (preferred) or dict with at least {"speech": str}.
         """
         ...
 
@@ -58,13 +57,19 @@ class BaseAgent(ABC):
             conversation_id.
         """
         result = await self.handle_task(task)
+        # Support both TaskResult and raw dict
+        if hasattr(result, "model_dump"):
+            result_dict = result.model_dump()
+        else:
+            result_dict = result
         chunk = {
-            "token": result.get("speech", ""),
+            "token": result_dict.get("speech", ""),
             "done": True,
             "conversation_id": task.conversation_id,
         }
-        if result.get("action_executed"):
-            chunk["action_executed"] = result["action_executed"]
+        action = result_dict.get("action_executed")
+        if action:
+            chunk["action_executed"] = action
         yield chunk
 
     def _load_prompt(self, name: str) -> str:
@@ -78,6 +83,19 @@ class BaseAgent(ABC):
         """
         path = _PROMPTS_DIR / f"{name}.txt"
         return path.read_text(encoding="utf-8").strip()
+
+    def _error_result(
+        self,
+        code: AgentErrorCode,
+        speech: str,
+        *,
+        recoverable: bool = True,
+    ) -> TaskResult:
+        """Build a TaskResult with a structured error."""
+        return TaskResult(
+            speech=speech,
+            error=AgentError(code=code, message=speech, recoverable=recoverable),
+        )
 
     async def _call_llm(self, messages: list[dict], **overrides) -> str:
         """Call the LLM using this agent's config.

@@ -55,48 +55,44 @@ class Dispatcher:
             )
             return
 
-        params = request.params or {}
-        agent_id = params.get("agent_id")
-        task_dict = params.get("task")
-        span_collector = params.pop("_span_collector", None)
-
-        if not agent_id or task_dict is None:
+        try:
+            raw_params = request.params or {}
+            span_collector = raw_params.pop("_span_collector", None)
+            params = MessageStreamParams(**raw_params)
+        except Exception as exc:
             yield JsonRpcStreamChunk(
                 id=request.id,
-                result={"token": "", "done": True, "error": "Missing agent_id or task"},
+                result={"token": "", "done": True, "error": f"Invalid params: {exc}"},
                 done=True,
             )
             return
 
-        task = AgentTask(**task_dict)
-        if span_collector:
-            task._span_collector = span_collector
-        async for chunk in self._transport.stream(agent_id, task, request.id):
+        task = AgentTask(**params.task)
+        task.span_collector = span_collector
+        async for chunk in self._transport.stream(params.agent_id, task, request.id):
             yield chunk
 
     async def _handle_message_send(self, request: JsonRpcRequest) -> JsonRpcResponse:
-        params = request.params or {}
-        agent_id = params.get("agent_id")
-        task_dict = params.get("task")
-        span_collector = params.pop("_span_collector", None)
+        try:
+            raw_params = request.params or {}
+            span_collector = raw_params.pop("_span_collector", None)
+            params = MessageSendParams(**raw_params)
+        except Exception as exc:
+            return error_response(request.id, INVALID_PARAMS, f"Invalid params: {exc}")
 
-        if not agent_id or task_dict is None:
-            return error_response(request.id, INVALID_PARAMS, "Missing agent_id or task")
-
-        task = AgentTask(**task_dict)
-        if span_collector:
-            task._span_collector = span_collector
-        return await self._transport.send(agent_id, task, request.id)
+        task = AgentTask(**params.task)
+        task.span_collector = span_collector
+        return await self._transport.send(params.agent_id, task, request.id)
 
     async def _handle_agent_discover(self, request: JsonRpcRequest) -> JsonRpcResponse:
-        params = request.params or {}
-        agent_id = params.get("agent_id")
-        if not agent_id:
-            return error_response(request.id, INVALID_PARAMS, "Missing agent_id")
+        try:
+            params = AgentDiscoverParams(**(request.params or {}))
+        except Exception as exc:
+            return error_response(request.id, INVALID_PARAMS, f"Invalid params: {exc}")
 
-        card = await self._registry.discover(agent_id)
+        card = await self._registry.discover(params.agent_id)
         if card is None:
-            return error_response(request.id, INVALID_PARAMS, f"Agent not found: {agent_id}")
+            return error_response(request.id, INVALID_PARAMS, f"Agent not found: {params.agent_id}")
         return success_response(request.id, card.model_dump())
 
     async def _handle_agent_list(self, request: JsonRpcRequest) -> JsonRpcResponse:

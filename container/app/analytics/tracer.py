@@ -6,6 +6,7 @@ All operations are fire-and-forget: errors are logged, never raised.
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -15,6 +16,23 @@ from typing import Any, AsyncGenerator
 from app.db.repository import TraceSpanRepository, TraceSummaryRepository
 
 logger = logging.getLogger(__name__)
+
+# Patterns to redact from trace metadata values
+_SENSITIVE_PATTERNS = [
+    (re.compile(r'\b\d{4,8}\b'), '[REDACTED_CODE]'),
+    (re.compile(r'"code"\s*:\s*"[^"]*"'), '"code": "[REDACTED]"'),
+]
+
+
+def _sanitize_metadata(metadata: dict) -> dict:
+    """Redact sensitive patterns from metadata string values."""
+    sanitized = {}
+    for key, value in metadata.items():
+        if isinstance(value, str):
+            for pattern, replacement in _SENSITIVE_PATTERNS:
+                value = pattern.sub(replacement, value)
+        sanitized[key] = value
+    return sanitized
 
 
 class SpanCollector:
@@ -65,6 +83,9 @@ class SpanCollector:
         if not self._spans:
             return
         try:
+            for span in self._spans:
+                if span.get("metadata"):
+                    span["metadata"] = _sanitize_metadata(span["metadata"])
             await TraceSpanRepository.insert_batch(self._spans)
             # Compute and store total duration from spans
             try:

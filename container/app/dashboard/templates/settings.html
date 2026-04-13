@@ -359,7 +359,7 @@ function settingsPage() {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'same-origin',
-                    body: JSON.stringify(payload),
+                    body: JSON.stringify({items: payload}),
                 });
                 if (resp.ok) {
                     this.showMessage('Settings saved.', 'success');
@@ -390,7 +390,7 @@ function settingsPage() {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         credentials: 'same-origin',
-                        body: JSON.stringify(settingsPayload),
+                        body: JSON.stringify({items: settingsPayload}),
                     }),
                     fetch('/api/admin/entity-matching-weights', {
                         method: 'PUT',

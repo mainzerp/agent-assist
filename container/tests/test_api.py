@@ -231,7 +231,7 @@ class TestAdminSettingsEndpoints:
     async def test_put_settings_updates_value(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(
             "/api/admin/settings",
-            json={"log_level": "DEBUG"},
+            json={"items": {"cache.routing.threshold": "0.90"}},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -767,6 +767,23 @@ class TestEntityVisibilitySummaryAPI:
         assert "light" in summary["light-agent"]["domains"]
         assert "switch" in summary["light-agent"]["domains"]
         assert "sensor" in summary["light-agent"]["excluded_domains"]
+
+    async def test_visibility_summary_includes_device_class_fields(self, authed_client: httpx.AsyncClient):
+        from app.db.repository import EntityVisibilityRepository
+
+        await EntityVisibilityRepository.set_rules("climate-agent", [
+            {"rule_type": "domain_include", "rule_value": "climate"},
+            {"rule_type": "domain_include", "rule_value": "sensor"},
+            {"rule_type": "device_class_include", "rule_value": "temperature"},
+            {"rule_type": "device_class_include", "rule_value": "humidity"},
+        ])
+        resp = await authed_client.get("/api/admin/agents/visibility-summary")
+        data = resp.json()
+        summary = data["summary"]
+        assert "climate-agent" in summary
+        assert "temperature" in summary["climate-agent"]["device_classes"]
+        assert "humidity" in summary["climate-agent"]["device_classes"]
+        assert summary["climate-agent"]["excluded_device_classes"] == []
 
 
 @pytest.mark.integration

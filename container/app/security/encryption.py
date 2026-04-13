@@ -59,8 +59,23 @@ async def retrieve_secret(key: str) -> str | None:
     encrypted = await SecretsRepository.get(key)
     if encrypted is None:
         return None
-    return decrypt(encrypted)
+    try:
+        return decrypt(encrypted)
+    except ValueError:
+        logger.error("Failed to decrypt secret '%s' -- Fernet key may have been rotated", key)
+        return None
 
 
 async def delete_secret(key: str) -> None:
     await SecretsRepository.delete(key)
+
+
+def export_fernet_key() -> str:
+    """Export the Fernet key as a base64-encoded string for backup."""
+    key = _load_or_generate_key()
+    return key.decode("utf-8")
+
+
+def is_fernet_key_present() -> bool:
+    """Check if a Fernet key file exists."""
+    return FERNET_KEY_PATH.exists()

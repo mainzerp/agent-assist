@@ -25,6 +25,8 @@ from app.db.repository import (
     AgentConfigRepository,
     SettingsRepository,
     AnalyticsRepository,
+    TraceSummaryRepository,
+    ConversationRepository,
 )
 
 logger = logging.getLogger(__name__)
@@ -168,6 +170,192 @@ async def get_overview(request: Request):
         "entity_count": entity_count,
         "mcp_server_count": mcp_count,
         "presence_rooms": presence_rooms,
+    }
+
+
+@router.get("/overview/extended")
+async def get_overview_extended(request: Request):
+    """Aggregated overview data for the redesigned dashboard home page.
+
+    Returns all data the overview needs in a single call: metrics, agent
+    distribution, cache tier stats, recent traces, and error/warning info.
+    """
+    registry = request.app.state.registry
+    entity_index = request.app.state.entity_index
+    mcp_registry = request.app.state.mcp_registry
+    presence_detector = request.app.state.presence_detector
+
+    from collections import defaultdict
+    from datetime import datetime, timedelta, timezone
+
+    start_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+
+    # --- Basic counts (reuse existing overview logic) ---
+    agents = await registry.list_agents() if registry else []
+
+    entity_count = 0
+    if entity_index:
+        try:
+            stats = entity_index.get_stats()
+            entity_count = stats.get("count", 0)
+        except Exception:
+            pass
+
+    mcp_count = 0
+    if mcp_registry:
+        try:
+            servers = mcp_registry.list_servers()
+            mcp_count = len(servers)
+        except Exception:
+            pass
+
+    presence_rooms = 0
+    if presence_detector:
+        try:
+            room_conf = presence_detector.get_room_confidence()
+            presence_rooms = len(room_conf)
+        except Exception:
+            pass
+
+    # --- Analytics: requests, latency ---
+    requests = []
+    try:
+        requests = await AnalyticsRepository.query_by_range(
+            event_type="request", start=start_24h, limit=100000,
+        )
+    except Exception:
+        pass
+
+    recent_requests = len(requests)
+    latencies = [
+        r["data"]["latency_ms"] for r in requests
+        if r.get("data") and isinstance(r["data"], dict) and "latency_ms" in r["data"]
+    ]
+    avg_latency = round(sum(latencies) / len(latencies), 1) if latencies else 0
+
+    # --- Cache events (all non-request events for cache analysis) ---
+    all_events = []
+    try:
+        all_events = await AnalyticsRepository.query_by_range(
+            start=start_24h, limit=100000,
+        )
+    except Exception:
+        pass
+
+    hit_types = {"routing_hit", "response_hit", "response_partial"}
+    miss_types = {"miss"}
+    hits = sum(1 for e in all_events if e.get("event_type") in hit_types)
+    misses = sum(1 for e in all_events if e.get("event_type") in miss_types)
+    total_cache = hits + misses
+    cache_hit_rate = round(hits / total_cache * 100, 1) if total_cache > 0 else 0
+
+    # Cache tier breakdown counts
+    routing_hits = sum(1 for e in all_events if e.get("event_type") == "routing_hit")
+    response_hits = sum(
+        1 for e in all_events
+        if e.get("event_type") in ("response_hit", "response_partial")
+    )
+    cache_misses = misses
+
+    # Conversations count
+    total_conversations = 0
+    try:
+        total_conversations = await ConversationRepository.count()
+    except Exception:
+        pass
+
+    # --- Agent distribution ---
+    agent_counts: dict[str, int] = defaultdict(int)
+    agent_latencies_map: dict[str, list] = defaultdict(list)
+    for e in requests:
+        agent = e.get("agent_id") or "unknown"
+        agent_counts[agent] += 1
+        data = e.get("data")
+        if isinstance(data, dict) and "latency_ms" in data:
+            agent_latencies_map[agent].append(data["latency_ms"])
+
+    agent_distribution = []
+    for agent_id in sorted(agent_counts.keys()):
+        lats = agent_latencies_map.get(agent_id, [])
+        agent_distribution.append({
+            "agent_id": agent_id,
+            "request_count": agent_counts[agent_id],
+            "avg_latency_ms": round(sum(lats) / len(lats), 1) if lats else 0,
+        })
+
+    # --- Request time-series (hourly buckets, last 24h) ---
+    request_buckets: dict[str, int] = defaultdict(int)
+    bucket_minutes = 60
+    for e in requests:
+        ts = e.get("created_at", "")
+        try:
+            dt = datetime.fromisoformat(ts)
+            bucket_secs = bucket_minutes * 60
+            ts_epoch = int(dt.timestamp())
+            bucket_start = ts_epoch - (ts_epoch % bucket_secs)
+            bucket_label = datetime.fromtimestamp(
+                bucket_start, tz=timezone.utc
+            ).strftime("%H:%M")
+            request_buckets[bucket_label] += 1
+        except (ValueError, TypeError):
+            pass
+
+    request_labels = sorted(request_buckets.keys())
+    request_data = [request_buckets[lb] for lb in request_labels]
+    request_trend = {"labels": request_labels, "data": request_data}
+
+    # --- Recent traces (last 8) ---
+    recent_traces = []
+    try:
+        result = await TraceSummaryRepository.list_filtered(
+            page=1, per_page=8,
+        )
+        for t in result:
+            recent_traces.append({
+                "trace_id": t.get("trace_id", ""),
+                "created_at": t.get("created_at", ""),
+                "user_input": (t.get("user_input") or "")[:120],
+                "routing_agent": t.get("routing_agent", ""),
+                "total_duration_ms": t.get("total_duration_ms", 0),
+                "label": t.get("label", ""),
+            })
+    except Exception:
+        pass
+
+    # --- Errors/warnings ---
+    agent_timeouts = sum(
+        1 for e in all_events if e.get("event_type") == "agent_timeout"
+    )
+    rewrite_events = [
+        e for e in all_events if e.get("event_type") == "rewrite_invocation"
+    ]
+    rewrite_failures = sum(
+        1 for e in rewrite_events
+        if e.get("data") and isinstance(e["data"], dict)
+        and not e["data"].get("success", True)
+    )
+
+    return {
+        "recent_requests": recent_requests,
+        "cache_hit_rate": cache_hit_rate,
+        "agent_count": len(agents),
+        "entity_count": entity_count,
+        "mcp_server_count": mcp_count,
+        "presence_rooms": presence_rooms,
+        "avg_latency_ms": avg_latency,
+        "total_conversations": total_conversations,
+        "agent_distribution": agent_distribution,
+        "cache_tier": {
+            "routing_hits": routing_hits,
+            "response_hits": response_hits,
+            "misses": cache_misses,
+        },
+        "request_trend": request_trend,
+        "recent_traces": recent_traces,
+        "warnings": {
+            "agent_timeouts": agent_timeouts,
+            "rewrite_failures": rewrite_failures,
+        },
     }
 
 

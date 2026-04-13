@@ -1,39 +1,25 @@
-"""Timer and alarm agent."""
+"""Timer and alarm agent with direct HA REST API execution."""
 
-from __future__ import annotations
-
-import logging
-
-from app.agents.base import BaseAgent
-from app.models.agent import AgentCard, AgentTask
-
-logger = logging.getLogger(__name__)
+from app.agents.actionable import ActionableAgent
+from app.agents.timer_executor import execute_timer_action
+from app.models.agent import AgentCard
 
 
-class TimerAgent(BaseAgent):
+class TimerAgent(ActionableAgent):
     """Controls timers and reminders via HA REST API."""
+
+    _prompt_name = "timer"
+
+    async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id):
+        return await execute_timer_action(action, ha_client, entity_index, entity_matcher, agent_id=agent_id)
 
     @property
     def agent_card(self) -> AgentCard:
         return AgentCard(
             agent_id="timer-agent",
             name="Timer Agent",
-            description="Manages timers, alarms, and reminders.",
-            skills=["timer_set", "timer_cancel", "reminder"],
+            description="Manages timers, alarms, reminders, sleep timers, delayed actions, and calendar events.",
+            skills=["timer_set", "timer_cancel", "timer_query", "timer_snooze",
+                    "reminder", "delayed_action", "sleep_timer", "calendar"],
             endpoint="local://timer-agent",
         )
-
-    async def handle_task(self, task: AgentTask) -> dict:
-        system_prompt = self._load_prompt("timer")
-        messages = [{"role": "system", "content": system_prompt}]
-
-        if task.context and task.context.conversation_turns:
-            for turn in task.context.conversation_turns:
-                messages.append({
-                    "role": turn.get("role", "user"),
-                    "content": turn.get("content", ""),
-                })
-
-        messages.append({"role": "user", "content": task.description})
-        response = await self._call_llm(messages)
-        return {"speech": response, "action_executed": None}

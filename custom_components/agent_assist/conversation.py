@@ -14,7 +14,7 @@ from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_URL, CONF_API_KEY, MATCH_ALL
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr, intent
+from homeassistant.helpers import device_registry as dr, entity_registry as er, intent
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
@@ -33,18 +33,26 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the conversation entity from a config entry."""
+    # Migrate legacy unique_id formats to entry.entry_id
+    entity_registry = er.async_get(hass)
+    for old_uid in (DOMAIN, f"{DOMAIN}_conversation"):
+        entity_id = entity_registry.async_get_entity_id("conversation", DOMAIN, old_uid)
+        if entity_id:
+            entity_registry.async_update_entity(entity_id, new_unique_id=entry.entry_id)
+            logger.info("Migrated entity %s unique_id from '%s' to '%s'", entity_id, old_uid, entry.entry_id)
+
     data = hass.data[DOMAIN][entry.entry_id]
     async_add_entities([AgentAssistConversationEntity(entry, data["url"], data["api_key"])])
 
 
 class AgentAssistConversationEntity(
     conversation.ConversationEntity,
-    conversation.AbstractConversationAgent,
 ):
     """Conversation entity that bridges HA voice to the agent-assist container."""
 
     _attr_has_entity_name = True
     _attr_name = None
+    _attr_should_poll = False
     _attr_supported_features = ConversationEntityFeature.CONTROL
 
     def __init__(self, entry: ConfigEntry, url: str, api_key: str) -> None:
@@ -71,15 +79,23 @@ class AgentAssistConversationEntity(
     async def async_added_to_hass(self) -> None:
         """When entity is added to Home Assistant."""
         await super().async_added_to_hass()
-        assist_pipeline.async_migrate_engine(
-            self.hass, "conversation", self._entry.entry_id, self.entity_id
+        try:
+            assist_pipeline.async_migrate_engine(
+                self.hass, "conversation", self._entry.entry_id, self.entity_id
+            )
+        except Exception:
+            logger.debug("Pipeline engine migration skipped (not critical)")
+        self._reconnect_task = self._entry.async_create_background_task(
+            self.hass,
+            self._reconnect_loop(),
+            name="agent_assist_ws_reconnect",
         )
-        conversation.async_set_agent(self.hass, self._entry, self)
-        await self._connect_ws()
 
     async def async_will_remove_from_hass(self) -> None:
         """When entity will be removed from Home Assistant."""
-        conversation.async_unset_agent(self.hass, self._entry)
+        if hasattr(self, "_reconnect_task") and self._reconnect_task:
+            self._reconnect_task.cancel()
+            self._reconnect_task = None
         await self._disconnect_ws()
         await super().async_will_remove_from_hass()
 
@@ -91,7 +107,8 @@ class AgentAssistConversationEntity(
 
             ws_url = self._url.replace("http://", "ws://").replace("https://", "wss://")
             self._ws = await self._session.ws_connect(
-                f"{ws_url}{WS_PATH}?token={self._api_key}",
+                f"{ws_url}{WS_PATH}",
+                headers={"Authorization": f"Bearer {self._api_key}"},
                 timeout=aiohttp.ClientTimeout(total=10),
             )
             self._reconnect_delay = RECONNECT_BASE_DELAY
@@ -99,6 +116,14 @@ class AgentAssistConversationEntity(
             return True
         except (aiohttp.ClientError, TimeoutError):
             logger.warning("Failed to connect to container at %s", self._url)
+            # Clean up session to prevent resource leak
+            if self._session:
+                try:
+                    await self._session.close()
+                except Exception:
+                    pass
+                self._session = None
+            self._ws = None
             return False
 
     async def _disconnect_ws(self) -> None:
@@ -110,6 +135,20 @@ class AgentAssistConversationEntity(
             await self._session.close()
             self._session = None
 
+    async def _reconnect_loop(self) -> None:
+        """Background loop that maintains the WebSocket connection."""
+        while True:
+            if self._ws is None or self._ws.closed:
+                connected = await self._connect_ws()
+                if not connected:
+                    delay = self._reconnect_delay
+                    self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
+                    logger.debug("Reconnect in %.1fs", delay)
+                    await asyncio.sleep(delay)
+                    continue
+            # Connection is alive -- sleep before checking again
+            await asyncio.sleep(30)
+
     async def _ensure_connected(self) -> bool:
         """Ensure WebSocket is connected, reconnect if needed."""
         if self._ws is not None and not self._ws.closed:
@@ -120,10 +159,13 @@ class AgentAssistConversationEntity(
             self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
         return connected
 
-    async def async_process(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
+    async def _async_handle_message(
+        self,
+        user_input: conversation.ConversationInput,
+        chat_log: conversation.ChatLog,
+    ) -> conversation.ConversationResult:
         """Process a conversation turn by forwarding to the container."""
         if not await self._ensure_connected():
-            # Fallback: try REST endpoint
             return await self._process_via_rest(user_input)
 
         try:
