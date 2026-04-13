@@ -25,8 +25,9 @@ class MusicAgent(ActionableAgent):
             agent_id="music-agent",
             name="Music Agent",
             description=(
-                "Controls music playback via Music Assistant: play, pause, skip, volume, "
-                "library search, queue management, playlist selection, multi-room audio."
+                "Controls music playback via Music Assistant: play, pause, skip, volume, shuffle, repeat, "
+                "library search, queue management, playlist/artist/album selection. "
+                "Reports current track info and lists music players."
             ),
             skills=[
                 "music_playback",
@@ -34,6 +35,10 @@ class MusicAgent(ActionableAgent):
                 "playlist_selection",
                 "library_search",
                 "queue_management",
+                "shuffle",
+                "repeat",
+                "music_status",
+                "playback_query",
             ],
             endpoint="local://music-agent",
         )

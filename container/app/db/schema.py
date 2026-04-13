@@ -189,6 +189,15 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
     """)
 
     await db.execute("""
+        CREATE TABLE IF NOT EXISTS agent_mcp_tools (
+            agent_id TEXT NOT NULL,
+            server_name TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            PRIMARY KEY (agent_id, server_name, tool_name)
+        )
+    """)
+
+    await db.execute("""
         CREATE TABLE IF NOT EXISTS conversations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             conversation_id TEXT NOT NULL,
@@ -243,6 +252,7 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             routing_duration_ms REAL,
             routing_reasoning TEXT,
             agent_instructions TEXT,
+            conversation_turns TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
@@ -283,6 +293,10 @@ async def _create_indexes(db: aiosqlite.Connection) -> None:
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_mcp_servers_enabled "
         "ON mcp_servers(enabled)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_mcp_tools_agent "
+        "ON agent_mcp_tools(agent_id)"
     )
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_trace_spans_trace_id "
@@ -622,4 +636,16 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         )
         await db.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (8)"
+        )
+
+    if current_version < 9:
+        # Migration 9: Add conversation_turns column to trace_summary
+        try:
+            await db.execute(
+                "ALTER TABLE trace_summary ADD COLUMN conversation_turns TEXT"
+            )
+        except Exception:
+            pass  # Column may already exist
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (9)"
         )

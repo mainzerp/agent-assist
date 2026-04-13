@@ -18,7 +18,7 @@ class SceneAgent(ActionableAgent):
         return AgentCard(
             agent_id="scene-agent",
             name="Scene Agent",
-            description="Activates and manages Home Assistant scenes.",
-            skills=["scene_activate", "scene_list"],
+            description="Activates Home Assistant scenes with optional transition timing. Lists available scenes and checks if a scene exists.",
+            skills=["scene_activate", "scene_list", "scene_query"],
             endpoint="local://scene-agent",
         )

@@ -172,6 +172,7 @@ async def get_trace_detail(trace_id: str):
             "to_agent": "orchestrator",
             "task": user_input,
             "response": "",
+            "memory": summary.get("conversation_turns") or [],
         })
         # Find ha_action and rewrite spans for the cached path
         ha_action_span = None
@@ -214,6 +215,7 @@ async def get_trace_detail(trace_id: str):
             "to_agent": "orchestrator",
             "task": user_input,
             "response": "",
+            "memory": summary.get("conversation_turns") or [],
         })
 
         if len(dispatch_spans) <= 1:
@@ -318,6 +320,7 @@ async def get_trace_detail(trace_id: str):
         "agent_executions": agent_executions,
         "agent_communication": agent_communication,
         "routing_cached": routing_cached,
+        "conversation_turns": summary.get("conversation_turns") or [],
     }
 
 

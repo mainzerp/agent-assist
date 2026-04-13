@@ -204,6 +204,8 @@
                              x-text="traceDetail.user_input || '-'"></pre>
                     </div>
 
+
+
                     <!-- Final Response -->
                     <div class="card mb-md" style="background: var(--bg-obsidian);">
                         <h4 class="card-title mb-sm" style="font-size: 0.875rem;">Final Response</h4>
@@ -292,6 +294,37 @@
                                                 <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; margin: 0.2rem 0 0 0; color: var(--color-cloud);"
                                                      x-text="comm.task"></pre>
                                             </template>
+                                        </div>
+                                    </template>
+                                    <!-- Memory (conversation history) -->
+                                    <template x-if="comm.memory && comm.memory.length > 0">
+                                        <div style="margin-left: 2rem; margin-top: 0.5rem;">
+                                            <div style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;"
+                                                 @click="comm._showMemory = !comm._showMemory">
+                                                <span style="font-size: 0.75rem; color: var(--teal-glow); font-weight: 600;">Memory</span>
+                                                <span style="font-size: 0.65rem; color: var(--text-silver);"
+                                                      x-text="'(' + comm.memory.length + ' prior messages)'"></span>
+                                                <span style="font-size: 0.65rem; color: var(--text-silver);"
+                                                      x-text="comm._showMemory ? 'hide' : 'show'"></span>
+                                            </div>
+                                            <div x-show="comm._showMemory" x-transition style="margin-top: 0.25rem;">
+                                                <template x-for="(turn, tidx) in comm.memory" :key="tidx">
+                                                    <div style="margin-bottom: 0.3rem; padding: 0.3rem 0.5rem; border-radius: 4px; font-size: 0.75rem;"
+                                                         :style="turn.role === 'user'
+                                                             ? 'background: var(--bg-charcoal); border-left: 2px solid var(--accent-blue);'
+                                                             : 'background: var(--bg-charcoal); border-left: 2px solid var(--teal-glow);'">
+                                                        <span style="font-weight: 600; text-transform: uppercase; font-size: 0.65rem;"
+                                                              :style="turn.role === 'user' ? 'color: var(--accent-blue);' : 'color: var(--teal-glow);'"
+                                                              x-text="turn.role"></span>
+                                                        <template x-if="turn.agent_id">
+                                                            <span class="badge" style="font-size: 0.55rem; margin-left: 0.3rem;"
+                                                                  x-text="turn.agent_id"></span>
+                                                        </template>
+                                                        <pre style="white-space: pre-wrap; word-break: break-word; font-size: 0.75rem; margin: 0.15rem 0 0 0; color: var(--color-cloud);"
+                                                             x-text="turn.content"></pre>
+                                                    </div>
+                                                </template>
+                                            </div>
                                         </div>
                                     </template>
                                     <template x-if="comm.response_unchanged">
@@ -526,6 +559,8 @@ function tracesPage() {
         // Label editing
         editingLabel: false,
         newLabel: '',
+
+
 
         async init() {
             await this.loadTraces();

@@ -46,6 +46,12 @@ async def execute_scene_action(
     action_name = action.get("action", "").lower()
     entity_query = action.get("entity", "")
 
+    # Read-only actions (no service call)
+    if action_name in ("query_scene", "list_scenes"):
+        return await _handle_scene_read_action(
+            action_name, entity_query, ha_client, entity_index, entity_matcher, agent_id
+        )
+
     # Validate action name
     mapping = _SCENE_ACTION_MAP.get(action_name)
     if not mapping:
@@ -114,3 +120,77 @@ async def execute_scene_action(
         "new_state": new_state,
         "speech": f"Done, {friendly_name} has been activated.",
     }
+
+
+# ---------------------------------------------------------------------------
+# Read-only scene action handlers
+# ---------------------------------------------------------------------------
+
+async def _query_scene(
+    entity_query: str,
+    ha_client: Any,
+    entity_index: Any,
+    entity_matcher: Any,
+    agent_id: str | None,
+) -> dict:
+    entity_id = None
+    friendly_name = entity_query
+    try:
+        if entity_matcher:
+            matches = await entity_matcher.match(entity_query, agent_id=agent_id)
+            if matches:
+                entity_id = matches[0].entity_id
+                friendly_name = matches[0].friendly_name or entity_id
+        if not entity_id and entity_index:
+            results = entity_index.search(entity_query, n_results=1)
+            if results:
+                entity_id = results[0][0].entity_id
+                friendly_name = results[0][0].friendly_name or entity_id
+    except Exception:
+        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
+
+    if not entity_id:
+        return {"success": False, "entity_id": None, "new_state": None,
+                "speech": f"Could not find a scene matching '{entity_query}'."}
+
+    return {"success": True, "entity_id": entity_id, "new_state": None,
+            "speech": f"Scene found: {friendly_name} ({entity_id})."}
+
+
+async def _list_scenes(ha_client: Any) -> dict:
+    try:
+        states = await ha_client.get_states()
+    except Exception as exc:
+        logger.error("Failed to fetch states for list_scenes", exc_info=True)
+        return {"success": False, "entity_id": "", "new_state": None,
+                "speech": f"Failed to list scenes: {exc}"}
+
+    scenes = [s for s in states if s.get("entity_id", "").startswith("scene.")]
+
+    if not scenes:
+        return {"success": True, "entity_id": "", "new_state": None,
+                "speech": "No scenes found."}
+
+    names = []
+    for s in scenes:
+        name = s.get("attributes", {}).get("friendly_name", s.get("entity_id", ""))
+        names.append(name)
+
+    speech = f"Available scenes ({len(names)}): {', '.join(names)}."
+    return {"success": True, "entity_id": "", "new_state": None, "speech": speech}
+
+
+async def _handle_scene_read_action(
+    action_name: str,
+    entity_query: str,
+    ha_client: Any,
+    entity_index: Any,
+    entity_matcher: Any,
+    agent_id: str | None,
+) -> dict:
+    if action_name == "query_scene":
+        return await _query_scene(entity_query, ha_client, entity_index, entity_matcher, agent_id)
+    if action_name == "list_scenes":
+        return await _list_scenes(ha_client)
+    return {"success": False, "entity_id": "", "new_state": None,
+            "speech": f"Unknown read action: {action_name}"}

@@ -562,7 +562,7 @@ async def admin_chat(request: Request, payload: ChatRequest):
     result = response.result or {}
     return {
         "speech": result.get("speech", ""),
-        "conversation_id": payload.conversation_id,
+        "conversation_id": result.get("conversation_id") or payload.conversation_id,
     }
 
 
@@ -599,7 +599,7 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
                 token = StreamToken(
                     token=chunk.result.get("token", ""),
                     done=chunk.done,
-                    conversation_id=payload.conversation_id if chunk.done else None,
+                    conversation_id=chunk.result.get("conversation_id") if chunk.done else None,
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:

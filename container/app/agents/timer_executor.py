@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any
 
 from app.agents.delayed_tasks import delayed_task_manager
@@ -18,6 +21,60 @@ _TIMER_ACTION_MAP: dict[str, tuple[str, str]] = {
     "finish_timer":  ("timer", "finish"),
     "set_datetime":  ("input_datetime", "set_datetime"),
 }
+
+
+# ---------------------------------------------------------------------------
+# Timer Metadata
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TimerMetadata:
+    name: str
+    entity_id: str
+    duration: str | None = None
+    origin_device_id: str | None = None
+    origin_area: str | None = None
+    media_player_entity: str | None = None
+    created_at: datetime = field(default_factory=datetime.now)
+    notification_type: str = "standard"
+
+
+# ---------------------------------------------------------------------------
+# Recently Expired Tracking
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ExpiredTimer:
+    name: str
+    entity_id: str
+    expired_at: datetime
+    metadata: TimerMetadata | None = None
+
+_recently_expired: deque[ExpiredTimer] = deque(maxlen=20)
+_EXPIRED_TTL = timedelta(minutes=10)
+
+
+def record_expired(name: str, entity_id: str, metadata: TimerMetadata | None = None) -> None:
+    """Record a timer as recently expired."""
+    _recently_expired.appendleft(ExpiredTimer(
+        name=name, entity_id=entity_id,
+        expired_at=datetime.now(), metadata=metadata,
+    ))
+
+
+def get_last_expired() -> ExpiredTimer | None:
+    """Get the most recently expired timer (within TTL)."""
+    now = datetime.now()
+    for exp in _recently_expired:
+        if now - exp.expired_at <= _EXPIRED_TTL:
+            return exp
+    return None
+
+
+def get_recently_expired() -> list[ExpiredTimer]:
+    """Get all recently expired timers within TTL."""
+    now = datetime.now()
+    return [e for e in _recently_expired if now - e.expired_at <= _EXPIRED_TTL]
 
 
 # ---------------------------------------------------------------------------
@@ -36,30 +93,42 @@ class _TimerPool:
     def __init__(self) -> None:
         self._name_to_entity: dict[str, str] = {}  # "egg timer" -> "timer.pool_1"
         self._entity_to_name: dict[str, str] = {}  # "timer.pool_1" -> "egg timer"
+        self._entity_to_metadata: dict[str, TimerMetadata] = {}
 
     def get_entity(self, name: str) -> str | None:
         """Look up entity_id by user-given timer name."""
         return self._name_to_entity.get(name.lower().strip())
 
-    def assign(self, name: str, entity_id: str) -> None:
+    def assign(self, name: str, entity_id: str, metadata: TimerMetadata | None = None) -> None:
         """Assign a name mapping to an entity."""
         key = name.lower().strip()
         self._name_to_entity[key] = entity_id
         self._entity_to_name[entity_id] = key
+        if metadata:
+            self._entity_to_metadata[entity_id] = metadata
 
     def release(self, entity_id: str) -> None:
         """Release a timer entity back to the pool."""
         name = self._entity_to_name.pop(entity_id, None)
         if name:
             self._name_to_entity.pop(name, None)
+        self._entity_to_metadata.pop(entity_id, None)
 
     def get_name(self, entity_id: str) -> str | None:
         """Get the user-given name for an entity, if any."""
         return self._entity_to_name.get(entity_id)
 
+    def get_metadata(self, entity_id: str) -> TimerMetadata | None:
+        """Get the metadata for an entity, if any."""
+        return self._entity_to_metadata.get(entity_id)
+
     def all_mappings(self) -> dict[str, str]:
         """Return a copy of all current name->entity mappings."""
         return dict(self._name_to_entity)
+
+    def all_metadata(self) -> dict[str, TimerMetadata]:
+        """Return a copy of all current entity->metadata mappings."""
+        return dict(self._entity_to_metadata)
 
 
 # Module-level singleton pool instance
@@ -81,6 +150,48 @@ async def _find_idle_timer(ha_client: Any) -> str | None:
         if s.get("state") == "idle" and entity_id not in _timer_pool._entity_to_name:
             return entity_id
     return None
+
+
+async def _resolve_media_player(ha_client: Any, device_id: str | None, area_id: str | None) -> str | None:
+    """Find a media_player entity in the same area as the originating device."""
+    if not area_id:
+        return None
+    try:
+        states = await ha_client.get_states()
+        for s in states:
+            eid = s.get("entity_id", "")
+            if eid.startswith("media_player."):
+                if s.get("attributes", {}).get("area_id") == area_id:
+                    return eid
+    except Exception:
+        logger.warning("Failed to resolve media_player for area %s", area_id, exc_info=True)
+    return None
+
+
+async def on_timer_finished(entity_id: str, ha_client: Any) -> None:
+    """Handle timer.finished WebSocket event -- dispatch notifications."""
+    metadata = _timer_pool.get_metadata(entity_id)
+    timer_name = _timer_pool.get_name(entity_id) or entity_id
+
+    logger.info("Timer finished: %s (name=%s)", entity_id, timer_name)
+
+    # Record as recently expired before releasing
+    record_expired(timer_name, entity_id, metadata)
+
+    # Dispatch notification via the notification dispatcher
+    try:
+        from app.agents.notification_dispatcher import dispatch_timer_notification
+        await dispatch_timer_notification(
+            ha_client=ha_client,
+            timer_name=timer_name,
+            entity_id=entity_id,
+            metadata=metadata,
+        )
+    except Exception:
+        logger.error("Notification dispatch failed for %s", entity_id, exc_info=True)
+
+    # Release pool mapping
+    _timer_pool.release(entity_id)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +244,16 @@ def _format_duration_human(total_seconds: int) -> str:
     if seconds:
         parts.append(f"{seconds} second{'s' if seconds != 1 else ''}")
     return " and ".join(parts) if len(parts) <= 2 else ", ".join(parts[:-1]) + f", and {parts[-1]}"
+
+
+def _format_elapsed(dt: datetime) -> str:
+    """Format elapsed time since a datetime as a short human-readable string."""
+    delta = datetime.now() - dt
+    total_secs = int(delta.total_seconds())
+    if total_secs < 60:
+        return f"{total_secs}s"
+    minutes = total_secs // 60
+    return f"{minutes} min"
 
 
 def _format_timer_state(entity_id: str, state_resp: dict) -> str:
@@ -290,10 +411,17 @@ async def _list_timers(ha_client: Any) -> dict:
     if idle:
         parts.append(f"Idle: {', '.join(idle)}")
 
+    expired = get_recently_expired()
+    if expired:
+        expired_names = [f"{e.name} (finished {_format_elapsed(e.expired_at)} ago)" for e in expired]
+        parts.append(f"Recently finished: {', '.join(expired_names)}")
+
     if not active and not paused:
         speech = "No timers are currently running."
         if idle:
             speech += f" {len(idle)} idle timer{'s' if len(idle) != 1 else ''} available."
+        if expired:
+            speech += f" {'. '.join(parts[-1:])}."
     else:
         speech = ". ".join(parts) + "."
 
@@ -363,17 +491,31 @@ async def _snooze_timer(
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
     if not entity_id:
+        # Try last expired timer for snooze
+        last = get_last_expired()
+        if last:
+            entity_id = last.entity_id
+            friendly_name = last.name
+
+    if not entity_id:
         return {"success": False, "entity_id": None, "new_state": None,
                 "speech": f"Could not find an entity matching '{entity_query}'."}
 
     try:
-        # Step 1: Cancel the current timer
-        await ha_client.call_service("timer", "cancel", entity_id)
-        await asyncio.sleep(0.2)
+        # Check current state -- if idle (recently expired), skip cancel
+        state_resp = await ha_client.get_state(entity_id)
+        current_state = state_resp.get("state") if state_resp else None
+        if current_state and current_state != "idle":
+            await ha_client.call_service("timer", "cancel", entity_id)
+            await asyncio.sleep(0.2)
 
-        # Step 2: Restart with snooze duration
+        # Restart with snooze duration
         await ha_client.call_service("timer", "start", entity_id, {"duration": snooze_duration})
         await asyncio.sleep(0.3)
+
+        # Re-register in pool if it was expired
+        if not _timer_pool.get_name(entity_id):
+            _timer_pool.assign(friendly_name, entity_id)
 
         state_resp = await ha_client.get_state(entity_id)
         new_state = state_resp.get("state") if state_resp else None
@@ -422,12 +564,17 @@ async def _start_timer_with_notification(
     if not entity_id:
         return result
 
-    # Schedule notification via delayed task manager
+    # Schedule notification via delayed task manager (fallback if WS event missed)
     async def _send_notification():
         try:
-            await ha_client.call_service(
-                "persistent_notification", "create", None,
-                {"message": notification_message, "title": "Timer Alert"},
+            from app.agents.notification_dispatcher import dispatch_timer_notification
+            timer_name = _timer_pool.get_name(entity_id) or entity_query
+            metadata = _timer_pool.get_metadata(entity_id)
+            await dispatch_timer_notification(
+                ha_client=ha_client,
+                timer_name=timer_name,
+                entity_id=entity_id,
+                metadata=metadata,
             )
         except Exception:
             logger.error("Failed to send timer notification", exc_info=True)
@@ -738,6 +885,8 @@ async def execute_timer_action(
     entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None = None,
+    device_id: str | None = None,
+    area_id: str | None = None,
 ) -> dict:
     """Resolve an entity, call a timer HA service, and verify the result.
 
@@ -818,7 +967,17 @@ async def execute_timer_action(
         idle_entity = await _find_idle_timer(ha_client)
         if idle_entity:
             entity_id = idle_entity
-            _timer_pool.assign(entity_query, idle_entity)
+            media_player = await _resolve_media_player(ha_client, device_id, area_id)
+            params = action.get("parameters") or {}
+            meta = TimerMetadata(
+                name=entity_query,
+                entity_id=idle_entity,
+                duration=str(params.get("duration", "")) or None,
+                origin_device_id=device_id,
+                origin_area=area_id,
+                media_player_entity=media_player,
+            )
+            _timer_pool.assign(entity_query, idle_entity, meta)
             pool_name = entity_query
             friendly_name = entity_query
             logger.info("Pool assigned '%s' -> %s", entity_query, idle_entity)

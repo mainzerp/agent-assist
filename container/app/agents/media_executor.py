@@ -69,6 +69,12 @@ async def execute_media_action(
     action_name = action.get("action", "").lower()
     entity_query = action.get("entity", "")
 
+    # Read-only actions (no service call)
+    if action_name in ("query_media_state", "list_media_players"):
+        return await _handle_media_read_action(
+            action_name, entity_query, ha_client, entity_index, entity_matcher, agent_id
+        )
+
     mapping = _MEDIA_ACTION_MAP.get(action_name)
     if not mapping:
         return {
@@ -132,3 +138,125 @@ async def execute_media_action(
         "new_state": new_state,
         "speech": f"Done, {friendly_name} is now {new_state or action_name.replace('_', ' ')}.",
     }
+
+
+# ---------------------------------------------------------------------------
+# Read-only media action handlers
+# ---------------------------------------------------------------------------
+
+def _format_media_state(entity_id: str, state_resp: dict) -> str:
+    state = state_resp.get("state", "unknown")
+    attrs = state_resp.get("attributes", {})
+    friendly_name = attrs.get("friendly_name", entity_id)
+
+    parts = [f"{friendly_name} is {state}"]
+    if state in ("playing", "paused", "on"):
+        title = attrs.get("media_title")
+        content_type = attrs.get("media_content_type")
+        if title:
+            parts.append(f'playing "{title}"')
+        if content_type:
+            parts.append(f"type {content_type}")
+        app_name = attrs.get("app_name")
+        if app_name:
+            parts.append(f"app {app_name}")
+    source = attrs.get("source")
+    if source:
+        parts.append(f"source {source}")
+    volume = attrs.get("volume_level")
+    if volume is not None:
+        parts.append(f"volume {round(float(volume) * 100)}%")
+    muted = attrs.get("is_volume_muted")
+    if muted:
+        parts.append("muted")
+    return ", ".join(parts) + "."
+
+
+async def _query_media_state(
+    entity_query: str,
+    ha_client: Any,
+    entity_index: Any,
+    entity_matcher: Any,
+    agent_id: str | None,
+) -> dict:
+    entity_id = None
+    friendly_name = entity_query
+    try:
+        if entity_matcher:
+            matches = await entity_matcher.match(entity_query, agent_id=agent_id)
+            if matches:
+                entity_id = matches[0].entity_id
+                friendly_name = matches[0].friendly_name or entity_id
+        if not entity_id and entity_index:
+            results = entity_index.search(entity_query, n_results=1)
+            if results:
+                entity_id = results[0][0].entity_id
+                friendly_name = results[0][0].friendly_name or entity_id
+    except Exception:
+        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
+
+    if not entity_id:
+        return {"success": False, "entity_id": None, "new_state": None,
+                "speech": f"Could not find an entity matching '{entity_query}'."}
+
+    try:
+        state_resp = await ha_client.get_state(entity_id)
+        if not state_resp:
+            return {"success": False, "entity_id": entity_id, "new_state": None,
+                    "speech": f"Could not retrieve state for {entity_id}."}
+        speech = _format_media_state(entity_id, state_resp)
+        return {"success": True, "entity_id": entity_id,
+                "new_state": state_resp.get("state"), "speech": speech}
+    except Exception as exc:
+        logger.error("State query failed for %s", entity_id, exc_info=True)
+        return {"success": False, "entity_id": entity_id, "new_state": None,
+                "speech": f"Failed to query media player status: {exc}"}
+
+
+async def _list_media_players(ha_client: Any) -> dict:
+    try:
+        states = await ha_client.get_states()
+    except Exception as exc:
+        logger.error("Failed to fetch states for list_media_players", exc_info=True)
+        return {"success": False, "entity_id": "", "new_state": None,
+                "speech": f"Failed to list media players: {exc}"}
+
+    players = [s for s in states if s.get("entity_id", "").startswith("media_player.")]
+
+    if not players:
+        return {"success": True, "entity_id": "", "new_state": None,
+                "speech": "No media players found."}
+
+    lines = []
+    for p in players:
+        attrs = p.get("attributes", {})
+        name = attrs.get("friendly_name", p.get("entity_id", ""))
+        state = p.get("state", "unknown")
+        source = attrs.get("source")
+        info = f"{name}: {state}"
+        if source:
+            info += f" (source: {source})"
+        if state in ("playing", "paused"):
+            title = attrs.get("media_title")
+            if title:
+                info += f' - "{title}"'
+        lines.append(info)
+
+    speech = "Media players: " + "; ".join(lines) + "."
+    return {"success": True, "entity_id": "", "new_state": None, "speech": speech}
+
+
+async def _handle_media_read_action(
+    action_name: str,
+    entity_query: str,
+    ha_client: Any,
+    entity_index: Any,
+    entity_matcher: Any,
+    agent_id: str | None,
+) -> dict:
+    if action_name == "query_media_state":
+        return await _query_media_state(entity_query, ha_client, entity_index, entity_matcher, agent_id)
+    if action_name == "list_media_players":
+        return await _list_media_players(ha_client)
+    return {"success": False, "entity_id": "", "new_state": None,
+            "speech": f"Unknown read action: {action_name}"}

@@ -15,3 +15,4 @@ You are combining responses from multiple smart home agents into one natural, co
 - Keep all factual content and entity names exactly as they are
 - Never add information that was not in an agent's response
 - Keep it concise and natural
+The output will be read aloud by a text-to-speech system. Ensure the result is plain text with no Markdown formatting -- no headers, no bold/italic markers, no links, no bullet lists, no code blocks. Write as if speaking naturally.

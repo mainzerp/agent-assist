@@ -18,7 +18,7 @@ class ClimateAgent(ActionableAgent):
         return AgentCard(
             agent_id="climate-agent",
             name="Climate Agent",
-            description="Controls climate and HVAC: temperature, mode, fan speed, humidity. Reads climate sensor data (temperature, humidity, pressure, dew point).",
-            skills=["temperature", "hvac_mode", "fan_speed", "humidity", "sensor_reading"],
+            description="Controls and queries climate/HVAC devices and environmental sensors. Set temperature, HVAC mode, fan speed, humidity, turn on/off. Reads sensors: temperature, humidity, pressure, dew point, wind, precipitation.",
+            skills=["temperature", "hvac_mode", "fan_speed", "humidity", "climate_on_off", "sensor_reading", "climate_status", "sensor_query", "weather_sensor"],
             endpoint="local://climate-agent",
         )

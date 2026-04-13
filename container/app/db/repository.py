@@ -444,6 +444,45 @@ class McpServerRepository:
             await db.commit()
 
 
+class AgentMcpToolsRepository:
+    """CRUD for MCP tool assignments to agents (built-in and custom)."""
+
+    @staticmethod
+    async def get_tools(agent_id: str) -> list[dict[str, str]]:
+        """Return list of {server_name, tool_name} for an agent."""
+        async with get_db() as db:
+            cursor = await db.execute(
+                "SELECT server_name, tool_name FROM agent_mcp_tools WHERE agent_id = ?",
+                (agent_id,),
+            )
+            return [{"server_name": row["server_name"], "tool_name": row["tool_name"]}
+                    for row in await cursor.fetchall()]
+
+    @staticmethod
+    async def assign_tool(agent_id: str, server_name: str, tool_name: str) -> None:
+        async with get_db() as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO agent_mcp_tools (agent_id, server_name, tool_name) VALUES (?, ?, ?)",
+                (agent_id, server_name, tool_name),
+            )
+            await db.commit()
+
+    @staticmethod
+    async def unassign_tool(agent_id: str, server_name: str, tool_name: str) -> None:
+        async with get_db() as db:
+            await db.execute(
+                "DELETE FROM agent_mcp_tools WHERE agent_id = ? AND server_name = ? AND tool_name = ?",
+                (agent_id, server_name, tool_name),
+            )
+            await db.commit()
+
+    @staticmethod
+    async def get_all_assignments() -> list[dict[str, str]]:
+        async with get_db() as db:
+            cursor = await db.execute("SELECT agent_id, server_name, tool_name FROM agent_mcp_tools")
+            return [dict(row) for row in await cursor.fetchall()]
+
+
 class EntityVisibilityRepository:
     """CRUD for per-agent entity visibility rules."""
 
@@ -882,14 +921,17 @@ class TraceSummaryRepository:
         agent_instructions = data.get("agent_instructions")
         if isinstance(agent_instructions, (list, dict)):
             agent_instructions = json.dumps(agent_instructions)
+        conversation_turns = data.get("conversation_turns")
+        if isinstance(conversation_turns, list):
+            conversation_turns = json.dumps(conversation_turns)
         async with get_db() as db:
             await db.execute(
                 "INSERT INTO trace_summary "
                 "(trace_id, conversation_id, user_input, final_response, "
                 "agents, total_duration_ms, label, source, routing_agent, "
                 "routing_confidence, routing_duration_ms, routing_reasoning, "
-                "agent_instructions) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "agent_instructions, conversation_turns) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     data.get("trace_id"),
                     data.get("conversation_id"),
@@ -904,6 +946,7 @@ class TraceSummaryRepository:
                     data.get("routing_duration_ms"),
                     data.get("routing_reasoning"),
                     agent_instructions,
+                    conversation_turns,
                 ),
             )
             await db.commit()
@@ -1011,6 +1054,11 @@ class TraceSummaryRepository:
             if result.get("agent_instructions"):
                 try:
                     result["agent_instructions"] = json.loads(result["agent_instructions"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if result.get("conversation_turns"):
+                try:
+                    result["conversation_turns"] = json.loads(result["conversation_turns"])
                 except (json.JSONDecodeError, TypeError):
                     pass
             return result

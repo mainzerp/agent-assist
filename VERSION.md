@@ -1,8 +1,91 @@
 # Version
 
-**Current Version:** 0.6.0
+**Current Version:** 0.9.4
 
 ## Version History
+
+### 0.9.4 -- Conversation Memory for Follow-up Questions
+
+- Inject conversation history into orchestrator classification prompt so follow-up questions are routed with context
+- Annotate stored conversation turns with agent_id for agent-level context tracking
+- Generate fallback conversation_id when Home Assistant sends None
+- Updated orchestrator prompt with conversation context routing rules
+- 6 new tests for conversation memory, history injection, and agent_id annotation
+
+### 0.9.3 -- Agent Description & Skills Improvements
+
+- Improved all 9 agent descriptions for better orchestrator LLM routing accuracy
+- light-agent: added switch_control, toggle, illuminance_sensor skills
+- music-agent: added shuffle, repeat skills
+- timer-agent: added timer_pause, timer_resume, alarm skills
+- climate-agent: added climate_on_off, weather_sensor skills
+- scene-agent: fixed misleading "manages" wording
+- security-agent: added door_sensor, window_sensor, doorbell, smoke_sensor, camera_control skills
+- media-agent: added mute skill, explicit distinction from music-agent
+- general-agent: added web_search, current_events, conversation skills
+- No behavioral or code logic changes -- description/skills text only
+
+### 0.9.2 -- MCP UI Improvements
+
+- Hide Delete button for built-in MCP servers (DuckDuckGo) with API-level protection (403)
+- "Built-in" badge shown next to built-in server names on MCP Servers page
+- MCP tool assignment UI in agent edit form with checkbox-based tool selection
+- MCP server badge on agent cards showing assigned tools per server (purple badges)
+- New API endpoint: GET /api/admin/mcp-servers/agent-tools-summary for bulk assignment data
+
+### 0.9.1 -- Docker Image Size Optimization
+
+- Switched to CPU-only PyTorch in Docker build, eliminating ~4.3 GB of unused NVIDIA/CUDA/Triton libraries
+- Docker image reduced from ~9.31 GB to ~5.0 GB (46% reduction)
+- No functional changes -- sentence-transformers and all other packages continue to work identically
+
+### 0.9.0 -- Web Search via MCP + LLM Tool Calling
+
+- DuckDuckGo web search MCP server (bundled, stdio transport, zero API key)
+  - `web_search` tool: general web search with configurable max results
+  - `web_search_news` tool: news-specific search with date and source info
+- LLM tool/function calling support via new `complete_with_tools()` in llm/client.py
+  - Configurable max tool rounds to prevent infinite loops
+  - Automatic tool_choice="auto" -- LLM decides when to use tools
+- MCP tool assignment for built-in agents (new `agent_mcp_tools` DB table)
+  - Admin API endpoints for assigning/unassigning MCP tools to any agent
+- GeneralAgent web search integration
+  - Fetches assigned MCP tools and uses tool calling when tools are available
+  - Falls back to plain LLM completion when no tools assigned
+- Auto-registration: DuckDuckGo MCP server registered on first startup, tools auto-assigned to general-agent
+- Updated general agent prompt with web search usage guidelines
+- New files: mcp/servers/duckduckgo_server.py, mcp/servers/__init__.py
+- 9 new tests for tool calling, MCP server, agent integration, and tool assignment
+
+### 0.8.0 -- Domain Agent Status/State Query Capabilities
+
+- Read-only status query support for all 7 domain agents (light, climate, automation, scene, security, music, media)
+- Each agent now supports querying individual entity status and listing all entities in its domain
+- Light agent: query_light_state and list_lights actions (covers both light.* and switch.* entities)
+- Climate agent: query_climate_state and list_climate actions (includes climate sensors)
+- Automation agent: query_automation_state and list_automations actions (shows enabled/disabled status and last triggered)
+- Scene agent: query_scene and list_scenes actions
+- Security agent: query_security_state and list_security actions (locks, alarms, cameras, binary sensors with device_class awareness)
+- Music agent: query_music_state and list_music_players actions (track, artist, volume info)
+- Media agent: query_media_state and list_media_players actions (source, volume, playback info)
+- Updated all agent card descriptions and skills for improved orchestrator routing of query requests
+- Updated all domain prompts to instruct LLM to use JSON action blocks for status queries
+- 42 new tests for query/list actions across all 7 domains
+
+### 0.7.0 -- Timer Notification System & Alarms Dashboard
+
+- Timer & Alarms Dashboard: new /dashboard/timers page with active timers, alarms, timer pool, delayed tasks overview
+- Device context propagation: device_id/area_id from HA voice satellite through entire processing pipeline
+- TimerMetadata tracking in timer pool (origin device, area, media_player association)
+- WebSocket timer.finished/timer.cancelled event listener for real-time timer completion detection
+- Multi-channel notification dispatcher: TTS on origin satellite, persistent_notification, mobile push
+- LLM-generated interactive TTS messages with conversation continuation on the originating satellite
+- AlarmMonitor background task for input_datetime entities (30s polling, daily deduplication)
+- Recently expired timer tracking with snooze-last-expired fallback
+- Notification profile settings configurable via admin API
+- New files: notification_dispatcher.py, alarm_monitor.py, timers.html dashboard template
+- New API endpoints: GET /dashboard/timers, GET /api/admin/timers, GET/PUT /api/admin/notification-profile, GET /api/admin/alarm-monitor, GET /api/admin/timers/recently-expired
+- 11 modified files across container/app/ and custom_components/
 
 ### 0.6.0 -- New Agents & Container Hardening
 
@@ -51,11 +134,6 @@
 - Project scaffolding and directory structure
 - Project definition document
 
-## Recent Changes (since 0.6.0)
+## Recent Changes (since 0.8.0)
 
-### Timer Agent Extensions
-- 10 new actions: query_timer, list_timers, snooze_timer, list_alarms, start_timer_with_notification, delayed_action, sleep_timer, create_reminder, create_recurring_reminder, named timer pool
-- DelayedTaskManager for post-timer callbacks (notifications, delayed actions, sleep timer)
-- Timer pool management with auto-allocation of idle timer helpers
-- Calendar integration for reminders with rrule support
-- 11 new tests (727 total)
+(none yet)

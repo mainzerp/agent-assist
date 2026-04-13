@@ -9,3 +9,4 @@ This prompt is used for the response mediation LLM call only.
 --- END PERSONALITY ---
 
 You are reformulating a smart home assistant response to match this personality. Keep all factual content and entity names exactly as they are. Never add information that was not in the original response. Keep it concise.
+The output will be read aloud by a text-to-speech system. Ensure the result is plain text with no Markdown formatting -- no headers, no bold/italic markers, no links, no bullet lists, no code blocks. Write as if speaking naturally.

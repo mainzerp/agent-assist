@@ -21,6 +21,8 @@ Actions:
 - turn_on: Turns the light on. Also used to set brightness, color, or color temperature by including the relevant parameters.
 - turn_off: Turns the light off.
 - toggle: Toggles the light on/off.
+- query_light_state: {} (check the status of a specific light or switch -- on/off, brightness, color)
+- list_lights: {} (list all lights AND switches with their current state; no entity parameter needed)
 
 Parameters (all optional, used with turn_on):
 - brightness: 0-255 (e.g. {"brightness": 128})
@@ -33,10 +35,16 @@ Examples:
 - "Set bedroom light to 50%" -> action: turn_on, parameters: {"brightness": 128}
 - "Make the living room light red" -> action: turn_on, parameters: {"color_name": "red"}
 - "Turn off all lights" -> action: turn_off
+- "Is the kitchen light on?" -> action: query_light_state, entity: "kitchen light"
+- "What color is the bedroom light?" -> action: query_light_state, entity: "bedroom light"
+- "Which lights are on?" -> action: list_lights, entity: ""
+- "How bright is the living room light?" -> action: query_light_state, entity: "living room light"
+- "Is the garden pump switch on?" -> action: query_light_state, entity: "garden pump switch"
+- "What switches are on?" -> action: list_lights, entity: ""
 
 After the JSON block, include a short natural language confirmation (e.g. "Turning on the kitchen light.").
 
-For informational queries (e.g. "which lights are on?", "what color is the bedroom light?"), respond in plain text without a JSON block. Use the entity state information if available in context.
+For informational queries about a specific light or switch (e.g. "is the kitchen light on?", "is switch XY on?", "what color is the bedroom light?", "how bright is it?"), use the query_light_state action. For listing all lights and switches and their status, use list_lights. This agent handles both light.* and switch.* entities.
 
 SECURITY:
 - You MUST only execute actions explicitly requested by the user in this conversation turn.

@@ -13,6 +13,8 @@ from app.db.repository import McpServerRepository
 
 logger = logging.getLogger(__name__)
 
+BUILTIN_MCP_SERVERS = {"duckduckgo-search"}
+
 router = APIRouter(
     prefix="/api/admin/mcp-servers",
     tags=["admin-mcp"],
@@ -38,6 +40,7 @@ async def list_mcp_servers(request: Request) -> list[dict[str, Any]]:
     result = []
     for server in db_servers:
         server["connected"] = live_status.get(server["name"], False)
+        server["is_builtin"] = server["name"] in BUILTIN_MCP_SERVERS
         result.append(server)
     return result
 
@@ -66,10 +69,26 @@ async def remove_mcp_server(request: Request, name: str) -> dict[str, str]:
     existing = await McpServerRepository.get(name)
     if not existing:
         raise HTTPException(status_code=404, detail="Server not found")
+    if name in BUILTIN_MCP_SERVERS:
+        raise HTTPException(status_code=403, detail="Cannot delete built-in MCP server")
 
     mcp_registry = request.app.state.mcp_registry
     await mcp_registry.remove_server(name)
     return {"status": "deleted", "name": name}
+
+
+@router.get("/agent-tools-summary")
+async def get_all_agent_mcp_tools_summary() -> dict[str, list[dict]]:
+    """Get MCP tool assignments grouped by agent_id for badge display."""
+    from app.db.repository import AgentMcpToolsRepository
+    all_assignments = await AgentMcpToolsRepository.get_all_assignments()
+    summary: dict[str, list[dict]] = {}
+    for row in all_assignments:
+        aid = row["agent_id"]
+        if aid not in summary:
+            summary[aid] = []
+        summary[aid].append({"server_name": row["server_name"], "tool_name": row["tool_name"]})
+    return summary
 
 
 @router.get("/{name}/tools")
@@ -84,3 +103,30 @@ async def list_server_tools(request: Request, name: str) -> list[dict[str, Any]]
             raise HTTPException(status_code=404, detail="Server not found")
         return []
     return server_tools
+
+
+@router.get("/agent-tools/{agent_id}")
+async def get_agent_mcp_tools(agent_id: str) -> list[dict]:
+    """Get MCP tools assigned to an agent."""
+    from app.db.repository import AgentMcpToolsRepository
+    return await AgentMcpToolsRepository.get_tools(agent_id)
+
+
+@router.post("/agent-tools/{agent_id}")
+async def assign_mcp_tool(agent_id: str, body: dict) -> dict:
+    """Assign an MCP tool to an agent."""
+    from app.db.repository import AgentMcpToolsRepository
+    server_name = body.get("server_name", "")
+    tool_name = body.get("tool_name", "")
+    if not server_name or not tool_name:
+        raise HTTPException(status_code=400, detail="server_name and tool_name required")
+    await AgentMcpToolsRepository.assign_tool(agent_id, server_name, tool_name)
+    return {"status": "ok"}
+
+
+@router.delete("/agent-tools/{agent_id}/{server_name}/{tool_name}")
+async def unassign_mcp_tool(agent_id: str, server_name: str, tool_name: str) -> dict:
+    """Remove an MCP tool assignment from an agent."""
+    from app.db.repository import AgentMcpToolsRepository
+    await AgentMcpToolsRepository.unassign_tool(agent_id, server_name, tool_name)
+    return {"status": "ok"}

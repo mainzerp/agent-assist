@@ -18,7 +18,7 @@ class MediaAgent(ActionableAgent):
         return AgentCard(
             agent_id="media-agent",
             name="Media Agent",
-            description="Controls generic media players: TV, speakers, casting, playback.",
-            skills=["tv_control", "speaker_control", "casting", "playback", "volume_control", "source_selection"],
+            description="Controls generic media players (TV, Chromecast, streaming devices): on/off, play/pause/stop, volume, mute, input/source selection. Reports playback status. Not for music library/Music Assistant -- use music-agent.",
+            skills=["tv_control", "speaker_control", "casting", "playback", "volume_control", "mute", "source_selection", "media_status", "playback_query"],
             endpoint="local://media-agent",
         )

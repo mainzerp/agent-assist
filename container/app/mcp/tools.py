@@ -61,28 +61,29 @@ class MCPToolManager:
     async def get_tools_for_agent(self, agent_id: str) -> list[dict[str, Any]]:
         """Look up tool assignments for a given agent.
 
-        Reads the mcp_tools JSON field from custom_agents table.
-        Returns tool descriptors for tools assigned to the agent.
+        Checks agent_mcp_tools table first (works for all agents),
+        then falls back to custom_agents.mcp_tools for custom agents.
         """
-        # Extract custom agent name from agent_id (custom-<name>)
-        if agent_id.startswith("custom-"):
+        from app.db.repository import AgentMcpToolsRepository
+
+        # Try the unified agent_mcp_tools table first
+        assignments = await AgentMcpToolsRepository.get_tools(agent_id)
+
+        # Fallback: for custom agents, also check custom_agents.mcp_tools field
+        if not assignments and agent_id.startswith("custom-"):
             name = agent_id[len("custom-"):]
-        else:
+            row = await CustomAgentRepository.get(name)
+            if row:
+                assignments = row.get("mcp_tools") or []
+
+        if not assignments:
             return []
 
-        row = await CustomAgentRepository.get(name)
-        if not row:
-            return []
-
-        mcp_tools = row.get("mcp_tools") or []
-        if not mcp_tools:
-            return []
-
-        # mcp_tools is a list of {"server": str, "tool": str} dicts
+        # Resolve tool descriptors from connected servers
         assigned: list[dict[str, Any]] = []
-        for entry in mcp_tools:
-            server_name = entry.get("server", "")
-            tool_name = entry.get("tool", "")
+        for entry in assignments:
+            server_name = entry.get("server_name") or entry.get("server", "")
+            tool_name = entry.get("tool_name") or entry.get("tool", "")
             client = self._registry.get_client(server_name)
             if client is None or not client.connected:
                 continue
@@ -90,7 +91,9 @@ class MCPToolManager:
                 tools = await client.list_tools()
                 for tool in tools:
                     if tool["name"] == tool_name:
-                        assigned.append(tool)
+                        tool_with_server = dict(tool)
+                        tool_with_server["_server_name"] = server_name
+                        assigned.append(tool_with_server)
                         break
             except Exception:
                 logger.warning(

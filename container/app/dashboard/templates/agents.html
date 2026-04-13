@@ -36,7 +36,7 @@
                             <input type="checkbox" :checked="agent.enabled == 1" @change="toggleAgent(agent)">
                             <span class="toggle-slider"></span>
                         </label>
-                        <button class="btn btn-sm btn-secondary" @click="agent._editing = !agent._editing">Edit</button>
+                        <button class="btn btn-sm btn-secondary" @click="agent._editing = !agent._editing; if(agent._editing) { loadAgentMcpTools(agent.agent_id); }">Edit</button>
                         <button class="btn btn-sm btn-secondary" @click="agent._editingPrompt = !agent._editingPrompt; if(agent._editingPrompt) loadPrompt(agent)">Prompt</button>
                     </div>
                 </div>
@@ -67,6 +67,18 @@
                     <template x-if="(!visibilitySummary[agent.agent_id] || !visibilitySummary[agent.agent_id].has_rules) && nonEntityAgents.indexOf(agent.agent_id) === -1">
                         <a :href="'/dashboard/entity-index?agent=' + agent.agent_id"
                            class="badge badge-muted" style="cursor:pointer; text-decoration:none; font-size:0.75rem;">All entities</a>
+                    </template>
+                    <!-- MCP tool badges -->
+                    <template x-if="allMcpAssignments[agent.agent_id] && allMcpAssignments[agent.agent_id].length > 0">
+                        <template x-for="serverGroup in Object.entries(
+                            (allMcpAssignments[agent.agent_id] || []).reduce((acc, t) => {
+                                acc[t.server_name] = (acc[t.server_name] || 0) + 1;
+                                return acc;
+                            }, {})
+                        )" :key="serverGroup[0]">
+                            <span class="badge badge-purple" style="font-size:0.75rem;"
+                                  x-text="'MCP: ' + serverGroup[0] + ' (' + serverGroup[1] + ')'"></span>
+                        </template>
                     </template>
                 </div>
 
@@ -122,6 +134,24 @@
                                 <input type="text" class="form-input" x-model="agent.description" placeholder="Agent description">
                             </div>
                         </div>
+                        <!-- MCP Tools Assignment -->
+                        <div class="mt-md">
+                            <label class="form-label">MCP Servers</label>
+                            <template x-if="mcpServers.filter(s => s.connected).length === 0">
+                                <p class="text-muted" style="font-size:0.85rem;">No connected MCP servers available.</p>
+                            </template>
+                            <div style="display:flex; flex-wrap:wrap; gap:0.35rem;">
+                                <template x-for="server in mcpServers.filter(s => s.connected)" :key="server.name">
+                                    <label class="badge" style="cursor:pointer; font-size:0.75rem; user-select:none;"
+                                           :class="isServerAssigned(agent.agent_id, server.name) ? 'badge-purple' : 'badge-muted'">
+                                        <input type="checkbox" style="display:none;"
+                                               :checked="isServerAssigned(agent.agent_id, server.name)"
+                                               @change="toggleServerAssignment(agent.agent_id, server.name)">
+                                        <span x-text="server.name"></span>
+                                    </label>
+                                </template>
+                            </div>
+                        </div>
                         <div class="form-actions">
                             <button class="btn btn-primary btn-sm" @click="saveAgent(agent)">Save</button>
                             <span x-show="agent._saved" class="save-feedback text-sage">Saved</span>
@@ -157,6 +187,11 @@ function agentsPage() {
         configuredProviders: [],
         visibilitySummary: {},
         nonEntityAgents: ['orchestrator', 'rewrite-agent', 'general-agent'],
+        mcpServers: [],
+        mcpServerTools: {},
+        agentMcpTools: {},
+        allMcpAssignments: {},
+        mcpToolsLoading: false,
         async loadAgents() {
             try {
                 await this.loadConfiguredProviders();
@@ -181,6 +216,8 @@ function agentsPage() {
                     return a;
                 });
                 await this.loadVisibilitySummary();
+                await this.loadMcpServers();
+                await this.loadAllMcpAssignments();
             } catch(e) {
                 console.error("Failed to load agents", e);
             }
@@ -203,6 +240,72 @@ function agentsPage() {
                 this.visibilitySummary = data.summary || {};
             } catch (e) {
                 console.error('Failed to load visibility summary', e);
+            }
+        },
+        async loadMcpServers() {
+            try {
+                var resp = await fetch('/api/admin/mcp-servers', { credentials: 'same-origin' });
+                if (resp.ok) this.mcpServers = await resp.json();
+            } catch (e) {
+                console.error('Failed to load MCP servers', e);
+            }
+        },
+        async loadMcpServerTools(serverName) {
+            if (this.mcpServerTools[serverName]) return;
+            try {
+                var resp = await fetch('/api/admin/mcp-servers/' + encodeURIComponent(serverName) + '/tools', { credentials: 'same-origin' });
+                if (resp.ok) this.mcpServerTools = {...this.mcpServerTools, [serverName]: await resp.json()};
+            } catch (e) {
+                console.error('Failed to load tools for ' + serverName, e);
+            }
+        },
+        async loadAgentMcpTools(agentId) {
+            this.mcpToolsLoading = true;
+            try {
+                var resp = await fetch('/api/admin/mcp-servers/agent-tools/' + encodeURIComponent(agentId), { credentials: 'same-origin' });
+                if (resp.ok) this.agentMcpTools = {...this.agentMcpTools, [agentId]: await resp.json()};
+            } catch (e) {
+                console.error('Failed to load agent MCP tools', e);
+            }
+            this.mcpToolsLoading = false;
+        },
+        isServerAssigned(agentId, serverName) {
+            var assigned = this.agentMcpTools[agentId] || [];
+            return assigned.some(t => t.server_name === serverName);
+        },
+        async toggleServerAssignment(agentId, serverName) {
+            var wasAssigned = this.isServerAssigned(agentId, serverName);
+            if (wasAssigned) {
+                // Unassign all tools from this server
+                var assigned = (this.agentMcpTools[agentId] || []).filter(t => t.server_name === serverName);
+                for (var t of assigned) {
+                    await fetch('/api/admin/mcp-servers/agent-tools/' + encodeURIComponent(agentId) + '/' + encodeURIComponent(t.server_name) + '/' + encodeURIComponent(t.tool_name), { method: 'DELETE', credentials: 'same-origin' });
+                }
+            } else {
+                // Load server tools and assign all
+                await this.loadMcpServerTools(serverName);
+                var tools = this.mcpServerTools[serverName] || [];
+                for (var tool of tools) {
+                    await fetch('/api/admin/mcp-servers/agent-tools/' + encodeURIComponent(agentId), {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'same-origin',
+                        body: JSON.stringify({ server_name: serverName, tool_name: tool.name })
+                    });
+                }
+            }
+            await this.loadAgentMcpTools(agentId);
+            await this.loadAllMcpAssignments();
+        },
+        async loadAllMcpAssignments() {
+            try {
+                var resp = await fetch('/api/admin/mcp-servers/agent-tools-summary', { credentials: 'same-origin' });
+                if (resp.ok) {
+                    var data = await resp.json();
+                    this.allMcpAssignments = data;
+                }
+            } catch (e) {
+                console.error('Failed to load MCP assignments summary', e);
             }
         },
         updateModelString(agent, providerChanged) {

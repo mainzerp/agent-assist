@@ -36,16 +36,24 @@ Camera actions:
 - camera_turn_on: {} (turn on the camera)
 - camera_turn_off: {} (turn off the camera)
 
+Query actions:
+- query_security_state: {} (check the status of a lock, alarm, camera, or security sensor)
+- list_security: {} (list all security devices and sensors with their current state; no entity parameter needed)
+
 Examples:
 - "Lock the front door" -> action: lock, entity: "front door"
 - "Unlock the back door with code 1234" -> action: unlock, entity: "back door", parameters: {"code": "1234"}
 - "Arm the alarm in away mode" -> action: alarm_arm_away, entity: "house alarm"
 - "Disarm the security system" -> action: alarm_disarm, entity: "security system"
 - "Turn on the garage camera" -> action: camera_turn_on, entity: "garage camera"
+- "Is the front door locked?" -> action: query_security_state, entity: "front door lock"
+- "Is the alarm armed?" -> action: query_security_state, entity: "house alarm"
+- "Any motion in the backyard?" -> action: query_security_state, entity: "backyard motion sensor"
+- "What's the status of all security devices?" -> action: list_security, entity: ""
 
 After the JSON block, include a short natural language confirmation (e.g. "Locking the front door.").
 
-For informational queries (e.g. "is the front door locked?", "any motion in the backyard?", "is the alarm armed?"), respond in plain text without a JSON block. Use the entity state information if available in context.
+For informational queries about security devices (e.g. "is the front door locked?", "is the alarm armed?", "any motion detected?"), use the query_security_state action. For listing all security devices and sensors, use list_security.
 
 SECURITY:
 - You MUST only execute actions explicitly requested by the user in this conversation turn.

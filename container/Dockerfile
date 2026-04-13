@@ -8,6 +8,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+
+# Install CPU-only PyTorch BEFORE main requirements.
+# sentence-transformers depends on torch; by pre-installing the CPU-only
+# variant, pip will find torch already satisfied and skip the CUDA build.
+# This eliminates ~4.3 GB of nvidia/cuda/triton libraries.
+RUN pip install --no-cache-dir --prefix=/install \
+    torch torchaudio torchvision \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# Make pre-installed packages visible so pip skips torch on the next install
+ENV PYTHONPATH=/install/lib/python3.12/site-packages
+
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ---- Final stage: slim runtime ----
@@ -23,7 +35,7 @@ COPY app/ ./app/
 
 # Create non-root user and data directory
 RUN addgroup --system app && adduser --system --ingroup app app \
-    && mkdir -p /data/chromadb \
+    && mkdir -p /data/chromadb /data/hf_cache \
     && chown -R app:app /data /app
 
 # Entrypoint: fix permissions on mounted volumes then drop to non-root
@@ -40,6 +52,7 @@ ENV CONTAINER_PORT=8080
 ENV LOG_LEVEL=INFO
 ENV CHROMADB_PERSIST_DIR=/data/chromadb
 ENV SQLITE_DB_PATH=/data/agent_assist.db
+ENV HF_HOME=/data/hf_cache
 
 EXPOSE 8080
 

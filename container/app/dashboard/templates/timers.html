@@ -1,0 +1,204 @@
+{% extends "dashboard_base.html" %}
+{% block page_title %}Timers & Alarms{% endblock %}
+{% block nav_timers %}active{% endblock %}
+{% block header_title %}Timers & Alarms{% endblock %}
+{% block page_content %}
+<div x-data="timersPage()" x-init="init()">
+
+    <div class="page-header">
+        <div class="page-header-text">
+            <h2 class="section-title mt-0 mb-0">Timers & Alarms</h2>
+            <p class="page-subtitle">Active timers, alarms, pool allocation, and pending delayed tasks. Auto-refreshes every 5s.</p>
+        </div>
+        <div class="page-actions">
+            <span class="text-muted" x-text="timers.length + ' timer(s), ' + alarms.length + ' alarm(s)'"></span>
+        </div>
+    </div>
+
+    <!-- Section 1: Active Timers -->
+    <div class="section-header">
+        <h2 class="section-title mt-0 mb-0">Active Timers</h2>
+    </div>
+    <template x-if="!loading && timers.length === 0">
+        <div class="empty-state"><p>No timer entities found in Home Assistant.</p></div>
+    </template>
+    <div x-show="timers.length > 0" class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Entity ID</th>
+                    <th>State</th>
+                    <th>Remaining</th>
+                    <th>Duration</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="t in timers" :key="t.entity_id">
+                    <tr>
+                        <td>
+                            <span x-text="t.name"></span>
+                            <template x-if="t.pool_name">
+                                <span class="badge badge-teal" style="margin-left: 0.375rem; font-size: 0.7rem;">pool</span>
+                            </template>
+                        </td>
+                        <td class="text-mono" x-text="t.entity_id"></td>
+                        <td>
+                            <span class="badge badge-dot"
+                                  :class="{
+                                      'badge-green': t.state === 'active',
+                                      'badge-yellow': t.state === 'paused',
+                                      'badge-muted': t.state === 'idle' || (t.state !== 'active' && t.state !== 'paused')
+                                  }"
+                                  x-text="t.state"></span>
+                        </td>
+                        <td class="text-mono" x-text="t.state === 'active' || t.state === 'paused' ? t.remaining : '-'"></td>
+                        <td class="text-mono" x-text="t.duration || '-'"></td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Section 2: Alarms & Schedules -->
+    <div class="section-header" style="margin-top: 2rem;">
+        <h2 class="section-title mt-0 mb-0">Alarms & Schedules</h2>
+    </div>
+    <template x-if="!loading && alarms.length === 0">
+        <div class="empty-state"><p>No input_datetime entities found in Home Assistant.</p></div>
+    </template>
+    <div x-show="alarms.length > 0" class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Entity ID</th>
+                    <th>Scheduled Time</th>
+                    <th>Type</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="a in alarms" :key="a.entity_id">
+                    <tr>
+                        <td x-text="a.name"></td>
+                        <td class="text-mono" x-text="a.entity_id"></td>
+                        <td class="text-mono" x-text="a.state"></td>
+                        <td>
+                            <span class="badge"
+                                  :class="{
+                                      'badge-blue': a.type === 'datetime',
+                                      'badge-teal': a.type === 'time',
+                                      'badge-muted': a.type === 'date'
+                                  }"
+                                  x-text="a.type"></span>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Section 3: Timer Pool -->
+    <div class="section-header" style="margin-top: 2rem;">
+        <h2 class="section-title mt-0 mb-0">Timer Pool</h2>
+    </div>
+    <div class="card">
+        <template x-if="pool.mappings.length === 0">
+            <p class="text-muted">No pool slots currently allocated. Timers are assigned from the pool when a user starts a named timer.</p>
+        </template>
+        <template x-if="pool.mappings.length > 0">
+            <div>
+                <p class="text-muted mb-md" x-text="pool.allocated + ' slot(s) allocated'"></p>
+                <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                    <template x-for="m in pool.mappings" :key="m.entity_id">
+                        <div class="badge badge-teal" style="display: inline-flex; flex-direction: column; padding: 0.375rem 0.75rem; line-height: 1.4;">
+                            <span style="font-weight: 600;" x-text="m.name"></span>
+                            <span style="font-size: 0.7rem; opacity: 0.8;" x-text="m.entity_id"></span>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- Section 4: Pending Delayed Tasks -->
+    <div class="section-header" style="margin-top: 2rem;">
+        <h2 class="section-title mt-0 mb-0">Pending Delayed Tasks</h2>
+    </div>
+    <template x-if="!loading && delayedTasks.length === 0">
+        <div class="empty-state"><p>No pending delayed tasks.</p></div>
+    </template>
+    <div x-show="delayedTasks.length > 0" class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Timer Entity</th>
+                    <th>Description</th>
+                    <th>Type</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="dt in delayedTasks" :key="dt.timer_entity_id">
+                    <tr>
+                        <td class="text-mono" x-text="dt.timer_entity_id"></td>
+                        <td x-text="dt.description"></td>
+                        <td>
+                            <span class="badge"
+                                  :class="{
+                                      'badge-blue': dt.description.startsWith('notify:'),
+                                      'badge-teal': dt.description.includes('media_player'),
+                                      'badge-muted': !dt.description.startsWith('notify:') && !dt.description.includes('media_player')
+                                  }"
+                                  x-text="inferTaskType(dt.description)"></span>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+
+    <template x-if="loading">
+        <p class="text-muted" style="padding: 1rem 0;">Loading timer data...</p>
+    </template>
+</div>
+
+<script>
+function timersPage() {
+    return {
+        timers: [],
+        alarms: [],
+        pool: { mappings: [], allocated: 0 },
+        delayedTasks: [],
+        loading: true,
+        refreshInterval: null,
+
+        async init() {
+            await this.loadData();
+            this.refreshInterval = setInterval(() => this.loadData(), 5000);
+        },
+
+        async loadData() {
+            try {
+                const resp = await fetch('/api/admin/timers', { credentials: 'same-origin' });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    this.timers = data.timers || [];
+                    this.alarms = data.alarms || [];
+                    this.pool = data.pool || { mappings: [], allocated: 0 };
+                    this.delayedTasks = data.delayed_tasks || [];
+                }
+            } catch (e) {
+                console.error('Failed to load timer data', e);
+            }
+            this.loading = false;
+        },
+
+        inferTaskType(description) {
+            if (description.startsWith('notify:')) return 'notification';
+            if (description.includes('media_player')) return 'sleep_timer';
+            return 'delayed_action';
+        }
+    };
+}
+</script>
+{% endblock %}

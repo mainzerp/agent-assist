@@ -199,6 +199,45 @@ async def lifespan(app: FastAPI):
         presence_detector = PresenceDetector(ha_client)
         await presence_detector.initialize()
 
+    # Initialize MCP server registry and tool manager (moved before agent registration)
+    from app.mcp.registry import MCPServerRegistry
+    from app.mcp.tools import MCPToolManager
+
+    mcp_registry = MCPServerRegistry()
+    mcp_tool_manager = MCPToolManager(mcp_registry)
+    if setup_complete:
+        try:
+            await mcp_registry.load_from_db()
+        except Exception:
+            logger.warning("Failed to load MCP servers from DB", exc_info=True)
+
+        # Auto-register built-in DuckDuckGo MCP server
+        from app.db.repository import McpServerRepository, AgentMcpToolsRepository
+
+        ddg_server = await McpServerRepository.get("duckduckgo-search")
+        if ddg_server is None:
+            logger.info("Registering built-in DuckDuckGo MCP server")
+            ddg_command = "python -m app.mcp.servers.duckduckgo_server"
+            connected = await mcp_registry.add_server(
+                name="duckduckgo-search",
+                transport="stdio",
+                command_or_url=ddg_command,
+            )
+            if connected:
+                try:
+                    client = mcp_registry.get_client("duckduckgo-search")
+                    if client:
+                        tools = await client.list_tools()
+                        for tool in tools:
+                            await AgentMcpToolsRepository.assign_tool(
+                                "general-agent", "duckduckgo-search", tool["name"]
+                            )
+                        logger.info("Assigned %d DuckDuckGo tools to general-agent", len(tools))
+                except Exception:
+                    logger.warning("Failed to auto-assign DuckDuckGo tools", exc_info=True)
+            else:
+                logger.warning("DuckDuckGo MCP server registered but failed to connect")
+
     # Register agents with HA client and entity index
     orchestrator_agent = OrchestratorAgent(
         dispatcher=dispatcher,
@@ -210,7 +249,7 @@ async def lifespan(app: FastAPI):
     )
     await registry.register(orchestrator_agent)
 
-    general_agent = GeneralAgent(ha_client=ha_client, entity_index=entity_index)
+    general_agent = GeneralAgent(ha_client=ha_client, entity_index=entity_index, mcp_tool_manager=mcp_tool_manager)
     await registry.register(general_agent)
 
     light_agent = LightAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
@@ -245,18 +284,6 @@ async def lifespan(app: FastAPI):
     # Load custom agents from DB (Batch 4)
     custom_loader = CustomAgentLoader(registry, ha_client=ha_client, entity_index=entity_index)
     await custom_loader.load_all()
-
-    # Initialize MCP server registry and tool manager (Batch 5A)
-    from app.mcp.registry import MCPServerRegistry
-    from app.mcp.tools import MCPToolManager
-
-    mcp_registry = MCPServerRegistry()
-    mcp_tool_manager = MCPToolManager(mcp_registry)
-    if setup_complete:
-        try:
-            await mcp_registry.load_from_db()
-        except Exception:
-            logger.warning("Failed to load MCP servers from DB", exc_info=True)
 
     # Load orchestrator reliability config
     await orchestrator_agent.initialize()
@@ -310,12 +337,59 @@ async def lifespan(app: FastAPI):
 
             ws_client.on_event("state_changed", on_state_changed_presence)
 
+        # Wire timer finished/cancelled events for notification dispatch
+        from app.agents.timer_executor import _timer_pool, on_timer_finished
+
+        async def _on_timer_finished_event(event: dict) -> None:
+            data = event.get("data", {})
+            eid = data.get("entity_id", "")
+            if eid:
+                await on_timer_finished(eid, ha_client)
+
+        async def _on_timer_cancelled_event(event: dict) -> None:
+            data = event.get("data", {})
+            eid = data.get("entity_id", "")
+            if eid:
+                _timer_pool.release(eid)
+
+        ws_client.on_event("timer.finished", _on_timer_finished_event)
+        ws_client.on_event("timer.cancelled", _on_timer_cancelled_event)
+
         ws_task = asyncio.create_task(ws_client.run())
 
     # Start periodic entity sync task
     sync_task = None
     if setup_complete and entity_index is not None:
         sync_task = asyncio.create_task(_periodic_entity_sync(app))
+
+    # Start alarm monitor
+    alarm_monitor = None
+    if setup_complete and ha_client:
+        from app.agents.alarm_monitor import AlarmMonitor
+        alarm_monitor = AlarmMonitor(ha_client)
+        await alarm_monitor.start()
+
+    # Register default notification profile if not set
+    existing_notif = await SettingsRepository.get_value("notification.profile")
+    if existing_notif is None:
+        import json as _json
+        await SettingsRepository.set(
+            "notification.profile",
+            _json.dumps({
+                "tts_enabled": True,
+                "tts_engine": "tts.google_translate_say",
+                "persistent_enabled": True,
+                "push_enabled": False,
+                "push_targets": [],
+                "voice_followup_enabled": True,
+                "tts_to_listen_delay": 4.0,
+                "chime_enabled": True,
+                "chime_url": "media-source://media_source/local/notification.mp3",
+            }),
+            value_type="json",
+            category="notification",
+            description="Timer/alarm notification profile: channels and targets",
+        )
 
     # Store on app.state for access elsewhere if needed
     app.state.startup_time = time.time()
@@ -332,6 +406,7 @@ async def lifespan(app: FastAPI):
     app.state.ws_client = ws_client
     app.state.presence_detector = presence_detector
     app.state.sync_task = sync_task
+    app.state.alarm_monitor = alarm_monitor
 
     # --- Plugin System (Batch F) ---
     from app.plugins.base import PluginContext
@@ -363,6 +438,9 @@ async def lifespan(app: FastAPI):
         await plugin_loader.run_lifecycle(LifecyclePhase.SHUTDOWN)
     except Exception:
         logger.warning("Plugin shutdown error (continuing cleanup)", exc_info=True)
+
+    if alarm_monitor:
+        await alarm_monitor.stop()
 
     if ws_client:
         await ws_client.disconnect()
@@ -442,6 +520,13 @@ def create_app() -> FastAPI:
     # Batch F routers
     from app.api.routes import plugins_api as plugins_api_routes
     app.include_router(plugins_api_routes.router)
+
+    # Redirect root to dashboard
+    from starlette.responses import RedirectResponse
+
+    @app.get("/", include_in_schema=False)
+    async def root_redirect():
+        return RedirectResponse(url="/dashboard")
 
     # Try to mount static files (may not exist yet in dev)
     try:

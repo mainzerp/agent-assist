@@ -175,3 +175,70 @@ class TestMCPToolManager:
         manager = MCPToolManager(registry)
         with pytest.raises(ConnectionError, match="not connected"):
             await manager.call_tool("server1", "tool1")
+
+
+# ---------------------------------------------------------------------------
+# DuckDuckGo MCP Server
+# ---------------------------------------------------------------------------
+
+class TestDuckDuckGoServerTools:
+
+    def test_server_module_importable(self):
+        """The DuckDuckGo MCP server module can be imported."""
+        pytest.importorskip("mcp")
+        pytest.importorskip("duckduckgo_search")
+        from app.mcp.servers import duckduckgo_server
+        assert hasattr(duckduckgo_server, "server")
+
+    async def test_list_tools_returns_expected_tools(self):
+        """Server exposes web_search and web_search_news tools."""
+        pytest.importorskip("mcp")
+        pytest.importorskip("duckduckgo_search")
+        from app.mcp.servers.duckduckgo_server import list_tools
+        tools = await list_tools()
+        names = {t.name for t in tools}
+        assert "web_search" in names
+        assert "web_search_news" in names
+
+    async def test_web_search_tool_has_query_param(self):
+        """web_search tool requires a 'query' parameter."""
+        pytest.importorskip("mcp")
+        pytest.importorskip("duckduckgo_search")
+        from app.mcp.servers.duckduckgo_server import list_tools
+        tools = await list_tools()
+        search_tool = next(t for t in tools if t.name == "web_search")
+        assert "query" in search_tool.inputSchema["properties"]
+        assert "query" in search_tool.inputSchema["required"]
+
+
+# ---------------------------------------------------------------------------
+# MCP Tool Assignment for Built-in Agents
+# ---------------------------------------------------------------------------
+
+class TestAgentMcpToolAssignment:
+
+    async def test_get_tools_for_builtin_agent_returns_empty_by_default(self):
+        """Built-in agent with no assignments returns empty list."""
+        with patch("app.db.repository.AgentMcpToolsRepository.get_tools", new_callable=AsyncMock, return_value=[]):
+            registry = MCPServerRegistry()
+            manager = MCPToolManager(registry)
+            tools = await manager.get_tools_for_agent("general-agent")
+            assert tools == []
+
+    async def test_get_tools_for_builtin_agent_returns_assigned_tools(self):
+        """Built-in agent with assignments gets tool descriptors."""
+        with patch("app.db.repository.AgentMcpToolsRepository.get_tools", new_callable=AsyncMock, return_value=[
+            {"server": "duckduckgo-search", "tool": "web_search"}
+        ]):
+            registry = MCPServerRegistry()
+            mock_client = MagicMock()
+            mock_client.connected = True
+            mock_client.list_tools = AsyncMock(return_value=[
+                {"name": "web_search", "description": "Search", "input_schema": {}}
+            ])
+            registry._clients["duckduckgo-search"] = mock_client
+            manager = MCPToolManager(registry)
+            tools = await manager.get_tools_for_agent("general-agent")
+            assert len(tools) == 1
+            assert tools[0]["name"] == "web_search"
+            assert tools[0]["_server_name"] == "duckduckgo-search"

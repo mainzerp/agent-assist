@@ -11,6 +11,8 @@ class ConversationRequest(BaseModel):
     text: str = Field(..., description="User input text", max_length=5000)
     conversation_id: str | None = Field(None, description="Conversation ID for multi-turn", max_length=64)
     language: str = Field("en", description="User language code", max_length=10)
+    device_id: str | None = Field(None, description="Device registry ID of the originating satellite/device", max_length=64)
+    area_id: str | None = Field(None, description="Area ID resolved from device registry", max_length=64)
 
 
 class ConversationResponse(BaseModel):

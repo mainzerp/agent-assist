@@ -189,6 +189,15 @@ async def presence_page(
     return templates.TemplateResponse(request, "presence.html")
 
 
+@router.get("/timers", response_class=HTMLResponse)
+async def timers_page(
+    request: Request,
+    _session: dict = Depends(require_admin_session_redirect),
+):
+    """Timers & alarms dashboard page."""
+    return templates.TemplateResponse(request, "timers.html")
+
+
 @router.get("/plugins", response_class=HTMLResponse)
 async def plugins_page(
     request: Request,

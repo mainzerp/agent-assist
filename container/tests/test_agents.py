@@ -33,10 +33,15 @@ from app.agents.timer_executor import execute_timer_action  # noqa: E402
 from app.agents.scene_executor import execute_scene_action  # noqa: E402
 from app.agents.automation_executor import execute_automation_action  # noqa: E402
 from app.agents.media_executor import execute_media_action  # noqa: E402
+from app.agents.action_executor import execute_action  # noqa: E402
+from app.agents.climate_executor import execute_climate_action  # noqa: E402
+from app.agents.music_executor import execute_music_action  # noqa: E402
+from app.agents.security_executor import execute_security_action  # noqa: E402
 from app.agents.general import GeneralAgent  # noqa: E402
 from app.agents.rewrite import RewriteAgent  # noqa: E402
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
 from app.agents.custom_loader import DynamicAgent, CustomAgentLoader  # noqa: E402
+from app.agents.sanitize import strip_markdown  # noqa: E402
 from app.models.agent import AgentCard, AgentTask, TaskContext  # noqa: E402
 import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
 
@@ -855,6 +860,44 @@ class TestGeneralAgent:
         await agent.handle_task(_make_task("hello"))
         call_messages = mock_complete.call_args[0][1]
         assert call_messages[0]["role"] == "system"
+
+
+# ---------------------------------------------------------------------------
+# GeneralAgent with MCP tools
+# ---------------------------------------------------------------------------
+
+class TestGeneralAgentWithTools:
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="plain answer")
+    async def test_handle_task_without_mcp_manager(self, mock_complete):
+        """GeneralAgent works normally when no mcp_tool_manager is provided."""
+        agent = GeneralAgent()
+        task = _make_task("what is Python?")
+        result = await agent.handle_task(task)
+        assert result.speech == "plain answer"
+
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="web answer")
+    async def test_handle_task_with_tools_uses_complete_with_tools(self, mock_cwt):
+        """GeneralAgent uses complete_with_tools when MCP tools are available."""
+        mock_manager = MagicMock()
+        mock_manager.get_tools_for_agent = AsyncMock(return_value=[
+            {"name": "web_search", "description": "Search", "input_schema": {}, "_server_name": "ddg"}
+        ])
+        agent = GeneralAgent(mcp_tool_manager=mock_manager)
+        task = _make_task("latest news today")
+        result = await agent.handle_task(task)
+        assert result.speech == "web answer"
+        mock_cwt.assert_awaited_once()
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="fallback answer")
+    async def test_handle_task_falls_back_when_no_tools_assigned(self, mock_complete):
+        """GeneralAgent falls back to plain complete() when agent has no tools assigned."""
+        mock_manager = MagicMock()
+        mock_manager.get_tools_for_agent = AsyncMock(return_value=[])
+        agent = GeneralAgent(mcp_tool_manager=mock_manager)
+        task = _make_task("hello")
+        result = await agent.handle_task(task)
+        assert result.speech == "fallback answer"
 
 
 # ---------------------------------------------------------------------------
@@ -1730,6 +1773,97 @@ class TestOrchestratorAgent:
         assert any(c["done"] for c in chunks)
         cache_manager.store_response.assert_not_called()
 
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_classify_includes_conversation_history(self, mock_complete, mock_track, mock_settings):
+        orch, *_ = self._make_orchestrator()
+        mock_complete.return_value = "general-agent (90%): provide the link to the cream puff recipe"
+
+        # Pre-populate conversation history
+        orch._store_turn("conv-ctx", "find me a recipe for cream puffs", "Here is a recipe for cream puffs: https://example.com/cream-puffs", agent_id="general-agent")
+
+        classifications, _ = await orch._classify("can you give me the link?", conversation_id="conv-ctx")
+        assert classifications[0][0] == "general-agent"
+
+        # Verify the LLM received conversation history in the messages
+        call_args = mock_complete.call_args
+        messages = call_args[0][1]  # complete(agent_id, messages, ...)
+        user_msg = messages[-1]["content"]
+        assert "cream puffs" in user_msg
+        assert "can you give me the link?" in user_msg
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_classify_no_history_when_no_conversation_id(self, mock_complete, mock_track, mock_settings):
+        orch, *_ = self._make_orchestrator()
+        mock_complete.return_value = "light-agent (95%): turn on the light"
+
+        classifications, _ = await orch._classify("turn on the light", conversation_id=None)
+        assert classifications[0][0] == "light-agent"
+
+        call_args = mock_complete.call_args
+        messages = call_args[0][1]  # complete(agent_id, messages, ...)
+        user_msg = messages[-1]["content"]
+        # Should NOT contain history markers
+        assert "[Conversation history" not in user_msg
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_fallback_conversation_id_generated_when_none(self, mock_complete, mock_track, mock_settings):
+        orch, *_ = self._make_orchestrator()
+        mock_complete.return_value = "general-agent: answer the question"
+        task = _make_task("what is the weather?")
+        task.conversation_id = None
+        await orch.handle_task(task)
+        # Should have stored a turn with a generated conversation_id
+        assert len(orch._conversations) == 1
+
+    async def test_store_turn_includes_agent_id(self):
+        orch, *_ = self._make_orchestrator()
+        orch._store_turn("conv-agent-id", "hello", "world", agent_id="general-agent")
+        turns = orch._get_turns("conv-agent-id")
+        assert len(turns) == 2
+        assert turns[0] == {"role": "user", "content": "hello"}
+        assert turns[1]["role"] == "assistant"
+        assert turns[1]["content"] == "world"
+        assert turns[1]["agent_id"] == "general-agent"
+
+    async def test_store_turn_no_agent_id_when_none(self):
+        orch, *_ = self._make_orchestrator()
+        orch._store_turn("conv-no-aid", "hello", "world")
+        turns = orch._get_turns("conv-no-aid")
+        assert len(turns) == 2
+        assert "agent_id" not in turns[1]
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_agent_receives_conversation_turns_on_dispatch(self, mock_complete, mock_track, mock_settings):
+        orch, dispatcher, *_ = self._make_orchestrator()
+
+        # Pre-populate a conversation turn with agent_id
+        orch._store_turn("conv-dispatch", "find a recipe for cream puffs",
+                         "Here is a recipe: https://example.com/cream-puffs",
+                         agent_id="general-agent")
+
+        mock_complete.return_value = "general-agent (90%): provide the link to the cream puff recipe"
+
+        task = _make_task("can you give me the link?")
+        task.conversation_id = "conv-dispatch"
+        await orch.handle_task(task)
+
+        # Verify that the dispatched task contains conversation turns
+        call_args = dispatcher.dispatch.call_args[0][0]
+        dispatched_task = call_args.params["task"]
+        conv_turns = dispatched_task["context"]["conversation_turns"]
+        assert len(conv_turns) == 2  # 1 user + 1 assistant from previous turn
+        assert conv_turns[0]["content"] == "find a recipe for cream puffs"
+        assert "cream-puffs" in conv_turns[1]["content"]
+        assert conv_turns[1].get("agent_id") == "general-agent"
+
 
 # ---------------------------------------------------------------------------
 # LightAgent empty response guard
@@ -2033,6 +2167,499 @@ class TestSecurityExecutor:
 
 
 # ---------------------------------------------------------------------------
+# Status/State Query Tests (all domain executors)
+# ---------------------------------------------------------------------------
+
+class TestLightExecutorQueries:
+
+    async def test_query_light_state_on(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(return_value={
+            "state": "on",
+            "attributes": {"brightness": 128, "color_name": "red", "friendly_name": "Kitchen Light"}
+        })
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="light.kitchen", friendly_name="Kitchen Light")])
+        result = await execute_action(
+            {"action": "query_light_state", "entity": "kitchen light"},
+            ha, None, matcher, agent_id="light-agent",
+        )
+        assert result["success"]
+        assert "Kitchen Light" in result["speech"]
+        assert "on" in result["speech"]
+        assert "50%" in result["speech"]  # 128/255 ~= 50%
+
+    async def test_query_light_state_switch(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(return_value={
+            "state": "on",
+            "attributes": {"friendly_name": "Garden Pump"}
+        })
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="switch.garden_pump", friendly_name="Garden Pump")])
+        result = await execute_action(
+            {"action": "query_light_state", "entity": "garden pump"},
+            ha, None, matcher, agent_id="light-agent",
+        )
+        assert result["success"]
+        assert "Garden Pump" in result["speech"]
+        assert "on" in result["speech"]
+
+    async def test_query_light_state_not_found(self):
+        ha = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_action(
+            {"action": "query_light_state", "entity": "nonexistent light"},
+            ha, None, matcher, agent_id="light-agent",
+        )
+        assert not result["success"]
+        assert "Could not find" in result["speech"]
+
+    async def test_query_light_state_ha_error(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(side_effect=Exception("HA down"))
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="light.kitchen", friendly_name="Kitchen Light")])
+        result = await execute_action(
+            {"action": "query_light_state", "entity": "kitchen light"},
+            ha, None, matcher, agent_id="light-agent",
+        )
+        assert not result["success"]
+        assert "Failed" in result["speech"]
+
+    async def test_list_lights(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[
+            {"entity_id": "light.kitchen", "state": "on", "attributes": {"friendly_name": "Kitchen Light"}},
+            {"entity_id": "light.bedroom", "state": "off", "attributes": {"friendly_name": "Bedroom Light"}},
+            {"entity_id": "switch.garden_pump", "state": "on", "attributes": {"friendly_name": "Garden Pump"}},
+        ])
+        result = await execute_action(
+            {"action": "list_lights", "entity": ""},
+            ha, None, None, agent_id="light-agent",
+        )
+        assert result["success"]
+        assert "Kitchen Light" in result["speech"]
+        assert "Garden Pump" in result["speech"]
+
+    async def test_list_lights_empty(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[])
+        result = await execute_action(
+            {"action": "list_lights", "entity": ""},
+            ha, None, None, agent_id="light-agent",
+        )
+        assert result["success"]
+        assert "No light" in result["speech"]
+
+
+class TestClimateExecutorQueries:
+
+    async def test_query_climate_state(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(return_value={
+            "state": "heat",
+            "attributes": {"current_temperature": 21.5, "temperature": 23, "current_humidity": 45,
+                           "fan_mode": "auto", "friendly_name": "Living Room Thermostat"}
+        })
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="climate.living_room", friendly_name="Living Room Thermostat")])
+        result = await execute_climate_action(
+            {"action": "query_climate_state", "entity": "living room thermostat"},
+            ha, None, matcher, agent_id="climate-agent",
+        )
+        assert result["success"]
+        assert "heat" in result["speech"]
+        assert "21.5" in result["speech"]
+
+    async def test_query_climate_state_not_found(self):
+        ha = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_climate_action(
+            {"action": "query_climate_state", "entity": "nonexistent"},
+            ha, None, matcher, agent_id="climate-agent",
+        )
+        assert not result["success"]
+        assert "Could not find" in result["speech"]
+
+    async def test_query_climate_state_ha_error(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(side_effect=Exception("HA down"))
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="climate.living_room", friendly_name="Thermostat")])
+        result = await execute_climate_action(
+            {"action": "query_climate_state", "entity": "thermostat"},
+            ha, None, matcher, agent_id="climate-agent",
+        )
+        assert not result["success"]
+        assert "Failed" in result["speech"]
+
+    async def test_list_climate(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[
+            {"entity_id": "climate.living_room", "state": "heat",
+             "attributes": {"friendly_name": "Living Room", "current_temperature": 21.5, "temperature": 23}},
+            {"entity_id": "sensor.outdoor_temperature", "state": "15.2",
+             "attributes": {"friendly_name": "Outdoor Temp", "unit_of_measurement": "C"}},
+        ])
+        result = await execute_climate_action(
+            {"action": "list_climate", "entity": ""},
+            ha, None, None, agent_id="climate-agent",
+        )
+        assert result["success"]
+        assert "Living Room" in result["speech"]
+        assert "Outdoor Temp" in result["speech"]
+
+    async def test_list_climate_empty(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[])
+        result = await execute_climate_action(
+            {"action": "list_climate", "entity": ""},
+            ha, None, None, agent_id="climate-agent",
+        )
+        assert result["success"]
+        assert "No climate" in result["speech"]
+
+
+class TestAutomationExecutorQueries:
+
+    async def test_query_automation_state(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(return_value={
+            "state": "on",
+            "attributes": {"last_triggered": "2024-01-15T10:30:00", "friendly_name": "Morning Routine"}
+        })
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="automation.morning_routine", friendly_name="Morning Routine")])
+        result = await execute_automation_action(
+            {"action": "query_automation_state", "entity": "morning routine"},
+            ha, None, matcher, agent_id="automation-agent",
+        )
+        assert result["success"]
+        assert "enabled" in result["speech"]
+        assert "last triggered" in result["speech"]
+
+    async def test_query_automation_state_not_found(self):
+        ha = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_automation_action(
+            {"action": "query_automation_state", "entity": "nonexistent"},
+            ha, None, matcher, agent_id="automation-agent",
+        )
+        assert not result["success"]
+        assert "Could not find" in result["speech"]
+
+    async def test_query_automation_state_ha_error(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(side_effect=Exception("HA down"))
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="automation.morning_routine", friendly_name="Morning Routine")])
+        result = await execute_automation_action(
+            {"action": "query_automation_state", "entity": "morning routine"},
+            ha, None, matcher, agent_id="automation-agent",
+        )
+        assert not result["success"]
+        assert "Failed" in result["speech"]
+
+    async def test_list_automations(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[
+            {"entity_id": "automation.morning_routine", "state": "on",
+             "attributes": {"friendly_name": "Morning Routine", "last_triggered": "2024-01-15T10:30:00"}},
+            {"entity_id": "automation.night_mode", "state": "off",
+             "attributes": {"friendly_name": "Night Mode"}},
+        ])
+        result = await execute_automation_action(
+            {"action": "list_automations", "entity": ""},
+            ha, None, None, agent_id="automation-agent",
+        )
+        assert result["success"]
+        assert "Morning Routine" in result["speech"]
+        assert "Night Mode" in result["speech"]
+
+    async def test_list_automations_empty(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[])
+        result = await execute_automation_action(
+            {"action": "list_automations", "entity": ""},
+            ha, None, None, agent_id="automation-agent",
+        )
+        assert result["success"]
+        assert "No automation" in result["speech"]
+
+
+class TestSceneExecutorQueries:
+
+    async def test_query_scene_found(self):
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="scene.movie_night", friendly_name="Movie Night")])
+        result = await execute_scene_action(
+            {"action": "query_scene", "entity": "movie scene"},
+            AsyncMock(), None, matcher, agent_id="scene-agent",
+        )
+        assert result["success"]
+        assert "Movie Night" in result["speech"]
+
+    async def test_query_scene_not_found(self):
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_scene_action(
+            {"action": "query_scene", "entity": "nonexistent scene"},
+            AsyncMock(), None, matcher, agent_id="scene-agent",
+        )
+        assert not result["success"]
+        assert "Could not find" in result["speech"]
+
+    async def test_list_scenes(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[
+            {"entity_id": "scene.movie_night", "state": "scening", "attributes": {"friendly_name": "Movie Night"}},
+            {"entity_id": "scene.bedtime", "state": "scening", "attributes": {"friendly_name": "Bedtime"}},
+        ])
+        result = await execute_scene_action(
+            {"action": "list_scenes", "entity": ""},
+            ha, None, None, agent_id="scene-agent",
+        )
+        assert result["success"]
+        assert "Movie Night" in result["speech"]
+        assert "Bedtime" in result["speech"]
+
+    async def test_list_scenes_empty(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[])
+        result = await execute_scene_action(
+            {"action": "list_scenes", "entity": ""},
+            ha, None, None, agent_id="scene-agent",
+        )
+        assert result["success"]
+        assert "No scenes" in result["speech"]
+
+
+class TestSecurityExecutorQueries:
+
+    async def test_query_security_state_lock(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(return_value={
+            "state": "locked",
+            "attributes": {"friendly_name": "Front Door Lock"}
+        })
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="lock.front_door", friendly_name="Front Door Lock")])
+        result = await execute_security_action(
+            {"action": "query_security_state", "entity": "front door lock"},
+            ha, None, matcher, agent_id="security-agent",
+        )
+        assert result["success"]
+        assert "locked" in result["speech"]
+
+    async def test_query_security_state_binary_sensor_motion(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(return_value={
+            "state": "on",
+            "attributes": {"friendly_name": "Backyard Motion", "device_class": "motion"}
+        })
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="binary_sensor.backyard_motion", friendly_name="Backyard Motion")])
+        result = await execute_security_action(
+            {"action": "query_security_state", "entity": "backyard motion sensor"},
+            ha, None, matcher, agent_id="security-agent",
+        )
+        assert result["success"]
+        assert "motion detected" in result["speech"]
+
+    async def test_query_security_state_not_found(self):
+        ha = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_security_action(
+            {"action": "query_security_state", "entity": "nonexistent"},
+            ha, None, matcher, agent_id="security-agent",
+        )
+        assert not result["success"]
+        assert "Could not find" in result["speech"]
+
+    async def test_query_security_state_ha_error(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(side_effect=Exception("HA down"))
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="lock.front_door", friendly_name="Front Door Lock")])
+        result = await execute_security_action(
+            {"action": "query_security_state", "entity": "front door lock"},
+            ha, None, matcher, agent_id="security-agent",
+        )
+        assert not result["success"]
+        assert "Failed" in result["speech"]
+
+    async def test_list_security(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[
+            {"entity_id": "lock.front_door", "state": "locked", "attributes": {"friendly_name": "Front Door"}},
+            {"entity_id": "alarm_control_panel.home", "state": "armed_away", "attributes": {"friendly_name": "Home Alarm"}},
+            {"entity_id": "binary_sensor.hallway_motion", "state": "off", "attributes": {"friendly_name": "Hallway Motion", "device_class": "motion"}},
+        ])
+        result = await execute_security_action(
+            {"action": "list_security", "entity": ""},
+            ha, None, None, agent_id="security-agent",
+        )
+        assert result["success"]
+        assert "Front Door" in result["speech"]
+        assert "Home Alarm" in result["speech"]
+
+    async def test_list_security_empty(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[])
+        result = await execute_security_action(
+            {"action": "list_security", "entity": ""},
+            ha, None, None, agent_id="security-agent",
+        )
+        assert result["success"]
+        assert "No security" in result["speech"]
+
+
+class TestMusicExecutorQueries:
+
+    async def test_query_music_state(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(return_value={
+            "state": "playing",
+            "attributes": {"media_title": "Bohemian Rhapsody", "media_artist": "Queen",
+                           "volume_level": 0.5, "friendly_name": "Kitchen Speaker"}
+        })
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="media_player.kitchen", friendly_name="Kitchen Speaker")])
+        result = await execute_music_action(
+            {"action": "query_music_state", "entity": "kitchen speaker"},
+            ha, None, matcher, agent_id="music-agent",
+        )
+        assert result["success"]
+        assert "playing" in result["speech"]
+        assert "Bohemian Rhapsody" in result["speech"]
+        assert "Queen" in result["speech"]
+
+    async def test_query_music_state_not_found(self):
+        ha = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_music_action(
+            {"action": "query_music_state", "entity": "nonexistent"},
+            ha, None, matcher, agent_id="music-agent",
+        )
+        assert not result["success"]
+        assert "Could not find" in result["speech"]
+
+    async def test_query_music_state_ha_error(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(side_effect=Exception("HA down"))
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="media_player.kitchen", friendly_name="Kitchen Speaker")])
+        result = await execute_music_action(
+            {"action": "query_music_state", "entity": "kitchen speaker"},
+            ha, None, matcher, agent_id="music-agent",
+        )
+        assert not result["success"]
+        assert "Failed" in result["speech"]
+
+    async def test_list_music_players(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[
+            {"entity_id": "media_player.kitchen", "state": "playing",
+             "attributes": {"friendly_name": "Kitchen Speaker", "media_title": "Song", "media_artist": "Artist"}},
+            {"entity_id": "media_player.bedroom", "state": "idle",
+             "attributes": {"friendly_name": "Bedroom Speaker"}},
+        ])
+        result = await execute_music_action(
+            {"action": "list_music_players", "entity": ""},
+            ha, None, None, agent_id="music-agent",
+        )
+        assert result["success"]
+        assert "Kitchen Speaker" in result["speech"]
+        assert "Bedroom Speaker" in result["speech"]
+
+    async def test_list_music_players_empty(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[])
+        result = await execute_music_action(
+            {"action": "list_music_players", "entity": ""},
+            ha, None, None, agent_id="music-agent",
+        )
+        assert result["success"]
+        assert "No music" in result["speech"]
+
+
+class TestMediaExecutorQueries:
+
+    async def test_query_media_state(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(return_value={
+            "state": "playing",
+            "attributes": {"media_title": "Movie", "source": "HDMI 1",
+                           "volume_level": 0.6, "friendly_name": "Living Room TV"}
+        })
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="media_player.living_room_tv", friendly_name="Living Room TV")])
+        result = await execute_media_action(
+            {"action": "query_media_state", "entity": "living room TV"},
+            ha, None, matcher, agent_id="media-agent",
+        )
+        assert result["success"]
+        assert "playing" in result["speech"]
+        assert "Movie" in result["speech"]
+        assert "HDMI 1" in result["speech"]
+
+    async def test_query_media_state_not_found(self):
+        ha = AsyncMock()
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_media_action(
+            {"action": "query_media_state", "entity": "nonexistent"},
+            ha, None, matcher, agent_id="media-agent",
+        )
+        assert not result["success"]
+        assert "Could not find" in result["speech"]
+
+    async def test_query_media_state_ha_error(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(side_effect=Exception("HA down"))
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="media_player.tv", friendly_name="TV")])
+        result = await execute_media_action(
+            {"action": "query_media_state", "entity": "TV"},
+            ha, None, matcher, agent_id="media-agent",
+        )
+        assert not result["success"]
+        assert "Failed" in result["speech"]
+
+    async def test_list_media_players(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[
+            {"entity_id": "media_player.living_room_tv", "state": "playing",
+             "attributes": {"friendly_name": "Living Room TV", "source": "HDMI 1", "media_title": "Movie"}},
+            {"entity_id": "media_player.chromecast", "state": "off",
+             "attributes": {"friendly_name": "Chromecast"}},
+        ])
+        result = await execute_media_action(
+            {"action": "list_media_players", "entity": ""},
+            ha, None, None, agent_id="media-agent",
+        )
+        assert result["success"]
+        assert "Living Room TV" in result["speech"]
+        assert "Chromecast" in result["speech"]
+
+    async def test_list_media_players_empty(self):
+        ha = AsyncMock()
+        ha.get_states = AsyncMock(return_value=[])
+        result = await execute_media_action(
+            {"action": "list_media_players", "entity": ""},
+            ha, None, None, agent_id="media-agent",
+        )
+        assert result["success"]
+        assert "No media" in result["speech"]
+
+
+# ---------------------------------------------------------------------------
 # Phase 4.3: Conversation memory eviction tests
 # ---------------------------------------------------------------------------
 
@@ -2115,4 +2742,106 @@ class TestConversationMemoryEviction:
             assert "conv-5" in orch._conversations
         finally:
             orch_mod._MAX_CONVERSATIONS = original_max
+
+
+# ---------------------------------------------------------------------------
+# strip_markdown TTS sanitization tests
+# ---------------------------------------------------------------------------
+
+class TestStripMarkdown:
+    """Tests for the strip_markdown TTS sanitization utility."""
+
+    def test_empty_string(self):
+        assert strip_markdown("") == ""
+
+    def test_none_returns_none(self):
+        assert strip_markdown(None) is None
+
+    def test_plain_text_unchanged(self):
+        text = "The weather today is sunny with a high of 72 degrees."
+        assert strip_markdown(text) == text
+
+    def test_strips_headers(self):
+        assert strip_markdown("## Weather Today") == "Weather Today"
+        assert strip_markdown("# Title\n## Subtitle") == "Title\nSubtitle"
+
+    def test_strips_bold(self):
+        assert strip_markdown("This is **important** info") == "This is important info"
+
+    def test_strips_italic(self):
+        assert strip_markdown("This is *emphasized* text") == "This is emphasized text"
+
+    def test_strips_bold_italic(self):
+        assert strip_markdown("This is ***very important***") == "This is very important"
+
+    def test_strips_links(self):
+        result = strip_markdown("Check [BBC News](https://bbc.com) for details")
+        assert result == "Check BBC News for details"
+
+    def test_strips_images(self):
+        result = strip_markdown("![weather icon](https://example.com/icon.png)")
+        assert result == "weather icon"
+
+    def test_strips_inline_code(self):
+        assert strip_markdown("Run `pip install`") == "Run pip install"
+
+    def test_strips_code_blocks(self):
+        text = "Example:\n```python\nprint('hello')\n```\nDone."
+        result = strip_markdown(text)
+        assert "```" not in result
+        assert "print('hello')" in result
+
+    def test_strips_bullet_lists(self):
+        text = "Items:\n- First\n- Second\n- Third"
+        result = strip_markdown(text)
+        assert "- " not in result
+        assert "First" in result
+
+    def test_strips_numbered_lists(self):
+        text = "Steps:\n1. First\n2. Second"
+        result = strip_markdown(text)
+        assert "1. " not in result
+        assert "First" in result
+
+    def test_strips_horizontal_rules(self):
+        text = "Section one\n---\nSection two"
+        result = strip_markdown(text)
+        assert "---" not in result
+
+    def test_strips_html_tags(self):
+        assert strip_markdown("Hello<br>World") == "HelloWorld"
+
+    def test_strips_bare_urls(self):
+        text = "Visit https://example.com/long/path for more"
+        result = strip_markdown(text)
+        assert "https://" not in result
+
+    def test_strips_blockquotes(self):
+        assert strip_markdown("> This is a quote") == "This is a quote"
+
+    def test_strips_strikethrough(self):
+        assert strip_markdown("~~old~~ new") == "old new"
+
+    def test_collapses_whitespace(self):
+        text = "Hello\n\n\n\nWorld"
+        result = strip_markdown(text)
+        assert "\n\n\n" not in result
+
+    def test_complex_web_search_response(self):
+        text = (
+            "## Weather in Berlin\n\n"
+            "According to **Weather.com**, the current temperature is *15C*.\n\n"
+            "- Humidity: 60%\n"
+            "- Wind: 10 km/h\n\n"
+            "Source: [Weather.com](https://weather.com/berlin)\n"
+        )
+        result = strip_markdown(text)
+        assert "##" not in result
+        assert "**" not in result
+        assert "*" not in result
+        assert "[" not in result
+        assert "https://" not in result
+        assert "- " not in result
+        assert "Weather in Berlin" in result
+        assert "15C" in result
 

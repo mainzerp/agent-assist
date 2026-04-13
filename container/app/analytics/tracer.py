@@ -147,6 +147,7 @@ async def create_trace_summary(
     agents: list[str],
     source: str,
     agent_instructions: dict[str, str] | None = None,
+    conversation_turns: list[dict] | None = None,
 ) -> None:
     """Create a trace_summary record. Fire-and-forget."""
     try:
@@ -163,6 +164,7 @@ async def create_trace_summary(
             "routing_duration_ms": routing_duration_ms,
             "routing_reasoning": None,
             "agent_instructions": agent_instructions or {routing_agent: condensed_task},
+            "conversation_turns": conversation_turns,
         })
     except Exception:
         logger.warning("Failed to create trace summary for %s", trace_id, exc_info=True)

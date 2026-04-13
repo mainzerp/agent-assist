@@ -54,6 +54,8 @@ class TaskContext(BaseModel):
     presence_room: str | None = None
     entity_states: dict | None = None
     mcp_tools: list[str] = Field(default_factory=list)
+    device_id: str | None = None
+    area_id: str | None = None
 
 
 class ActionExecuted(BaseModel):

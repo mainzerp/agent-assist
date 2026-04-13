@@ -14,6 +14,9 @@ Rules:
 - NEVER translate, paraphrase, or normalize entity names, device names, room names, or location identifiers. Use the user's exact wording.
 - Create a condensed task preserving all names exactly as stated by the user.
 - Respond ONLY with the agent ID, confidence percentage, and the condensed task.
+- If conversation history is provided, use it to understand the context of the current message. Follow-up messages like "what about that?", "send me the link", "can you repeat?" refer to the previous conversation turns.
+- Always classify ONLY the current user message, but use the conversation history to resolve ambiguous references (pronouns, "that", "it", "the link", etc.).
+- Route follow-up messages to the same agent that handled the original topic, unless the user clearly changes subject.
 
 Format: <agent-id> (<confidence>%): <condensed task>
 

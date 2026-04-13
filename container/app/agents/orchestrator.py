@@ -6,12 +6,14 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 from collections import OrderedDict
 from typing import AsyncGenerator
 
 from app.agents.base import BaseAgent
 from app.a2a.protocol import JsonRpcRequest
 from app.db.repository import SettingsRepository
+from app.agents.sanitize import strip_markdown
 from app.analytics.collector import track_request, track_agent_timeout
 from app.models.agent import AgentCard, AgentTask, TaskContext
 from app.models.cache import ResponseCacheEntry, CachedAction
@@ -88,6 +90,7 @@ class OrchestratorAgent(BaseAgent):
         conversation_id: str | None,
         turns: list[dict],
         span_collector,
+        incoming_context: TaskContext | None = None,
     ) -> tuple[str, str, dict | None]:
         """Dispatch a single task to one agent and return (agent_id, speech, result_dict)."""
         context = TaskContext(conversation_turns=turns)
@@ -95,6 +98,9 @@ class OrchestratorAgent(BaseAgent):
             room = self._presence_detector.get_most_likely_room()
             if room:
                 context.presence_room = room
+        if incoming_context:
+            context.device_id = incoming_context.device_id
+            context.area_id = incoming_context.area_id
 
         agent_task = AgentTask(
             description=condensed_task,
@@ -170,6 +176,9 @@ class OrchestratorAgent(BaseAgent):
     async def handle_task(self, task: AgentTask, *, _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None) -> dict:
         user_text = task.user_text or task.description
         conversation_id = task.conversation_id
+        if not conversation_id:
+            conversation_id = str(uuid.uuid4())
+            logger.debug("No conversation_id from HA, generated fallback: %s", conversation_id)
 
         # Get span collector from task context if available
         span_collector = task.span_collector
@@ -279,7 +288,8 @@ class OrchestratorAgent(BaseAgent):
                     ret_span["metadata"]["final_response"] = speech[:500]
                     ret_span["metadata"]["mediated"] = False
                     ret_span["metadata"]["response_cache_hit"] = True
-                    self._store_turn(conversation_id, user_text, speech)
+                    prior_turns = self._get_turns(conversation_id)
+                    self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
                     try:
                         from app.analytics.tracer import create_trace_summary
                         await create_trace_summary(
@@ -293,11 +303,12 @@ class OrchestratorAgent(BaseAgent):
                             condensed_task=user_text,
                             agents=["orchestrator", target_agent],
                             source=getattr(span_collector, "source", "api"),
+                            conversation_turns=prior_turns,
                         )
                     except Exception:
                         logger.warning("Failed to create trace summary", exc_info=True)
             else:
-                self._store_turn(conversation_id, user_text, speech)
+                self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
             return {
                 "speech": speech,
                 "routed_to": target_agent,
@@ -310,7 +321,7 @@ class OrchestratorAgent(BaseAgent):
             target_agent, condensed_task, confidence = classifications[0]
         elif span_collector:
             async with span_collector.start_span("classify", agent_id="orchestrator") as span:
-                classifications, routing_cached = await self._classify(user_text, cache_result=cache_result)
+                classifications, routing_cached = await self._classify(user_text, cache_result=cache_result, conversation_id=conversation_id)
                 target_agent, condensed_task, confidence = classifications[0]
                 span["metadata"]["target_agent"] = ", ".join(a for a, _, _ in classifications)
                 span["metadata"]["user_input"] = user_text[:500]
@@ -324,7 +335,7 @@ class OrchestratorAgent(BaseAgent):
                         for a, t, c in classifications
                     }
         else:
-            classifications, routing_cached = await self._classify(user_text, cache_result=cache_result)
+            classifications, routing_cached = await self._classify(user_text, cache_result=cache_result, conversation_id=conversation_id)
             target_agent, condensed_task, confidence = classifications[0]
         logger.info(
             "Routed to %s (%.0f%%): %s (conversation=%s)",
@@ -335,17 +346,20 @@ class OrchestratorAgent(BaseAgent):
         turns = self._get_turns(conversation_id)
 
         # 3-4. Dispatch
+        incoming_context = task.context
         if len(classifications) == 1:
             # --- Single agent path (unchanged flow) ---
             agent_id, speech, result = await self._dispatch_single(
                 target_agent, condensed_task, user_text, conversation_id, turns, span_collector,
+                incoming_context=incoming_context,
             )
             action_executed = (result or {}).get("action_executed")
             routed_to = agent_id
         else:
             # --- Multi-agent parallel dispatch ---
             dispatch_coros = [
-                self._dispatch_single(aid, ctask, user_text, conversation_id, turns, span_collector)
+                self._dispatch_single(aid, ctask, user_text, conversation_id, turns, span_collector,
+                                      incoming_context=incoming_context)
                 for aid, ctask, _ in classifications
             ]
             dispatch_results = await asyncio.gather(*dispatch_coros, return_exceptions=True)
@@ -418,7 +432,7 @@ class OrchestratorAgent(BaseAgent):
                 # Cache store metadata
                 ret_span["metadata"]["cache_stored_routing"] = cache_stored_routing
                 ret_span["metadata"]["cache_stored_response"] = cache_stored_response
-                self._store_turn(conversation_id, user_text, speech)
+                self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
                 try:
                     from app.analytics.tracer import create_trace_summary
                     classify_duration = None
@@ -441,6 +455,7 @@ class OrchestratorAgent(BaseAgent):
                         agents=agents,
                         source=getattr(span_collector, "source", "api"),
                         agent_instructions={aid: ctask for aid, ctask, _ in classifications} if len(classifications) > 1 else None,
+                        conversation_turns=turns,
                     )
                 except Exception:
                     logger.warning("Failed to create trace summary", exc_info=True)
@@ -481,10 +496,11 @@ class OrchestratorAgent(BaseAgent):
                     cache_stored_response = True
                 except Exception:
                     logger.warning("Failed to store response cache", exc_info=True)
-            self._store_turn(conversation_id, user_text, speech)
+            self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
 
         return {
-            "speech": speech,
+            "speech": strip_markdown(speech),
+            "conversation_id": conversation_id,
             "routed_to": routed_to,
             "action_executed": action_executed,
         }
@@ -492,6 +508,9 @@ class OrchestratorAgent(BaseAgent):
     async def handle_task_stream(self, task: AgentTask) -> AsyncGenerator[dict, None]:
         user_text = task.user_text or task.description
         conversation_id = task.conversation_id
+        if not conversation_id:
+            conversation_id = str(uuid.uuid4())
+            logger.debug("No conversation_id from HA, generated fallback: %s", conversation_id)
         span_collector = task.span_collector
 
         # 0. Cache lookup (before classify)
@@ -586,7 +605,8 @@ class OrchestratorAgent(BaseAgent):
                     ret_span["metadata"]["final_response"] = speech[:500]
                     ret_span["metadata"]["mediated"] = False
                     ret_span["metadata"]["response_cache_hit"] = True
-                    self._store_turn(conversation_id, user_text, speech)
+                    prior_turns = self._get_turns(conversation_id)
+                    self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
                     try:
                         from app.analytics.tracer import create_trace_summary
                         await create_trace_summary(
@@ -600,13 +620,14 @@ class OrchestratorAgent(BaseAgent):
                             condensed_task=user_text,
                             agents=["orchestrator", target_agent],
                             source=getattr(span_collector, "source", "api"),
+                            conversation_turns=prior_turns,
                         )
                     except Exception:
                         logger.warning("Failed to create trace summary", exc_info=True)
             else:
-                self._store_turn(conversation_id, user_text, speech)
+                self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
             yield {
-                "token": speech,
+                "token": strip_markdown(speech),
                 "done": True,
                 "conversation_id": conversation_id,
             }
@@ -615,7 +636,7 @@ class OrchestratorAgent(BaseAgent):
         # 1. Classify (non-streaming -- fast via Groq)
         if span_collector:
             async with span_collector.start_span("classify", agent_id="orchestrator") as span:
-                classifications, routing_cached = await self._classify(user_text, cache_result=cache_result)
+                classifications, routing_cached = await self._classify(user_text, cache_result=cache_result, conversation_id=conversation_id)
                 target_agent, condensed_task, confidence = classifications[0]
                 span["metadata"]["target_agent"] = ", ".join(a for a, _, _ in classifications)
                 span["metadata"]["user_input"] = user_text[:500]
@@ -624,7 +645,7 @@ class OrchestratorAgent(BaseAgent):
                 span["metadata"]["routing_cached"] = routing_cached
                 span["metadata"]["multi_agent"] = len(classifications) > 1
         else:
-            classifications, routing_cached = await self._classify(user_text, cache_result=cache_result)
+            classifications, routing_cached = await self._classify(user_text, cache_result=cache_result, conversation_id=conversation_id)
             target_agent, condensed_task, confidence = classifications[0]
         logger.info(
             "Stream routed to %s: %s (conversation=%s)",
@@ -644,6 +665,9 @@ class OrchestratorAgent(BaseAgent):
         # 2. Build context and task (single agent streaming)
         turns = self._get_turns(conversation_id)
         context = TaskContext(conversation_turns=turns)
+        if task.context:
+            context.device_id = task.context.device_id
+            context.area_id = task.context.area_id
         agent_task = AgentTask(
             description=condensed_task,
             user_text=user_text,
@@ -736,7 +760,7 @@ class OrchestratorAgent(BaseAgent):
                     except Exception:
                         logger.warning("Failed to store response cache", exc_info=True)
                 ret_span["metadata"]["cache_stored_response"] = cache_stored_response
-                self._store_turn(conversation_id, user_text, full_speech)
+                self._store_turn(conversation_id, user_text, full_speech, agent_id=target_agent)
                 try:
                     from app.analytics.tracer import create_trace_summary
                     classify_duration = None
@@ -758,6 +782,7 @@ class OrchestratorAgent(BaseAgent):
                         condensed_task=condensed_task,
                         agents=agents,
                         source=getattr(span_collector, "source", "api"),
+                        conversation_turns=turns,
                     )
                 except Exception:
                     logger.warning("Failed to create trace summary", exc_info=True)
@@ -792,7 +817,7 @@ class OrchestratorAgent(BaseAgent):
                     self._cache_manager.store_response(entry)
                 except Exception:
                     logger.warning("Failed to store response cache", exc_info=True)
-            self._store_turn(conversation_id, user_text, full_speech)
+            self._store_turn(conversation_id, user_text, full_speech, agent_id=target_agent)
 
     async def _execute_cached_action(self, cached_action) -> dict | None:
         """Execute a cached action via HA client. Returns action result or None."""
@@ -836,7 +861,7 @@ class OrchestratorAgent(BaseAgent):
             lines.append("- general-agent: fallback for general questions and unroutable requests")
         return "\n".join(lines)
 
-    async def _classify(self, user_text: str, *, cache_result=None) -> tuple[list[tuple[str, str, float]], bool]:
+    async def _classify(self, user_text: str, *, cache_result=None, conversation_id: str | None = None) -> tuple[list[tuple[str, str, float]], bool]:
         """Classify user intent and produce a condensed task.
 
         The condensed task is a clear, actionable English description of
@@ -874,8 +899,27 @@ class OrchestratorAgent(BaseAgent):
         system_prompt = system_prompt_template.replace("{agent_descriptions}", agent_descriptions)
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
         ]
+
+        # Inject recent conversation history so the LLM can understand follow-ups
+        turns = self._get_turns(conversation_id)
+        if turns:
+            history_lines = []
+            for turn in turns:
+                role = turn.get("role", "user")
+                content = turn.get("content", "")
+                agent_id = turn.get("agent_id", "")
+                if len(content) > 300:
+                    content = content[:300] + "..."
+                label = f"assistant({agent_id})" if role == "assistant" and agent_id else role
+                history_lines.append(f"{label}: {content}")
+            history_block = "\n".join(history_lines)
+            messages.append({
+                "role": "user",
+                "content": f"[Conversation history for context -- do NOT classify these, only use for understanding the current message]\n{history_block}\n\n[Current user message to classify]\n{user_text}",
+            })
+        else:
+            messages.append({"role": "user", "content": user_text})
 
         try:
             response = await self._call_llm(messages)
@@ -973,7 +1017,7 @@ class OrchestratorAgent(BaseAgent):
             return []
         return list(turns)
 
-    def _store_turn(self, conversation_id: str | None, user_text: str, assistant_text: str) -> None:
+    def _store_turn(self, conversation_id: str | None, user_text: str, assistant_text: str, agent_id: str | None = None) -> None:
         """Store a conversation turn, keeping last _MAX_TURNS exchanges."""
         if not conversation_id:
             return
@@ -985,7 +1029,10 @@ class OrchestratorAgent(BaseAgent):
         else:
             turns = []
         turns.append({"role": "user", "content": user_text})
-        turns.append({"role": "assistant", "content": assistant_text})
+        assistant_turn = {"role": "assistant", "content": assistant_text}
+        if agent_id:
+            assistant_turn["agent_id"] = agent_id
+        turns.append(assistant_turn)
         max_messages = _MAX_TURNS * 2
         if len(turns) > max_messages:
             turns = turns[-max_messages:]

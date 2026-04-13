@@ -247,3 +247,109 @@ class TestLLMComplete:
         with pytest.raises(ValueError, match="Empty LLM response"):
             await complete("light-agent", [{"role": "user", "content": "turn on light"}])
         assert mock_acompletion.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# LLM complete_with_tools function
+# ---------------------------------------------------------------------------
+
+class TestCompleteWithTools:
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_returns_direct_answer_when_no_tool_calls(self, mock_repo, mock_params, mock_acompletion):
+        """LLM responds without tool calls -- returns content directly."""
+        mock_repo.get = AsyncMock(return_value={
+            "agent_id": "general-agent", "model": "groq/test",
+            "max_tokens": 256, "temperature": 0.2,
+        })
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = "The answer is 42"
+        response.choices[0].message.tool_calls = None
+        mock_acompletion.return_value = response
+
+        from app.llm.client import complete_with_tools
+        result = await complete_with_tools(
+            "general-agent", [{"role": "user", "content": "test"}],
+            tools=[{"type": "function", "function": {"name": "search", "parameters": {}}}],
+            tool_executor=AsyncMock(),
+        )
+        assert result == "The answer is 42"
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_executes_tool_and_returns_final_answer(self, mock_repo, mock_params, mock_acompletion):
+        """LLM calls a tool, gets result, then gives final answer."""
+        mock_repo.get = AsyncMock(return_value={
+            "agent_id": "general-agent", "model": "groq/test",
+            "max_tokens": 256, "temperature": 0.2,
+        })
+        # First call: LLM requests a tool call
+        tool_call = MagicMock()
+        tool_call.id = "call_123"
+        tool_call.function.name = "web_search"
+        tool_call.function.arguments = '{"query": "latest news"}'
+
+        first_response = MagicMock()
+        first_response.choices = [MagicMock()]
+        first_response.choices[0].message.content = None
+        first_response.choices[0].message.tool_calls = [tool_call]
+
+        # Second call: LLM gives final answer
+        second_response = MagicMock()
+        second_response.choices = [MagicMock()]
+        second_response.choices[0].message.content = "Here are the latest news..."
+        second_response.choices[0].message.tool_calls = None
+
+        mock_acompletion.side_effect = [first_response, second_response]
+
+        tool_executor = AsyncMock(return_value='[{"title": "News", "url": "http://example.com"}]')
+
+        from app.llm.client import complete_with_tools
+        result = await complete_with_tools(
+            "general-agent", [{"role": "user", "content": "what's the news?"}],
+            tools=[{"type": "function", "function": {"name": "web_search", "parameters": {}}}],
+            tool_executor=tool_executor,
+        )
+        assert result == "Here are the latest news..."
+        tool_executor.assert_awaited_once_with("web_search", {"query": "latest news"})
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_max_tool_rounds_prevents_infinite_loop(self, mock_repo, mock_params, mock_acompletion):
+        """Exceeding max_tool_rounds forces a final answer."""
+        mock_repo.get = AsyncMock(return_value={
+            "agent_id": "general-agent", "model": "groq/test",
+            "max_tokens": 256, "temperature": 0.2,
+        })
+        # Every call returns a tool call (infinite loop scenario)
+        tool_call = MagicMock()
+        tool_call.id = "call_loop"
+        tool_call.function.name = "web_search"
+        tool_call.function.arguments = '{"query": "loop"}'
+
+        loop_response = MagicMock()
+        loop_response.choices = [MagicMock()]
+        loop_response.choices[0].message.content = None
+        loop_response.choices[0].message.tool_calls = [tool_call]
+
+        final_response = MagicMock()
+        final_response.choices = [MagicMock()]
+        final_response.choices[0].message.content = "Forced answer"
+        final_response.choices[0].message.tool_calls = None
+
+        # max_tool_rounds=2: 2 tool calls + 1 forced final = 3 LLM calls
+        mock_acompletion.side_effect = [loop_response, loop_response, final_response]
+
+        from app.llm.client import complete_with_tools
+        result = await complete_with_tools(
+            "general-agent", [{"role": "user", "content": "test"}],
+            tools=[{"type": "function", "function": {"name": "web_search", "parameters": {}}}],
+            tool_executor=AsyncMock(return_value="result"),
+            max_tool_rounds=2,
+        )
+        assert result == "Forced answer"

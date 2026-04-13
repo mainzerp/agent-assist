@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Literal
 
 import aiohttp
@@ -25,6 +26,30 @@ from .const import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_markdown(text: str) -> str:
+    """Remove Markdown formatting for TTS-friendly output."""
+    if not text:
+        return text
+    text = re.sub(r"```[a-zA-Z]*\n?", "", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", text)
+    text = re.sub(r"_{1,3}([^_]+)_{1,3}", r"\1", text)
+    text = re.sub(r"~~([^~]+)~~", r"\1", text)
+    text = re.sub(r"^[\s]*([-*_]){3,}\s*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^[\s]*[-*+]\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^[\s]*\d+\.\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r" {2,}", " ", text)
+    lines = [line.strip() for line in text.splitlines()]
+    return "\n".join(lines).strip()
 
 
 async def async_setup_entry(
@@ -177,11 +202,22 @@ class AgentAssistConversationEntity(
 
     async def _process_via_ws(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         """Send request via WebSocket and accumulate streaming tokens."""
+        device_id = getattr(user_input, "device_id", None)
+        area_id = None
+        if device_id:
+            device_reg = dr.async_get(self.hass)
+            device = device_reg.async_get(device_id)
+            if device:
+                area_id = device.area_id
         payload = {
             "text": user_input.text,
             "conversation_id": user_input.conversation_id,
             "language": user_input.language or "en",
         }
+        if device_id:
+            payload["device_id"] = device_id
+        if area_id:
+            payload["area_id"] = area_id
         await self._ws.send_json(payload)
 
         speech_parts: list[str] = []
@@ -205,6 +241,13 @@ class AgentAssistConversationEntity(
 
     async def _process_via_rest(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         """Fallback: send request via REST and get full response."""
+        device_id = getattr(user_input, "device_id", None)
+        area_id = None
+        if device_id:
+            device_reg = dr.async_get(self.hass)
+            device = device_reg.async_get(device_id)
+            if device:
+                area_id = device.area_id
         try:
             if self._session is None:
                 self._session = aiohttp.ClientSession()
@@ -214,6 +257,10 @@ class AgentAssistConversationEntity(
                 "conversation_id": user_input.conversation_id,
                 "language": user_input.language or "en",
             }
+            if device_id:
+                payload["device_id"] = device_id
+            if area_id:
+                payload["area_id"] = area_id
             async with self._session.post(
                 f"{self._url}/api/conversation",
                 json=payload,
@@ -242,5 +289,5 @@ class AgentAssistConversationEntity(
     def _build_result(self, speech: str, conversation_id: str | None, language: str | None) -> conversation.ConversationResult:
         """Assemble a ConversationResult from the response."""
         response = intent.IntentResponse(language=language or "en")
-        response.async_set_speech(speech)
+        response.async_set_speech(_strip_markdown(speech))
         return conversation.ConversationResult(response=response, conversation_id=conversation_id)

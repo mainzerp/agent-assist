@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from app.security.auth import require_admin_session
@@ -344,8 +344,147 @@ async def get_all_agents_visibility_summary():
     return {"summary": summary}
 
 
+@router.get("/timers")
+async def get_timers_info(request: Request):
+    """Return timer, alarm, pool, and delayed task state for the dashboard."""
+    from app.agents.timer_executor import _timer_pool
+    from app.agents.delayed_tasks import delayed_task_manager
+
+    ha_client = getattr(request.app.state, "ha_client", None)
+
+    timers = []
+    alarms = []
+
+    if ha_client:
+        try:
+            states = await ha_client.get_states()
+        except Exception:
+            states = []
+
+        for s in states:
+            entity_id = s.get("entity_id", "")
+            state = s.get("state", "unknown")
+            attrs = s.get("attributes", {})
+            friendly_name = attrs.get("friendly_name", entity_id)
+
+            if entity_id.startswith("timer."):
+                pool_name = _timer_pool.get_name(entity_id)
+                duration = attrs.get("duration", "")
+                remaining = attrs.get("remaining", "")
+                timers.append({
+                    "entity_id": entity_id,
+                    "name": pool_name or friendly_name,
+                    "friendly_name": friendly_name,
+                    "pool_name": pool_name,
+                    "state": state,
+                    "duration": duration,
+                    "remaining": remaining,
+                })
+
+            elif entity_id.startswith("input_datetime."):
+                has_date = attrs.get("has_date", False)
+                has_time = attrs.get("has_time", False)
+                dtype = "datetime" if (has_date and has_time) else ("date" if has_date else "time")
+                alarms.append({
+                    "entity_id": entity_id,
+                    "name": friendly_name,
+                    "state": state,
+                    "type": dtype,
+                })
+
+    # Timer pool
+    pool_mappings = _timer_pool.all_mappings()
+    pool = {
+        "mappings": [
+            {"name": name, "entity_id": eid}
+            for name, eid in pool_mappings.items()
+        ],
+        "allocated": len(pool_mappings),
+    }
+
+    # Delayed tasks
+    pending = delayed_task_manager.get_pending()
+
+    return {
+        "timers": timers,
+        "alarms": alarms,
+        "pool": pool,
+        "delayed_tasks": pending,
+    }
+
+
 @router.get("/fernet-key-backup")
 async def get_fernet_key_backup():
     """Export the Fernet key for backup. Handle with extreme care."""
     from app.security.encryption import export_fernet_key
     return {"key": export_fernet_key(), "warning": "Store this key securely. Loss of this key makes all encrypted secrets unrecoverable."}
+
+
+# =========================================================================
+# Notification Profile
+# =========================================================================
+
+
+@router.get("/notification-profile")
+async def get_notification_profile():
+    """Get current notification profile."""
+    import json as _json
+    raw = await SettingsRepository.get_value("notification.profile")
+    if raw:
+        return {"profile": _json.loads(raw)}
+    return {"profile": {}}
+
+
+@router.put("/notification-profile")
+async def update_notification_profile(payload: dict):
+    """Update notification profile."""
+    import json as _json
+    profile = payload.get("profile", payload)
+    await SettingsRepository.set(
+        "notification.profile",
+        _json.dumps(profile),
+        value_type="json",
+        category="notification",
+        description="Timer/alarm notification profile: channels and targets",
+    )
+    return {"status": "ok"}
+
+
+# =========================================================================
+# Alarm Monitor
+# =========================================================================
+
+
+@router.get("/alarm-monitor")
+async def get_alarm_monitor_status(request: Request):
+    """Get alarm monitor status."""
+    alarm_monitor = getattr(request.app.state, "alarm_monitor", None)
+    if not alarm_monitor:
+        return {"active": False, "fired_today": [], "check_interval": 30}
+    return {
+        "active": True,
+        "fired_today": alarm_monitor.fired_today,
+        "check_interval": 30,
+    }
+
+
+# =========================================================================
+# Recently Expired Timers
+# =========================================================================
+
+
+@router.get("/timers/recently-expired")
+async def get_recently_expired_timers():
+    """Get recently expired timers."""
+    from app.agents.timer_executor import get_recently_expired
+    expired = get_recently_expired()
+    return {
+        "recently_expired": [
+            {
+                "name": e.name,
+                "entity_id": e.entity_id,
+                "expired_at": e.expired_at.isoformat(),
+            }
+            for e in expired
+        ],
+    }

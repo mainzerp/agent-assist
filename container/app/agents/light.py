@@ -18,7 +18,7 @@ class LightAgent(ActionableAgent):
         return AgentCard(
             agent_id="light-agent",
             name="Light Agent",
-            description="Controls lighting devices: on/off, brightness, color, color temperature.",
-            skills=["light_control", "brightness", "color"],
+            description="Controls and queries lights, switches, and illuminance sensors: on/off, toggle, brightness, color, color temperature. Reports light/switch status and light-level readings. Lists all lights and switches.",
+            skills=["light_control", "switch_control", "brightness", "color", "toggle", "illuminance_sensor", "light_status", "light_query", "switch_status", "switch_query"],
             endpoint="local://light-agent",
         )

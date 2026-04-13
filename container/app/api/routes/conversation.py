@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from app.a2a.protocol import JsonRpcRequest
 from app.analytics.tracer import SpanCollector
 from app.models.conversation import ConversationRequest, ConversationResponse, StreamToken
-from app.models.agent import AgentTask
+from app.models.agent import AgentTask, TaskContext
 from app.security.auth import require_api_key, require_api_key_ws
 
 logger = logging.getLogger(__name__)
@@ -34,10 +34,17 @@ def set_dispatcher(dispatcher) -> None:
 
 def _build_a2a_request(conv_request: ConversationRequest, method: str, span_collector=None) -> tuple[JsonRpcRequest, AgentTask]:
     """Convert a ConversationRequest into an A2A JsonRpcRequest + AgentTask."""
+    context = None
+    if conv_request.device_id or conv_request.area_id:
+        context = TaskContext(
+            device_id=conv_request.device_id,
+            area_id=conv_request.area_id,
+        )
     task = AgentTask(
         description=conv_request.text,
         user_text=conv_request.text,
         conversation_id=conv_request.conversation_id,
+        context=context,
     )
     request_id = str(uuid.uuid4())
     # Route all requests through the orchestrator for intent classification
@@ -75,7 +82,7 @@ async def conversation_rest(
     result = response.result or {}
     return ConversationResponse(
         speech=result.get("speech", ""),
-        conversation_id=conv_request.conversation_id,
+        conversation_id=result.get("conversation_id") or conv_request.conversation_id,
     )
 
 
@@ -100,7 +107,7 @@ async def conversation_sse(
                 token = StreamToken(
                     token=chunk.result.get("token", ""),
                     done=chunk.done,
-                    conversation_id=conv_request.conversation_id if chunk.done else None,
+                    conversation_id=chunk.result.get("conversation_id") if chunk.done else None,
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
@@ -136,7 +143,7 @@ async def ws_conversation(
                     token = StreamToken(
                         token=chunk.result.get("token", ""),
                         done=chunk.done,
-                        conversation_id=conv_request.conversation_id if chunk.done else None,
+                        conversation_id=chunk.result.get("conversation_id") if chunk.done else None,
                     )
                     await websocket.send_json(token.model_dump())
             finally:
