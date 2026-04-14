@@ -30,7 +30,9 @@ from app.agents.media import MediaAgent
 from app.agents.scene import SceneAgent
 from app.agents.automation import AutomationAgent
 from app.agents.security import SecurityAgent
+from app.agents.send import SendAgent
 from app.agents.rewrite import RewriteAgent
+from app.agents.filler import FillerAgent
 from app.agents.custom_loader import CustomAgentLoader
 from app.presence.detector import PresenceDetector
 from app.api.routes import conversation as conversation_routes
@@ -132,6 +134,60 @@ async def lifespan(app: FastAPI):
             value_type="number",
             category="sync",
             description="Minutes between periodic entity index syncs (0 = disabled)",
+        )
+
+    # Register default filler settings if not already set
+    if await SettingsRepository.get_value("filler.enabled") is None:
+        await SettingsRepository.set(
+            "filler.enabled",
+            "false",
+            value_type="bool",
+            category="filler",
+            description="Enable interim filler responses for slow agents",
+        )
+    if await SettingsRepository.get_value("filler.threshold_ms") is None:
+        await SettingsRepository.set(
+            "filler.threshold_ms",
+            "1000",
+            value_type="number",
+            category="filler",
+            description="Milliseconds to wait before sending filler",
+        )
+
+    # Register default mediation settings if not already set
+    if await SettingsRepository.get_value("mediation.model") is None:
+        await SettingsRepository.set(
+            "mediation.model",
+            "",
+            value_type="string",
+            category="mediation",
+            description="LLM model for mediation/merge (empty = use orchestrator model)",
+        )
+    if await SettingsRepository.get_value("mediation.temperature") is None:
+        await SettingsRepository.set(
+            "mediation.temperature",
+            "0.3",
+            value_type="number",
+            category="mediation",
+            description="Temperature for mediation/merge LLM calls",
+        )
+    if await SettingsRepository.get_value("mediation.max_tokens") is None:
+        await SettingsRepository.set(
+            "mediation.max_tokens",
+            "8192",
+            value_type="number",
+            category="mediation",
+            description="Max tokens for mediation/merge LLM calls (increase for reasoning models)",
+        )
+
+    # Register default language setting if not already set
+    if await SettingsRepository.get_value("language") is None:
+        await SettingsRepository.set(
+            "language",
+            "auto",
+            value_type="string",
+            category="general",
+            description="Response language: 'auto' = detect from user input, or a specific ISO code like 'de', 'en'",
         )
 
     # Check if setup is complete before initializing HA-dependent components
@@ -239,6 +295,8 @@ async def lifespan(app: FastAPI):
                 logger.warning("DuckDuckGo MCP server registered but failed to connect")
 
     # Register agents with HA client and entity index
+    filler_agent = FillerAgent(ha_client=ha_client, entity_index=entity_index)
+
     orchestrator_agent = OrchestratorAgent(
         dispatcher=dispatcher,
         registry=registry,
@@ -246,6 +304,7 @@ async def lifespan(app: FastAPI):
         presence_detector=presence_detector,
         ha_client=ha_client,
         entity_index=entity_index,
+        filler_agent=filler_agent,
     )
     await registry.register(orchestrator_agent)
 
@@ -258,6 +317,8 @@ async def lifespan(app: FastAPI):
     music_agent = MusicAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
     await registry.register(music_agent)
 
+    await registry.register(filler_agent)
+
     # Register Phase 2 agents (only if enabled in agent_configs)
     if setup_complete:
         _PHASE2_AGENTS = [
@@ -267,6 +328,7 @@ async def lifespan(app: FastAPI):
             ("scene-agent", SceneAgent),
             ("automation-agent", AutomationAgent),
             ("security-agent", SecurityAgent),
+            ("send-agent", SendAgent),
         ]
         _PHASE2_AGENTS_WITH_MATCHER = {"climate-agent", "security-agent", "timer-agent", "scene-agent", "automation-agent", "media-agent"}
         for agent_id, agent_cls in _PHASE2_AGENTS:

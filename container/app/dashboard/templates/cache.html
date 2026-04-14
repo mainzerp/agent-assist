@@ -161,6 +161,12 @@ function cachePage() {
         },
 
         async flushCache(tier) {
+            const messages = {
+                'routing': 'Are you sure you want to flush the routing cache?',
+                'response': 'Are you sure you want to flush the response cache?',
+            };
+            const msg = messages[tier] || 'Are you sure you want to flush ALL caches? This cannot be undone.';
+            if (!confirm(msg)) return;
             try {
                 const resp = await fetch('/api/admin/cache/flush', {
                     method: 'POST',

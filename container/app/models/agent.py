@@ -18,6 +18,7 @@ class AgentCard(BaseModel):
     input_types: list[str] = Field(default_factory=lambda: ["text/plain"])
     output_types: list[str] = Field(default_factory=lambda: ["text/plain", "application/json"])
     endpoint: str = Field("", description="Agent endpoint URL (local:// for in-process)")
+    expected_latency: str = Field("low", description="Expected response latency: low, medium, high")
 
 
 class AgentConfig(BaseModel):
@@ -31,6 +32,7 @@ class AgentConfig(BaseModel):
     temperature: float = 0.2
     max_tokens: int = 1024
     description: str | None = None
+    reasoning_effort: str | None = None
 
 
 class AgentTask(BaseModel):
@@ -56,6 +58,8 @@ class TaskContext(BaseModel):
     mcp_tools: list[str] = Field(default_factory=list)
     device_id: str | None = None
     area_id: str | None = None
+    language: str = "en"
+    sequential_send: bool = False
 
 
 class ActionExecuted(BaseModel):

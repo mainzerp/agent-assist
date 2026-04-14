@@ -199,9 +199,27 @@
                     <label class="form-label">Conversation Context Turns</label>
                     <input type="number" class="form-input" x-model.number="s['general.conversation_context_turns']" min="1" max="20">
                 </div>
+                <div class="form-group">
+                    <label class="form-label">Language</label>
+                    <select class="form-input" x-model="s['language']">
+                        <option value="auto">Auto-detect</option>
+                        <option value="de">Deutsch</option>
+                        <option value="en">English</option>
+                        <option value="fr">Francais</option>
+                        <option value="es">Espanol</option>
+                        <option value="it">Italiano</option>
+                        <option value="nl">Nederlands</option>
+                        <option value="pt">Portugues</option>
+                        <option value="pl">Polski</option>
+                        <option value="ru">Russkiy</option>
+                        <option value="ja">Nihongo</option>
+                        <option value="zh">Zhongwen</option>
+                        <option value="ko">Hangugeo</option>
+                    </select>
+                </div>
             </div>
             <div class="form-actions">
-                <button class="btn btn-primary btn-sm" @click="saveSection('general')">Save General</button>
+                <button class="btn btn-primary btn-sm" @click="saveLanguage()">Save General</button>
             </div>
         </div>
     </details>
@@ -402,6 +420,33 @@ function settingsPage() {
                     this.showMessage('Entity matching settings saved.', 'success');
                 } else {
                     this.showMessage('Failed to save some settings.', 'error');
+                }
+            } catch (e) {
+                this.showMessage('Network error.', 'error');
+            }
+        },
+
+        async saveLanguage() {
+            var payload = {};
+            for (var key in this.s) {
+                if (key.startsWith('general.')) {
+                    payload[key] = this.s[key];
+                }
+            }
+            if (this.s['language'] !== undefined) {
+                payload['language'] = this.s['language'];
+            }
+            try {
+                var resp = await fetch('/api/admin/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({items: payload}),
+                });
+                if (resp.ok) {
+                    this.showMessage('Settings saved.', 'success');
+                } else {
+                    this.showMessage('Failed to save.', 'error');
                 }
             } catch (e) {
                 this.showMessage('Network error.', 'error');

@@ -20,13 +20,14 @@ from pydantic import BaseModel
 from app.security.auth import require_admin_session
 from app.a2a.protocol import JsonRpcRequest
 from app.models.conversation import StreamToken
-from app.models.agent import AgentTask
+from app.models.agent import AgentTask, TaskContext
 from app.db.repository import (
     AgentConfigRepository,
     SettingsRepository,
     AnalyticsRepository,
     TraceSummaryRepository,
     ConversationRepository,
+    SendDeviceMappingRepository,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,40 @@ def set_chat_dispatcher(dispatcher) -> None:
     _dispatcher = dispatcher
 
 
+def _create_phase2_agent(agent_id: str, app):
+    """Instantiate a Phase 2 agent by ID for hot-registration."""
+    from app.agents.timer import TimerAgent
+    from app.agents.climate import ClimateAgent
+    from app.agents.media import MediaAgent
+    from app.agents.scene import SceneAgent
+    from app.agents.automation import AutomationAgent
+    from app.agents.security import SecurityAgent
+    from app.agents.send import SendAgent
+
+    _AGENT_MAP = {
+        "timer-agent": TimerAgent,
+        "climate-agent": ClimateAgent,
+        "media-agent": MediaAgent,
+        "scene-agent": SceneAgent,
+        "automation-agent": AutomationAgent,
+        "security-agent": SecurityAgent,
+        "send-agent": SendAgent,
+    }
+    _WITH_MATCHER = {"climate-agent", "security-agent", "timer-agent", "scene-agent", "automation-agent", "media-agent"}
+
+    cls = _AGENT_MAP.get(agent_id)
+    if cls is None:
+        return None
+
+    ha_client = getattr(app.state, "ha_client", None)
+    entity_index = getattr(app.state, "entity_index", None)
+    entity_matcher = getattr(app.state, "entity_matcher", None)
+
+    if agent_id in _WITH_MATCHER:
+        return cls(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
+    return cls(ha_client=ha_client, entity_index=entity_index)
+
+
 def _validate_agent_path(agent_id: str) -> Path:
     """Validate agent_id and return a safe prompt path within PROMPTS_DIR."""
     if not _SAFE_AGENT_ID_RE.match(agent_id):
@@ -73,6 +108,7 @@ class AgentConfigUpdate(BaseModel):
     max_tokens: int | None = None
     max_iterations: int | None = None
     description: str | None = None
+    reasoning_effort: str | None = None
 
 
 class PromptUpdate(BaseModel):
@@ -87,6 +123,8 @@ class RewriteConfigUpdate(BaseModel):
 class PersonalityConfigUpdate(BaseModel):
     prompt: str | None = None
     mediation_temperature: float | None = None
+    filler_enabled: bool | None = None
+    filler_threshold_ms: int | None = None
 
 
 # --- Overview ---
@@ -372,12 +410,32 @@ async def get_agent_config(agent_id: str):
 
 
 @router.put("/agents/{agent_id}")
-async def update_agent_config(agent_id: str, payload: AgentConfigUpdate):
+async def update_agent_config(agent_id: str, payload: AgentConfigUpdate, request: Request):
     """Update agent configuration fields."""
     updates = payload.model_dump(exclude_none=True)
+    # Allow clearing reasoning_effort by sending empty string -> store as None
+    if payload.reasoning_effort is not None:
+        updates["reasoning_effort"] = payload.reasoning_effort or None
     if not updates:
         return {"status": "no changes"}
     await AgentConfigRepository.upsert(agent_id, **updates)
+
+    # Hot-register/unregister agent in live registry
+    if payload.enabled is not None:
+        _registry = request.app.state.registry
+        if payload.enabled:
+            existing = await _registry.discover(agent_id)
+            if existing is None:
+                agent_instance = _create_phase2_agent(agent_id, request.app)
+                if agent_instance:
+                    await _registry.register(agent_instance)
+                    logger.info("Hot-registered agent: %s", agent_id)
+        else:
+            _CORE_AGENTS = {"orchestrator", "general-agent", "light-agent", "music-agent", "rewrite-agent"}
+            if agent_id not in _CORE_AGENTS:
+                await _registry.unregister(agent_id)
+                logger.info("Hot-unregistered agent: %s", agent_id)
+
     return {"status": "ok", "agent_id": agent_id}
 
 
@@ -508,15 +566,22 @@ async def update_rewrite_config(payload: RewriteConfigUpdate):
 
 @router.get("/personality/config")
 async def get_personality_config():
-    """Get current personality prompt and mediation temperature."""
+    """Get current personality prompt, mediation temperature, and filler settings."""
     prompt = await SettingsRepository.get_value("personality.prompt", "")
     temperature = await SettingsRepository.get_value("mediation.temperature", "0.3")
-    return {"prompt": prompt, "mediation_temperature": float(temperature)}
+    filler_enabled = await SettingsRepository.get_value("filler.enabled", "false")
+    filler_threshold_ms = await SettingsRepository.get_value("filler.threshold_ms", "1000")
+    return {
+        "prompt": prompt,
+        "mediation_temperature": float(temperature),
+        "filler_enabled": filler_enabled == "true",
+        "filler_threshold_ms": int(filler_threshold_ms),
+    }
 
 
 @router.put("/personality/config")
 async def update_personality_config(payload: PersonalityConfigUpdate):
-    """Save personality prompt and mediation temperature."""
+    """Save personality prompt, mediation temperature, and filler settings."""
     if payload.prompt is not None:
         await SettingsRepository.set(
             "personality.prompt", payload.prompt,
@@ -527,6 +592,16 @@ async def update_personality_config(payload: PersonalityConfigUpdate):
             "mediation.temperature", str(payload.mediation_temperature),
             "float", "mediation", "Temperature for personality mediation LLM calls",
         )
+    if payload.filler_enabled is not None:
+        await SettingsRepository.set(
+            "filler.enabled", str(payload.filler_enabled).lower(),
+            "bool", "filler", "Enable interim filler responses for slow agents",
+        )
+    if payload.filler_threshold_ms is not None:
+        await SettingsRepository.set(
+            "filler.threshold_ms", str(payload.filler_threshold_ms),
+            "int", "filler", "Milliseconds to wait before sending filler",
+        )
     return {"status": "ok"}
 
 
@@ -535,7 +610,7 @@ async def update_personality_config(payload: PersonalityConfigUpdate):
 class ChatRequest(BaseModel):
     text: str
     conversation_id: str | None = None
-    language: str = "en"
+    language: str | None = None
 
 
 @router.post("/chat")
@@ -547,10 +622,15 @@ async def admin_chat(request: Request, payload: ChatRequest):
     span_collector = getattr(request.state, "span_collector", None)
     if span_collector:
         span_collector.source = "chat"
+    # Resolve language: request > DB settings > fallback "en"
+    language = payload.language
+    if not language:
+        language = await SettingsRepository.get_value("language") or "en"
     task = AgentTask(
         description=payload.text,
         user_text=payload.text,
         conversation_id=payload.conversation_id,
+        context=TaskContext(language=language),
     )
     a2a_request = JsonRpcRequest(
         method="message/send",
@@ -582,10 +662,15 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
     span_collector = getattr(request.state, "span_collector", None)
     if span_collector:
         span_collector.source = "chat"
+    # Resolve language: request > DB settings > fallback "en"
+    language = payload.language
+    if not language:
+        language = await SettingsRepository.get_value("language") or "en"
     task = AgentTask(
         description=payload.text,
         user_text=payload.text,
         conversation_id=payload.conversation_id,
+        context=TaskContext(language=language),
     )
     a2a_request = JsonRpcRequest(
         method="message/stream",
@@ -608,6 +693,7 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
                     done=chunk.done,
                     conversation_id=chunk.result.get("conversation_id") if chunk.done else None,
                     mediated_speech=chunk.result.get("mediated_speech") if chunk.done else None,
+                    is_filler=chunk.result.get("is_filler", False),
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
@@ -617,3 +703,90 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
                 await span_collector.flush()
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# --- Send device mappings ---
+
+class SendDeviceMappingCreate(BaseModel):
+    display_name: str
+    device_type: str
+    ha_service_target: str
+
+
+@router.get("/send-devices")
+async def list_send_devices():
+    """List all send device mappings."""
+    return await SendDeviceMappingRepository.list_all()
+
+
+@router.post("/send-devices")
+async def create_send_device(body: SendDeviceMappingCreate):
+    """Create a new send device mapping."""
+    if body.device_type not in ("notify", "tts"):
+        return JSONResponse({"detail": "device_type must be 'notify' or 'tts'"}, status_code=400)
+    if not body.display_name.strip():
+        return JSONResponse({"detail": "display_name is required"}, status_code=400)
+    if not body.ha_service_target.strip():
+        return JSONResponse({"detail": "ha_service_target is required"}, status_code=400)
+    existing = await SendDeviceMappingRepository.find_by_name(body.display_name)
+    if existing:
+        return JSONResponse({"detail": f"Mapping for '{body.display_name}' already exists"}, status_code=409)
+    row_id = await SendDeviceMappingRepository.create(
+        body.display_name, body.device_type, body.ha_service_target,
+    )
+    return {"id": row_id}
+
+
+@router.put("/send-devices/{mapping_id}")
+async def update_send_device(mapping_id: int, body: SendDeviceMappingCreate):
+    """Update an existing send device mapping."""
+    if body.device_type not in ("notify", "tts"):
+        return JSONResponse({"detail": "device_type must be 'notify' or 'tts'"}, status_code=400)
+    ok = await SendDeviceMappingRepository.update(
+        mapping_id,
+        display_name=body.display_name,
+        device_type=body.device_type,
+        ha_service_target=body.ha_service_target,
+    )
+    if not ok:
+        return JSONResponse({"detail": "Mapping not found"}, status_code=404)
+    return {"ok": True}
+
+
+@router.delete("/send-devices/{mapping_id}")
+async def delete_send_device(mapping_id: int):
+    """Delete a send device mapping."""
+    ok = await SendDeviceMappingRepository.delete(mapping_id)
+    if not ok:
+        return JSONResponse({"detail": "Mapping not found"}, status_code=404)
+    return {"ok": True}
+
+
+@router.get("/send-devices/available-targets")
+async def list_available_send_targets(request: Request, type: str = "notify"):
+    """Fetch available HA services/entities for send device mapping."""
+    ha_client = request.app.state.ha_client
+    if not ha_client:
+        return []
+
+    targets = []
+    if type == "notify":
+        try:
+            services = await ha_client.get_services()
+            notify_services = services.get("notify", {})
+            for svc_name in notify_services:
+                targets.append({"id": svc_name, "label": f"notify.{svc_name}"})
+        except Exception:
+            logger.warning("Failed to fetch notify services from HA", exc_info=True)
+    elif type == "tts":
+        try:
+            states = await ha_client.get_states()
+            for state in states:
+                eid = state.get("entity_id", "")
+                if eid.startswith("media_player."):
+                    name = state.get("attributes", {}).get("friendly_name", eid)
+                    targets.append({"id": eid, "label": f"{name} ({eid})"})
+        except Exception:
+            logger.warning("Failed to fetch media_player entities from HA", exc_info=True)
+
+    return targets

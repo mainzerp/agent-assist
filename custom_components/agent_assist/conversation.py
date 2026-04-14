@@ -227,6 +227,14 @@ class AgentAssistConversationEntity(
             msg = await asyncio.wait_for(self._ws.receive(), timeout=30.0)
             if msg.type == aiohttp.WSMsgType.TEXT:
                 data = json.loads(msg.data)
+
+                # Handle filler tokens -- speak immediately via TTS, do not accumulate
+                if data.get("is_filler", False):
+                    filler_text = data.get("token", "")
+                    if filler_text:
+                        await self._speak_filler(filler_text, user_input)
+                    continue
+
                 token_text = data.get("token", "")
                 if token_text:
                     speech_parts.append(token_text)
@@ -294,3 +302,45 @@ class AgentAssistConversationEntity(
         response = intent.IntentResponse(language=language or "en")
         response.async_set_speech(_strip_markdown(speech))
         return conversation.ConversationResult(response=response, conversation_id=conversation_id)
+
+    async def _speak_filler(self, text: str, user_input) -> None:
+        """Speak filler text immediately via TTS, bypassing the conversation result."""
+        try:
+            device_id = getattr(user_input, "device_id", None)
+            if not device_id:
+                return
+            tts_entity = self._resolve_tts_entity(device_id)
+            if not tts_entity:
+                return
+            await self.hass.services.async_call(
+                "tts",
+                "speak",
+                {
+                    "entity_id": tts_entity,
+                    "message": _strip_markdown(text),
+                },
+                blocking=False,
+            )
+        except Exception:
+            logger.debug("Failed to speak filler text", exc_info=True)
+
+    def _resolve_tts_entity(self, device_id: str) -> str | None:
+        """Resolve a device_id to a TTS-capable media_player entity in the same area."""
+        try:
+            device_reg = dr.async_get(self.hass)
+            device = device_reg.async_get(device_id)
+            if not device or not device.area_id:
+                return None
+            entity_reg = er.async_get(self.hass)
+            for entry in entity_reg.entities.values():
+                if (
+                    entry.domain == "media_player"
+                    and entry.device_id
+                ):
+                    mp_device = device_reg.async_get(entry.device_id)
+                    if mp_device and mp_device.area_id == device.area_id:
+                        return entry.entity_id
+            return None
+        except Exception:
+            logger.debug("Failed to resolve TTS entity for device %s", device_id)
+            return None

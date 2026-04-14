@@ -92,10 +92,22 @@ class TestStreamToken:
         st = StreamToken(token="Hi")
         assert st.done is False
         assert st.conversation_id is None
+        assert st.is_filler is False
 
     def test_done_token(self):
         st = make_stream_token(token="", done=True)
         assert st.done is True
+
+    def test_is_filler_defaults_false(self):
+        st = StreamToken(token="hello")
+        assert st.is_filler is False
+
+    def test_is_filler_serialization(self):
+        st = StreamToken(token="One moment...", is_filler=True)
+        data = st.model_dump()
+        assert data["is_filler"] is True
+        restored = StreamToken.model_validate(data)
+        assert restored.is_filler is True
 
 
 # ---- Agent models ----
@@ -111,6 +123,14 @@ class TestAgentCard:
         card = AgentCard(agent_id="a", name="A", description="desc")
         assert "text/plain" in card.input_types
         assert "application/json" in card.output_types
+
+    def test_expected_latency_defaults_low(self):
+        card = AgentCard(agent_id="a", name="A", description="desc")
+        assert card.expected_latency == "low"
+
+    def test_expected_latency_high(self):
+        card = AgentCard(agent_id="a", name="A", description="desc", expected_latency="high")
+        assert card.expected_latency == "high"
 
     def test_missing_required_raises(self):
         with pytest.raises(ValidationError):
@@ -148,6 +168,14 @@ class TestAgentTask:
         ctx = TaskContext(presence_room="kitchen")
         task = make_agent_task(context=ctx)
         assert task.context.presence_room == "kitchen"
+
+    def test_task_context_language_default(self):
+        ctx = TaskContext()
+        assert ctx.language == "en"
+
+    def test_task_context_language_custom(self):
+        ctx = TaskContext(language="de")
+        assert ctx.language == "de"
 
     def test_missing_description_raises(self):
         with pytest.raises(ValidationError):

@@ -31,6 +31,7 @@ async def complete(
         raise ValueError(f"No model configured for agent: {agent_id}")
     max_tokens = overrides.get("max_tokens", config.max_tokens)
     temperature = overrides.get("temperature", config.temperature)
+    reasoning_effort = overrides.get("reasoning_effort") or config.reasoning_effort
 
     provider_params = await resolve_provider_params(model)
 
@@ -38,13 +39,17 @@ async def complete(
                  agent_id, model, max_tokens, temperature)
 
     try:
-        response = await litellm.acompletion(
+        call_kwargs = dict(
             model=model,
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
             **provider_params,
         )
+        if reasoning_effort:
+            call_kwargs["reasoning_effort"] = reasoning_effort
+            call_kwargs["drop_params"] = True
+        response = await litellm.acompletion(**call_kwargs)
         if response.choices and response.choices[0].finish_reason == "length":
             logger.warning(
                 "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
@@ -59,13 +64,7 @@ async def complete(
                 agent_id, model, response.choices[0].finish_reason,
             )
             await asyncio.sleep(1)
-            response = await litellm.acompletion(
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                **provider_params,
-            )
+            response = await litellm.acompletion(**call_kwargs)
             if response.choices and response.choices[0].finish_reason == "length":
                 logger.warning(
                     "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
@@ -126,6 +125,7 @@ async def complete_with_tools(
         raise ValueError(f"No model configured for agent: {agent_id}")
     max_tokens = overrides.get("max_tokens", config.max_tokens)
     temperature = overrides.get("temperature", config.temperature)
+    reasoning_effort = overrides.get("reasoning_effort") or config.reasoning_effort
 
     provider_params = await resolve_provider_params(model)
 
@@ -137,7 +137,7 @@ async def complete_with_tools(
             "LLM tool-call round %d: agent=%s model=%s",
             _round + 1, agent_id, model,
         )
-        response = await litellm.acompletion(
+        tool_call_kwargs = dict(
             model=model,
             messages=msgs,
             tools=tools,
@@ -146,6 +146,10 @@ async def complete_with_tools(
             temperature=temperature,
             **provider_params,
         )
+        if reasoning_effort:
+            tool_call_kwargs["reasoning_effort"] = reasoning_effort
+            tool_call_kwargs["drop_params"] = True
+        response = await litellm.acompletion(**tool_call_kwargs)
         if hasattr(response, 'usage') and response.usage:
             await track_token_usage(
                 agent_id=agent_id,
@@ -203,13 +207,17 @@ async def complete_with_tools(
         "Max tool rounds (%d) exhausted for agent=%s, forcing final response",
         max_tool_rounds, agent_id,
     )
-    response = await litellm.acompletion(
+    final_kwargs = dict(
         model=model,
         messages=msgs,
         max_tokens=max_tokens,
         temperature=temperature,
         **provider_params,
     )
+    if reasoning_effort:
+        final_kwargs["reasoning_effort"] = reasoning_effort
+        final_kwargs["drop_params"] = True
+    response = await litellm.acompletion(**final_kwargs)
     if hasattr(response, 'usage') and response.usage:
         await track_token_usage(
             agent_id=agent_id,

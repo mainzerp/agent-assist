@@ -277,6 +277,14 @@
                                         <template x-if="comm.parallel">
                                             <span style="font-size: 0.65rem; color: var(--teal-glow); font-weight: 600; margin-left: 0.25rem;">PARALLEL</span>
                                         </template>
+                                        <template x-if="comm.sequential">
+                                            <span style="font-size: 0.65rem; color: #a78bfa; font-weight: 600; margin-left: 0.25rem;"
+                                                  x-text="'SEQUENTIAL (' + (comm.sequential_step || '') + ')'"></span>
+                                        </template>
+                                        <template x-if="comm.is_filler">
+                                            <span :style="'font-size: 0.65rem; font-weight: 600; margin-left: 0.25rem; color:' + (comm.filler_stage === 'sent' ? '#22c55e' : '#4ade80')"
+                                                  x-text="comm.filler_stage === 'sent' ? 'FILLER SENT' : (comm.filler_was_sent === false ? 'FILLER GENERATED (unused)' : 'FILLER GENERATED')"></span>
+                                        </template>
                                     </div>
                                     <template x-if="comm.task">
                                         <div style="margin-left: 2rem; margin-bottom: 0.4rem;">
@@ -661,7 +669,7 @@ function tracesPage() {
 
             const spanById = {};
             this.ganttSpans.forEach(span => {
-                const sid = span.metadata && span.metadata.span_id;
+                const sid = span.span_id;
                 if (sid) spanById[sid] = span;
             });
 
@@ -674,6 +682,10 @@ function tracesPage() {
                 'cache_lookup': '#06b6d4',
                 'classify': '#8b5cf6',
                 'dispatch': '#3b82f6',
+                'dispatch_content': '#2563eb',
+                'dispatch_send': '#1d4ed8',
+                'filler_generate': '#4ade80',
+                'filler_send': '#22c55e',
                 'llm_call': '#f59e0b',
                 'ha_action': '#10b981',
                 'return': '#ec4899',
@@ -682,7 +694,7 @@ function tracesPage() {
 
             const items = this.ganttSpans.map((span, idx) => {
                 const start = new Date(span.start_time);
-                const end = new Date(start.getTime() + span.duration_ms);
+                const end = span.end_time ? new Date(span.end_time) : new Date(start.getTime() + span.duration_ms);
                 const isError = span.status === 'error';
                 const depth = getDepth(span);
                 const indent = '\u00A0\u00A0'.repeat(depth);

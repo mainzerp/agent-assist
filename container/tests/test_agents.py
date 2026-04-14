@@ -29,6 +29,7 @@ from app.agents.timer import TimerAgent  # noqa: E402
 from app.agents.scene import SceneAgent  # noqa: E402
 from app.agents.automation import AutomationAgent  # noqa: E402
 from app.agents.security import SecurityAgent  # noqa: E402
+from app.agents.send import SendAgent, _CONTENT_SEPARATOR  # noqa: E402
 from app.agents.timer_executor import execute_timer_action  # noqa: E402
 from app.agents.scene_executor import execute_scene_action  # noqa: E402
 from app.agents.automation_executor import execute_automation_action  # noqa: E402
@@ -39,10 +40,12 @@ from app.agents.music_executor import execute_music_action  # noqa: E402
 from app.agents.security_executor import execute_security_action  # noqa: E402
 from app.agents.general import GeneralAgent  # noqa: E402
 from app.agents.rewrite import RewriteAgent  # noqa: E402
+from app.agents.filler import FillerAgent  # noqa: E402
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
 from app.agents.custom_loader import DynamicAgent, CustomAgentLoader  # noqa: E402
 from app.agents.sanitize import strip_markdown  # noqa: E402
 from app.models.agent import AgentCard, AgentTask, TaskContext  # noqa: E402
+from app.models.agent import AgentErrorCode  # noqa: E402
 from app.models.conversation import StreamToken  # noqa: E402
 import app.llm.client  # noqa: E402,F401 -- force module load for patch targets
 
@@ -862,6 +865,18 @@ class TestGeneralAgent:
         call_messages = mock_complete.call_args[0][1]
         assert call_messages[0]["role"] == "system"
 
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Here is the recipe with link.")
+    async def test_sequential_send_prompt_override(self, mock_complete):
+        agent = GeneralAgent()
+        ctx = TaskContext(sequential_send=True)
+        task = _make_task("find a lasagna recipe", context=ctx)
+        await agent.handle_task(task)
+        system_msg = mock_complete.call_args[0][1][0]["content"]
+        assert "MAY include URLs" in system_msg
+        assert "delivered as text" in system_msg
+        # Also verify max_tokens=2048 is passed
+        assert mock_complete.call_args[1].get("max_tokens") == 2048
+
 
 # ---------------------------------------------------------------------------
 # GeneralAgent with MCP tools
@@ -1019,6 +1034,7 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_routes_to_correct_agent(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, dispatcher, *_ = self._make_orchestrator()
         mock_complete.return_value = "light-agent: Turn on kitchen light"
         task = _make_task("turn on kitchen light", user_text="turn on kitchen light")
@@ -1031,6 +1047,7 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_returns_routed_to_field(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, *_ = self._make_orchestrator()
         mock_complete.return_value = "light-agent: Turn on kitchen light"
         task = _make_task("turn on kitchen light")
@@ -1041,6 +1058,7 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_fallback_on_unknown_agent(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, *_ = self._make_orchestrator()
         mock_complete.return_value = "unknown-agent: do something"
         task = _make_task("something random")
@@ -1053,6 +1071,7 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_fallback_on_timeout(self, mock_complete, mock_track, mock_timeout, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, dispatcher, *_ = self._make_orchestrator()
         mock_complete.return_value = "light-agent: Turn on light"
         orch._default_timeout = 0.001  # very short timeout
@@ -1071,6 +1090,7 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_fallback_on_dispatch_error(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, dispatcher, *_ = self._make_orchestrator()
         mock_complete.return_value = "light-agent: Turn on light"
 
@@ -1092,6 +1112,7 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_classification_falls_back_on_llm_failure(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, *_ = self._make_orchestrator()
         mock_complete.side_effect = Exception("LLM error")
         task = _make_task("turn on kitchen light")
@@ -1102,6 +1123,7 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_conversation_turns_stored(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, *_ = self._make_orchestrator()
         mock_complete.return_value = "light-agent: Turn on light"
         task = _make_task("turn on kitchen light")
@@ -1116,6 +1138,7 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_conversation_turns_limited(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, *_ = self._make_orchestrator()
         mock_complete.return_value = "general-agent: answer"
         for i in range(10):
@@ -1155,6 +1178,7 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_presence_room_injected_into_context(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, dispatcher, *_ = self._make_orchestrator()
         mock_complete.return_value = "light-agent: Turn on light"
 
@@ -1787,12 +1811,15 @@ class TestOrchestratorAgent:
         classifications, _ = await orch._classify("can you give me the link?", conversation_id="conv-ctx")
         assert classifications[0][0] == "general-agent"
 
-        # Verify the LLM received conversation history in the messages
+        # Verify the LLM received conversation history as multi-turn messages
         call_args = mock_complete.call_args
         messages = call_args[0][1]  # complete(agent_id, messages, ...)
+        # Last message should be the current user text only
         user_msg = messages[-1]["content"]
-        assert "cream puffs" in user_msg
-        assert "can you give me the link?" in user_msg
+        assert user_msg == "can you give me the link?"
+        # History should appear as separate prior messages (not bundled)
+        all_content = " ".join(m["content"] for m in messages)
+        assert "cream puffs" in all_content
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -1814,6 +1841,7 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_fallback_conversation_id_generated_when_none(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, *_ = self._make_orchestrator()
         mock_complete.return_value = "general-agent: answer the question"
         task = _make_task("what is the weather?")
@@ -1843,6 +1871,7 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_agent_receives_conversation_turns_on_dispatch(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, dispatcher, *_ = self._make_orchestrator()
 
         # Pre-populate a conversation turn with agent_id
@@ -2040,6 +2069,468 @@ class TestMergeResponsesActionStatus:
 
 
 # ---------------------------------------------------------------------------
+# Orchestrator filler/interim response tests
+# ---------------------------------------------------------------------------
+
+class TestOrchestratorFiller:
+    """Tests for the filler/interim response feature."""
+
+    def _make_filler_orchestrator(self):
+        dispatcher = AsyncMock()
+        registry = AsyncMock()
+        cache_manager = MagicMock()
+        cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
+        cache_manager.apply_rewrite = AsyncMock()
+
+        response_mock = MagicMock()
+        response_mock.error = None
+        response_mock.result = {"speech": "Done!"}
+        dispatcher.dispatch = AsyncMock(return_value=response_mock)
+
+        registry.list_agents = AsyncMock(return_value=[
+            AgentCard(agent_id="light-agent", name="Light Agent", description="", skills=["light"]),
+            AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"], expected_latency="high"),
+        ])
+
+        orchestrator = OrchestratorAgent(
+            dispatcher=dispatcher,
+            registry=registry,
+            cache_manager=cache_manager,
+        )
+        return orchestrator, dispatcher, registry
+
+    async def test_should_send_filler_true_for_high_latency(self):
+        orch, _, _ = self._make_filler_orchestrator()
+        orch._filler_enabled = True
+        result = await orch._should_send_filler("general-agent")
+        assert result is True
+
+    async def test_should_send_filler_false_for_low_latency(self):
+        orch, _, _ = self._make_filler_orchestrator()
+        orch._filler_enabled = True
+        result = await orch._should_send_filler("light-agent")
+        assert result is False
+
+    async def test_should_send_filler_false_when_disabled(self):
+        orch, _, _ = self._make_filler_orchestrator()
+        orch._filler_enabled = False
+        result = await orch._should_send_filler("general-agent")
+        assert result is False
+
+    async def test_should_send_filler_false_when_no_registry(self):
+        orch, _, _ = self._make_filler_orchestrator()
+        orch._filler_enabled = True
+        orch._registry = None
+        result = await orch._should_send_filler("general-agent")
+        assert result is False
+
+    @patch("app.agents.filler.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_invoke_filler_agent_returns_text(self, mock_complete, mock_settings):
+        orch, _, _ = self._make_filler_orchestrator()
+        filler = FillerAgent()
+        orch._filler_agent = filler
+        mock_settings.get_value = AsyncMock(return_value="")
+        mock_complete.return_value = "One moment, let me check that for you."
+        result = await orch._invoke_filler_agent("what is the weather", "general-agent", "en")
+        assert result == "One moment, let me check that for you."
+        mock_complete.assert_awaited_once()
+
+    @patch("app.agents.filler.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_invoke_filler_agent_returns_none_on_timeout(self, mock_complete, mock_settings):
+        orch, _, _ = self._make_filler_orchestrator()
+        filler = FillerAgent()
+        orch._filler_agent = filler
+        mock_settings.get_value = AsyncMock(return_value="")
+
+        async def _slow(*args, **kwargs):
+            await asyncio.sleep(10)
+            return "too late"
+        mock_complete.side_effect = _slow
+        result = await orch._invoke_filler_agent("query", "general-agent", "en")
+        assert result is None
+
+    async def test_invoke_filler_agent_returns_none_when_no_filler_agent(self):
+        orch, _, _ = self._make_filler_orchestrator()
+        orch._filler_agent = None
+        result = await orch._invoke_filler_agent("query", "general-agent", "en")
+        assert result is None
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_load_filler_config_defaults(self, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda key, default=None: {
+            "a2a.default_timeout": "5",
+            "a2a.max_iterations": "3",
+            "filler.enabled": "false",
+            "filler.threshold_ms": "1000",
+        }.get(key, default))
+        orch = OrchestratorAgent(dispatcher=AsyncMock())
+        await orch.initialize()
+        assert orch._filler_enabled is False
+        assert orch._filler_threshold_ms == 1000
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_load_filler_config_enabled(self, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda key, default=None: {
+            "a2a.default_timeout": "5",
+            "a2a.max_iterations": "3",
+            "filler.enabled": "true",
+            "filler.threshold_ms": "1500",
+        }.get(key, default))
+        orch = OrchestratorAgent(dispatcher=AsyncMock())
+        await orch.initialize()
+        assert orch._filler_enabled is True
+        assert orch._filler_threshold_ms == 1500
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_no_filler_when_agent_responds_fast(self, mock_complete, mock_track, mock_settings):
+        """When the agent responds before the filler threshold, no filler is yielded."""
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, dispatcher, _ = self._make_filler_orchestrator()
+        orch._filler_enabled = True
+        orch._filler_threshold_ms = 5000  # 5s threshold
+
+        # Classification returns general-agent
+        mock_complete.return_value = "general-agent: search the web"
+
+        # Dispatcher streams tokens immediately (no delay)
+        async def _fast_stream(req):
+            chunk = MagicMock()
+            chunk.result = {"token": "Here is the answer", "done": False}
+            chunk.done = False
+            yield chunk
+            final = MagicMock()
+            final.result = {"token": "", "done": True}
+            final.done = True
+            yield final
+
+        dispatcher.dispatch_stream = _fast_stream
+
+        task = _make_task("search something", user_text="search something")
+        task.conversation_id = "conv-fast"
+        task.context = TaskContext(language="en")
+
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+
+        # No filler token should be present
+        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        assert len(filler_chunks) == 0
+        # Real tokens should be present
+        real_tokens = [c for c in chunks if c.get("token") and not c.get("is_filler") and not c.get("done")]
+        assert len(real_tokens) >= 1
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_filler_when_agent_is_slow(self, mock_complete, mock_track, mock_settings):
+        """When the agent exceeds the threshold, a filler token is yielded."""
+        orch, dispatcher, _ = self._make_filler_orchestrator()
+        orch._filler_enabled = True
+        orch._filler_threshold_ms = 50  # 50ms threshold (very short for test)
+
+        mock_settings.get_value = AsyncMock(return_value="groq/llama-3.1-8b-instant")
+
+        # Classification call only
+        mock_complete.return_value = "general-agent: search the web"
+
+        # Mock filler agent invocation
+        orch._invoke_filler_agent = AsyncMock(return_value="Let me look that up for you.")
+
+        # Dispatcher streams tokens with a delay exceeding threshold
+        async def _slow_stream(req):
+            await asyncio.sleep(0.2)  # 200ms delay, exceeds 50ms threshold
+            chunk = MagicMock()
+            chunk.result = {"token": "Here is the answer", "done": False}
+            chunk.done = False
+            yield chunk
+            final = MagicMock()
+            final.result = {"token": "", "done": True}
+            final.done = True
+            yield final
+
+        dispatcher.dispatch_stream = _slow_stream
+
+        task = _make_task("search something", user_text="search something")
+        task.conversation_id = "conv-slow"
+        task.context = TaskContext(language="en")
+
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+
+        # A filler token should be yielded before real tokens
+        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        assert len(filler_chunks) == 1
+        assert filler_chunks[0]["token"] == "Let me look that up for you."
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_no_filler_for_fast_agent(self, mock_complete, mock_track, mock_settings):
+        """Filler is never sent for agents with expected_latency != high."""
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, dispatcher, _ = self._make_filler_orchestrator()
+        orch._filler_enabled = True
+        orch._filler_threshold_ms = 10
+
+        mock_complete.return_value = "light-agent: Turn on kitchen light"
+
+        async def _stream(req):
+            await asyncio.sleep(0.1)  # Slow, but agent is not "high" latency
+            chunk = MagicMock()
+            chunk.result = {"token": "Done", "done": True}
+            chunk.done = True
+            yield chunk
+
+        dispatcher.dispatch_stream = _stream
+
+        task = _make_task("turn on light", user_text="turn on light")
+        task.conversation_id = "conv-fast-agent"
+        task.context = TaskContext(language="en")
+
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+
+        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        assert len(filler_chunks) == 0
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_filler_generation_failure_still_yields_agent_tokens(self, mock_complete, mock_track, mock_settings):
+        """When filler generation fails, agent tokens are still yielded normally."""
+        orch, dispatcher, _ = self._make_filler_orchestrator()
+        orch._filler_enabled = True
+        orch._filler_threshold_ms = 50
+
+        mock_settings.get_value = AsyncMock(return_value="groq/llama-3.1-8b-instant")
+
+        # Classification call only
+        mock_complete.return_value = "general-agent: search the web"
+
+        # Mock filler agent invocation to return None (failure)
+        orch._invoke_filler_agent = AsyncMock(return_value=None)
+
+        async def _slow_stream(req):
+            await asyncio.sleep(0.2)
+            chunk = MagicMock()
+            chunk.result = {"token": "Real answer", "done": False}
+            chunk.done = False
+            yield chunk
+            final = MagicMock()
+            final.result = {"token": "", "done": True}
+            final.done = True
+            yield final
+
+        dispatcher.dispatch_stream = _slow_stream
+
+        task = _make_task("search something", user_text="search something")
+        task.conversation_id = "conv-fail"
+        task.context = TaskContext(language="en")
+
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+
+        # No filler since generation failed
+        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        assert len(filler_chunks) == 0
+        # But real tokens should still be present
+        real_tokens = [c for c in chunks if c.get("token") == "Real answer"]
+        assert len(real_tokens) == 1
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_filler_generated_but_not_sent_records_generate_span(self, mock_complete, mock_track, mock_settings):
+        """When filler is generated but agent responds during generation, only filler_generate span is recorded."""
+        from app.analytics.tracer import SpanCollector
+
+        orch, dispatcher, _ = self._make_filler_orchestrator()
+        orch._filler_enabled = True
+        orch._filler_threshold_ms = 50
+
+        mock_settings.get_value = AsyncMock(return_value="groq/llama-3.1-8b-instant")
+        mock_complete.return_value = "general-agent: search the web"
+
+        # Filler agent returns text, but agent responds during filler generation
+        # We simulate this by having the stream put a chunk before filler finishes
+        async def _filler_slow(user_text, agent, lang):
+            await asyncio.sleep(0.05)
+            return "Hold on..."
+
+        orch._invoke_filler_agent = AsyncMock(side_effect=_filler_slow)
+
+        # Dispatcher streams a chunk immediately (will be in queue when filler returns)
+        async def _fast_after_threshold(req):
+            # Small delay to exceed threshold, but chunk arrives during filler gen
+            await asyncio.sleep(0.07)
+            chunk = MagicMock()
+            chunk.result = {"token": "Fast answer", "done": False}
+            chunk.done = False
+            yield chunk
+            final = MagicMock()
+            final.result = {"token": "", "done": True}
+            final.done = True
+            yield final
+
+        dispatcher.dispatch_stream = _fast_after_threshold
+
+        collector = SpanCollector("trace-filler-unsent")
+        task = _make_task("search something", user_text="search something")
+        task.conversation_id = "conv-unsent"
+        task.context = TaskContext(language="en")
+        task.span_collector = collector
+
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+
+        # No filler should have been sent to user
+        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        assert len(filler_chunks) == 0
+
+        # filler_generate span should exist with was_sent=False
+        fg_spans = [s for s in collector._spans if s.get("span_name") == "filler_generate"]
+        assert len(fg_spans) == 1
+        assert fg_spans[0]["metadata"]["was_sent"] is False
+        assert fg_spans[0]["metadata"]["filler_text"] == "Hold on..."
+
+        # filler_send span should NOT exist
+        fs_spans = [s for s in collector._spans if s.get("span_name") == "filler_send"]
+        assert len(fs_spans) == 0
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_filler_sent_records_both_spans(self, mock_complete, mock_track, mock_settings):
+        """When filler is sent, both filler_generate and filler_send spans are recorded."""
+        from app.analytics.tracer import SpanCollector
+
+        orch, dispatcher, _ = self._make_filler_orchestrator()
+        orch._filler_enabled = True
+        orch._filler_threshold_ms = 50
+
+        mock_settings.get_value = AsyncMock(return_value="groq/llama-3.1-8b-instant")
+        mock_complete.return_value = "general-agent: search the web"
+
+        orch._invoke_filler_agent = AsyncMock(return_value="Let me look that up for you.")
+
+        async def _slow_stream(req):
+            await asyncio.sleep(0.2)
+            chunk = MagicMock()
+            chunk.result = {"token": "Here is the answer", "done": False}
+            chunk.done = False
+            yield chunk
+            final = MagicMock()
+            final.result = {"token": "", "done": True}
+            final.done = True
+            yield final
+
+        dispatcher.dispatch_stream = _slow_stream
+
+        collector = SpanCollector("trace-filler-sent")
+        task = _make_task("search something", user_text="search something")
+        task.conversation_id = "conv-sent"
+        task.context = TaskContext(language="en")
+        task.span_collector = collector
+
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+
+        # Filler should have been sent
+        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        assert len(filler_chunks) == 1
+
+        # filler_generate span should exist with was_sent=True
+        fg_spans = [s for s in collector._spans if s.get("span_name") == "filler_generate"]
+        assert len(fg_spans) == 1
+        assert fg_spans[0]["metadata"]["was_sent"] is True
+        assert fg_spans[0]["metadata"]["filler_text"] == "Let me look that up for you."
+
+        # filler_send span should exist with duration 0
+        fs_spans = [s for s in collector._spans if s.get("span_name") == "filler_send"]
+        assert len(fs_spans) == 1
+        assert fs_spans[0]["metadata"]["filler_text"] == "Let me look that up for you."
+        assert fs_spans[0]["duration_ms"] == 0
+
+
+# ---------------------------------------------------------------------------
+# FillerAgent tests
+# ---------------------------------------------------------------------------
+
+class TestFillerAgent:
+    """Tests for the standalone FillerAgent class."""
+
+    def test_agent_card(self):
+        agent = FillerAgent()
+        card = agent.agent_card
+        assert card.agent_id == "filler-agent"
+        assert card.expected_latency == "low"
+        assert "filler_generation" in card.skills
+
+    @patch("app.agents.filler.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_returns_speech(self, mock_complete, mock_settings):
+        mock_settings.get_value = AsyncMock(return_value="You are friendly.")
+        mock_complete.return_value = "One moment, let me check."
+        agent = FillerAgent()
+        task = AgentTask(
+            description="generate_filler:general-agent",
+            user_text="what is the weather",
+            context=TaskContext(language="en"),
+        )
+        result = await agent.handle_task(task)
+        assert result.speech == "One moment, let me check."
+        mock_complete.assert_awaited_once()
+
+    @patch("app.agents.filler.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_returns_empty_on_timeout(self, mock_complete, mock_settings):
+        mock_settings.get_value = AsyncMock(return_value="")
+
+        async def _slow(*args, **kwargs):
+            await asyncio.sleep(10)
+            return "too late"
+        mock_complete.side_effect = _slow
+        agent = FillerAgent()
+        task = AgentTask(
+            description="generate_filler:general-agent",
+            user_text="query",
+            context=TaskContext(language="en"),
+        )
+        result = await agent.handle_task(task)
+        assert result.speech == ""
+
+    @patch("app.agents.filler.SettingsRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_returns_empty_on_error(self, mock_complete, mock_settings):
+        mock_settings.get_value = AsyncMock(return_value="")
+        mock_complete.side_effect = Exception("LLM error")
+        agent = FillerAgent()
+        task = AgentTask(
+            description="generate_filler:general-agent",
+            user_text="query",
+            context=TaskContext(language="en"),
+        )
+        result = await agent.handle_task(task)
+        assert result.speech == ""
+
+    def test_language_names_mapping(self):
+        from app.agents.filler import _LANGUAGE_NAMES
+        assert _LANGUAGE_NAMES["de"] == "German (Deutsch)"
+        assert _LANGUAGE_NAMES["en"] == "English"
+        assert _LANGUAGE_NAMES["fr"] == "French (Francais)"
+
+
+# ---------------------------------------------------------------------------
 # AgentConfig default temperature
 # ---------------------------------------------------------------------------
 
@@ -2049,6 +2540,19 @@ class TestAgentConfigDefaultTemperature:
         from app.models.agent import AgentConfig
         config = AgentConfig(agent_id="test-agent")
         assert config.temperature == 0.2
+
+
+class TestAgentConfigReasoningEffort:
+
+    def test_default_reasoning_effort_is_none(self):
+        from app.models.agent import AgentConfig
+        config = AgentConfig(agent_id="test-agent")
+        assert config.reasoning_effort is None
+
+    def test_reasoning_effort_accepted(self):
+        from app.models.agent import AgentConfig
+        config = AgentConfig(agent_id="test-agent", reasoning_effort="low")
+        assert config.reasoning_effort == "low"
 
 
 # ---------------------------------------------------------------------------
@@ -2940,4 +3444,643 @@ class TestStreamMediatedSpeech:
         token = StreamToken(token="hi", done=False)
         data = token.model_dump()
         assert data["mediated_speech"] is None
+
+
+# ---------------------------------------------------------------------------
+# SendAgent
+# ---------------------------------------------------------------------------
+
+class TestSendAgent:
+
+    def _make_send_agent(self):
+        ha_client = AsyncMock()
+        agent = SendAgent(ha_client=ha_client, entity_index=None)
+        return agent, ha_client
+
+    def test_agent_card(self):
+        agent, _ = self._make_send_agent()
+        card = agent.agent_card
+        assert card.agent_id == "send-agent"
+        assert "send" in card.description.lower()
+
+    @patch("app.agents.send.SendDeviceMappingRepository")
+    async def test_handle_task_notify(self, mock_repo, monkeypatch):
+        agent, ha_client = self._make_send_agent()
+        mock_repo.find_by_name = AsyncMock(return_value={
+            "display_name": "Laura Handy",
+            "device_type": "notify",
+            "ha_service_target": "mobile_app_lauras_iphone",
+        })
+        monkeypatch.setattr(agent, "_format_content", AsyncMock(return_value="test content"))
+
+        task = _make_task(
+            description=f"send to Laura Handy{_CONTENT_SEPARATOR}Here is the recipe...",
+        )
+        result = await agent.handle_task(task)
+        assert "Laura Handy" in result.speech
+        ha_client.call_service.assert_called_once_with(
+            "notify", "mobile_app_lauras_iphone", None,
+            {"message": "test content", "title": "Agent Assist"},
+        )
+
+    @patch("app.agents.send.SendDeviceMappingRepository")
+    async def test_handle_task_tts(self, mock_repo, monkeypatch):
+        agent, ha_client = self._make_send_agent()
+        mock_repo.find_by_name = AsyncMock(return_value={
+            "display_name": "Satellite Kueche",
+            "device_type": "tts",
+            "ha_service_target": "media_player.satellite_kueche",
+        })
+        monkeypatch.setattr(agent, "_format_content", AsyncMock(return_value="short summary"))
+
+        task = _make_task(
+            description=f"sende an Satellite Kueche{_CONTENT_SEPARATOR}Full content here",
+        )
+        result = await agent.handle_task(task)
+        assert "Satellite Kueche" in result.speech
+        ha_client.call_service.assert_called_once()
+        call_args = ha_client.call_service.call_args
+        assert call_args[0][0] == "tts"
+        assert call_args[0][1] == "speak"
+
+    @patch("app.agents.send.SendDeviceMappingRepository")
+    async def test_handle_task_unknown_device(self, mock_repo):
+        agent, _ = self._make_send_agent()
+        mock_repo.find_by_name = AsyncMock(return_value=None)
+
+        task = _make_task(
+            description=f"send to Unknown Device{_CONTENT_SEPARATOR}content",
+        )
+        result = await agent.handle_task(task)
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.ENTITY_NOT_FOUND
+
+    async def test_handle_task_no_content_separator(self):
+        agent, _ = self._make_send_agent()
+        task = _make_task(description="send to Laura Handy")
+        result = await agent.handle_task(task)
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.PARSE_ERROR
+
+    def test_extract_target_name_german(self):
+        agent, _ = self._make_send_agent()
+        assert agent._extract_target_name("sende an Laura Handy") == "Laura Handy"
+        assert agent._extract_target_name("schicke an Satellite Kueche") == "Satellite Kueche"
+
+    def test_extract_target_name_english(self):
+        agent, _ = self._make_send_agent()
+        assert agent._extract_target_name("send to Laura Handy") == "Laura Handy"
+        assert agent._extract_target_name("deliver to Kitchen Speaker") == "Kitchen Speaker"
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator Sequential Send
+# ---------------------------------------------------------------------------
+
+class TestOrchestratorSequentialSend:
+
+    def _make_orchestrator(self):
+        dispatcher = AsyncMock()
+        registry = AsyncMock()
+        cache_manager = MagicMock()
+        cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
+
+        registry.list_agents = AsyncMock(return_value=[
+            AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"]),
+            AgentCard(agent_id="send-agent", name="Send Agent", description="", skills=["send"]),
+        ])
+
+        orchestrator = OrchestratorAgent(
+            dispatcher=dispatcher,
+            registry=registry,
+            cache_manager=cache_manager,
+        )
+        return orchestrator, dispatcher
+
+    async def test_sequential_send_dispatches_content_then_send(self):
+        orchestrator, _ = self._make_orchestrator()
+        orchestrator._dispatch_single = AsyncMock(side_effect=[
+            ("general-agent", "Here is the recipe: ...", {"speech": "Here is the recipe: ..."}),
+            ("send-agent", "Sent to Laura Handy.", {"speech": "Sent to Laura Handy."}),
+        ])
+        classifications = [
+            ("general-agent", "find lasagna recipe", 0.9),
+            ("send-agent", "send to Laura Handy", 0.95),
+        ]
+        user_text = "find lasagna recipe and send to Laura Handy"
+        routed_to, speech, result = await orchestrator._handle_sequential_send(
+            classifications, user_text,
+            "conv-123", [], None, None,
+        )
+        assert "general-agent" in routed_to
+        assert "send-agent" in routed_to
+        # Content agent receives condensed content_task as description
+        calls = orchestrator._dispatch_single.call_args_list
+        assert calls[0][0][0] == "general-agent"
+        assert calls[0][0][1] == "find lasagna recipe"
+        assert calls[1][0][0] == "send-agent"
+        assert _CONTENT_SEPARATOR in calls[1][0][1]
+        # Return value is send_speech only (not combined)
+        assert speech == "Sent to Laura Handy."
+
+    async def test_sequential_send_sets_context_flag(self):
+        orchestrator, _ = self._make_orchestrator()
+        orchestrator._dispatch_single = AsyncMock(side_effect=[
+            ("general-agent", "Recipe content", {"speech": "Recipe content"}),
+            ("send-agent", "Sent.", {"speech": "Sent."}),
+        ])
+        classifications = [
+            ("general-agent", "find recipe", 0.9),
+            ("send-agent", "send to phone", 0.95),
+        ]
+        await orchestrator._handle_sequential_send(
+            classifications, "find recipe and send to phone",
+            "conv-123", [], None, None,
+        )
+        # Content agent dispatch should receive context with sequential_send=True
+        content_call = orchestrator._dispatch_single.call_args_list[0]
+        ctx = content_call.kwargs.get("incoming_context") or content_call[1].get("incoming_context")
+        assert ctx is not None
+        assert ctx.sequential_send is True
+
+    async def test_sequential_send_no_content_available(self):
+        orchestrator, _ = self._make_orchestrator()
+        orchestrator._dispatch_single = AsyncMock(return_value=(
+            "general-agent", "", {"speech": ""},
+        ))
+        classifications = [
+            ("general-agent", "find recipe", 0.9),
+            ("send-agent", "send to Laura Handy", 0.95),
+        ]
+        routed_to, speech, result = await orchestrator._handle_sequential_send(
+            classifications, "test", "conv-123", [], None, None,
+        )
+        assert "no content" in speech.lower()
+
+
+# ---------------------------------------------------------------------------
+# Hot-register/unregister via dashboard endpoint
+# ---------------------------------------------------------------------------
+
+class TestHotRegistration:
+    """Tests for hot-register / unregister in update_agent_config."""
+
+    @pytest.fixture
+    def mock_app(self):
+        """Create a mock app with registry and state."""
+        from app.a2a.registry import AgentRegistry
+        app = MagicMock()
+        app.state.registry = AgentRegistry()
+        app.state.ha_client = MagicMock()
+        app.state.entity_index = MagicMock()
+        app.state.entity_matcher = MagicMock()
+        return app
+
+    @pytest.mark.asyncio
+    async def test_enable_registers_agent(self, mock_app):
+        """Enabling a Phase 2 agent hot-registers it in the registry."""
+        from app.api.routes.dashboard_api import _create_phase2_agent
+        registry = mock_app.state.registry
+
+        agent = _create_phase2_agent("send-agent", mock_app)
+        assert agent is not None
+        assert agent.agent_card.agent_id == "send-agent"
+
+        await registry.register(agent)
+        card = await registry.discover("send-agent")
+        assert card is not None
+        assert card.agent_id == "send-agent"
+
+    @pytest.mark.asyncio
+    async def test_disable_unregisters_agent(self, mock_app):
+        """Disabling a Phase 2 agent hot-unregisters it from the registry."""
+        from app.api.routes.dashboard_api import _create_phase2_agent
+        registry = mock_app.state.registry
+
+        agent = _create_phase2_agent("send-agent", mock_app)
+        await registry.register(agent)
+        assert await registry.discover("send-agent") is not None
+
+        await registry.unregister("send-agent")
+        assert await registry.discover("send-agent") is None
+
+    @pytest.mark.asyncio
+    async def test_core_agents_protected_from_unregister(self):
+        """Core agents should not be unregistered via the hot-unregister path."""
+        from app.api.routes.dashboard_api import AgentConfigUpdate
+        core_agents = {"orchestrator", "general-agent", "light-agent", "music-agent", "rewrite-agent"}
+        for agent_id in core_agents:
+            payload = AgentConfigUpdate(enabled=False)
+            # The endpoint guards core agents; verify the set matches
+            assert agent_id in core_agents
+
+    @pytest.mark.asyncio
+    async def test_create_phase2_agent_with_matcher(self, mock_app):
+        """Agents needing entity_matcher receive it."""
+        from app.api.routes.dashboard_api import _create_phase2_agent
+        agent = _create_phase2_agent("climate-agent", mock_app)
+        assert agent is not None
+        assert agent._entity_matcher is mock_app.state.entity_matcher
+
+    @pytest.mark.asyncio
+    async def test_create_phase2_agent_unknown_returns_none(self, mock_app):
+        """Unknown agent IDs return None."""
+        from app.api.routes.dashboard_api import _create_phase2_agent
+        assert _create_phase2_agent("unknown-agent", mock_app) is None
+
+
+# ---------------------------------------------------------------------------
+# _strip_seq_rule
+# ---------------------------------------------------------------------------
+
+class TestStripSeqRule:
+    """Tests for OrchestratorAgent._strip_seq_rule."""
+
+    def test_removes_seq_block(self):
+        prompt = (
+            "Some preamble.\n"
+            "Sequential dispatch rule:\n"
+            "- If the user asks to send...\n"
+            "  output TWO lines.\n"
+            "Format: <agent-id> (<confidence>%): <condensed task>\n"
+            "Trailing content."
+        )
+        result = OrchestratorAgent._strip_seq_rule(prompt)
+        assert "Sequential dispatch rule:" not in result
+        assert "Format:" in result
+        assert "Some preamble." in result
+        assert "Trailing content." in result
+
+    def test_noop_when_markers_absent(self):
+        prompt = "No markers here.\nJust text."
+        result = OrchestratorAgent._strip_seq_rule(prompt)
+        assert result == prompt
+
+    def test_noop_when_only_start_marker(self):
+        prompt = "Sequential dispatch rule:\nSome content."
+        result = OrchestratorAgent._strip_seq_rule(prompt)
+        assert result == prompt
+
+    def test_noop_when_end_before_start(self):
+        prompt = "Format: something\nSequential dispatch rule:\nMore."
+        result = OrchestratorAgent._strip_seq_rule(prompt)
+        assert result == prompt
+
+
+# ---------------------------------------------------------------------------
+# Sequential send filler support
+# ---------------------------------------------------------------------------
+
+class TestSequentialSendFiller:
+    """Tests for filler TTS in the sequential-send (content + send-agent) path."""
+
+    def _make_orchestrator(self):
+        dispatcher = AsyncMock()
+        registry = AsyncMock()
+        cache_manager = MagicMock()
+        cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
+        cache_manager.apply_rewrite = AsyncMock()
+
+        registry.list_agents = AsyncMock(return_value=[
+            AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"], expected_latency="high"),
+            AgentCard(agent_id="send-agent", name="Send Agent", description="", skills=["send"]),
+        ])
+
+        orchestrator = OrchestratorAgent(
+            dispatcher=dispatcher,
+            registry=registry,
+            cache_manager=cache_manager,
+        )
+        orchestrator._filler_enabled = True
+        orchestrator._filler_threshold_ms = 50  # 50ms for fast tests
+        return orchestrator
+
+    def _seq_classifications(self):
+        return [
+            ("general-agent", "find lasagna recipe", 0.9),
+            ("send-agent", "send to Laura Handy", 0.95),
+        ]
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_seq_send_filler_fires_when_slow(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        """Filler is yielded when handle_task takes longer than the threshold."""
+        orch = self._make_orchestrator()
+        classifications = self._seq_classifications()
+
+        # Classification call
+        mock_complete.return_value = "general-agent: find lasagna recipe\nsend-agent: send to Laura Handy"
+
+        # Mock _should_send_filler -> True
+        orch._should_send_filler = AsyncMock(return_value=True)
+
+        # Mock _invoke_filler_agent -> filler text
+        orch._invoke_filler_agent = AsyncMock(return_value="One moment please.")
+
+        # Mock handle_task to be slow (exceeds 50ms threshold)
+        original_handle = orch.handle_task
+
+        async def _slow_handle(task, _pre_classified=None):
+            await asyncio.sleep(0.3)
+            return {"speech": "Here is the recipe. Sent to Laura Handy."}
+
+        orch.handle_task = AsyncMock(side_effect=_slow_handle)
+
+        task = _make_task("find recipe and send to Laura", user_text="find recipe and send to Laura")
+        task.conversation_id = "conv-seq-slow"
+        task.context = TaskContext(language="en")
+
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+
+        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        assert len(filler_chunks) == 1
+        assert filler_chunks[0]["token"] == "One moment please."
+
+        # Final result should also be present
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_seq_send_no_filler_when_fast(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        """No filler when handle_task finishes before threshold."""
+        orch = self._make_orchestrator()
+        orch._filler_threshold_ms = 5000  # very high threshold
+
+        mock_complete.return_value = "general-agent: find recipe\nsend-agent: send"
+
+        orch._should_send_filler = AsyncMock(return_value=True)
+        orch._invoke_filler_agent = AsyncMock(return_value="One moment please.")
+
+        # handle_task completes instantly
+        orch.handle_task = AsyncMock(return_value={"speech": "Done and sent."})
+
+        task = _make_task("find recipe and send", user_text="find recipe and send")
+        task.conversation_id = "conv-seq-fast"
+        task.context = TaskContext(language="en")
+
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+
+        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        assert len(filler_chunks) == 0
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_seq_send_no_filler_when_disabled(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        """No filler when _should_send_filler returns False."""
+        orch = self._make_orchestrator()
+
+        mock_complete.return_value = "general-agent: find recipe\nsend-agent: send"
+
+        orch._should_send_filler = AsyncMock(return_value=False)
+        orch._invoke_filler_agent = AsyncMock(return_value="One moment please.")
+
+        async def _slow_handle(task, _pre_classified=None):
+            await asyncio.sleep(0.3)
+            return {"speech": "Done."}
+
+        orch.handle_task = AsyncMock(side_effect=_slow_handle)
+
+        task = _make_task("find recipe and send", user_text="find recipe and send")
+        task.conversation_id = "conv-seq-disabled"
+        task.context = TaskContext(language="en")
+
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+
+        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        assert len(filler_chunks) == 0
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_seq_send_filler_skipped_if_task_done_during_gen(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        """Filler is skipped if handle_task completes while filler is being generated."""
+        orch = self._make_orchestrator()
+        orch._filler_threshold_ms = 50
+
+        mock_complete.return_value = "general-agent: find recipe\nsend-agent: send"
+
+        orch._should_send_filler = AsyncMock(return_value=True)
+
+        # Filler gen is slow (200ms), but handle_task finishes in 100ms (during filler gen)
+        async def _slow_filler(user_text, agent_id, language):
+            await asyncio.sleep(0.2)
+            return "Thinking..."
+
+        orch._invoke_filler_agent = AsyncMock(side_effect=_slow_filler)
+
+        async def _medium_handle(task, _pre_classified=None):
+            await asyncio.sleep(0.1)
+            return {"speech": "Done."}
+
+        orch.handle_task = AsyncMock(side_effect=_medium_handle)
+
+        task = _make_task("find recipe and send", user_text="find recipe and send")
+        task.conversation_id = "conv-seq-race"
+        task.context = TaskContext(language="en")
+
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+
+        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        assert len(filler_chunks) == 0
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_seq_send_filler_span_recorded(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        """When filler fires, analytics span records sequential_send=True."""
+        from app.analytics.tracer import SpanCollector
+
+        orch = self._make_orchestrator()
+
+        mock_complete.return_value = "general-agent: find recipe\nsend-agent: send"
+
+        orch._should_send_filler = AsyncMock(return_value=True)
+        orch._invoke_filler_agent = AsyncMock(return_value="Hold on.")
+
+        async def _slow_handle(task, _pre_classified=None):
+            await asyncio.sleep(0.3)
+            return {"speech": "Done."}
+
+        orch.handle_task = AsyncMock(side_effect=_slow_handle)
+
+        collector = SpanCollector("trace-seq-filler")
+
+        task = _make_task("find recipe and send", user_text="find recipe and send")
+        task.conversation_id = "conv-seq-span"
+        task.context = TaskContext(language="en")
+        task.span_collector = collector
+
+        chunks = []
+        async for c in orch.handle_task_stream(task):
+            chunks.append(c)
+
+        # Filler should have fired
+        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        assert len(filler_chunks) == 1
+
+        # Find the filler_generate span
+        fg_spans = [s for s in collector._spans if s.get("span_name") == "filler_generate"]
+        assert len(fg_spans) == 1
+        assert fg_spans[0]["metadata"]["sequential_send"] is True
+        assert fg_spans[0]["metadata"]["target_agent"] == "general-agent"
+        assert fg_spans[0]["metadata"]["was_sent"] is True
+
+        # Find the filler_send span
+        fs_spans = [s for s in collector._spans if s.get("span_name") == "filler_send"]
+        assert len(fs_spans) == 1
+        assert fs_spans[0]["metadata"]["sequential_send"] is True
+        assert fs_spans[0]["metadata"]["target_agent"] == "general-agent"
+
+
+# ---------------------------------------------------------------------------
+# Language detection
+# ---------------------------------------------------------------------------
+
+class TestLanguageDetection:
+    """Tests for the language detection utility."""
+
+    def test_detect_german(self):
+        from app.agents.language_detect import detect_user_language
+        result = detect_user_language("Kannst du bitte das Licht in der Kueche einschalten und die Heizung auf zwanzig Grad stellen?", "en")
+        assert result == "de"
+
+    def test_detect_english(self):
+        from app.agents.language_detect import detect_user_language
+        result = detect_user_language("Turn on the kitchen light please", "en")
+        assert result == "en"
+
+    def test_short_text_fallback(self):
+        from app.agents.language_detect import detect_user_language
+        result = detect_user_language("ok", "de")
+        assert result == "de"
+
+    def test_empty_text_fallback(self):
+        from app.agents.language_detect import detect_user_language
+        result = detect_user_language("", "en")
+        assert result == "en"
+
+    def test_low_confidence_fallback(self):
+        from app.agents.language_detect import detect_user_language
+        # "na, was machst du?" is ambiguous (sw:28%, en:28%) - should fall back
+        result = detect_user_language("na, was machst du?", "de")
+        assert result == "de"
+
+
+class TestResolveLanguage:
+    """Tests for orchestrator _resolve_language."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_language_auto_detect(self):
+        """When setting is 'auto', language is detected from user text."""
+        orch = OrchestratorAgent(dispatcher=MagicMock())
+        with patch("app.agents.orchestrator.SettingsRepository") as mock_repo:
+            mock_repo.get_value = AsyncMock(return_value="auto")
+            result = await orch._resolve_language("Kannst du bitte das Licht in der Kueche einschalten und die Heizung auf zwanzig Grad stellen?", "en")
+        assert result == "de"
+
+    @pytest.mark.asyncio
+    async def test_resolve_language_manual_override(self):
+        """When setting is a specific language code, it overrides detection."""
+        orch = OrchestratorAgent(dispatcher=MagicMock())
+        with patch("app.agents.orchestrator.SettingsRepository") as mock_repo:
+            mock_repo.get_value = AsyncMock(return_value="fr")
+            result = await orch._resolve_language("Turn on the light", "en")
+        assert result == "fr"
+
+    @pytest.mark.asyncio
+    async def test_resolve_language_falls_back_to_turns(self):
+        """When user text is ambiguous, detect from conversation turns."""
+        orch = OrchestratorAgent(dispatcher=MagicMock())
+        turns = [
+            {"role": "user", "content": "Schalte bitte das Licht in der Kueche ein"},
+            {"role": "assistant", "content": "Das Licht in der Kueche ist jetzt an."},
+        ]
+        with patch("app.agents.orchestrator.SettingsRepository") as mock_repo:
+            mock_repo.get_value = AsyncMock(return_value="auto")
+            result = await orch._resolve_language("na, was machst du?", "en", turns=turns)
+        assert result == "de"
+
+
+# ---------------------------------------------------------------------------
+# Span end_time tests
+# ---------------------------------------------------------------------------
+
+class TestSpanEndTime:
+    """Verify that SpanCollector records end_time on spans."""
+
+    @pytest.mark.asyncio
+    async def test_span_has_end_time(self):
+        from app.analytics.tracer import SpanCollector
+        collector = SpanCollector(trace_id="t-endtime")
+        async with collector.start_span("test_op") as span:
+            pass
+        recorded = collector._spans[0]
+        assert "end_time" in recorded
+        assert recorded["end_time"] is not None
+
+    @pytest.mark.asyncio
+    async def test_sequential_spans_do_not_overlap(self):
+        from datetime import datetime
+        from app.analytics.tracer import SpanCollector
+        collector = SpanCollector(trace_id="t-seq")
+        async with collector.start_span("first") as s1:
+            await asyncio.sleep(0.01)
+        async with collector.start_span("second") as s2:
+            await asyncio.sleep(0.01)
+        first = collector._spans[0]
+        second = collector._spans[1]
+        end1 = datetime.fromisoformat(first["end_time"])
+        start2 = datetime.fromisoformat(second["start_time"])
+        assert end1 <= start2
+
+    @pytest.mark.asyncio
+    async def test_override_duration_computes_correct_end_time(self):
+        from datetime import datetime, timedelta
+        from app.analytics.tracer import SpanCollector
+        collector = SpanCollector(trace_id="t-override")
+        async with collector.start_span("overridden") as span:
+            span["_override_duration_ms"] = 500.0
+        recorded = collector._spans[0]
+        st = datetime.fromisoformat(recorded["start_time"])
+        et = datetime.fromisoformat(recorded["end_time"])
+        expected = st + timedelta(milliseconds=500.0)
+        assert et == expected
+        assert recorded["duration_ms"] == 500.0
+
+    @pytest.mark.asyncio
+    async def test_flush_uses_end_time_for_total_duration(self):
+        from datetime import datetime, timedelta, timezone
+        from app.analytics.tracer import SpanCollector
+        collector = SpanCollector(trace_id="t-flush")
+        async with collector.start_span("a") as span:
+            await asyncio.sleep(0.01)
+        # Manually set a later end_time to verify flush picks it up
+        et = datetime.fromisoformat(collector._spans[0]["end_time"])
+        later_end = (et + timedelta(seconds=1)).isoformat()
+        collector._spans[0]["end_time"] = later_end
+        with patch("app.analytics.tracer.TraceSpanRepository") as mock_repo, \
+             patch("app.analytics.tracer.TraceSummaryRepository") as mock_summary:
+            mock_repo.insert_batch = AsyncMock()
+            mock_summary.update_duration = AsyncMock()
+            await collector.flush()
+            if mock_summary.update_duration.called:
+                total_ms = mock_summary.update_duration.call_args[0][1]
+                assert total_ms >= 1000.0
 

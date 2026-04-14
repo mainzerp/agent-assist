@@ -62,6 +62,16 @@ class HARestClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_services(self) -> dict[str, Any]:
+        """GET /api/services -- returns a dict of domain -> service list."""
+        resp = await self._client.get("/api/services")
+        resp.raise_for_status()
+        data = resp.json()
+        result: dict[str, Any] = {}
+        for entry in (data or []):
+            result[entry.get("domain", "")] = entry.get("services", {})
+        return result
+
     async def get_state(self, entity_id: str) -> dict[str, Any] | None:
         """GET /api/states/<entity_id> -- returns a single entity state."""
         resp = await self._client.get(f"/api/states/{entity_id}")

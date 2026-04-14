@@ -20,6 +20,7 @@ from app.db.repository import (
     SettingsRepository,
     SetupStateRepository,
     TraceSummaryRepository,
+    SendDeviceMappingRepository,
 )
 
 
@@ -35,7 +36,7 @@ class TestSchemaCreation:
             "entity_matching_config", "aliases", "mcp_servers", "secrets",
             "admin_accounts", "setup_state", "entity_visibility_rules",
             "plugins", "conversations", "analytics", "trace_spans",
-            "trace_summary",
+            "trace_summary", "send_device_mappings",
         }
         async with aiosqlite.connect(str(db_repository)) as db:
             cursor = await db.execute(
@@ -746,3 +747,80 @@ class TestMigrationV5:
 
         row = await AgentConfigRepository.get("rewrite-agent")
         assert row["max_tokens"] == 1024  # preserved
+
+
+# ---------------------------------------------------------------------------
+# SendDeviceMappingRepository
+# ---------------------------------------------------------------------------
+
+class TestSendDeviceMappingRepository:
+
+    async def test_create_and_get(self, db_repository):
+        row_id = await SendDeviceMappingRepository.create(
+            "Laura Handy", "notify", "mobile_app_lauras_iphone",
+        )
+        assert row_id is not None
+        mapping = await SendDeviceMappingRepository.get(row_id)
+        assert mapping["display_name"] == "Laura Handy"
+        assert mapping["device_type"] == "notify"
+        assert mapping["ha_service_target"] == "mobile_app_lauras_iphone"
+
+    async def test_find_by_name_case_insensitive(self, db_repository):
+        await SendDeviceMappingRepository.create(
+            "Laura Handy", "notify", "mobile_app_lauras_iphone",
+        )
+        result = await SendDeviceMappingRepository.find_by_name("laura handy")
+        assert result is not None
+        assert result["display_name"] == "Laura Handy"
+
+    async def test_find_by_name_not_found(self, db_repository):
+        result = await SendDeviceMappingRepository.find_by_name("nonexistent")
+        assert result is None
+
+    async def test_list_all(self, db_repository):
+        await SendDeviceMappingRepository.create("Device A", "notify", "svc_a")
+        await SendDeviceMappingRepository.create("Device B", "tts", "media_player.b")
+        mappings = await SendDeviceMappingRepository.list_all()
+        assert len(mappings) == 2
+
+    async def test_update(self, db_repository):
+        row_id = await SendDeviceMappingRepository.create("Old Name", "notify", "svc_old")
+        ok = await SendDeviceMappingRepository.update(row_id, display_name="New Name")
+        assert ok is True
+        mapping = await SendDeviceMappingRepository.get(row_id)
+        assert mapping["display_name"] == "New Name"
+
+    async def test_delete(self, db_repository):
+        row_id = await SendDeviceMappingRepository.create("To Delete", "notify", "svc_del")
+        ok = await SendDeviceMappingRepository.delete(row_id)
+        assert ok is True
+        mapping = await SendDeviceMappingRepository.get(row_id)
+        assert mapping is None
+
+    async def test_delete_nonexistent(self, db_repository):
+        ok = await SendDeviceMappingRepository.delete(9999)
+        assert ok is False
+
+    async def test_find_by_name_apostrophe_mismatch(self, db_repository):
+        await SendDeviceMappingRepository.create(
+            "Patric's Handy", "notify", "mobile_app_patrics_handy",
+        )
+        result = await SendDeviceMappingRepository.find_by_name("patrics handy")
+        assert result is not None
+        assert result["display_name"] == "Patric's Handy"
+
+    async def test_find_by_name_special_chars_fallback(self, db_repository):
+        await SendDeviceMappingRepository.create(
+            "Laura's Tablet", "notify", "mobile_app_lauras_tablet",
+        )
+        result = await SendDeviceMappingRepository.find_by_name("lauras tablet")
+        assert result is not None
+        assert result["display_name"] == "Laura's Tablet"
+
+    async def test_find_by_name_exact_still_works(self, db_repository):
+        await SendDeviceMappingRepository.create(
+            "Patric's Handy", "notify", "mobile_app_patrics_handy",
+        )
+        result = await SendDeviceMappingRepository.find_by_name("Patric's Handy")
+        assert result is not None
+        assert result["display_name"] == "Patric's Handy"

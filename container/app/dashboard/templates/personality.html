@@ -49,7 +49,33 @@
     </div>
 
     <div class="card card-narrow" style="margin-top: 1.5rem;">
-        <h3 class="card-title mb-md">Status</h3>
+        <h3 class="card-title mb-md">Filler / Interim Responses</h3>
+        <p class="text-muted mb-md" style="font-size: 0.875rem;">
+            When enabled, the assistant speaks a short filler phrase while waiting for slow agents (e.g. web search). Only triggers for agents marked as high-latency.
+        </p>
+
+        <div class="form-group">
+            <label class="form-label" style="display: flex; align-items: center; gap: 0.5rem;">
+                <input type="checkbox" x-model="config.filler_enabled" style="width: auto;">
+                Enable filler responses
+            </label>
+        </div>
+
+        <div class="form-group" x-show="config.filler_enabled">
+            <label class="form-label">Threshold: <span x-text="config.filler_threshold_ms"></span> ms</label>
+            <input type="range" class="form-input" min="500" max="5000" step="100"
+                   x-model.number="config.filler_threshold_ms" style="width: 100%;">
+            <span class="form-hint">How long to wait (ms) before sending a filler. Default: 2000 ms.</span>
+        </div>
+
+
+
+        <div class="form-actions">
+            <button class="btn btn-primary btn-sm" @click="saveConfig()">Save Changes</button>
+        </div>
+    </div>
+
+    <div class="card card-narrow" style="margin-top: 1.5rem;">
         <p class="text-muted" style="font-size: 0.875rem;">
             <template x-if="config.prompt && config.prompt.trim()">
                 <span class="text-sage">Active -- responses will be mediated with the personality prompt.</span>
@@ -64,7 +90,7 @@
 <script>
 function personalityPage() {
     return {
-        config: { prompt: "", mediation_temperature: 0.3 },
+        config: { prompt: "", mediation_temperature: 0.3, filler_enabled: false, filler_threshold_ms: 2000 },
         saved: false,
         error: "",
         async loadConfig() {

@@ -294,3 +294,73 @@ class TestOverviewExtended:
         assert isinstance(data["entity_count"], int)
         assert isinstance(data["avg_latency_ms"], (int, float))
         assert isinstance(data["total_conversations"], int)
+
+
+# ===================================================================
+# Send devices API
+# ===================================================================
+
+
+@pytest.mark.integration
+class TestSendDevicesAPI:
+
+    async def test_list_empty(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/api/admin/send-devices")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_create_and_list(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.post("/api/admin/send-devices", json={
+            "display_name": "Laura Handy",
+            "device_type": "notify",
+            "ha_service_target": "mobile_app_lauras_iphone",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "id" in data
+
+        resp = await dashboard_client.get("/api/admin/send-devices")
+        assert resp.status_code == 200
+        mappings = resp.json()
+        assert len(mappings) == 1
+        assert mappings[0]["display_name"] == "Laura Handy"
+
+    async def test_create_duplicate_rejected(self, dashboard_client: httpx.AsyncClient):
+        await dashboard_client.post("/api/admin/send-devices", json={
+            "display_name": "Laura Handy",
+            "device_type": "notify",
+            "ha_service_target": "svc_a",
+        })
+        resp = await dashboard_client.post("/api/admin/send-devices", json={
+            "display_name": "Laura Handy",
+            "device_type": "notify",
+            "ha_service_target": "svc_b",
+        })
+        assert resp.status_code == 409
+
+    async def test_create_invalid_type(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.post("/api/admin/send-devices", json={
+            "display_name": "Test",
+            "device_type": "invalid",
+            "ha_service_target": "svc",
+        })
+        assert resp.status_code == 400
+
+    async def test_delete(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.post("/api/admin/send-devices", json={
+            "display_name": "To Delete",
+            "device_type": "notify",
+            "ha_service_target": "svc_del",
+        })
+        mapping_id = resp.json()["id"]
+        resp = await dashboard_client.delete(f"/api/admin/send-devices/{mapping_id}")
+        assert resp.status_code == 200
+
+        resp = await dashboard_client.get("/api/admin/send-devices")
+        assert resp.status_code == 200
+        assert len(resp.json()) == 0
+
+    async def test_send_devices_page(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/send-devices")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers.get("content-type", "")

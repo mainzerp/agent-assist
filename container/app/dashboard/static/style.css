@@ -1176,6 +1176,15 @@ input[type="range"]::-webkit-slider-thumb {
     gap: 1rem;
 }
 
+.grid-2 > .card {
+    display: flex;
+    flex-direction: column;
+}
+
+.grid-2 > .card > :last-child {
+    flex: 1;
+}
+
 .grid-3 {
     display: grid;
     grid-template-columns: repeat(3, 1fr);

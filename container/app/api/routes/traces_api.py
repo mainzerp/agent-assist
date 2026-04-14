@@ -128,8 +128,8 @@ async def get_trace_detail(trace_id: str):
     # Build agent_executions from spans
     agent_executions = []
     for span in spans:
-        if span.get("agent_id") and span["span_name"] in ("dispatch", "classify", "return", "rewrite", "ha_action"):
-            response_key = "final_response" if span["span_name"] == "return" else ("rewritten_text" if span["span_name"] == "rewrite" else ("result_speech" if span["span_name"] == "ha_action" else "agent_response"))
+        if span.get("agent_id") and span["span_name"] in ("dispatch", "dispatch_content", "dispatch_send", "classify", "return", "rewrite", "ha_action", "filler_generate", "filler_send"):
+            response_key = "final_response" if span["span_name"] == "return" else ("rewritten_text" if span["span_name"] == "rewrite" else ("result_speech" if span["span_name"] == "ha_action" else ("filler_text" if span["span_name"] in ("filler_generate", "filler_send") else "agent_response")))
             agent_executions.append({
                 "agent_id": span["agent_id"],
                 "span_name": span["span_name"],
@@ -142,7 +142,11 @@ async def get_trace_detail(trace_id: str):
     agent_communication = []
     classify_span = None
     dispatch_spans = []
+    dispatch_content_spans = []
+    dispatch_send_spans = []
     return_span = None
+    filler_generate_span = None
+    filler_send_span = None
     routing_cached = False
 
     for span in spans:
@@ -151,8 +155,16 @@ async def get_trace_detail(trace_id: str):
             routing_cached = (span.get("metadata") or {}).get("routing_cached", False)
         elif span.get("span_name") == "dispatch":
             dispatch_spans.append(span)
+        elif span.get("span_name") == "dispatch_content":
+            dispatch_content_spans.append(span)
+        elif span.get("span_name") == "dispatch_send":
+            dispatch_send_spans.append(span)
         elif span.get("span_name") == "return":
             return_span = span
+        elif span.get("span_name") == "filler_generate":
+            filler_generate_span = span
+        elif span.get("span_name") == "filler_send":
+            filler_send_span = span
 
     user_input = summary.get("user_input", "")
     final_response = summary.get("final_response", "")
@@ -218,35 +230,179 @@ async def get_trace_detail(trace_id: str):
             "memory": summary.get("conversation_turns") or [],
         })
 
-        if len(dispatch_spans) <= 1:
-            # Single-agent path (backward compatible)
+        is_sequential_send = len(dispatch_content_spans) > 0 and len(dispatch_send_spans) > 0
+
+        if is_sequential_send:
+            # Sequential send path (content agent -> send agent)
+            condensed = meta.get("condensed_task", "")
+
+            # Content agent dispatch
+            content_ds = dispatch_content_spans[0]
+            content_meta = content_ds.get("metadata") or {}
+            content_agent = content_meta.get("content_agent") or content_ds.get("agent_id", "")
+            content_resp = content_meta.get("agent_response", "")
+            if not content_resp:
+                for ds in dispatch_spans:
+                    if ds.get("agent_id") == content_agent:
+                        content_resp = (ds.get("metadata") or {}).get("agent_response", "")
+                        break
+
+            step_content = {
+                "from_agent": "orchestrator",
+                "to_agent": content_agent,
+                "task": condensed,
+                "response": content_resp,
+                "sequential": True,
+                "sequential_step": "content",
+            }
+            if condensed == user_input:
+                step_content["task_pass_through"] = True
+            agent_communication.append(step_content)
+
+            # Filler (if present)
+            if filler_generate_span:
+                fg_meta = filler_generate_span.get("metadata") or {}
+                was_sent = fg_meta.get("was_sent", False)
+                agent_communication.append({
+                    "from_agent": "filler-agent",
+                    "to_agent": "orchestrator",
+                    "task": "",
+                    "response": fg_meta.get("filler_text", ""),
+                    "is_filler": True,
+                    "filler_stage": "generated",
+                    "filler_was_sent": was_sent,
+                })
+
+            if filler_send_span:
+                fs_meta = filler_send_span.get("metadata") or {}
+                agent_communication.append({
+                    "from_agent": "orchestrator (filler)",
+                    "to_agent": "user",
+                    "task": "",
+                    "response": fs_meta.get("filler_text", ""),
+                    "is_filler": True,
+                    "filler_stage": "sent",
+                })
+
+            # Send agent dispatch
+            send_ds = dispatch_send_spans[0]
+            send_meta = send_ds.get("metadata") or {}
+            send_agent = send_ds.get("agent_id", "send-agent")
+            send_resp = send_meta.get("agent_response", "")
+            if not send_resp:
+                for ds in dispatch_spans:
+                    if ds.get("agent_id") == send_agent:
+                        send_resp = (ds.get("metadata") or {}).get("agent_response", "")
+                        break
+
+            agent_communication.append({
+                "from_agent": "orchestrator",
+                "to_agent": send_agent,
+                "task": send_meta.get("send_target", ""),
+                "response": send_resp,
+                "sequential": True,
+                "sequential_step": "send",
+            })
+
+            # Final return
+            mediated = False
+            if return_span:
+                ret_meta = return_span.get("metadata") or {}
+                mediated = ret_meta.get("mediated", False)
+            agent_communication.append({
+                "from_agent": "orchestrator",
+                "to_agent": "user",
+                "task": "",
+                "response": final_response,
+                "response_unchanged": not mediated,
+            })
+
+        elif len(dispatch_spans) <= 1:
+            # Single-agent path
             dispatch_span = dispatch_spans[0] if dispatch_spans else None
             agent_resp = ""
             if dispatch_span:
                 agent_resp = (dispatch_span.get("metadata") or {}).get("agent_response", "")
             condensed = meta.get("condensed_task", "")
 
-            step2 = {
-                "from_agent": "orchestrator",
-                "to_agent": target,
-                "task": condensed,
-                "response": agent_resp,
-            }
-            if condensed == user_input:
-                step2["task_pass_through"] = True
-            agent_communication.append(step2)
-
             mediated = False
             if return_span:
                 ret_meta = return_span.get("metadata") or {}
                 mediated = ret_meta.get("mediated", False)
-            agent_communication.append({
-                "from_agent": target,
-                "to_agent": "orchestrator",
-                "task": "",
-                "response": final_response,
-                "response_unchanged": (agent_resp == final_response and not mediated),
-            })
+
+            if filler_generate_span:
+                # With filler: show chronological order
+                # 2. Orchestrator dispatches task (no response yet)
+                step_dispatch = {
+                    "from_agent": "orchestrator",
+                    "to_agent": target,
+                    "task": condensed,
+                    "response": "",
+                }
+                if condensed == user_input:
+                    step_dispatch["task_pass_through"] = True
+                agent_communication.append(step_dispatch)
+
+                # 3. Filler generated
+                fg_meta = filler_generate_span.get("metadata") or {}
+                was_sent = fg_meta.get("was_sent", False)
+                agent_communication.append({
+                    "from_agent": "filler-agent",
+                    "to_agent": "orchestrator",
+                    "task": "",
+                    "response": fg_meta.get("filler_text", ""),
+                    "is_filler": True,
+                    "filler_stage": "generated",
+                    "filler_was_sent": was_sent,
+                })
+
+                # 4. Filler sent to user (only if actually sent)
+                if filler_send_span:
+                    fs_meta = filler_send_span.get("metadata") or {}
+                    agent_communication.append({
+                        "from_agent": "orchestrator (filler)",
+                        "to_agent": "user",
+                        "task": "",
+                        "response": fs_meta.get("filler_text", ""),
+                        "is_filler": True,
+                        "filler_stage": "sent",
+                    })
+
+                # 5. Agent responds to orchestrator
+                agent_communication.append({
+                    "from_agent": target,
+                    "to_agent": "orchestrator",
+                    "task": "",
+                    "response": agent_resp,
+                })
+
+                # 6. Final response (mediated) to user
+                agent_communication.append({
+                    "from_agent": "orchestrator",
+                    "to_agent": "user",
+                    "task": "",
+                    "response": final_response,
+                    "response_unchanged": (agent_resp == final_response and not mediated),
+                })
+            else:
+                # Without filler: compact format (backward compatible)
+                step2 = {
+                    "from_agent": "orchestrator",
+                    "to_agent": target,
+                    "task": condensed,
+                    "response": agent_resp,
+                }
+                if condensed == user_input:
+                    step2["task_pass_through"] = True
+                agent_communication.append(step2)
+
+                agent_communication.append({
+                    "from_agent": target,
+                    "to_agent": "orchestrator",
+                    "task": "",
+                    "response": final_response,
+                    "response_unchanged": (agent_resp == final_response and not mediated),
+                })
         else:
             # Multi-agent fan-out path
             for ds in dispatch_spans:

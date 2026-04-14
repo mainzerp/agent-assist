@@ -207,6 +207,44 @@ class TestConversationEndpoints:
         )
         assert resp.status_code == 401
 
+    async def test_sse_passes_through_is_filler(self, authed_client: httpx.AsyncClient):
+        """SSE endpoint should include is_filler field in streamed tokens."""
+        import json as _json
+        from app.api.routes import conversation as conv_routes
+
+        # Mock dispatcher that yields a filler token
+        async def _filler_stream(req):
+            filler = MagicMock()
+            filler.result = {"token": "One moment...", "is_filler": True}
+            filler.done = False
+            yield filler
+            chunk = MagicMock()
+            chunk.result = {"token": "Here is the answer"}
+            chunk.done = False
+            yield chunk
+            final = MagicMock()
+            final.result = {"token": ""}
+            final.done = True
+            yield final
+
+        old_dispatcher = conv_routes._dispatcher
+        mock_d = MagicMock()
+        mock_d.dispatch_stream = _filler_stream
+        conv_routes._dispatcher = mock_d
+
+        try:
+            resp = await authed_client.post(
+                "/api/conversation/stream",
+                json={"text": "search something"},
+            )
+            assert resp.status_code == 200
+            lines = [l for l in resp.text.splitlines() if l.startswith("data:")]
+            assert len(lines) >= 2
+            first_data = _json.loads(lines[0].removeprefix("data:").strip())
+            assert first_data.get("is_filler") is True
+        finally:
+            conv_routes._dispatcher = old_dispatcher
+
 
 # ===================================================================
 # Admin Settings

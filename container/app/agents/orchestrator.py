@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import time
 import uuid
 from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 
 from app.agents.base import BaseAgent
 from app.a2a.protocol import JsonRpcRequest
 from app.db.repository import SettingsRepository
 from app.agents.sanitize import strip_markdown
+from app.agents.language_detect import detect_user_language
 from app.analytics.collector import track_request, track_agent_timeout
 from app.models.agent import AgentCard, AgentTask, TaskContext
 from app.models.cache import ResponseCacheEntry, CachedAction
@@ -31,22 +34,52 @@ _CONVERSATION_TTL_SECONDS = 1800  # 30 minutes
 _FALLBACK_AGENT = "general-agent"
 
 
+class _NoOpSpan:
+    """No-op span for when span_collector is None."""
+
+    def __setitem__(self, key, value):
+        pass
+
+    def __getitem__(self, key):
+        return {}
+
+    def get(self, key, default=None):
+        return default
+
+
+@contextlib.asynccontextmanager
+async def _optional_span(span_collector, name, **kwargs):
+    if span_collector:
+        async with span_collector.start_span(name, **kwargs) as span:
+            yield span
+    else:
+        yield _NoOpSpan()
+
+
 class OrchestratorAgent(BaseAgent):
     """Classifies user intent and dispatches to specialized agents via A2A."""
 
-    def __init__(self, dispatcher, registry=None, cache_manager=None, ha_client=None, entity_index=None, presence_detector=None) -> None:
+    def __init__(self, dispatcher, registry=None, cache_manager=None, ha_client=None, entity_index=None, presence_detector=None, filler_agent=None) -> None:
         super().__init__(ha_client=ha_client, entity_index=entity_index)
         self._dispatcher = dispatcher
         self._registry = registry
         self._cache_manager = cache_manager
         self._presence_detector = presence_detector
+        self._filler_agent = filler_agent
         self._conversations: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
         self._default_timeout: int = 5
         self._max_iterations: int = 3
+        self._filler_enabled: bool = False
+        self._filler_threshold_ms: int = 1000
+        self._mediation_model: str | None = None
+        self._mediation_temperature: float = 0.3
+        self._mediation_max_tokens: int = 2048
 
     async def initialize(self) -> None:
         """Load reliability config from DB. Call during startup."""
         await self._load_reliability_config()
+        await self._load_filler_config()
+        await self._load_mediation_config()
 
     async def _load_reliability_config(self) -> None:
         """Read timeout and max_iterations from settings."""
@@ -65,12 +98,72 @@ class OrchestratorAgent(BaseAgent):
             self._default_timeout, self._max_iterations,
         )
 
+    async def _load_filler_config(self) -> None:
+        """Read filler/interim response settings from DB."""
+        try:
+            val = await SettingsRepository.get_value("filler.enabled", "false")
+            self._filler_enabled = val.lower() == "true"
+        except (ValueError, TypeError):
+            self._filler_enabled = False
+        try:
+            val = await SettingsRepository.get_value("filler.threshold_ms", "1000")
+            self._filler_threshold_ms = int(val)
+        except (ValueError, TypeError):
+            self._filler_threshold_ms = 1000
+        logger.info(
+            "Filler config: enabled=%s threshold=%dms",
+            self._filler_enabled, self._filler_threshold_ms,
+        )
+
+    async def _load_mediation_config(self) -> None:
+        """Read mediation/merge override params from settings."""
+        try:
+            val = await SettingsRepository.get_value("mediation.model", "")
+            self._mediation_model = val if val else None
+        except (ValueError, TypeError):
+            self._mediation_model = None
+        try:
+            val = await SettingsRepository.get_value("mediation.temperature", "0.3")
+            self._mediation_temperature = float(val)
+        except (ValueError, TypeError):
+            self._mediation_temperature = 0.3
+        try:
+            val = await SettingsRepository.get_value("mediation.max_tokens", "2048")
+            self._mediation_max_tokens = int(val)
+        except (ValueError, TypeError):
+            self._mediation_max_tokens = 2048
+        logger.info(
+            "Mediation config: model=%s temperature=%.1f max_tokens=%d",
+            self._mediation_model or "(orchestrator default)",
+            self._mediation_temperature,
+            self._mediation_max_tokens,
+        )
+
     async def _get_known_agents(self) -> set[str]:
         """Return set of currently registered agent IDs (excluding orchestrator)."""
         if not self._registry:
             return {"light-agent", "music-agent", "general-agent"}
         cards = await self._registry.list_agents()
         return {card.agent_id for card in cards if card.agent_id != "orchestrator"}
+
+    async def _resolve_language(self, user_text: str, context_language: str | None = None, turns: list[dict] | None = None) -> str:
+        """Resolve effective language: DB setting > auto-detect > turns-detect > fallback."""
+        setting = await SettingsRepository.get_value("language", "auto")
+        if setting and setting != "auto":
+            return setting  # Manual override from settings
+        # Auto-detect from user text
+        detected = detect_user_language(user_text, fallback="")
+        if detected:
+            return detected
+        # Low confidence on short text - try with recent conversation context
+        if turns:
+            user_turns = [t.get("content", "") for t in turns if t.get("role") == "user"]
+            if user_turns:
+                combined = " ".join(user_turns[-3:]) + " " + user_text
+                detected = detect_user_language(combined, fallback="")
+                if detected:
+                    return detected
+        return context_language or "en"
 
     @property
     def agent_card(self) -> AgentCard:
@@ -91,6 +184,7 @@ class OrchestratorAgent(BaseAgent):
         turns: list[dict],
         span_collector,
         incoming_context: TaskContext | None = None,
+        skip_dispatch_span: bool = False,
     ) -> tuple[str, str, dict | None]:
         """Dispatch a single task to one agent and return (agent_id, speech, result_dict)."""
         context = TaskContext(conversation_turns=turns)
@@ -101,6 +195,7 @@ class OrchestratorAgent(BaseAgent):
         if incoming_context:
             context.device_id = incoming_context.device_id
             context.area_id = incoming_context.area_id
+            context.language = incoming_context.language
 
         agent_task = AgentTask(
             description=condensed_task,
@@ -119,23 +214,22 @@ class OrchestratorAgent(BaseAgent):
         )
         try:
             t0 = time.perf_counter()
-            if span_collector:
-                async with span_collector.start_span("dispatch", agent_id=target_agent) as span:
-                    response = await asyncio.wait_for(
-                        self._dispatcher.dispatch(request),
-                        timeout=self._default_timeout,
-                    )
-                    latency_ms = (time.perf_counter() - t0) * 1000
-                    span["metadata"]["latency_ms"] = round(latency_ms, 1)
-                    result_data = response.result or {}
-                    span["metadata"]["agent_response"] = (result_data.get("speech") or "")[:500]
-                    span["metadata"]["condensed_task"] = condensed_task[:500]
-            else:
+            noop_span = {"metadata": {}}
+            dispatch_ctx = (
+                contextlib.nullcontext(noop_span)
+                if skip_dispatch_span
+                else _optional_span(span_collector, "dispatch", agent_id=target_agent)
+            )
+            async with dispatch_ctx as span:
                 response = await asyncio.wait_for(
                     self._dispatcher.dispatch(request),
                     timeout=self._default_timeout,
                 )
                 latency_ms = (time.perf_counter() - t0) * 1000
+                span["metadata"]["latency_ms"] = round(latency_ms, 1)
+                result_data = response.result or {}
+                span["metadata"]["agent_response"] = (result_data.get("speech") or "")[:500]
+                span["metadata"]["condensed_task"] = condensed_task[:500]
             logger.info("Agent %s responded in %.1fms", target_agent, latency_ms)
             await track_request(target_agent, cache_hit=False, latency_ms=latency_ms)
         except asyncio.TimeoutError:
@@ -173,6 +267,315 @@ class OrchestratorAgent(BaseAgent):
 
         return target_agent, speech, result
 
+    async def _handle_sequential_send(
+        self,
+        classifications: list[tuple[str, str, float]],
+        user_text: str,
+        conversation_id: str,
+        turns: list[dict],
+        span_collector,
+        incoming_context,
+    ) -> tuple[str, str, dict | None]:
+        """Handle sequential dispatch: content agent -> send agent.
+
+        Returns (routed_to, speech, result_dict) like _dispatch_single.
+        """
+        content_agents = [(a, t, c) for a, t, c in classifications if a != "send-agent"]
+        send_classification = next(((a, t, c) for a, t, c in classifications if a == "send-agent"), None)
+
+        if not send_classification:
+            logger.warning("_handle_sequential_send called without send-agent classification")
+            return await self._dispatch_single(
+                classifications[0][0], classifications[0][1], user_text,
+                conversation_id, turns, span_collector, incoming_context=incoming_context,
+            )
+
+        _send_agent_id, send_task_text, _send_confidence = send_classification
+
+        # Step 1: Dispatch content agent(s)
+        if content_agents:
+            content_aid, content_task, _ = content_agents[0]
+            content_context = TaskContext(
+                conversation_turns=turns,
+                device_id=incoming_context.device_id if incoming_context else None,
+                area_id=incoming_context.area_id if incoming_context else None,
+                language=incoming_context.language if incoming_context else "en",
+                sequential_send=True,
+            )
+            if self._presence_detector:
+                room = self._presence_detector.get_most_likely_room()
+                if room:
+                    content_context.presence_room = room
+            async with _optional_span(span_collector, "dispatch_content", agent_id=content_aid) as span:
+                content_agent_id, content_speech, _content_result = await self._dispatch_single(
+                    content_aid, content_task, user_text, conversation_id, turns, span_collector,
+                    incoming_context=content_context,
+                    skip_dispatch_span=True,
+                )
+                span["metadata"]["content_agent"] = content_agent_id
+                span["metadata"]["content_length"] = len(content_speech or "")
+                span["metadata"]["agent_response"] = (content_speech or "")[:500]
+                span["metadata"]["condensed_task"] = content_task[:500]
+        else:
+            content_speech = turns[-1].get("content", "") if turns else ""
+            content_agent_id = "conversation-history"
+
+        if not content_speech:
+            return (
+                "send-agent",
+                "No content available to send.",
+                {"speech": "No content available to send.", "error": {
+                    "code": "parse_error", "recoverable": True,
+                }},
+            )
+
+        # Step 2: Build augmented task for send-agent with the content
+        from app.agents.send import _CONTENT_SEPARATOR
+        augmented_task = f"{send_task_text}{_CONTENT_SEPARATOR}{content_speech}"
+
+        async with _optional_span(span_collector, "dispatch_send", agent_id="send-agent") as span:
+            send_aid, send_speech, send_result = await self._dispatch_single(
+                "send-agent", augmented_task, user_text, conversation_id, turns, span_collector,
+                incoming_context=incoming_context,
+                skip_dispatch_span=True,
+            )
+            span["metadata"]["send_target"] = send_task_text
+            span["metadata"]["content_from"] = content_agent_id
+            span["metadata"]["agent_response"] = (send_speech or "")[:500]
+            span["metadata"]["condensed_task"] = augmented_task[:500]
+
+        routed_to = f"{content_agent_id}, send-agent"
+
+        return routed_to, send_speech, send_result
+
+    # ------------------------------------------------------------------
+    # Shared helpers to reduce duplication between handle_task / handle_task_stream
+    # ------------------------------------------------------------------
+
+    async def _do_cache_lookup(self, user_text: str, span_collector) -> tuple:
+        """Perform cache lookup with optional span recording.
+
+        Returns (cache_result, cache_span_or_None).
+        """
+        cache_result = None
+        cache_span_ref = None
+        if not self._cache_manager:
+            return cache_result, cache_span_ref
+
+        async with _optional_span(span_collector, "cache_lookup", agent_id="orchestrator") as cache_span:
+            try:
+                cache_result = await self._cache_manager.process(user_text)
+            except Exception:
+                logger.warning("Cache lookup failed", exc_info=True)
+                cache_result = None
+            if cache_result:
+                cache_span["metadata"]["hit_type"] = cache_result.hit_type
+                cache_span["metadata"]["similarity"] = cache_result.similarity
+                cache_span["metadata"]["cached_agent_id"] = cache_result.agent_id
+                if cache_result.hit_type.startswith("response"):
+                    cache_span["metadata"]["cache_tier"] = "response"
+                elif cache_result.hit_type == "routing_hit":
+                    cache_span["metadata"]["cache_tier"] = "routing"
+                else:
+                    cache_span["metadata"]["cache_tier"] = "both_miss"
+                if cache_result.entry:
+                    cache_span["metadata"]["hit_count"] = getattr(cache_result.entry, "hit_count", None)
+                    created = getattr(cache_result.entry, "created_at", None)
+                    if created:
+                        try:
+                            from datetime import datetime, timezone
+                            created_dt = datetime.fromisoformat(created)
+                            age = (datetime.now(timezone.utc) - created_dt).total_seconds()
+                            cache_span["metadata"]["entry_age_seconds"] = round(age, 1)
+                        except Exception:
+                            pass
+            else:
+                cache_span["metadata"]["hit_type"] = "miss"
+                cache_span["metadata"]["cache_tier"] = "both_miss"
+            cache_span_ref = cache_span
+
+        return cache_result, cache_span_ref
+
+    async def _handle_response_cache_hit(
+        self,
+        cache_result,
+        conversation_id: str,
+        user_text: str,
+        span_collector,
+        cache_span=None,
+    ) -> dict:
+        """Handle a response cache hit: execute cached action, rewrite, store turn, trace.
+
+        Returns the response dict.
+        """
+        target_agent = cache_result.agent_id or "unknown"
+        action_executed = None
+
+        async def _do_ha():
+            if not cache_result.cached_action:
+                return None
+            try:
+                return await self._execute_cached_action(cache_result.cached_action)
+            except Exception:
+                logger.warning("Cached action execution failed", exc_info=True)
+                return None
+
+        async def _do_rewrite():
+            if self._cache_manager:
+                await self._cache_manager.apply_rewrite(cache_result)
+
+        ha_result, _ = await asyncio.gather(_do_ha(), _do_rewrite())
+        action_executed = ha_result
+        speech = cache_result.response_text or ""
+
+        if cache_result.cached_action:
+            async with _optional_span(span_collector, "ha_action", agent_id=target_agent) as ha_span:
+                ha_span["metadata"]["action"] = cache_result.cached_action.service
+                ha_span["metadata"]["entity"] = cache_result.cached_action.entity_id
+                ha_span["metadata"]["success"] = action_executed is not None
+                ha_span["metadata"]["cached"] = True
+            if cache_span:
+                try:
+                    from datetime import datetime, timedelta
+                    _cs = datetime.fromisoformat(cache_span["start_time"])
+                    ha_span["start_time"] = (
+                        _cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))
+                    ).isoformat()
+                except Exception:
+                    pass
+        if cache_result.rewrite_applied:
+            async with _optional_span(span_collector, "rewrite", agent_id="rewrite-agent") as rw_span:
+                rw_span["metadata"]["original_text"] = (cache_result.original_response_text or "")[:500]
+                rw_span["metadata"]["rewritten_text"] = speech[:500]
+                rw_span["metadata"]["latency_ms"] = cache_result.rewrite_latency_ms
+                rw_span["metadata"]["success"] = True
+            if cache_result.rewrite_latency_ms is not None:
+                rw_span["duration_ms"] = round(cache_result.rewrite_latency_ms, 2)
+            if cache_span:
+                try:
+                    from datetime import datetime, timedelta
+                    _cs = datetime.fromisoformat(cache_span["start_time"])
+                    rw_span["start_time"] = (
+                        _cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))
+                    ).isoformat()
+                except Exception:
+                    pass
+        async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
+            ret_span["metadata"]["from_agent"] = target_agent
+            ret_span["metadata"]["agent_response"] = speech[:500]
+            ret_span["metadata"]["final_response"] = speech[:500]
+            ret_span["metadata"]["mediated"] = False
+            ret_span["metadata"]["response_cache_hit"] = True
+            prior_turns = self._get_turns(conversation_id)
+            self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
+            if span_collector:
+                try:
+                    from app.analytics.tracer import create_trace_summary
+                    await create_trace_summary(
+                        trace_id=span_collector.trace_id,
+                        conversation_id=conversation_id,
+                        user_input=user_text,
+                        final_response=speech,
+                        routing_agent=target_agent,
+                        routing_confidence=1.0,
+                        routing_duration_ms=None,
+                        condensed_task=user_text,
+                        agents=["orchestrator", target_agent],
+                        source=getattr(span_collector, "source", "api"),
+                        conversation_turns=prior_turns,
+                    )
+                except Exception:
+                    logger.warning("Failed to create trace summary", exc_info=True)
+
+        return {
+            "speech": speech,
+            "routed_to": target_agent,
+            "action_executed": action_executed,
+        }
+
+    def _store_response_cache(
+        self,
+        user_text: str,
+        speech: str,
+        target_agent: str,
+        confidence: float,
+        action_executed,
+        has_error: bool,
+    ) -> bool:
+        """Store a response in the cache. Returns True if stored."""
+        if (
+            not self._cache_manager
+            or target_agent == _FALLBACK_AGENT
+            or not speech
+            or has_error
+        ):
+            return False
+        try:
+            cached_action = None
+            entity_ids: list[str] = []
+            if action_executed and action_executed.get("success"):
+                entity_id_str = action_executed.get("entity_id", "")
+                domain = entity_id_str.split(".")[0] if "." in entity_id_str else ""
+                cached_action = CachedAction(
+                    service=f"{domain}/{action_executed['action']}",
+                    entity_id=entity_id_str,
+                    service_data={},
+                )
+                entity_ids = [entity_id_str] if entity_id_str else []
+            entry = ResponseCacheEntry(
+                query_text=user_text,
+                response_text=speech,
+                agent_id=target_agent,
+                cached_action=cached_action,
+                confidence=confidence,
+                entity_ids=entity_ids,
+            )
+            self._cache_manager.store_response(entry)
+            return True
+        except Exception:
+            logger.warning("Failed to store response cache", exc_info=True)
+            return False
+
+    async def _create_trace(
+        self,
+        span_collector,
+        conversation_id: str,
+        user_text: str,
+        speech: str,
+        target_agent: str,
+        confidence: float,
+        condensed_task: str,
+        classifications: list[tuple[str, str, float]],
+        turns: list[dict],
+    ) -> None:
+        """Create a trace summary from span data."""
+        try:
+            from app.analytics.tracer import create_trace_summary
+            classify_duration = None
+            for s in span_collector._spans:
+                if s.get("span_name") == "classify":
+                    classify_duration = s.get("duration_ms")
+                    break
+            agents = list({s.get("agent_id") for s in span_collector._spans if s.get("agent_id")})
+            if "orchestrator" not in agents:
+                agents.insert(0, "orchestrator")
+            await create_trace_summary(
+                trace_id=span_collector.trace_id,
+                conversation_id=conversation_id,
+                user_input=user_text,
+                final_response=speech,
+                routing_agent=target_agent,
+                routing_confidence=confidence,
+                routing_duration_ms=classify_duration,
+                condensed_task=condensed_task,
+                agents=agents,
+                source=getattr(span_collector, "source", "api"),
+                agent_instructions={aid: ctask for aid, ctask, _ in classifications} if len(classifications) > 1 else None,
+                conversation_turns=turns,
+            )
+        except Exception:
+            logger.warning("Failed to create trace summary", exc_info=True)
+
     async def handle_task(self, task: AgentTask, *, _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None) -> dict:
         user_text = task.user_text or task.description
         conversation_id = task.conversation_id
@@ -180,147 +583,33 @@ class OrchestratorAgent(BaseAgent):
             conversation_id = str(uuid.uuid4())
             logger.debug("No conversation_id from HA, generated fallback: %s", conversation_id)
 
+        # Resolve effective language via DB setting / auto-detect
+        context_language = (task.context.language if task.context else None) or "en"
+        lang_turns = self._get_turns(conversation_id)
+        detected_language = await self._resolve_language(user_text, context_language, turns=lang_turns)
+
         # Get span collector from task context if available
         span_collector = task.span_collector
 
         # 0. Cache lookup (before classify)
         cache_result = None
+        cache_span_ref = None
         if _pre_classified is None and self._cache_manager:
-            if span_collector:
-                async with span_collector.start_span("cache_lookup", agent_id="orchestrator") as cache_span:
-                    try:
-                        cache_result = await self._cache_manager.process(user_text)
-                    except Exception:
-                        logger.warning("Cache lookup failed", exc_info=True)
-                        cache_result = None
-                    if cache_result:
-                        cache_span["metadata"]["hit_type"] = cache_result.hit_type
-                        cache_span["metadata"]["similarity"] = cache_result.similarity
-                        cache_span["metadata"]["cached_agent_id"] = cache_result.agent_id
-                        if cache_result.hit_type.startswith("response"):
-                            cache_span["metadata"]["cache_tier"] = "response"
-                        elif cache_result.hit_type == "routing_hit":
-                            cache_span["metadata"]["cache_tier"] = "routing"
-                        else:
-                            cache_span["metadata"]["cache_tier"] = "both_miss"
-                        if cache_result.entry:
-                            cache_span["metadata"]["hit_count"] = getattr(cache_result.entry, "hit_count", None)
-                            created = getattr(cache_result.entry, "created_at", None)
-                            if created:
-                                try:
-                                    from datetime import datetime, timezone
-                                    created_dt = datetime.fromisoformat(created)
-                                    age = (datetime.now(timezone.utc) - created_dt).total_seconds()
-                                    cache_span["metadata"]["entry_age_seconds"] = round(age, 1)
-                                except Exception:
-                                    pass
-                    else:
-                        cache_span["metadata"]["hit_type"] = "miss"
-                        cache_span["metadata"]["cache_tier"] = "both_miss"
-            else:
-                try:
-                    cache_result = await self._cache_manager.process(user_text)
-                except Exception:
-                    logger.warning("Cache lookup failed", exc_info=True)
-                    cache_result = None
+            cache_result, cache_span_ref = await self._do_cache_lookup(user_text, span_collector)
 
         # Response hit short-circuit: skip classify and dispatch entirely
         if cache_result and cache_result.hit_type == "response_hit":
-            target_agent = cache_result.agent_id or "unknown"
-            action_executed = None
-
-            # Run HA action and rewrite concurrently for faster response
-            async def _do_ha():
-                if not cache_result.cached_action:
-                    return None
-                try:
-                    return await self._execute_cached_action(cache_result.cached_action)
-                except Exception:
-                    logger.warning("Cached action execution failed", exc_info=True)
-                    return None
-
-            async def _do_rewrite():
-                if self._cache_manager:
-                    await self._cache_manager.apply_rewrite(cache_result)
-
-            ha_result, _ = await asyncio.gather(_do_ha(), _do_rewrite())
-            action_executed = ha_result
-            speech = cache_result.response_text or ""
-
-            if span_collector:
-                # HA action span (retroactive, timed by HA client roundtrip)
-                if cache_result.cached_action:
-                    async with span_collector.start_span("ha_action", agent_id=target_agent) as ha_span:
-                        ha_span["metadata"]["action"] = cache_result.cached_action.service
-                        ha_span["metadata"]["entity"] = cache_result.cached_action.entity_id
-                        ha_span["metadata"]["success"] = action_executed is not None
-                        ha_span["metadata"]["cached"] = True
-                    # Align ha_action right after cache_lookup
-                    try:
-                        from datetime import datetime, timedelta
-                        _cs = datetime.fromisoformat(cache_span["start_time"])
-                        ha_span["start_time"] = (
-                            _cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))
-                        ).isoformat()
-                    except Exception:
-                        pass
-                # Rewrite span (retroactive, timed by LLM call)
-                if cache_result.rewrite_applied:
-                    async with span_collector.start_span("rewrite", agent_id="rewrite-agent") as rw_span:
-                        rw_span["metadata"]["original_text"] = (cache_result.original_response_text or "")[:500]
-                        rw_span["metadata"]["rewritten_text"] = speech[:500]
-                        rw_span["metadata"]["latency_ms"] = cache_result.rewrite_latency_ms
-                        rw_span["metadata"]["success"] = True
-                    if cache_result.rewrite_latency_ms is not None:
-                        rw_span["duration_ms"] = round(cache_result.rewrite_latency_ms, 2)
-                    # Align rewrite start_time to right after cache_lookup ends (concurrent with ha_action)
-                    try:
-                        from datetime import datetime, timedelta
-                        _cs = datetime.fromisoformat(cache_span["start_time"])
-                        rw_span["start_time"] = (
-                            _cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))
-                        ).isoformat()
-                    except Exception:
-                        pass
-                async with span_collector.start_span("return", agent_id="orchestrator") as ret_span:
-                    ret_span["metadata"]["from_agent"] = target_agent
-                    ret_span["metadata"]["agent_response"] = speech[:500]
-                    ret_span["metadata"]["final_response"] = speech[:500]
-                    ret_span["metadata"]["mediated"] = False
-                    ret_span["metadata"]["response_cache_hit"] = True
-                    prior_turns = self._get_turns(conversation_id)
-                    self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
-                    try:
-                        from app.analytics.tracer import create_trace_summary
-                        await create_trace_summary(
-                            trace_id=span_collector.trace_id,
-                            conversation_id=conversation_id,
-                            user_input=user_text,
-                            final_response=speech,
-                            routing_agent=target_agent,
-                            routing_confidence=1.0,
-                            routing_duration_ms=None,
-                            condensed_task=user_text,
-                            agents=["orchestrator", target_agent],
-                            source=getattr(span_collector, "source", "api"),
-                            conversation_turns=prior_turns,
-                        )
-                    except Exception:
-                        logger.warning("Failed to create trace summary", exc_info=True)
-            else:
-                self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
-            return {
-                "speech": speech,
-                "routed_to": target_agent,
-                "action_executed": action_executed,
-            }
+            result = await self._handle_response_cache_hit(
+                cache_result, conversation_id, user_text, span_collector, cache_span_ref,
+            )
+            return result
 
         # 1. Classify intent (skip if pre-classified by handle_task_stream)
         if _pre_classified is not None:
             classifications, routing_cached = _pre_classified
             target_agent, condensed_task, confidence = classifications[0]
-        elif span_collector:
-            async with span_collector.start_span("classify", agent_id="orchestrator") as span:
+        else:
+            async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
                 classifications, routing_cached = await self._classify(user_text, cache_result=cache_result, conversation_id=conversation_id)
                 target_agent, condensed_task, confidence = classifications[0]
                 span["metadata"]["target_agent"] = ", ".join(a for a, _, _ in classifications)
@@ -334,9 +623,6 @@ class OrchestratorAgent(BaseAgent):
                         a: {"task": t[:300], "confidence": c}
                         for a, t, c in classifications
                     }
-        else:
-            classifications, routing_cached = await self._classify(user_text, cache_result=cache_result, conversation_id=conversation_id)
-            target_agent, condensed_task, confidence = classifications[0]
         logger.info(
             "Routed to %s (%.0f%%): %s (conversation=%s)",
             target_agent, confidence * 100, condensed_task[:80], conversation_id,
@@ -345,9 +631,24 @@ class OrchestratorAgent(BaseAgent):
         # 2. Build context with conversation turns
         turns = self._get_turns(conversation_id)
 
+        # Check for sequential send dispatch
+        is_sequential_send = (
+            len(classifications) > 1
+            and any(a == "send-agent" for a, _, _ in classifications)
+        )
+
         # 3-4. Dispatch
         incoming_context = task.context
-        if len(classifications) == 1:
+        if is_sequential_send:
+            # --- Sequential send dispatch (content agent -> send agent) ---
+            routed_to, speech, result = await self._handle_sequential_send(
+                classifications, user_text, conversation_id, turns, span_collector,
+                incoming_context=incoming_context,
+            )
+            action_executed = (result or {}).get("action_executed")
+            has_error = bool((result or {}).get("error"))
+            agent_error = (result or {}).get("error")
+        elif len(classifications) == 1:
             # --- Single agent path (unchanged flow) ---
             agent_id, speech, result = await self._dispatch_single(
                 target_agent, condensed_task, user_text, conversation_id, turns, span_collector,
@@ -355,6 +656,10 @@ class OrchestratorAgent(BaseAgent):
             )
             action_executed = (result or {}).get("action_executed")
             routed_to = agent_id
+
+            # Check for agent-level error
+            agent_error = (result or {}).get("error")
+            has_error = agent_error is not None
         else:
             # --- Multi-agent parallel dispatch ---
             dispatch_coros = [
@@ -381,129 +686,47 @@ class OrchestratorAgent(BaseAgent):
             target_agent = routed_agents[0] if routed_agents else _FALLBACK_AGENT
             routed_to = ", ".join(routed_agents) if routed_agents else _FALLBACK_AGENT
             speech = ""  # Will be set by _merge_responses inside return span
+            has_error = False
 
         # 5. Mediate response, store turn, trace
         original_speech = speech
-        cache_stored_routing = False
         cache_stored_response = False
-        if span_collector:
-            async with span_collector.start_span("return", agent_id="orchestrator") as ret_span:
-                ret_span["metadata"]["from_agent"] = routed_to
-                if len(classifications) > 1:
-                    speech = await self._merge_responses(agent_responses, user_text)
-                    result = {"speech": speech}
-                ret_span["metadata"]["agent_response"] = speech[:500]
-                if len(classifications) <= 1:
-                    speech = await self._mediate_response(speech, user_text, target_agent)
-                # Multi-agent merging already applied personality in _merge_responses
-                ret_span["metadata"]["final_response"] = speech[:500]
-                ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1
-                # --- Store response cache (single-agent, non-fallback) ---
-                if (
-                    self._cache_manager
-                    and len(classifications) == 1
-                    and target_agent != _FALLBACK_AGENT
-                    and original_speech
-                ):
-                    try:
-                        cached_action = None
-                        entity_ids: list[str] = []
-                        if action_executed and action_executed.get("success"):
-                            entity_id_str = action_executed.get("entity_id", "")
-                            domain = entity_id_str.split(".")[0] if "." in entity_id_str else ""
-                            cached_action = CachedAction(
-                                service=f"{domain}/{action_executed['action']}",
-                                entity_id=entity_id_str,
-                                service_data={},
-                            )
-                            entity_ids = [entity_id_str] if entity_id_str else []
-                        entry = ResponseCacheEntry(
-                            query_text=user_text,
-                            response_text=original_speech,
-                            agent_id=target_agent,
-                            cached_action=cached_action,
-                            confidence=confidence,
-                            entity_ids=entity_ids,
-                        )
-                        self._cache_manager.store_response(entry)
-                        cache_stored_response = True
-                    except Exception:
-                        logger.warning("Failed to store response cache", exc_info=True)
-                # Cache store metadata
-                ret_span["metadata"]["cache_stored_routing"] = cache_stored_routing
-                ret_span["metadata"]["cache_stored_response"] = cache_stored_response
-                self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
-                try:
-                    from app.analytics.tracer import create_trace_summary
-                    classify_duration = None
-                    for s in span_collector._spans:
-                        if s.get("span_name") == "classify":
-                            classify_duration = s.get("duration_ms")
-                            break
-                    agents = list({s.get("agent_id") for s in span_collector._spans if s.get("agent_id")})
-                    if "orchestrator" not in agents:
-                        agents.insert(0, "orchestrator")
-                    await create_trace_summary(
-                        trace_id=span_collector.trace_id,
-                        conversation_id=conversation_id,
-                        user_input=user_text,
-                        final_response=speech,
-                        routing_agent=target_agent,
-                        routing_confidence=confidence,
-                        routing_duration_ms=classify_duration,
-                        condensed_task=condensed_task,
-                        agents=agents,
-                        source=getattr(span_collector, "source", "api"),
-                        agent_instructions={aid: ctask for aid, ctask, _ in classifications} if len(classifications) > 1 else None,
-                        conversation_turns=turns,
-                    )
-                except Exception:
-                    logger.warning("Failed to create trace summary", exc_info=True)
-        else:
-            if len(classifications) > 1:
+        async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
+            ret_span["metadata"]["from_agent"] = routed_to
+            if len(classifications) > 1 and not is_sequential_send:
                 speech = await self._merge_responses(agent_responses, user_text)
                 result = {"speech": speech}
-            elif len(classifications) <= 1:
-                speech = await self._mediate_response(speech, user_text, target_agent)
-            # --- Store response cache (single-agent, non-fallback) ---
-            if (
-                self._cache_manager
-                and len(classifications) == 1
-                and target_agent != _FALLBACK_AGENT
-                and original_speech
-            ):
-                try:
-                    cached_action_obj = None
-                    entity_ids_list: list[str] = []
-                    if action_executed and action_executed.get("success"):
-                        entity_id_str = action_executed.get("entity_id", "")
-                        domain = entity_id_str.split(".")[0] if "." in entity_id_str else ""
-                        cached_action_obj = CachedAction(
-                            service=f"{domain}/{action_executed['action']}",
-                            entity_id=entity_id_str,
-                            service_data={},
-                        )
-                        entity_ids_list = [entity_id_str] if entity_id_str else []
-                    entry = ResponseCacheEntry(
-                        query_text=user_text,
-                        response_text=original_speech,
-                        agent_id=target_agent,
-                        cached_action=cached_action_obj,
-                        confidence=confidence,
-                        entity_ids=entity_ids_list,
-                    )
-                    self._cache_manager.store_response(entry)
-                    cache_stored_response = True
-                except Exception:
-                    logger.warning("Failed to store response cache", exc_info=True)
+            ret_span["metadata"]["agent_response"] = speech[:500]
+            if (len(classifications) <= 1 or is_sequential_send) and not has_error:
+                mediation_agent = "send-agent" if is_sequential_send else target_agent
+                mediation_language = detected_language
+                speech = await self._mediate_response(speech, user_text, mediation_agent, language=mediation_language)
+            ret_span["metadata"]["final_response"] = speech[:500]
+            ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1
+            if len(classifications) == 1:
+                cache_stored_response = self._store_response_cache(
+                    user_text, speech, target_agent, confidence, action_executed, has_error,
+                )
+            ret_span["metadata"]["cache_stored_response"] = cache_stored_response
             self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
+            if span_collector:
+                await self._create_trace(
+                    span_collector, conversation_id, user_text, speech,
+                    target_agent, confidence, condensed_task, classifications, turns,
+                )
 
-        return {
+        response = {
             "speech": strip_markdown(speech),
             "conversation_id": conversation_id,
             "routed_to": routed_to,
             "action_executed": action_executed,
         }
+        if has_error:
+            response["error"] = {
+                "code": agent_error.get("code", "unknown") if agent_error else "unknown",
+                "recoverable": agent_error.get("recoverable", True) if agent_error else True,
+            }
+        return response
 
     async def handle_task_stream(self, task: AgentTask) -> AsyncGenerator[dict, None]:
         user_text = task.user_text or task.description
@@ -511,149 +734,161 @@ class OrchestratorAgent(BaseAgent):
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
             logger.debug("No conversation_id from HA, generated fallback: %s", conversation_id)
+
+        # Resolve effective language via DB setting / auto-detect
+        context_language = (task.context.language if task.context else None) or "en"
+        lang_turns = self._get_turns(conversation_id)
+        detected_language = await self._resolve_language(user_text, context_language, turns=lang_turns)
+
         span_collector = task.span_collector
+        t0_request = time.perf_counter()  # Wall-clock start for filler threshold
+        t0_request_utc = datetime.now(timezone.utc)  # Absolute UTC for span timestamp overrides
 
         # 0. Cache lookup (before classify)
         cache_result = None
+        cache_span_ref = None
         if self._cache_manager:
-            if span_collector:
-                async with span_collector.start_span("cache_lookup", agent_id="orchestrator") as cache_span:
-                    try:
-                        cache_result = await self._cache_manager.process(user_text)
-                    except Exception:
-                        logger.warning("Cache lookup failed", exc_info=True)
-                        cache_result = None
-                    if cache_result:
-                        cache_span["metadata"]["hit_type"] = cache_result.hit_type
-                        cache_span["metadata"]["similarity"] = cache_result.similarity
-                        cache_span["metadata"]["cached_agent_id"] = cache_result.agent_id
-                        if cache_result.hit_type.startswith("response"):
-                            cache_span["metadata"]["cache_tier"] = "response"
-                        elif cache_result.hit_type == "routing_hit":
-                            cache_span["metadata"]["cache_tier"] = "routing"
-                        else:
-                            cache_span["metadata"]["cache_tier"] = "both_miss"
-                    else:
-                        cache_span["metadata"]["hit_type"] = "miss"
-                        cache_span["metadata"]["cache_tier"] = "both_miss"
-            else:
-                try:
-                    cache_result = await self._cache_manager.process(user_text)
-                except Exception:
-                    logger.warning("Cache lookup failed", exc_info=True)
-                    cache_result = None
+            cache_result, cache_span_ref = await self._do_cache_lookup(user_text, span_collector)
 
         # Response hit short-circuit for streaming
         if cache_result and cache_result.hit_type == "response_hit":
-            target_agent = cache_result.agent_id or "unknown"
-            action_executed = None
-
-            # Run HA action and rewrite concurrently for faster response
-            async def _do_ha():
-                if not cache_result.cached_action:
-                    return None
-                try:
-                    return await self._execute_cached_action(cache_result.cached_action)
-                except Exception:
-                    logger.warning("Cached action execution failed", exc_info=True)
-                    return None
-
-            async def _do_rewrite():
-                if self._cache_manager:
-                    await self._cache_manager.apply_rewrite(cache_result)
-
-            ha_result, _ = await asyncio.gather(_do_ha(), _do_rewrite())
-            action_executed = ha_result
-            speech = cache_result.response_text or ""
-
-            if span_collector:
-                # HA action span (retroactive)
-                if cache_result.cached_action:
-                    async with span_collector.start_span("ha_action", agent_id=target_agent) as ha_span:
-                        ha_span["metadata"]["action"] = cache_result.cached_action.service
-                        ha_span["metadata"]["entity"] = cache_result.cached_action.entity_id
-                        ha_span["metadata"]["success"] = action_executed is not None
-                        ha_span["metadata"]["cached"] = True
-                    try:
-                        from datetime import datetime, timedelta
-                        _cs = datetime.fromisoformat(cache_span["start_time"])
-                        ha_span["start_time"] = (
-                            _cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))
-                        ).isoformat()
-                    except Exception:
-                        pass
-                # Rewrite span (retroactive)
-                if cache_result.rewrite_applied:
-                    async with span_collector.start_span("rewrite", agent_id="rewrite-agent") as rw_span:
-                        rw_span["metadata"]["original_text"] = (cache_result.original_response_text or "")[:500]
-                        rw_span["metadata"]["rewritten_text"] = speech[:500]
-                        rw_span["metadata"]["latency_ms"] = cache_result.rewrite_latency_ms
-                        rw_span["metadata"]["success"] = True
-                    if cache_result.rewrite_latency_ms is not None:
-                        rw_span["duration_ms"] = round(cache_result.rewrite_latency_ms, 2)
-                    try:
-                        from datetime import datetime, timedelta
-                        _cs = datetime.fromisoformat(cache_span["start_time"])
-                        rw_span["start_time"] = (
-                            _cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))
-                        ).isoformat()
-                    except Exception:
-                        pass
-                async with span_collector.start_span("return", agent_id="orchestrator") as ret_span:
-                    ret_span["metadata"]["from_agent"] = target_agent
-                    ret_span["metadata"]["agent_response"] = speech[:500]
-                    ret_span["metadata"]["final_response"] = speech[:500]
-                    ret_span["metadata"]["mediated"] = False
-                    ret_span["metadata"]["response_cache_hit"] = True
-                    prior_turns = self._get_turns(conversation_id)
-                    self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
-                    try:
-                        from app.analytics.tracer import create_trace_summary
-                        await create_trace_summary(
-                            trace_id=span_collector.trace_id,
-                            conversation_id=conversation_id,
-                            user_input=user_text,
-                            final_response=speech,
-                            routing_agent=target_agent,
-                            routing_confidence=1.0,
-                            routing_duration_ms=None,
-                            condensed_task=user_text,
-                            agents=["orchestrator", target_agent],
-                            source=getattr(span_collector, "source", "api"),
-                            conversation_turns=prior_turns,
-                        )
-                    except Exception:
-                        logger.warning("Failed to create trace summary", exc_info=True)
-            else:
-                self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
+            result = await self._handle_response_cache_hit(
+                cache_result, conversation_id, user_text, span_collector, cache_span_ref,
+            )
             yield {
-                "token": strip_markdown(speech),
+                "token": strip_markdown(result["speech"]),
                 "done": True,
                 "conversation_id": conversation_id,
             }
             return
 
         # 1. Classify (non-streaming -- fast via Groq)
-        if span_collector:
-            async with span_collector.start_span("classify", agent_id="orchestrator") as span:
-                classifications, routing_cached = await self._classify(user_text, cache_result=cache_result, conversation_id=conversation_id)
-                target_agent, condensed_task, confidence = classifications[0]
-                span["metadata"]["target_agent"] = ", ".join(a for a, _, _ in classifications)
-                span["metadata"]["user_input"] = user_text[:500]
-                span["metadata"]["condensed_task"] = condensed_task[:500]
-                span["metadata"]["confidence"] = confidence
-                span["metadata"]["routing_cached"] = routing_cached
-                span["metadata"]["multi_agent"] = len(classifications) > 1
-        else:
+        async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
             classifications, routing_cached = await self._classify(user_text, cache_result=cache_result, conversation_id=conversation_id)
             target_agent, condensed_task, confidence = classifications[0]
+            span["metadata"]["target_agent"] = ", ".join(a for a, _, _ in classifications)
+            span["metadata"]["user_input"] = user_text[:500]
+            span["metadata"]["condensed_task"] = condensed_task[:500]
+            span["metadata"]["confidence"] = confidence
+            span["metadata"]["routing_cached"] = routing_cached
+            span["metadata"]["multi_agent"] = len(classifications) > 1
         logger.info(
             "Stream routed to %s: %s (conversation=%s)",
             target_agent, condensed_task[:80], conversation_id,
         )
 
-        # Multi-agent: fall back to non-streaming handle_task, yield as single chunk
+        # Multi-agent: yield progress marker, then fall back to non-streaming handle_task
+        is_sequential_send = (
+            len(classifications) > 1
+            and any(a == "send-agent" for a, _, _ in classifications)
+        )
+
+        # Sequential send: fall back to non-streaming, with filler support
+        if is_sequential_send:
+            yield {
+                "token": "",
+                "done": False,
+                "conversation_id": conversation_id,
+                "status": "sequential_send",
+            }
+
+            # Determine which content agent to check for filler
+            content_agent_ids = [a for a, _, _ in classifications if a != "send-agent"]
+            content_agent_for_filler = content_agent_ids[0] if content_agent_ids else None
+            seq_use_filler = (
+                await self._should_send_filler(content_agent_for_filler)
+                if content_agent_for_filler
+                else False
+            )
+            language = detected_language
+
+            seq_filler_sent = False
+            seq_filler_text = ""
+            seq_filler_start_ms = 0.0
+            seq_filler_end_ms = 0.0
+            seq_filler_generated = False
+            seq_filler_send_ms = 0.0
+
+            if seq_use_filler:
+                # Race handle_task against filler threshold
+                task_coro = self.handle_task(task, _pre_classified=(classifications, routing_cached))
+                task_future = asyncio.ensure_future(task_coro)
+
+                elapsed = time.perf_counter() - t0_request
+                remaining = max(0, self._filler_threshold_ms / 1000 - elapsed)
+
+                done_set, _ = await asyncio.wait({task_future}, timeout=remaining)
+                if done_set:
+                    # handle_task completed before threshold -- no filler needed
+                    result = task_future.result()
+                else:
+                    # Threshold exceeded -- generate filler
+                    seq_filler_start_ms = (time.perf_counter() - t0_request) * 1000
+                    filler_text = await self._invoke_filler_agent(
+                        user_text, content_agent_for_filler, language,
+                    )
+                    seq_filler_end_ms = (time.perf_counter() - t0_request) * 1000
+
+                    if filler_text and not task_future.done():
+                        seq_filler_generated = True
+                        seq_filler_text = filler_text
+                        seq_filler_send_ms = (time.perf_counter() - t0_request) * 1000
+                        yield {
+                            "token": filler_text,
+                            "done": False,
+                            "is_filler": True,
+                            "conversation_id": conversation_id,
+                        }
+                        seq_filler_sent = True
+                    elif filler_text:
+                        seq_filler_generated = True
+                        seq_filler_text = filler_text
+
+                    result = await task_future
+            else:
+                result = await self.handle_task(task, _pre_classified=(classifications, routing_cached))
+
+            # Record filler_generate span
+            if seq_filler_generated:
+                async with _optional_span(span_collector, "filler_generate", agent_id="filler-agent") as fg_span:
+                    fg_span["metadata"]["threshold_ms"] = self._filler_threshold_ms
+                    fg_span["metadata"]["target_agent"] = content_agent_for_filler
+                    fg_span["metadata"]["filler_text"] = seq_filler_text
+                    fg_span["metadata"]["sequential_send"] = True
+                    fg_span["metadata"]["was_sent"] = seq_filler_sent
+                    if seq_filler_start_ms > 0:
+                        actual_start = t0_request_utc + timedelta(milliseconds=seq_filler_start_ms)
+                        fg_span["start_time"] = actual_start.isoformat()
+                        fg_span["_override_duration_ms"] = round(
+                            seq_filler_end_ms - seq_filler_start_ms, 2,
+                        )
+
+            # Record filler_send span
+            if seq_filler_sent:
+                async with _optional_span(span_collector, "filler_send", agent_id="filler-agent") as fs_span:
+                    fs_span["metadata"]["target_agent"] = content_agent_for_filler
+                    fs_span["metadata"]["filler_text"] = seq_filler_text
+                    fs_span["metadata"]["sequential_send"] = True
+                    if seq_filler_send_ms > 0:
+                        actual_start = t0_request_utc + timedelta(milliseconds=seq_filler_send_ms)
+                        fs_span["start_time"] = actual_start.isoformat()
+                        fs_span["_override_duration_ms"] = 0
+
+            yield {
+                "token": result["speech"],
+                "done": True,
+                "conversation_id": conversation_id,
+            }
+            return
+
         if len(classifications) > 1:
+            yield {
+                "token": "",
+                "done": False,
+                "conversation_id": conversation_id,
+                "status": "multi_agent",
+                "agents": [a for a, _, _ in classifications],
+            }
             result = await self.handle_task(task, _pre_classified=(classifications, routing_cached))
             yield {
                 "token": result["speech"],
@@ -664,7 +899,8 @@ class OrchestratorAgent(BaseAgent):
 
         # 2. Build context and task (single agent streaming)
         turns = self._get_turns(conversation_id)
-        context = TaskContext(conversation_turns=turns)
+        language = detected_language
+        context = TaskContext(conversation_turns=turns, language=language)
         if task.context:
             context.device_id = task.context.device_id
             context.area_id = task.context.area_id
@@ -689,151 +925,183 @@ class OrchestratorAgent(BaseAgent):
         t0_dispatch = time.perf_counter()
         collected_speech = []
         action_executed = None
-        if span_collector:
-            async with span_collector.start_span("dispatch", agent_id=target_agent) as span:
-                async for chunk in self._dispatcher.dispatch_stream(request):
-                    token = chunk.result.get("token", "")
-                    done = chunk.result.get("done", False)
-                    error = chunk.result.get("error")
-                    if error:
-                        logger.warning("Agent streaming error: %s", error)
-                    if token:
-                        collected_speech.append(token)
-                    if done and chunk.result.get("action_executed"):
-                        action_executed = chunk.result["action_executed"]
-                    # Always forward non-empty tokens (even from done=True chunks);
-                    # never propagate done=True from agent -- we yield our own after mediation
+        use_filler = await self._should_send_filler(target_agent)
+        filler_sent = False
+        filler_text_sent = ""
+        filler_start_ms = 0.0
+        filler_end_ms = 0.0
+        filler_generated = False
+        filler_send_ms = 0.0
+        logger.info("Filler decision for %s: use_filler=%s (enabled=%s)", target_agent, use_filler, self._filler_enabled)
+
+        async def _process_chunk(chunk):
+            """Process a single stream chunk: collect speech and detect actions."""
+            nonlocal action_executed
+            token = chunk.result.get("token", "")
+            done = chunk.result.get("done", False)
+            error = chunk.result.get("error")
+            if error:
+                logger.warning("Agent streaming error: %s", error)
+            if token:
+                collected_speech.append(token)
+            if done and chunk.result.get("action_executed"):
+                action_executed = chunk.result["action_executed"]
+            return token
+
+        async def _stream_with_filler(stream_iter, span=None):
+            """Race the first agent token against the filler threshold.
+
+            Uses an asyncio.Queue to decouple the async generator reader
+            from the consumer, so cancellation on timeout does not corrupt
+            the generator state.
+            """
+            nonlocal filler_sent, filler_text_sent, filler_start_ms, filler_end_ms, filler_generated, filler_send_ms
+
+            if not use_filler:
+                # No filler logic -- stream directly
+                async for chunk in stream_iter:
+                    token = await _process_chunk(chunk)
                     if token:
                         yield {
                             "token": token,
                             "done": False,
                             "conversation_id": None,
                         }
-                span["metadata"]["token_count"] = len(collected_speech)
-                span["metadata"]["agent_response"] = "".join(collected_speech)[:500]
-        else:
-            async for chunk in self._dispatcher.dispatch_stream(request):
-                token = chunk.result.get("token", "")
-                done = chunk.result.get("done", False)
-                error = chunk.result.get("error")
-                if error:
-                    logger.warning("Agent streaming error: %s", error)
-                if token:
-                    collected_speech.append(token)
-                if done and chunk.result.get("action_executed"):
-                    action_executed = chunk.result["action_executed"]
-                # Always forward non-empty tokens (even from done=True chunks);
-                # never propagate done=True from agent -- we yield our own after mediation
-                if token:
-                    yield {
-                        "token": token,
-                        "done": False,
-                        "conversation_id": None,
-                    }
+                return
+
+            # Queue-based approach: reader task fills queue, main loop consumes
+            queue: asyncio.Queue = asyncio.Queue()
+            _sentinel = object()
+
+            async def _reader():
+                try:
+                    async for chunk in stream_iter:
+                        await queue.put(chunk)
+                finally:
+                    await queue.put(_sentinel)
+
+            reader_task = asyncio.create_task(_reader())
+
+            try:
+                # Wait for first chunk or threshold (accounting for time already spent on classify)
+                first_chunk = None
+                elapsed_since_request = time.perf_counter() - t0_request
+                remaining_threshold = max(0, self._filler_threshold_ms / 1000 - elapsed_since_request)
+                logger.info("Filler remaining threshold: %.1fms (elapsed %.0fms)", remaining_threshold * 1000, elapsed_since_request * 1000)
+                try:
+                    item = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=remaining_threshold,
+                    )
+                    logger.info("First chunk arrived before threshold")
+                    if item is not _sentinel:
+                        first_chunk = item
+                except asyncio.TimeoutError:
+                    # Agent is slow -- generate and yield filler
+                    logger.info("Threshold exceeded, generating filler for %s", target_agent)
+                    filler_start_ms = (time.perf_counter() - t0_request) * 1000
+                    filler_text = await self._invoke_filler_agent(user_text, target_agent, language)
+                    filler_end_ms = (time.perf_counter() - t0_request) * 1000
+                    logger.info("Filler generation result: %s", repr(filler_text[:80]) if filler_text else "None")
+                    if filler_text:
+                        filler_generated = True
+                        filler_text_sent = filler_text
+                        # Check if agent already responded during filler generation
+                        if not queue.empty():
+                            logger.info("Agent responded during filler generation, skipping filler")
+                        else:
+                            filler_send_ms = (time.perf_counter() - t0_request) * 1000
+                            yield {
+                                "token": filler_text,
+                                "done": False,
+                                "is_filler": True,
+                                "conversation_id": None,
+                            }
+                            filler_sent = True
+                            logger.info("Filler sent for %s: %s", target_agent, filler_text[:80])
+                    # Now wait for the real first chunk
+                    item = await queue.get()
+                    if item is not _sentinel:
+                        first_chunk = item
+
+                # Process first chunk
+                if first_chunk is not None:
+                    token = await _process_chunk(first_chunk)
+                    if token:
+                        yield {
+                            "token": token,
+                            "done": False,
+                            "conversation_id": None,
+                        }
+
+                # Drain remaining chunks from queue
+                while True:
+                    item = await queue.get()
+                    if item is _sentinel:
+                        break
+                    token = await _process_chunk(item)
+                    if token:
+                        yield {
+                            "token": token,
+                            "done": False,
+                            "conversation_id": None,
+                        }
+            finally:
+                await reader_task
+
+        async with _optional_span(span_collector, "dispatch", agent_id=target_agent) as span:
+            async for token_dict in _stream_with_filler(self._dispatcher.dispatch_stream(request), span):
+                yield token_dict
+            span["metadata"]["token_count"] = len(collected_speech)
+            span["metadata"]["agent_response"] = "".join(collected_speech)[:500]
+            if filler_sent:
+                span["metadata"]["filler_sent"] = True
 
         latency_ms = (time.perf_counter() - t0_dispatch) * 1000
         await track_request(target_agent, cache_hit=False, latency_ms=latency_ms)
 
+        # Record filler_generate span (always, if filler was generated -- even if not sent)
+        if filler_generated:
+            async with _optional_span(span_collector, "filler_generate", agent_id="filler-agent") as fg_span:
+                fg_span["metadata"]["threshold_ms"] = self._filler_threshold_ms
+                fg_span["metadata"]["target_agent"] = target_agent
+                fg_span["metadata"]["filler_text"] = filler_text_sent
+                fg_span["metadata"]["was_sent"] = filler_sent
+                if filler_start_ms > 0:
+                    actual_start = t0_request_utc + timedelta(milliseconds=filler_start_ms)
+                    fg_span["start_time"] = actual_start.isoformat()
+                    fg_span["_override_duration_ms"] = round(filler_end_ms - filler_start_ms, 2)
+
+        # Record filler_send span (only if filler was actually yielded to user)
+        if filler_sent:
+            async with _optional_span(span_collector, "filler_send", agent_id="filler-agent") as fs_span:
+                fs_span["metadata"]["target_agent"] = target_agent
+                fs_span["metadata"]["filler_text"] = filler_text_sent
+                if filler_send_ms > 0:
+                    actual_start = t0_request_utc + timedelta(milliseconds=filler_send_ms)
+                    fs_span["start_time"] = actual_start.isoformat()
+                    fs_span["_override_duration_ms"] = 0
+
         # 4. Store conversation turn and create trace summary
         full_speech = "".join(collected_speech)
-        original_speech = full_speech
-        cache_stored_response = False
-        if span_collector:
-            async with span_collector.start_span("return", agent_id="orchestrator") as ret_span:
-                ret_span["metadata"]["from_agent"] = target_agent
-                ret_span["metadata"]["agent_response"] = full_speech[:500]
-                full_speech = await self._mediate_response(full_speech, user_text, target_agent)
-                ret_span["metadata"]["final_response"] = full_speech[:500]
-                ret_span["metadata"]["mediated"] = (full_speech != "".join(collected_speech))
-                # --- Store response cache (single-agent, non-fallback) ---
-                if (
-                    self._cache_manager
-                    and target_agent != _FALLBACK_AGENT
-                    and original_speech
-                ):
-                    try:
-                        cached_action = None
-                        entity_ids: list[str] = []
-                        if action_executed and action_executed.get("success"):
-                            entity_id_str = action_executed.get("entity_id", "")
-                            domain = entity_id_str.split(".")[0] if "." in entity_id_str else ""
-                            cached_action = CachedAction(
-                                service=f"{domain}/{action_executed['action']}",
-                                entity_id=entity_id_str,
-                                service_data={},
-                            )
-                            entity_ids = [entity_id_str] if entity_id_str else []
-                        entry = ResponseCacheEntry(
-                            query_text=user_text,
-                            response_text=original_speech,
-                            agent_id=target_agent,
-                            cached_action=cached_action,
-                            confidence=confidence,
-                            entity_ids=entity_ids,
-                        )
-                        self._cache_manager.store_response(entry)
-                        cache_stored_response = True
-                    except Exception:
-                        logger.warning("Failed to store response cache", exc_info=True)
-                ret_span["metadata"]["cache_stored_response"] = cache_stored_response
-                self._store_turn(conversation_id, user_text, full_speech, agent_id=target_agent)
-                try:
-                    from app.analytics.tracer import create_trace_summary
-                    classify_duration = None
-                    for s in span_collector._spans:
-                        if s.get("span_name") == "classify":
-                            classify_duration = s.get("duration_ms")
-                            break
-                    agents = list({s.get("agent_id") for s in span_collector._spans if s.get("agent_id")})
-                    if "orchestrator" not in agents:
-                        agents.insert(0, "orchestrator")
-                    await create_trace_summary(
-                        trace_id=span_collector.trace_id,
-                        conversation_id=conversation_id,
-                        user_input=user_text,
-                        final_response=full_speech,
-                        routing_agent=target_agent,
-                        routing_confidence=confidence,
-                        routing_duration_ms=classify_duration,
-                        condensed_task=condensed_task,
-                        agents=agents,
-                        source=getattr(span_collector, "source", "api"),
-                        conversation_turns=turns,
-                    )
-                except Exception:
-                    logger.warning("Failed to create trace summary", exc_info=True)
-        else:
-            full_speech = await self._mediate_response(full_speech, user_text, target_agent)
-            # --- Store response cache (single-agent, non-fallback) ---
-            if (
-                self._cache_manager
-                and target_agent != _FALLBACK_AGENT
-                and original_speech
-            ):
-                try:
-                    cached_action_obj = None
-                    entity_ids_list: list[str] = []
-                    if action_executed and action_executed.get("success"):
-                        entity_id_str = action_executed.get("entity_id", "")
-                        domain = entity_id_str.split(".")[0] if "." in entity_id_str else ""
-                        cached_action_obj = CachedAction(
-                            service=f"{domain}/{action_executed['action']}",
-                            entity_id=entity_id_str,
-                            service_data={},
-                        )
-                        entity_ids_list = [entity_id_str] if entity_id_str else []
-                    entry = ResponseCacheEntry(
-                        query_text=user_text,
-                        response_text=original_speech,
-                        agent_id=target_agent,
-                        cached_action=cached_action_obj,
-                        confidence=confidence,
-                        entity_ids=entity_ids_list,
-                    )
-                    self._cache_manager.store_response(entry)
-                except Exception:
-                    logger.warning("Failed to store response cache", exc_info=True)
+        has_error = False  # streaming path does not propagate agent errors yet
+        async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
+            ret_span["metadata"]["from_agent"] = target_agent
+            ret_span["metadata"]["agent_response"] = full_speech[:500]
+            full_speech = await self._mediate_response(full_speech, user_text, target_agent, language=language)
+            ret_span["metadata"]["final_response"] = full_speech[:500]
+            ret_span["metadata"]["mediated"] = (full_speech != "".join(collected_speech))
+            cache_stored_response = self._store_response_cache(
+                user_text, full_speech, target_agent, confidence, action_executed, has_error,
+            )
+            ret_span["metadata"]["cache_stored_response"] = cache_stored_response
             self._store_turn(conversation_id, user_text, full_speech, agent_id=target_agent)
+            if span_collector:
+                classifications = [(target_agent, condensed_task, confidence)]
+                await self._create_trace(
+                    span_collector, conversation_id, user_text, full_speech,
+                    target_agent, confidence, condensed_task, classifications, turns,
+                )
 
         # Yield final done chunk with optional mediated_speech
         mediated_text = strip_markdown(full_speech)
@@ -846,6 +1114,39 @@ class OrchestratorAgent(BaseAgent):
         if mediated_text != strip_markdown(raw_text):
             final_chunk["mediated_speech"] = mediated_text
         yield final_chunk
+
+    async def _should_send_filler(self, target_agent: str) -> bool:
+        """Check if filler is enabled and the target agent is expected to be slow."""
+        if not self._filler_enabled:
+            return False
+        if not self._registry:
+            return False
+        cards = await self._registry.list_agents()
+        for card in cards:
+            if card.agent_id == target_agent:
+                return card.expected_latency == "high"
+        return False
+
+    async def _invoke_filler_agent(self, user_text: str, target_agent: str, language: str) -> str | None:
+        """Call the filler-agent directly to generate a filler phrase.
+
+        Returns the filler text or None if generation fails.
+        """
+        if not self._filler_agent:
+            return None
+        try:
+            context = TaskContext(language=language)
+            filler_task = AgentTask(
+                description=f"generate_filler:{target_agent}",
+                user_text=user_text,
+                context=context,
+            )
+            result = await self._filler_agent.handle_task(filler_task)
+            speech = result.speech if hasattr(result, "speech") else (result or {}).get("speech", "")
+            return speech.strip() if speech else None
+        except Exception:
+            logger.warning("Filler agent invocation failed", exc_info=True)
+            return None
 
     async def _execute_cached_action(self, cached_action) -> dict | None:
         """Execute a cached action via HA client. Returns action result or None."""
@@ -925,29 +1226,22 @@ class OrchestratorAgent(BaseAgent):
         system_prompt_template = self._load_prompt("orchestrator")
         agent_descriptions = await self._build_agent_descriptions()
         system_prompt = system_prompt_template.replace("{agent_descriptions}", agent_descriptions)
+        if "send-agent" not in agent_descriptions:
+            system_prompt = self._strip_seq_rule(system_prompt)
         messages = [
             {"role": "system", "content": system_prompt},
         ]
 
-        # Inject recent conversation history so the LLM can understand follow-ups
+        # Inject recent conversation history as proper multi-turn messages
         turns = self._get_turns(conversation_id)
         if turns:
-            history_lines = []
             for turn in turns:
                 role = turn.get("role", "user")
                 content = turn.get("content", "")
-                agent_id = turn.get("agent_id", "")
                 if len(content) > 300:
                     content = content[:300] + "..."
-                label = f"assistant({agent_id})" if role == "assistant" and agent_id else role
-                history_lines.append(f"{label}: {content}")
-            history_block = "\n".join(history_lines)
-            messages.append({
-                "role": "user",
-                "content": f"[Conversation history for context -- do NOT classify these, only use for understanding the current message]\n{history_block}\n\n[Current user message to classify]\n{user_text}",
-            })
-        else:
-            messages.append({"role": "user", "content": user_text})
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_text})
 
         try:
             response = await self._call_llm(messages)
@@ -981,6 +1275,9 @@ class OrchestratorAgent(BaseAgent):
 
         lines = [line.strip() for line in response.split("\n") if line.strip()]
         for line in lines:
+            # Strip [SEQ] prefix used for sequential send dispatch
+            if line.startswith("[SEQ]"):
+                line = line[5:].strip()
             # Try new format: "agent-id (85%): task text"
             match = re.match(r'^([\w-]+)\s*\((\d+)%?\)\s*:\s*(.+)$', line, re.DOTALL)
             if match:
@@ -1108,8 +1405,6 @@ class OrchestratorAgent(BaseAgent):
         agent_summary = "\n".join(summary_parts)
 
         try:
-            from app.llm import client as llm_client
-
             personality = ""
             try:
                 personality = await SettingsRepository.get_value("personality.prompt", "")
@@ -1132,9 +1427,13 @@ class OrchestratorAgent(BaseAgent):
                 },
             ]
 
-            model = await SettingsRepository.get_value("rewrite.model", "groq/llama-3.1-8b-instant")
-            temp = float(await SettingsRepository.get_value("mediation.temperature", "0.3"))
-            result = await llm_client.complete("orchestrator", messages, model=model, temperature=temp, max_tokens=2048)
+            overrides = {
+                "temperature": self._mediation_temperature,
+                "max_tokens": self._mediation_max_tokens,
+            }
+            if self._mediation_model:
+                overrides["model"] = self._mediation_model
+            result = await self._call_llm(messages, **overrides)
             return result.strip() if result and result.strip() else self._format_fallback(agent_responses)
         except Exception:
             logger.warning("Multi-agent response merge failed, using fallback format", exc_info=True)
@@ -1146,7 +1445,7 @@ class OrchestratorAgent(BaseAgent):
         parts = [f"[{aid}] {sp}" for aid, sp, _ in agent_responses if sp and sp.strip()]
         return "\n\n".join(parts) if parts else "I couldn't process that request."
 
-    async def _mediate_response(self, agent_speech: str, user_text: str, agent_id: str) -> str:
+    async def _mediate_response(self, agent_speech: str, user_text: str, agent_id: str, language: str = "en") -> str:
         """Optionally mediate the domain agent response with personality.
 
         When personality.prompt is non-empty, passes the agent speech through
@@ -1164,21 +1463,36 @@ class OrchestratorAgent(BaseAgent):
             return agent_speech
 
         try:
-            from app.llm import client as llm_client
             system_prompt = self._load_prompt("mediate")
             personality_text = personality.strip() if personality.strip() else ""
-            system_prompt = system_prompt.replace("{personality}", personality_text).strip()
+            system_prompt = system_prompt.replace("{personality}", personality_text)
+            system_prompt = system_prompt.replace("{language}", language or "en").strip()
             messages = [
                 {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
-                    "content": f"User asked: {user_text}\nAgent ({agent_id}) responded: {agent_speech}\n\nRephrase:",
+                    "content": f"User asked: {user_text}\nAgent ({agent_id}) responded: {agent_speech}\n\nRephrase in {language}:",
                 },
             ]
-            model = await SettingsRepository.get_value("rewrite.model", "groq/llama-3.1-8b-instant")
-            temp = float(await SettingsRepository.get_value("mediation.temperature", "0.3"))
-            result = await llm_client.complete("orchestrator", messages, model=model, temperature=temp, max_tokens=2048)
+            overrides = {
+                "temperature": self._mediation_temperature,
+                "max_tokens": self._mediation_max_tokens,
+            }
+            if self._mediation_model:
+                overrides["model"] = self._mediation_model
+            result = await self._call_llm(messages, **overrides)
             return result.strip() if result and result.strip() else agent_speech
         except Exception:
             logger.warning("Response mediation failed, using original speech", exc_info=True)
             return agent_speech
+
+    @staticmethod
+    def _strip_seq_rule(prompt: str) -> str:
+        """Remove the sequential dispatch rule block when send-agent is unavailable."""
+        start_marker = "Sequential dispatch rule:"
+        end_marker = "Format:"
+        start_idx = prompt.find(start_marker)
+        end_idx = prompt.find(end_marker)
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            return prompt[:start_idx] + prompt[end_idx:]
+        return prompt

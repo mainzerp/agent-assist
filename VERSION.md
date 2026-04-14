@@ -1,8 +1,61 @@
 # Version
 
-**Current Version:** 0.9.4
+**Current Version:** 0.12.0
 
 ## Version History
+
+### 0.12.0 -- Send-Agent & Sequential Orchestrator Dispatch
+
+New send-agent enables content delivery to smartphones (via HA notify) and satellites (via TTS):
+
+- **Send Agent**: New domain agent (`send.py`) delivers LLM-researched content to target devices
+- **Sequential Dispatch**: Orchestrator supports 2-step sequential flow: content agent researches, send-agent delivers. New `[SEQ]` classification marker and `_handle_sequential_send()` method
+- **Device Mapping**: New `send_device_mappings` DB table (migration 12) maps user-friendly names ("Laura Handy") to HA service targets (`notify.mobile_app_*` or `media_player.*`)
+- **Dual Delivery Channels**: notify.* for smartphone push notifications, tts.speak for satellite speakers
+- **Dashboard Page**: New "Send Devices" page with CRUD for device mappings and HA entity discovery
+- **HA Service Discovery**: New `get_services()` on HA client; dashboard auto-discovers available notify and media_player targets
+- **Content Formatting**: Send-agent uses LLM to format content per channel (full text for notify, spoken summary for TTS)
+- **Target Name Parsing**: Regex-based extraction supports German ("sende an X") and English ("send to X")
+- **Filler Language Fix**: Filler now uses full language names ("German (Deutsch)" instead of "de") and neutral user message to ensure correct language output
+- **Filler Span Timestamps**: Filler spans now record actual generation timestamps for correct Span Timeline ordering
+- **UI Cosmetics**: Navbar icon refresh (Agents/Custom Agents/Presence), app renamed to HA-AgentHub, flush button confirmations, analytics card height fix
+- 22 new tests (847 total)
+
+### 0.11.0 -- Prompt & LLM Architecture Restructuring
+
+12 improvements to prompt consistency, code quality, and LLM call architecture:
+
+- **PHASE Headers**: All 14 prompt files now have consistent header blocks indicating their role in the pipeline
+- **Filler Message Role**: filler.txt split from single user message to proper system+user message pair, consistent with all other LLM calls
+- **Prompt Deduplication**: New personality_base.txt shared include for mediate.txt, merge.txt, and rewrite.txt; eliminates triplicated personality/entity-preservation rules
+- **Language Directives**: Domain agents (actionable + general) now inject explicit language directives for non-English users at runtime
+- **Language Propagation**: TaskContext.language now properly propagated from orchestrator to domain agents
+- **Classification History**: Conversation history in classification is now proper multi-turn messages instead of bracketed single-message bundle
+- **Mediation Config Clarity**: Scattered inline overrides for mediation/merge (model, temperature, max_tokens) consolidated into _load_mediation_config() with pre-loaded attributes; default max_tokens increased to 8192 for reasoning model compatibility
+- **Error Handling**: Agent errors now skip mediation and response caching; error metadata propagated in response dict
+- **Cache Post-Mediation**: Response cache now stores post-mediation speech instead of raw agent response; rewrite agent focuses purely on phrasing variation
+- **Original Text in Agent Calls**: Domain agents receive both condensed task and original user text when they differ
+- **Orchestrator Code Dedup**: Extracted _do_cache_lookup(), _handle_response_cache_hit(), _store_response_cache(), _create_trace() helpers used by both handle_task() and handle_task_stream()
+- **Span Boilerplate Reduction**: _NoOpSpan class and _optional_span() context manager eliminate if/else span_collector branches throughout orchestrator
+- **Multi-Agent Streaming**: Progressive status markers (status="multi_agent" with agent list) yielded before non-streaming multi-agent fallback
+- **Brevity Rules**: mediate, merge, and rewrite prompts now instruct "aim for 2-3 sentences"
+- **Mediation Output Clarity**: mediate and merge prompts explicitly prohibit echoing "User asked:" preamble
+- **Reasoning Effort**: New per-agent reasoning_effort setting (Low/Medium/High) in agent config dashboard; passed to litellm with drop_params=True for graceful fallback on unsupported models
+
+### 0.10.0 -- Orchestrator Filler/Interim Responses
+
+- Filler/interim TTS responses for slow agents: when an agent (e.g., general-agent with web search) takes longer than a configurable threshold, a short LLM-generated filler sentence is streamed to the client for immediate TTS playback
+- New `expected_latency` field on AgentCard model (low/medium/high) to identify slow agents; general-agent set to "high"
+- New `is_filler` field on StreamToken model to distinguish filler tokens from real content
+- New `language` field on TaskContext model for language propagation through the pipeline
+- Filler prompt template (prompts/filler.txt) generates personality-aware, language-matched filler sentences
+- Configurable via DB settings: filler.enabled (default: false), filler.threshold_ms (default: 2000), filler.model (default: rewrite model)
+- Race pattern in orchestrator handle_task_stream: races agent dispatch against threshold timer using async generator __anext__ with timeout
+- HA custom component handles filler tokens via tts.speak service for immediate TTS playback, separate from main response
+- Analytics/tracing span for filler events
+- SSE and WebSocket endpoints pass through is_filler field
+- Feature is disabled by default
+- 15 new tests for filler logic, model fields, and API passthrough
 
 ### 0.9.4 -- Conversation Memory for Follow-up Questions
 

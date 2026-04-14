@@ -39,6 +39,11 @@ def _build_a2a_request(conv_request: ConversationRequest, method: str, span_coll
         context = TaskContext(
             device_id=conv_request.device_id,
             area_id=conv_request.area_id,
+            language=conv_request.language or "en",
+        )
+    else:
+        context = TaskContext(
+            language=conv_request.language or "en",
         )
     task = AgentTask(
         description=conv_request.text,
@@ -109,6 +114,7 @@ async def conversation_sse(
                     done=chunk.done,
                     conversation_id=chunk.result.get("conversation_id") if chunk.done else None,
                     mediated_speech=chunk.result.get("mediated_speech") if chunk.done else None,
+                    is_filler=chunk.result.get("is_filler", False),
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
@@ -147,6 +153,7 @@ async def ws_conversation(
                         done=chunk.done,
                         conversation_id=chunk.result.get("conversation_id") if chunk.done else None,
                         mediated_speech=chunk.result.get("mediated_speech") if chunk.done else None,
+                        is_filler=chunk.result.get("is_filler", False),
                     )
                     await websocket.send_json(token.model_dump())
             finally:

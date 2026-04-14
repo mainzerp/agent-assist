@@ -253,6 +253,66 @@ class TestLLMComplete:
 # LLM complete_with_tools function
 # ---------------------------------------------------------------------------
 
+
+class TestLLMReasoningEffort:
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_complete_passes_reasoning_effort(self, mock_repo, mock_params, mock_acompletion):
+        mock_repo.get = AsyncMock(return_value={
+            "agent_id": "test-agent",
+            "enabled": True,
+            "model": "anthropic/claude-3-7-sonnet",
+            "timeout": 5,
+            "max_iterations": 3,
+            "temperature": 0.2,
+            "max_tokens": 1024,
+            "description": "Test",
+            "reasoning_effort": "low",
+        })
+        choice = MagicMock()
+        choice.message.content = "Done!"
+        choice.finish_reason = "stop"
+        mock_acompletion.return_value = MagicMock(choices=[choice], usage=None)
+
+        from app.llm.client import complete
+        await complete("test-agent", [{"role": "user", "content": "test"}])
+
+        call_kwargs = mock_acompletion.call_args
+        all_kwargs = call_kwargs.kwargs if call_kwargs.kwargs else {}
+        assert all_kwargs.get("reasoning_effort") == "low"
+        assert all_kwargs.get("drop_params") is True
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_complete_omits_reasoning_effort_when_none(self, mock_repo, mock_params, mock_acompletion):
+        mock_repo.get = AsyncMock(return_value={
+            "agent_id": "test-agent",
+            "enabled": True,
+            "model": "openrouter/openai/gpt-4o-mini",
+            "timeout": 5,
+            "max_iterations": 3,
+            "temperature": 0.2,
+            "max_tokens": 1024,
+            "description": "Test",
+            "reasoning_effort": None,
+        })
+        choice = MagicMock()
+        choice.message.content = "Done!"
+        choice.finish_reason = "stop"
+        mock_acompletion.return_value = MagicMock(choices=[choice], usage=None)
+
+        from app.llm.client import complete
+        await complete("test-agent", [{"role": "user", "content": "test"}])
+
+        call_kwargs = mock_acompletion.call_args
+        all_kwargs = call_kwargs.kwargs if call_kwargs.kwargs else {}
+        assert "reasoning_effort" not in all_kwargs
+        assert "drop_params" not in all_kwargs
+
+
 class TestCompleteWithTools:
 
     @patch("litellm.acompletion", new_callable=AsyncMock)

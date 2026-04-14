@@ -207,6 +207,15 @@ async def plugins_page(
     return templates.TemplateResponse(request, "plugins.html")
 
 
+@router.get("/send-devices", response_class=HTMLResponse)
+async def send_devices_page(
+    request: Request,
+    _session: dict = Depends(require_admin_session_redirect),
+):
+    """Send device mappings management page."""
+    return templates.TemplateResponse(request, "send_devices.html")
+
+
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(
     request: Request,

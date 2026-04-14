@@ -128,6 +128,15 @@
                                 <label class="form-label">Max Iterations</label>
                                 <input type="number" class="form-input" x-model.number="agent.max_iterations" min="1" max="20">
                             </div>
+                            <div class="form-group">
+                                <label class="form-label">Reasoning Effort</label>
+                                <select class="form-input" x-model="agent.reasoning_effort">
+                                    <option value="">Default</option>
+                                    <option value="low">Low</option>
+                                    <option value="medium">Medium</option>
+                                    <option value="high">High</option>
+                                </select>
+                            </div>
                             <div class="form-group form-grid-full">
                                 <label class="form-label">Description</label>
                                 <input type="text" class="form-input" x-model="agent.description" placeholder="Agent description">
@@ -364,7 +373,8 @@ function agentsPage() {
                         temperature: agent.temperature,
                         max_tokens: agent.max_tokens,
                         max_iterations: agent.max_iterations,
-                        description: agent.description || null
+                        description: agent.description || null,
+                        reasoning_effort: agent.reasoning_effort || ""
                     })
                 });
                 if (!resp.ok) {

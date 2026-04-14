@@ -82,7 +82,14 @@ class BaseAgent(ABC):
             Prompt text content.
         """
         path = _PROMPTS_DIR / f"{name}.txt"
-        return path.read_text(encoding="utf-8").strip()
+        content = path.read_text(encoding="utf-8").strip()
+        # Resolve {personality_base} include if present
+        if "{personality_base}" in content:
+            base_path = _PROMPTS_DIR / "personality_base.txt"
+            if base_path.exists():
+                base_content = base_path.read_text(encoding="utf-8").strip()
+                content = content.replace("{personality_base}", base_content)
+        return content
 
     def _error_result(
         self,

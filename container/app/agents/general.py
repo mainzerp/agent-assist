@@ -25,10 +25,26 @@ class GeneralAgent(BaseAgent):
             description="Handles general knowledge, conversation, web search, current events, and requests outside device control. Can search the web for real-time information. Fallback for unroutable requests.",
             skills=["general_qa", "web_search", "current_events", "conversation", "fallback"],
             endpoint="local://general-agent",
+            expected_latency="high",
         )
 
     async def handle_task(self, task: AgentTask) -> TaskResult:
         system_prompt = self._load_prompt("general")
+
+        # Inject language directive for non-English users
+        language = None
+        if task.context:
+            language = task.context.language
+        if language and language.lower() not in ("en", "english", ""):
+            system_prompt += f"\n\nIMPORTANT: Respond in {language}. The user's language is {language}. Keep entity names, device names, and room names exactly as the user wrote them -- do NOT translate those."
+
+        if task.context and task.context.sequential_send:
+            system_prompt += (
+                "\n\nThis response will be delivered as text to a device (not spoken aloud). "
+                "You MAY include URLs and links if relevant. "
+                "Format for readability -- you can use line breaks."
+            )
+
         messages = [{"role": "system", "content": system_prompt}]
 
         if task.context and task.context.conversation_turns:
@@ -40,15 +56,21 @@ class GeneralAgent(BaseAgent):
 
         # task.description = condensed task from orchestrator (primary input)
         # task.user_text = original unmodified user text (fallback only)
-        messages.append({"role": "user", "content": task.description})
+        user_content = task.description
+        if task.user_text and task.user_text != task.description:
+            user_content = f"{task.description}\n\n(Original user message: \"{task.user_text}\")"
+        messages.append({"role": "user", "content": user_content})
 
         # Check for available MCP tools
+        llm_kwargs = {}
+        if task.context and task.context.sequential_send:
+            llm_kwargs["max_tokens"] = 2048
         tools = await self._get_mcp_tools()
         if tools:
             tool_schemas = self._mcp_tools_to_openai_format(tools)
-            response = await self._call_llm_with_tools(messages, tool_schemas, tools)
+            response = await self._call_llm_with_tools(messages, tool_schemas, tools, **llm_kwargs)
         else:
-            response = await self._call_llm(messages)
+            response = await self._call_llm(messages, **llm_kwargs)
 
         return TaskResult(speech=response)
 
@@ -77,7 +99,7 @@ class GeneralAgent(BaseAgent):
             })
         return openai_tools
 
-    async def _call_llm_with_tools(self, messages, tool_schemas, mcp_tools):
+    async def _call_llm_with_tools(self, messages, tool_schemas, mcp_tools, **overrides):
         """Call LLM with tool calling support."""
         from app.llm.client import complete_with_tools
 
@@ -107,4 +129,5 @@ class GeneralAgent(BaseAgent):
             messages,
             tools=tool_schemas,
             tool_executor=execute_tool,
+            **overrides,
         )

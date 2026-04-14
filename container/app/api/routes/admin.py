@@ -87,6 +87,7 @@ async def list_agents():
         "orchestrator", "general-agent", "light-agent", "music-agent",
         "timer-agent", "climate-agent", "media-agent", "scene-agent",
         "automation-agent", "security-agent", "rewrite-agent",
+        "send-agent",
     }
 
     # Include disabled built-in agents from DB that are not yet registered

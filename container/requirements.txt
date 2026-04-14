@@ -42,3 +42,6 @@ cryptography==46.0.7
 bcrypt==5.0.0
 python-multipart==0.0.26
 itsdangerous==2.2.0
+
+# Language detection
+langdetect==1.0.9

@@ -229,6 +229,7 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             agent_id TEXT,
             parent_span TEXT,
             start_time TEXT NOT NULL,
+            end_time TEXT,
             duration_ms REAL NOT NULL,
             status TEXT NOT NULL DEFAULT 'ok',
             metadata TEXT,
@@ -253,6 +254,16 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             routing_reasoning TEXT,
             agent_instructions TEXT,
             conversation_turns TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS send_device_mappings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            display_name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            device_type TEXT NOT NULL CHECK(device_type IN ('notify', 'tts')),
+            ha_service_target TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
@@ -381,7 +392,9 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("scene-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Scene activation"),
         ("automation-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Automation management"),
         ("security-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Security system control"),
+        ("send-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 1, 0.2, 512, "Send content to devices via notification or TTS"),
         ("rewrite-agent", 0, "groq/llama-3.1-8b-instant", 2, 1, 0.8, 1024, "Cached response phrasing variation"),
+        ("filler-agent", 1, "groq/llama-3.1-8b-instant", 3, 1, 0.7, 50, "Interim filler TTS phrase generation"),
     ]
 
     await db.executemany(
@@ -658,4 +671,43 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         """)
         await db.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (10)"
+        )
+
+    if current_version < 11:
+        # Migration 11: Add reasoning_effort column to agent_configs
+        try:
+            await db.execute(
+                "ALTER TABLE agent_configs ADD COLUMN reasoning_effort TEXT"
+            )
+        except Exception:
+            pass  # Column may already exist
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (11)"
+        )
+
+    if current_version < 12:
+        # Migration 12: Send device mappings for send-agent
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS send_device_mappings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                device_type TEXT NOT NULL CHECK(device_type IN ('notify', 'tts')),
+                ha_service_target TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (12)"
+        )
+
+    if current_version < 13:
+        # Migration 13: Add end_time column to trace_spans
+        try:
+            await db.execute(
+                "ALTER TABLE trace_spans ADD COLUMN end_time TEXT"
+            )
+        except Exception:
+            pass  # Column may already exist
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (13)"
         )

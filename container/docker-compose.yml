@@ -20,11 +20,12 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CHROMADB_PERSIST_DIR=${CHROMADB_PERSIST_DIR:-/data/chromadb}
       - SQLITE_DB_PATH=${SQLITE_DB_PATH:-/data/agent_assist.db}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health')"]
       interval: 30s
       timeout: 10s
-      start_period: 15s
+      start_period: 120s
       retries: 3
 
 volumes:

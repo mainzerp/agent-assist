@@ -1,0 +1,19 @@
+============================================================
+SHARED: PERSONALITY BASE
+Purpose: Common personality injection and entity-preservation rules.
+Included by mediate.txt, merge.txt, and rewrite.txt via {personality_base}.
+============================================================
+
+--- PERSONALITY (injected at runtime, may be empty) ---
+{personality}
+--- END PERSONALITY ---
+
+Entity & format rules:
+- NEVER change entity names, device names, or room names. Copy them character-for-character from the original.
+- NEVER change state values (on, off, brightness percentages, temperatures, etc.). Copy them exactly.
+- NEVER add information not present in the original response.
+
+Output:
+- Plain text only -- no Markdown, no bullet lists, no formatting.
+- The output will be read aloud by a text-to-speech system. Write as if speaking naturally.
+- ALWAYS follow any language or style directives from the personality section above.

@@ -10,7 +10,7 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator
 
 from app.db.repository import TraceSpanRepository, TraceSummaryRepository
@@ -75,7 +75,18 @@ class SpanCollector:
             raise
         finally:
             self._span_stack.pop()
-            span["duration_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+            # Allow callers to override duration (e.g. filler spans with pre-recorded timestamps)
+            if "_override_duration_ms" in span:
+                span["duration_ms"] = span.pop("_override_duration_ms")
+                # Compute end_time from start_time + overridden duration
+                try:
+                    st = datetime.fromisoformat(span["start_time"])
+                    span["end_time"] = (st + timedelta(milliseconds=span["duration_ms"])).isoformat()
+                except Exception:
+                    span["end_time"] = datetime.now(timezone.utc).isoformat()
+            else:
+                span["duration_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+                span["end_time"] = datetime.now(timezone.utc).isoformat()
             self._spans.append(span)
 
     async def flush(self) -> None:
@@ -89,12 +100,12 @@ class SpanCollector:
             await TraceSpanRepository.insert_batch(self._spans)
             # Compute and store total duration from spans
             try:
-                from datetime import datetime, timedelta
                 starts = [datetime.fromisoformat(s["start_time"]) for s in self._spans if s.get("start_time")]
                 if starts:
                     min_start = min(starts)
                     max_end = max(
-                        datetime.fromisoformat(s["start_time"]) + timedelta(milliseconds=s.get("duration_ms", 0))
+                        datetime.fromisoformat(s["end_time"]) if s.get("end_time")
+                        else datetime.fromisoformat(s["start_time"]) + timedelta(milliseconds=s.get("duration_ms", 0))
                         for s in self._spans if s.get("start_time")
                     )
                     total_ms = round((max_end - min_start).total_seconds() * 1000, 2)
@@ -118,6 +129,7 @@ async def record_span(
     parent_span: str | None = None,
     status: str = "ok",
     metadata: dict | None = None,
+    end_time: str | None = None,
 ) -> None:
     """Record a single span directly. Fire-and-forget."""
     try:
@@ -130,6 +142,7 @@ async def record_span(
             parent_span=parent_span,
             status=status,
             metadata=metadata,
+            end_time=end_time,
         )
     except Exception:
         logger.warning("Failed to record span %s", span_name, exc_info=True)
