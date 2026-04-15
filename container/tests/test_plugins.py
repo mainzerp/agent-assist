@@ -134,7 +134,43 @@ class TestPluginContext:
         assert ctx.agent_registry is agent_reg
         assert ctx.mcp_registry is mcp_reg
         assert ctx.settings is settings
-        assert ctx.app is app
+
+    def test_ctx_app_raises_attribute_error(self):
+        """PluginContext.app must raise AttributeError (escape hatch removed)."""
+        app = MagicMock()
+        ctx = PluginContext(
+            agent_registry=MagicMock(),
+            mcp_registry=MagicMock(),
+            settings_repo=MagicMock(),
+            app=app,
+        )
+        with pytest.raises(AttributeError, match="has been removed"):
+            _ = ctx.app
+
+    def test_ctx_add_api_route_delegates_to_app(self):
+        """add_api_route should still work after app property removal."""
+        app = MagicMock()
+        ctx = PluginContext(
+            agent_registry=MagicMock(),
+            mcp_registry=MagicMock(),
+            settings_repo=MagicMock(),
+            app=app,
+        )
+        ctx.add_api_route("/test", lambda: None, methods=["GET"])
+        app.add_api_route.assert_called_once()
+
+    def test_ctx_include_router_delegates_to_app(self):
+        """include_router should still work after app property removal."""
+        app = MagicMock()
+        router = MagicMock()
+        ctx = PluginContext(
+            agent_registry=MagicMock(),
+            mcp_registry=MagicMock(),
+            settings_repo=MagicMock(),
+            app=app,
+        )
+        ctx.include_router(router)
+        app.include_router.assert_called_once_with(router)
 
 
 # ---------------------------------------------------------------------------
@@ -207,3 +243,79 @@ class TestPluginLoader:
         assert result is True
         plugin.shutdown.assert_awaited_once()
         assert "test" not in loader._loaded
+
+    @patch("app.plugins.loader.PluginRepository")
+    async def test_disabled_plugin_module_not_imported(self, mock_repo, tmp_path):
+        """Disabled plugins should not be imported at all."""
+        sentinel = tmp_path / "_sentinel.txt"
+        plugin_file = tmp_path / "test_sentinel.py"
+        plugin_file.write_text(
+            "from pathlib import Path\n"
+            f"Path(r'{sentinel}').write_text('imported')\n"
+            "from app.plugins.base import BasePlugin\n"
+            "class SentinelPlugin(BasePlugin):\n"
+            "    @property\n"
+            "    def name(self): return 'test-sentinel'\n"
+            "    @property\n"
+            "    def version(self): return '1.0.0'\n"
+        )
+
+        mock_repo.get = AsyncMock(return_value={"enabled": 0})
+        mock_repo.upsert = AsyncMock()
+
+        ctx = MagicMock(spec=PluginContext)
+        loader = PluginLoader(plugin_dir=str(tmp_path), context=ctx)
+        await loader.discover_and_load()
+
+        assert not sentinel.exists(), "Module-level code executed for disabled plugin"
+        assert "test-sentinel" not in loader.loaded_plugins
+
+    @patch("app.plugins.loader.PluginRepository")
+    async def test_disabled_plugin_constructor_not_called(self, mock_repo, tmp_path):
+        """Disabled plugins should not have their constructor called."""
+        sentinel = tmp_path / "_ctor_sentinel.txt"
+        plugin_file = tmp_path / "test_ctor.py"
+        plugin_file.write_text(
+            "from pathlib import Path\n"
+            "from app.plugins.base import BasePlugin\n"
+            "class CtorPlugin(BasePlugin):\n"
+            "    def __init__(self):\n"
+            "        super().__init__()\n"
+            f"        Path(r'{sentinel}').write_text('constructed')\n"
+            "    @property\n"
+            "    def name(self): return 'test-ctor'\n"
+            "    @property\n"
+            "    def version(self): return '1.0.0'\n"
+        )
+
+        mock_repo.get = AsyncMock(return_value={"enabled": 0})
+        mock_repo.upsert = AsyncMock()
+
+        ctx = MagicMock(spec=PluginContext)
+        loader = PluginLoader(plugin_dir=str(tmp_path), context=ctx)
+        await loader.discover_and_load()
+
+        assert not sentinel.exists(), "Constructor ran for disabled plugin"
+        assert "test-ctor" not in loader.loaded_plugins
+
+    @patch("app.plugins.loader.PluginRepository")
+    async def test_enabled_plugin_loaded_normally(self, mock_repo, tmp_path):
+        """Enabled plugins should be fully imported and loaded."""
+        plugin_file = tmp_path / "test_good.py"
+        plugin_file.write_text(
+            "from app.plugins.base import BasePlugin\n"
+            "class GoodPlugin(BasePlugin):\n"
+            "    @property\n"
+            "    def name(self): return 'test-good'\n"
+            "    @property\n"
+            "    def version(self): return '2.0.0'\n"
+        )
+
+        mock_repo.get = AsyncMock(return_value=None)
+        mock_repo.upsert = AsyncMock()
+
+        ctx = MagicMock(spec=PluginContext)
+        loader = PluginLoader(plugin_dir=str(tmp_path), context=ctx)
+        await loader.discover_and_load()
+
+        assert "test-good" in loader.loaded_plugins

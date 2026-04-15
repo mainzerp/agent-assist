@@ -120,6 +120,23 @@ async def get_settings():
     return {"settings": grouped}
 
 
+def _validate_setting_value(key: str, value: str, value_type: str) -> None:
+    """Validate a setting value against its stored type. Raises HTTPException on failure."""
+    try:
+        if value_type == "int":
+            int(value)
+        elif value_type == "float":
+            float(value)
+        elif value_type == "bool":
+            if str(value).lower() not in ("true", "false", "1", "0"):
+                raise ValueError("Expected boolean")
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid value for '{key}': expected {value_type}",
+        )
+
+
 @router.put("/settings")
 async def update_settings(payload: SettingsUpdatePayload):
     """Update multiple settings. Payload: {"items": {key: value, ...}}."""
@@ -129,20 +146,10 @@ async def update_settings(payload: SettingsUpdatePayload):
             raise HTTPException(status_code=400, detail=f"Unknown setting key: {key}")
         # Validate value type against stored type
         value_type = existing.get("value_type", "str")
-        try:
-            if value_type == "int":
-                int(value)
-            elif value_type == "float":
-                float(value)
-            elif value_type == "bool":
-                if str(value).lower() not in ("true", "false", "1", "0"):
-                    raise ValueError("Expected boolean")
-        except (ValueError, TypeError):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid value for '{key}': expected {value_type}",
-            )
-        await SettingsRepository.set(key, str(value))
+        _validate_setting_value(key, str(value), value_type)
+        await SettingsRepository.set(key, str(value), value_type=existing["value_type"],
+                                     category=existing.get("category", "general"),
+                                     description=existing.get("description"))
     return {"status": "ok"}
 
 
@@ -152,10 +159,17 @@ async def update_single_setting(key: str, payload: dict):
     value = payload.get("value")
     if value is None:
         return {"status": "error", "detail": "Missing value"}
-    value_type = payload.get("value_type", "string")
-    category = payload.get("category", "general")
-    description = payload.get("description")
-    await SettingsRepository.set(key, str(value), value_type, category, description)
+
+    existing = await SettingsRepository.get(key)
+    if existing is None:
+        raise HTTPException(status_code=400, detail=f"Unknown setting key: {key}")
+
+    value_type = existing.get("value_type", "str")
+    _validate_setting_value(key, str(value), value_type)
+
+    await SettingsRepository.set(key, str(value), value_type=existing["value_type"],
+                                 category=existing.get("category", "general"),
+                                 description=existing.get("description"))
     return {"status": "ok", "key": key}
 
 

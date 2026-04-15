@@ -6,6 +6,8 @@ import asyncio
 import logging
 from typing import Any
 
+from app.analytics.tracer import _optional_span
+
 logger = logging.getLogger(__name__)
 
 _SECURITY_ACTION_MAP: dict[str, tuple[str, str]] = {
@@ -21,6 +23,14 @@ _SECURITY_ACTION_MAP: dict[str, tuple[str, str]] = {
     "camera_turn_on":   ("camera", "turn_on"),
     "camera_turn_off":  ("camera", "turn_off"),
 }
+
+_ALLOWED_DOMAINS: frozenset[str] = frozenset({"alarm_control_panel", "lock", "camera", "binary_sensor", "sensor"})
+
+
+def _validate_domain(entity_id: str) -> bool:
+    """Check that entity_id belongs to an allowed domain for this executor."""
+    domain = entity_id.split(".")[0] if "." in entity_id else ""
+    return domain in _ALLOWED_DOMAINS
 
 
 def _build_security_service_data(action: dict) -> dict[str, Any]:
@@ -40,6 +50,7 @@ async def execute_security_action(
     entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None = None,
+    span_collector=None,
 ) -> dict:
     """Resolve an entity, call a security HA service, and verify the result.
 
@@ -59,7 +70,8 @@ async def execute_security_action(
     # Read-only actions (no service call)
     if action_name in ("query_security_state", "list_security"):
         return await _handle_security_read_action(
-            action_name, entity_query, ha_client, entity_index, entity_matcher, agent_id
+            action_name, entity_query, ha_client, entity_index, entity_matcher, agent_id,
+            span_collector=span_collector,
         )
 
     # Validate action name
@@ -79,17 +91,22 @@ async def execute_security_action(
     friendly_name = entity_query
     try:
         if entity_matcher:
-            matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-            if matches:
-                entity_id = matches[0].entity_id
-                friendly_name = matches[0].friendly_name or entity_id
-        if not entity_id and entity_index:
-            results = entity_index.search(entity_query, n_results=1)
-            if results:
-                entity_id = results[0][0].entity_id
-                friendly_name = results[0][0].friendly_name or entity_id
+            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
+                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
+                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
+                if matches:
+                    entity_id = matches[0].entity_id
+                    friendly_name = matches[0].friendly_name or entity_id
+                    em_span["metadata"]["top_entity_id"] = entity_id
+                    em_span["metadata"]["top_friendly_name"] = friendly_name
+                    em_span["metadata"]["top_score"] = matches[0].score
+                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
+
+    if entity_id and not _validate_domain(entity_id):
+        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
+        entity_id = None
 
     if not entity_id:
         return {
@@ -177,39 +194,49 @@ async def _query_security_state(
     entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None,
+    span_collector=None,
 ) -> dict:
     entity_id = None
     friendly_name = entity_query
     try:
         if entity_matcher:
-            matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-            if matches:
-                entity_id = matches[0].entity_id
-                friendly_name = matches[0].friendly_name or entity_id
-        if not entity_id and entity_index:
-            results = entity_index.search(entity_query, n_results=1)
-            if results:
-                entity_id = results[0][0].entity_id
-                friendly_name = results[0][0].friendly_name or entity_id
+            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
+                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
+                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
+                if matches:
+                    entity_id = matches[0].entity_id
+                    friendly_name = matches[0].friendly_name or entity_id
+                    em_span["metadata"]["top_entity_id"] = entity_id
+                    em_span["metadata"]["top_friendly_name"] = friendly_name
+                    em_span["metadata"]["top_score"] = matches[0].score
+                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
+    if entity_id and not _validate_domain(entity_id):
+        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
+        entity_id = None
+
     if not entity_id:
         return {"success": False, "entity_id": None, "new_state": None,
-                "speech": f"Could not find an entity matching '{entity_query}'."}
+                "speech": f"Could not find an entity matching '{entity_query}'.",
+                "cacheable": False}
 
     try:
         state_resp = await ha_client.get_state(entity_id)
         if not state_resp:
             return {"success": False, "entity_id": entity_id, "new_state": None,
-                    "speech": f"Could not retrieve state for {entity_id}."}
+                    "speech": f"Could not retrieve state for {entity_id}.",
+                    "cacheable": False}
         speech = _format_security_state(entity_id, state_resp)
         return {"success": True, "entity_id": entity_id,
-                "new_state": state_resp.get("state"), "speech": speech}
+                "new_state": state_resp.get("state"), "speech": speech,
+                "cacheable": False}
     except Exception as exc:
         logger.error("State query failed for %s", entity_id, exc_info=True)
         return {"success": False, "entity_id": entity_id, "new_state": None,
-                "speech": f"Failed to query security status: {exc}"}
+                "speech": f"Failed to query security status: {exc}",
+                "cacheable": False}
 
 
 async def _list_security(ha_client: Any) -> dict:
@@ -252,7 +279,8 @@ async def _list_security(ha_client: Any) -> dict:
             parts.append(f"{label}: {'; '.join(items)}")
 
     speech = ". ".join(parts) + "."
-    return {"success": True, "entity_id": "", "new_state": None, "speech": speech}
+    return {"success": True, "entity_id": "", "new_state": None, "speech": speech,
+            "cacheable": False}
 
 
 async def _handle_security_read_action(
@@ -262,9 +290,11 @@ async def _handle_security_read_action(
     entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None,
+    span_collector=None,
 ) -> dict:
     if action_name == "query_security_state":
-        return await _query_security_state(entity_query, ha_client, entity_index, entity_matcher, agent_id)
+        return await _query_security_state(entity_query, ha_client, entity_index, entity_matcher, agent_id,
+                                           span_collector=span_collector)
     if action_name == "list_security":
         return await _list_security(ha_client)
     return {"success": False, "entity_id": "", "new_state": None,

@@ -71,7 +71,10 @@ async def db_repository(db_path: Path):
             finally:
                 await conn.close()
 
-        with patch("app.db.repository.get_db", _temp_get_db):
+        with patch("app.db.repository.get_db_read", _temp_get_db), \
+             patch("app.db.repository.get_db_write", _temp_get_db), \
+             patch("app.db.schema.get_db_read", _temp_get_db), \
+             patch("app.db.schema.get_db_write", _temp_get_db):
             yield db_path
 
 

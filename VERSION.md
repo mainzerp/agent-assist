@@ -1,8 +1,124 @@
 # Version
 
-**Current Version:** 0.12.0
+**Current Version:** 0.14.4
 
 ## Version History
+
+### 0.14.4 -- Cache Dedup + Hit Counter Flush
+
+- **Deterministic cache IDs**: `RoutingCache.store()` and `ResponseCache.store()` now use `sha256(query_text)[:16]` instead of `uuid4()` for entry IDs, so upsert overwrites existing entries for the same query instead of creating duplicates.
+- **Flush on store**: Both caches now flush pending hit-count updates inside `store()` to prevent buffered updates from being lost.
+- **Reduced flush interval**: Lowered `_flush_interval` from 50 to 5 so low-traffic instances flush hit counts more frequently.
+- **Shutdown flush**: Added `flush_pending()` public method to both caches and `CacheManager`; called during container shutdown to persist any remaining buffered hit counts.
+
+### 0.14.3 -- Routing Cache Priority + Purge Widening
+
+- **Routing cache checked first**: Reordered `_process_inner()` in `CacheManager` to check the routing cache before the response cache. The routing cache is cheaper (agent_id + condensed_task only) and prevents stale response entries from preempting valid routing hits.
+- **Failed replay resets cache_result**: After a `response_hit` replay fails in `handle_task()` / `handle_task_stream()`, `cache_result` is now reset to `None` so `_classify()` can re-check the routing cache instead of skipping it.
+- **Wider read-only purge**: `purge_readonly_entries()` now also removes entries whose `cached_action` contains a read-only service call (`query_*`, `list_*`), not just entries with empty `cached_action`.
+
+### 0.14.2 -- Cache Fall-Through Span + Stale Purge
+
+- **Cache fall-through span**: Added `cache_fallthrough` span in both `handle_task()` and `handle_task_stream()` to mark the gap when a cached action replay fails and the request falls through to live classify+dispatch. Visible in the Gantt trace timeline (rose color).
+- **Startup purge of stale read-only cache entries**: Added `purge_readonly_entries()` to `ResponseCache` and `CacheManager`. A one-time background task at startup removes response cache entries with `cached_action == ""` (read-only responses like sensor queries that hold stale state values).
+
+### 0.14.1 -- LLM Entity Particle Stripping
+
+- **Prompt-level entity extraction fix**: Updated all 8 domain agent prompts (climate, light, scene, media, security, music, automation, timer) and the orchestrator prompt to instruct the LLM to strip grammatical particles (prepositions, articles, cases) from entity names in any language. Fixes degraded entity matching when users include particles like "im", "in the", "dans la", "en la" in their queries (e.g. "im gaestezimmer" -> "gaestezimmer").
+
+### 0.14.0 -- Sensor Cache Fix
+
+- **Prevent caching of read-only responses**: Added `cacheable` field (default `True`) to `ActionExecuted` model. All 8 executors now return `cacheable=False` for read-only actions (`_query_*`, `_list_*`). `_store_response_cache()` checks this flag and skips storage when `False`, preventing stale sensor/status data from being served from cache.
+- **Fall-through on failed cached action replay**: When `_handle_response_cache_hit()` detects that a cached action existed but replay returned `None` (failed), it returns `None` so `handle_task()` and `handle_task_stream()` fall through to full classify+dispatch instead of returning stale text.
+
+### 0.13.9 -- Digraph Embedding Search Fix
+
+- **Digraph-to-umlaut dual embedding search**: When the query contains German digraphs (ae/oe/ue), `EntityMatcher.match()` now runs a second embedding search with the digraph-converted umlaut form (e.g., "gaestezimmer" -> "gastezimmer") and merges both result sets, de-duplicating by entity_id and keeping the better embedding score. This fixes the gatekeeper problem where the embedding model returned completely wrong entities for digraph queries.
+
+### 0.13.8 -- Umlaut Containment Bonus Fix
+
+- **Umlaut normalization**: Containment bonus in `EntityMatcher.match()` now normalizes both query and friendly_name via `_normalize_for_containment()` before substring check, handling German umlaut digraphs (ae/oe/ue) and Unicode diacritics so that queries like "gaestezimmer" correctly match friendly names like "Gastezimmer Temperatur"
+
+### 0.13.7 -- Event Loop Blocking Fix
+
+- **Async entity index**: Added async wrappers (`add_async`, `remove_async`, `populate_async`, `sync_async`, `search_async`) to `EntityIndex` that offload synchronous ChromaDB/embedding operations to thread pool via `run_in_executor()`
+- **Batched state updates**: `on_state_changed` WebSocket callback now queues entity updates into an async queue, flushed every 0.5s in a single batch upsert, preventing event loop starvation on initial HA connect
+- **Non-blocking startup**: `entity_index.populate()` during startup now runs in executor, allowing other async tasks to proceed
+- **Non-blocking periodic sync**: `_periodic_entity_sync()` now uses `sync_async()` to avoid blocking the event loop every 30 minutes
+- **Non-blocking search**: `EmbeddingSignal.score()` and `timer_executor` entity search calls now use `search_async()`, preventing event loop blocking during HTTP request handling
+
+### 0.13.6 -- Entity Matcher Containment Bonus
+
+- **Containment bonus**: Entity matcher now adds a 0.3 score bonus (capped at 1.0) when the normalized query is a substring of the candidate's friendly name, improving partial entity name matches
+
+### 0.13.5 -- Entity ID Validation & Visibility Ordering Fix
+
+- **Pydantic ValidationError fix**: `ActionExecuted.entity_id` now uses `result.get("entity_id") or ""` to handle `None` values that triggered Pydantic validation errors
+- **Visibility filtering before top-N**: `EntityMatcher.match()` now applies agent visibility rules before the top-N cutoff, ensuring filtered-out entities do not consume result slots
+
+### 0.13.4 -- Span Visibility Fix for Read-Action Paths
+
+Threaded `span_collector` into all read-action code paths so `entity_match` spans appear in the trace timeline for status queries (not just write actions):
+
+- **Read-action span threading**: Added `span_collector=None` parameter to all 8 `_handle_*_read_action()` and `_query_*()` functions; wrapped `entity_matcher.match()` calls with `_optional_span` in `action_executor`, `climate_executor`, `media_executor`, `music_executor`, `scene_executor`, `security_executor`, `timer_executor`, and `automation_executor`
+- **Migration 14**: Seeded `device_class_include` rules for climate-agent (9 classes), security-agent (11 classes), and light-agent (1 class), plus `domain_include` sensor/binary_sensor rules using `INSERT OR IGNORE` for idempotency
+- **Gantt colorMap**: Added `entity_match` to the vis.js Gantt chart color map (purple `#a855f7`)
+
+### 0.13.3 -- Entity Match Span Tracing
+
+Added `entity_match` spans to all 8 executor modules so entity resolution timing, scores, and signal breakdowns appear in the span timeline visualization:
+
+- **Shared span utilities**: Moved `_NoOpSpan` and `_optional_span` from `orchestrator.py` to `app/analytics/tracer.py` for reuse across all executors
+- **Span instrumentation**: Wrapped `entity_matcher.match()` calls in all 8 executors (`action`, `climate`, `media`, `music`, `scene`, `security`, `automation`, `timer`) with `entity_match` spans recording query, match_count, top_entity_id, top_friendly_name, top_score, and signal_scores
+- **span_collector threading**: Added `span_collector=None` parameter through `ActionableAgent._do_execute()`, all 8 agent wrappers, all 8 executor main functions, and 5 timer helper functions (`_snooze_timer`, `_start_timer_with_notification`, `_sleep_timer`, `_create_reminder`, `_create_recurring_reminder`)
+
+New tests: test_action_executor (3) = 3 new tests (entity_match span recorded, no-match span, backward compatibility)
+
+### 0.13.2 -- Agent Domain Access Hardening
+
+Removed unfiltered `entity_index.search()` fallback from all 8 executor modules and added per-executor domain validation:
+
+- **Fallback removal**: Removed 17 occurrences of unfiltered `entity_index.search()` fallback across `action_executor`, `climate_executor`, `media_executor`, `music_executor`, `scene_executor`, `security_executor`, `timer_executor`, and `automation_executor`
+- **Domain validation**: Each executor now declares `_ALLOWED_DOMAINS` and validates resolved entities belong to the correct domain before proceeding; wrong-domain entities are treated as "not found"
+- **Safety net**: Prevents cross-domain entity leakage (e.g., `media_player.wohnzimmer_tv` being returned for a climate query about "Wohnzimmer")
+
+New tests: test_action_executor (7) = 7 new tests
+Updated tests: test_action_executor (2) = 2 updated tests
+
+### 0.13.1 -- Orchestrator Flow Bug Fixes
+
+4 end-to-end defects fixed in the orchestrator streaming pipeline, multi-agent dispatch, conversation persistence, and HA websocket integration:
+
+- **Streaming error propagation**: StreamToken now carries an error field; orchestrator sets has_error from actual agent errors instead of hard-coding False; route adapters (SSE, WS, dashboard) surface errors to clients; HA integration detects error tokens and falls back to REST
+- **Multi-agent partial failure**: Failed parallel agent branches are tracked with agent ID and error message; has_error reflects reality; merged response includes partial failure note; response dict contains partial_failure metadata
+- **Conversation persistence**: _store_turn() now persists to DB via ConversationRepository.insert() so admin conversation pages and analytics totals reflect runtime conversations; DB failure is non-fatal (logged, does not break runtime)
+- **HA WebSocket close/error handling**: _process_via_ws() raises on mid-stream CLOSED/ERROR instead of returning partial speech as success; triggers existing REST fallback path
+
+New tests: test_agents (5), test_api (2), test_ha_client (4) = 11 new tests
+Updated tests: test_agents (2) = 2 updated tests
+
+### 0.13.0 -- Lower-Risk Hardening
+
+4 lower-confidence risks and maintainability items addressed:
+
+- **HA WebSocket concurrency**: Added `asyncio.Lock` to serialize overlapping conversation turns on the same entity, preventing response interleaving on the shared WebSocket connection
+- **MCP transport/timeout**: Per-server timeout now wired to tool calls and connection establishment; removed misleading `http` transport alias (use `sse` instead); README updated to document actual transport support (stdio + SSE)
+- **SQLite read/write split**: Separated `get_db()` into `get_db_read()` (no lock, concurrent reads) and `get_db_write()` (locked, serialized writes); all 86 repository call sites classified and updated; leverages existing WAL mode for true concurrent read access
+- **Plugin trust boundary**: Removed deprecated `PluginContext.app` escape hatch (now raises `AttributeError`); added `event_bus` attribute to `PluginContext`; documented trust model in plugin-development.md
+
+New tests: test_ha_client (1), test_mcp (5), test_db (2), test_plugins (3) = 11 new tests
+
+### 0.12.1 -- Review Bug Fixes
+
+5 confirmed defects fixed from full project review:
+
+- **HA WebSocket startup**: Fixed `run()` never entering its main loop from a fresh client; `_running` is now set to `True` at the start of `run()` so the initial connection attempt proceeds
+- **Plugin discovery isolation**: Disabled plugins no longer execute module-level code or constructor side effects during discovery; the DB-backed enabled check now runs before import
+- **Settings type preservation**: Bulk settings route no longer silently rewrites `value_type` to `"string"`; `ON CONFLICT` clause now preserves existing metadata
+- **Single-setting route hardening**: Single-setting PUT route now enforces the same allowlist and type validation as the bulk route; rejects unknown keys and invalid values
+- **WebSocket auth deprecation**: Query-string API key auth is now deprecated with a logged warning; `Authorization` header is checked first; documentation updated
+
+New tests: test_ha_client (3), test_plugins (3), test_db (2), test_api (4), test_security (6) = 18 new tests
 
 ### 0.12.0 -- Send-Agent & Sequential Orchestrator Dispatch
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
+from functools import partial
 
 from app.cache.vector_store import VectorStore, COLLECTION_ENTITY_INDEX
 from app.models.entity_index import EntityIndexEntry
@@ -274,3 +276,54 @@ class EntityIndex:
             "embedding_status": dict(self._status),
             "sync": dict(self._sync_stats),
         }
+
+    # ------------------------------------------------------------------
+    # Batch add (used by async queue flush)
+    # ------------------------------------------------------------------
+
+    def batch_add(self, entries: list[EntityIndexEntry]) -> None:
+        """Add or update multiple entities in a single upsert call."""
+        if not entries:
+            return
+        seen: dict[str, EntityIndexEntry] = {}
+        for e in entries:
+            seen[e.entity_id] = e
+        deduped = list(seen.values())
+        ids = [e.entity_id for e in deduped]
+        documents = [e.embedding_text for e in deduped]
+        metadatas = [self._build_metadata(e) for e in deduped]
+        self._store.upsert(
+            COLLECTION_ENTITY_INDEX,
+            ids=ids,
+            documents=documents,
+            metadatas=metadatas,
+        )
+
+    # ------------------------------------------------------------------
+    # Async wrappers (offload to thread pool via run_in_executor)
+    # ------------------------------------------------------------------
+
+    async def add_async(self, entry: EntityIndexEntry) -> None:
+        """Async wrapper -- offloads add() to thread pool."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.add, entry)
+
+    async def remove_async(self, entity_id: str) -> None:
+        """Async wrapper -- offloads remove() to thread pool."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.remove, entity_id)
+
+    async def populate_async(self, entities: list[EntityIndexEntry]) -> None:
+        """Async wrapper -- offloads populate() to thread pool."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.populate, entities)
+
+    async def sync_async(self, entities: list[EntityIndexEntry]) -> dict:
+        """Async wrapper -- offloads sync() to thread pool."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.sync, entities)
+
+    async def search_async(self, query: str, n_results: int = 5) -> list[tuple[EntityIndexEntry, float]]:
+        """Async wrapper -- offloads search() to thread pool."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, partial(self.search, query, n_results=n_results))

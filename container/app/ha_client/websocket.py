@@ -95,6 +95,7 @@ class HAWebSocketClient:
         self._logger.info("Disconnected from HA WebSocket")
 
     async def run(self) -> None:
+        self._running = True
         while self._running:
             connected = await self.connect()
             if not connected:

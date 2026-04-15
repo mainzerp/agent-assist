@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
-import uuid
 from datetime import datetime, timezone
 
 from app.cache.vector_store import VectorStore, COLLECTION_RESPONSE_CACHE
@@ -30,7 +30,7 @@ class ResponseCache:
         self._store_count: int = 0
         self._eviction_interval: int = 100
         self._pending_updates: dict[str, tuple[str, dict]] = {}
-        self._flush_interval: int = 50
+        self._flush_interval: int = 5
         self._hit_since_flush: int = 0
 
     async def load_config(self) -> None:
@@ -117,7 +117,8 @@ class ResponseCache:
             self._store_count = 0
             self._enforce_lru()
         now = datetime.now(timezone.utc).isoformat()
-        entry_id = str(uuid.uuid4())
+        entry_id = hashlib.sha256(entry.query_text.encode()).hexdigest()[:16]
+        self._flush_pending_updates()
         meta = {
             "response_text": entry.response_text,
             "agent_id": entry.agent_id,
@@ -179,6 +180,10 @@ class ResponseCache:
         self._pending_updates.clear()
         self._hit_since_flush = 0
 
+    def flush_pending(self) -> None:
+        """Public flush for shutdown hook."""
+        self._flush_pending_updates()
+
     def get_stats(self) -> dict:
         """Return response cache stats."""
         return {
@@ -187,3 +192,41 @@ class ResponseCache:
             "hit_threshold": self._hit_threshold,
             "partial_threshold": self._partial_threshold,
         }
+
+    @staticmethod
+    def _is_readonly_action(cached_action_str: str) -> bool:
+        """Check if a cached_action JSON string represents a read-only service call."""
+        if not cached_action_str:
+            return True  # No action = read-only (sensor query, status check, etc.)
+        try:
+            import json
+            data = json.loads(cached_action_str)
+            service = data.get("service", "")
+            # "sensor/query_status" -> action part is "query_status"
+            action = service.split("/", 1)[1] if "/" in service else ""
+            return action.startswith(("query_", "list_"))
+        except (json.JSONDecodeError, IndexError, TypeError):
+            return False
+
+    def purge_readonly_entries(self) -> int:
+        """Remove stale read-only response cache entries.
+
+        Purges entries with no cached action OR whose cached action is a
+        read-only service call (query_*, list_*).
+
+        Returns the number of purged entries.
+        """
+        all_data = self._store.get(
+            COLLECTION_RESPONSE_CACHE,
+            include=["metadatas"],
+        )
+        if not all_data["ids"]:
+            return 0
+        to_delete = []
+        for entry_id, meta in zip(all_data["ids"], all_data["metadatas"]):
+            if self._is_readonly_action(meta.get("cached_action", "")):
+                to_delete.append(entry_id)
+        if to_delete:
+            for i in range(0, len(to_delete), 500):
+                self._store.delete(COLLECTION_RESPONSE_CACHE, ids=to_delete[i:i + 500])
+        return len(to_delete)

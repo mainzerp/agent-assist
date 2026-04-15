@@ -88,6 +88,7 @@ class AgentAssistConversationEntity(
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._attr_unique_id = entry.entry_id
         self._reconnect_delay = RECONNECT_BASE_DELAY
+        self._ws_lock = asyncio.Lock()
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
@@ -194,7 +195,8 @@ class AgentAssistConversationEntity(
             return await self._process_via_rest(user_input)
 
         try:
-            return await self._process_via_ws(user_input)
+            async with self._ws_lock:
+                return await self._process_via_ws(user_input)
         except (aiohttp.ClientError, asyncio.TimeoutError):
             logger.warning("WebSocket error, falling back to REST")
             await self._disconnect_ws()
@@ -223,6 +225,8 @@ class AgentAssistConversationEntity(
         speech_parts: list[str] = []
         final_conversation_id = user_input.conversation_id
 
+        received_done = False
+
         while True:
             msg = await asyncio.wait_for(self._ws.receive(), timeout=30.0)
             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -239,13 +243,24 @@ class AgentAssistConversationEntity(
                 if token_text:
                     speech_parts.append(token_text)
                 if data.get("done", False):
+                    received_done = True
+                    error = data.get("error")
+                    if error:
+                        raise aiohttp.ClientError(f"Agent streaming error: {error}")
                     final_conversation_id = data.get("conversation_id", final_conversation_id)
                     mediated = data.get("mediated_speech")
                     if mediated:
                         speech_parts = [mediated]
                     break
             elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                break
+                self._ws = None
+                raise aiohttp.ClientError(
+                    f"WebSocket {'closed' if msg.type == aiohttp.WSMsgType.CLOSED else 'error'} mid-stream"
+                )
+
+        if not received_done:
+            self._ws = None
+            raise aiohttp.ClientError("WebSocket stream ended without done token")
 
         speech = "".join(speech_parts)
         return self._build_result(speech, final_conversation_id, user_input.language)

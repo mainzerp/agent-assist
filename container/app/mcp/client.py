@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shlex
 from typing import Any
@@ -38,19 +39,36 @@ class MCPClient:
     def connected(self) -> bool:
         return self._connected and self._session is not None
 
+    @property
+    def timeout(self) -> int:
+        """Per-server timeout in seconds."""
+        return self._timeout
+
     async def connect(self) -> bool:
         """Connect to the MCP server. Returns True on success."""
         try:
             if self._transport == "stdio":
-                return await self._connect_stdio()
-            elif self._transport in ("http", "sse"):
-                return await self._connect_sse()
+                return await asyncio.wait_for(
+                    self._connect_stdio(), timeout=float(self._timeout)
+                )
+            elif self._transport == "sse":
+                return await asyncio.wait_for(
+                    self._connect_sse(), timeout=float(self._timeout)
+                )
             else:
                 logger.error(
-                    "Unknown transport type '%s' for MCP server '%s'",
+                    "Unsupported transport type '%s' for MCP server '%s'. "
+                    "Supported transports: stdio, sse.",
                     self._transport, self._name,
                 )
                 return False
+        except asyncio.TimeoutError:
+            logger.error(
+                "Connection to MCP server '%s' timed out after %ds",
+                self._name, self._timeout,
+            )
+            self._connected = False
+            return False
         except Exception:
             logger.error(
                 "Failed to connect to MCP server '%s'", self._name, exc_info=True

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from app.agents.delayed_tasks import delayed_task_manager
+from app.analytics.tracer import _optional_span
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,14 @@ _TIMER_ACTION_MAP: dict[str, tuple[str, str]] = {
     "finish_timer":  ("timer", "finish"),
     "set_datetime":  ("input_datetime", "set_datetime"),
 }
+
+_ALLOWED_DOMAINS: frozenset[str] = frozenset({"timer", "input_datetime"})
+
+
+def _validate_domain(entity_id: str) -> bool:
+    """Check that entity_id belongs to an allowed domain for this executor."""
+    domain = entity_id.split(".")[0] if "." in entity_id else ""
+    return domain in _ALLOWED_DOMAINS
 
 
 # ---------------------------------------------------------------------------
@@ -304,11 +313,13 @@ async def _handle_read_action(
     entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None,
+    span_collector=None,
 ) -> dict:
     """Handle read-only actions that query state without calling a service."""
 
     if action_name == "query_timer":
-        return await _query_timer(entity_query, ha_client, entity_index, entity_matcher, agent_id)
+        return await _query_timer(entity_query, ha_client, entity_index, entity_matcher, agent_id,
+                                  span_collector=span_collector)
     if action_name == "list_timers":
         return await _list_timers(ha_client)
     if action_name == "list_alarms":
@@ -324,6 +335,7 @@ async def _query_timer(
     entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None,
+    span_collector=None,
 ) -> dict:
     """Query the status of a specific timer or input_datetime entity."""
     entity_id = None
@@ -336,32 +348,41 @@ async def _query_timer(
     if not entity_id:
         try:
             if entity_matcher:
-                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-                if matches:
-                    entity_id = matches[0].entity_id
-            if not entity_id and entity_index:
-                results = entity_index.search(entity_query, n_results=1)
-                if results:
-                    entity_id = results[0][0].entity_id
+                async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
+                    matches = await entity_matcher.match(entity_query, agent_id=agent_id)
+                    em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
+                    if matches:
+                        entity_id = matches[0].entity_id
+                        em_span["metadata"]["top_entity_id"] = entity_id
+                        em_span["metadata"]["top_score"] = matches[0].score
+                        em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
         except Exception:
             logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
+    if entity_id and not _validate_domain(entity_id):
+        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
+        entity_id = None
+
     if not entity_id:
         return {"success": False, "entity_id": None, "new_state": None,
-                "speech": f"Could not find an entity matching '{entity_query}'."}
+                "speech": f"Could not find an entity matching '{entity_query}'.",
+                "cacheable": False}
 
     try:
         state_resp = await ha_client.get_state(entity_id)
         if not state_resp:
             return {"success": False, "entity_id": entity_id, "new_state": None,
-                    "speech": f"Could not retrieve state for {entity_id}."}
+                    "speech": f"Could not retrieve state for {entity_id}.",
+                    "cacheable": False}
         speech = _format_timer_state(entity_id, state_resp)
         return {"success": True, "entity_id": entity_id,
-                "new_state": state_resp.get("state"), "speech": speech}
+                "new_state": state_resp.get("state"), "speech": speech,
+                "cacheable": False}
     except Exception as exc:
         logger.error("State query failed for %s", entity_id, exc_info=True)
         return {"success": False, "entity_id": entity_id, "new_state": None,
-                "speech": f"Failed to query timer status: {exc}"}
+                "speech": f"Failed to query timer status: {exc}",
+                "cacheable": False}
 
 
 async def _list_timers(ha_client: Any) -> dict:
@@ -425,7 +446,8 @@ async def _list_timers(ha_client: Any) -> dict:
     else:
         speech = ". ".join(parts) + "."
 
-    return {"success": True, "entity_id": "", "new_state": None, "speech": speech}
+    return {"success": True, "entity_id": "", "new_state": None, "speech": speech,
+            "cacheable": False}
 
 
 async def _list_alarms(ha_client: Any) -> dict:
@@ -451,7 +473,8 @@ async def _list_alarms(ha_client: Any) -> dict:
         lines.append(f"{friendly_name}: {state}")
 
     speech = "Alarms: " + "; ".join(lines) + "."
-    return {"success": True, "entity_id": "", "new_state": None, "speech": speech}
+    return {"success": True, "entity_id": "", "new_state": None, "speech": speech,
+            "cacheable": False}
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +490,7 @@ async def _snooze_timer(
     entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None,
+    span_collector=None,
 ) -> dict:
     """Snooze a timer by cancelling it and restarting with a snooze duration."""
     entity_query = action.get("entity", "")
@@ -478,17 +502,22 @@ async def _snooze_timer(
     friendly_name = entity_query
     try:
         if entity_matcher:
-            matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-            if matches:
-                entity_id = matches[0].entity_id
-                friendly_name = matches[0].friendly_name or entity_id
-        if not entity_id and entity_index:
-            results = entity_index.search(entity_query, n_results=1)
-            if results:
-                entity_id = results[0][0].entity_id
-                friendly_name = results[0][0].friendly_name or entity_id
+            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
+                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
+                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
+                if matches:
+                    entity_id = matches[0].entity_id
+                    friendly_name = matches[0].friendly_name or entity_id
+                    em_span["metadata"]["top_entity_id"] = entity_id
+                    em_span["metadata"]["top_friendly_name"] = friendly_name
+                    em_span["metadata"]["top_score"] = matches[0].score
+                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
+
+    if entity_id and not _validate_domain(entity_id):
+        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
+        entity_id = None
 
     if not entity_id:
         # Try last expired timer for snooze
@@ -540,6 +569,7 @@ async def _start_timer_with_notification(
     entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None,
+    span_collector=None,
 ) -> dict:
     """Start a timer and schedule a notification for when it finishes."""
     entity_query = action.get("entity", "")
@@ -555,7 +585,8 @@ async def _start_timer_with_notification(
     start_action = {"action": "start_timer", "entity": entity_query,
                     "parameters": {"duration": duration}}
     result = await execute_timer_action(start_action, ha_client, entity_index,
-                                         entity_matcher, agent_id=agent_id)
+                                         entity_matcher, agent_id=agent_id,
+                                         span_collector=span_collector)
 
     if not result.get("success"):
         return result
@@ -669,6 +700,7 @@ async def _sleep_timer(
     entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None,
+    span_collector=None,
 ) -> dict:
     """Set a sleep timer that stops a media player after a duration.
 
@@ -692,7 +724,8 @@ async def _sleep_timer(
     start_action = {"action": "start_timer", "entity": timer_entity_query,
                     "parameters": {"duration": duration}}
     result = await execute_timer_action(start_action, ha_client, entity_index,
-                                         entity_matcher, agent_id=agent_id)
+                                         entity_matcher, agent_id=agent_id,
+                                         span_collector=span_collector)
 
     if not result.get("success"):
         return result
@@ -736,6 +769,7 @@ async def _create_reminder(
     entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None,
+    span_collector=None,
 ) -> dict:
     """Create a calendar event as a reminder using calendar.create_event."""
     entity_query = action.get("entity", "")
@@ -757,12 +791,18 @@ async def _create_reminder(
     friendly_name = entity_query
     try:
         if entity_matcher:
-            matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-            if matches:
-                entity_id = matches[0].entity_id
-                friendly_name = matches[0].friendly_name or entity_id
+            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
+                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
+                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
+                if matches:
+                    entity_id = matches[0].entity_id
+                    friendly_name = matches[0].friendly_name or entity_id
+                    em_span["metadata"]["top_entity_id"] = entity_id
+                    em_span["metadata"]["top_friendly_name"] = friendly_name
+                    em_span["metadata"]["top_score"] = matches[0].score
+                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
         if not entity_id and entity_index:
-            results = entity_index.search(entity_query, n_results=1)
+            results = await entity_index.search_async(entity_query, n_results=1)
             if results:
                 entity_id = results[0][0].entity_id
                 friendly_name = results[0][0].friendly_name or entity_id
@@ -802,6 +842,7 @@ async def _create_recurring_reminder(
     entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None,
+    span_collector=None,
 ) -> dict:
     """Create a recurring calendar event using calendar.create_event with rrule."""
     entity_query = action.get("entity", "")
@@ -826,12 +867,18 @@ async def _create_recurring_reminder(
     friendly_name = entity_query
     try:
         if entity_matcher:
-            matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-            if matches:
-                entity_id = matches[0].entity_id
-                friendly_name = matches[0].friendly_name or entity_id
+            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
+                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
+                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
+                if matches:
+                    entity_id = matches[0].entity_id
+                    friendly_name = matches[0].friendly_name or entity_id
+                    em_span["metadata"]["top_entity_id"] = entity_id
+                    em_span["metadata"]["top_friendly_name"] = friendly_name
+                    em_span["metadata"]["top_score"] = matches[0].score
+                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
         if not entity_id and entity_index:
-            results = entity_index.search(entity_query, n_results=1)
+            results = await entity_index.search_async(entity_query, n_results=1)
             if results:
                 entity_id = results[0][0].entity_id
                 friendly_name = results[0][0].friendly_name or entity_id
@@ -887,6 +934,7 @@ async def execute_timer_action(
     agent_id: str | None = None,
     device_id: str | None = None,
     area_id: str | None = None,
+    span_collector=None,
 ) -> dict:
     """Resolve an entity, call a timer HA service, and verify the result.
 
@@ -906,22 +954,23 @@ async def execute_timer_action(
     # Read-only actions (no service call)
     if action_name in ("query_timer", "list_timers", "list_alarms"):
         return await _handle_read_action(action_name, entity_query, ha_client,
-                                          entity_index, entity_matcher, agent_id)
+                                          entity_index, entity_matcher, agent_id,
+                                          span_collector=span_collector)
 
     # Multi-step actions (custom logic, not simple service calls)
     if action_name == "snooze_timer":
-        return await _snooze_timer(action, ha_client, entity_index, entity_matcher, agent_id)
+        return await _snooze_timer(action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector)
     if action_name == "start_timer_with_notification":
         return await _start_timer_with_notification(action, ha_client, entity_index,
-                                                      entity_matcher, agent_id)
+                                                      entity_matcher, agent_id, span_collector=span_collector)
     if action_name == "delayed_action":
         return await _delayed_action(action, ha_client, entity_index, entity_matcher, agent_id)
     if action_name == "sleep_timer":
-        return await _sleep_timer(action, ha_client, entity_index, entity_matcher, agent_id)
+        return await _sleep_timer(action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector)
     if action_name == "create_reminder":
-        return await _create_reminder(action, ha_client, entity_index, entity_matcher, agent_id)
+        return await _create_reminder(action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector)
     if action_name == "create_recurring_reminder":
-        return await _create_recurring_reminder(action, ha_client, entity_index, entity_matcher, agent_id)
+        return await _create_recurring_reminder(action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector)
 
     # Validate action name for simple service-call actions
     mapping = _TIMER_ACTION_MAP.get(action_name)
@@ -950,17 +999,22 @@ async def execute_timer_action(
     if not entity_id:
         try:
             if entity_matcher:
-                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-                if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
-            if not entity_id and entity_index:
-                results = entity_index.search(entity_query, n_results=1)
-                if results:
-                    entity_id = results[0][0].entity_id
-                    friendly_name = results[0][0].friendly_name or entity_id
+                async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
+                    matches = await entity_matcher.match(entity_query, agent_id=agent_id)
+                    em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
+                    if matches:
+                        entity_id = matches[0].entity_id
+                        friendly_name = matches[0].friendly_name or entity_id
+                        em_span["metadata"]["top_entity_id"] = entity_id
+                        em_span["metadata"]["top_friendly_name"] = friendly_name
+                        em_span["metadata"]["top_score"] = matches[0].score
+                        em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
         except Exception:
             logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
+
+    if entity_id and not _validate_domain(entity_id):
+        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
+        entity_id = None
 
     # For start_timer: if no entity found, try to allocate from pool
     if not entity_id and action_name == "start_timer":

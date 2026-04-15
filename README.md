@@ -13,7 +13,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 - **A2A protocol** -- JSON-RPC 2.0-based agent-to-agent communication with registry, dispatcher, and in-process transport
 - **Two-tier vector cache** -- Routing cache (skip intent classification) and response cache (skip entire agent pipeline) using ChromaDB embeddings with configurable similarity thresholds
 - **Hybrid entity matching** -- Five-signal weighted matcher (Levenshtein, Jaro-Winkler, phonetic, embedding similarity, alias lookup) with LLM disambiguation fallback
-- **MCP tool integration** -- Connect external tool servers via Model Context Protocol (stdio and HTTP transports) and assign tools to agents
+- **MCP tool integration** -- Connect external tool servers via Model Context Protocol (stdio and SSE transports) and assign tools to agents
 - **Plugin system** -- Extend functionality with Python plugins that register agents, subscribe to events, add dashboard routes, and access settings
 - **Admin dashboard** -- 14-page HTMX-powered dashboard for managing agents, entities, cache, MCP servers, analytics, traces, presence, and plugins
 - **Presence detection** -- Room-level presence awareness using motion, occupancy, and mmWave sensors with weighted scoring and decay

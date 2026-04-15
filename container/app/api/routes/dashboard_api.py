@@ -694,6 +694,7 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
                     conversation_id=chunk.result.get("conversation_id") if chunk.done else None,
                     mediated_speech=chunk.result.get("mediated_speech") if chunk.done else None,
                     is_filler=chunk.result.get("is_filler", False),
+                    error=chunk.result.get("error") if chunk.done else None,
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:

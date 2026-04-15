@@ -182,25 +182,26 @@ class TestExecuteAction:
         assert "Failed to execute" in result["speech"]
 
     @pytest.mark.asyncio
-    async def test_fallback_to_entity_index(self, ha_client, entity_index):
-        """When entity_matcher returns no results, fall back to entity_index.search."""
+    async def test_no_fallback_to_entity_index(self, ha_client, entity_index):
+        """When entity_matcher returns no results, should NOT fall back to unfiltered entity_index."""
         matcher = AsyncMock()
         matcher.match = AsyncMock(return_value=[])
 
         action = {"action": "turn_on", "entity": "kitchen light", "parameters": {}}
         result = await execute_action(action, ha_client, entity_index, matcher)
 
-        assert result["success"] is True
-        assert result["entity_id"] == "light.kitchen_ceiling"
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        entity_index.search.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_matcher_uses_index(self, ha_client, entity_index):
-        """When entity_matcher is None, fall back to entity_index."""
+    async def test_no_matcher_no_fallback(self, ha_client, entity_index):
+        """When entity_matcher is None, should NOT fall back to unfiltered entity_index."""
         action = {"action": "turn_on", "entity": "kitchen light", "parameters": {}}
         result = await execute_action(action, ha_client, entity_index, None)
 
-        assert result["success"] is True
-        assert result["entity_id"] == "light.kitchen_ceiling"
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
 
     @pytest.mark.asyncio
     async def test_state_verification_failure(self, ha_client, entity_matcher, entity_index):
@@ -220,6 +221,167 @@ class TestExecuteAction:
 
         assert result["success"] is True
         entity_matcher.match.assert_awaited_once_with("kitchen light", agent_id="light-agent")
+
+    @pytest.mark.asyncio
+    async def test_domain_validation_rejects_wrong_domain(self, ha_client):
+        """Resolved entity in wrong domain should be treated as not found."""
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "media_player.living_room_tv"
+        match_result.friendly_name = "Living Room TV"
+        matcher.match = AsyncMock(return_value=[match_result])
+        index = MagicMock()
+
+        action = {"action": "turn_on", "entity": "living room", "parameters": {}}
+        result = await execute_action(action, ha_client, index, matcher, agent_id="light-agent")
+
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_domain_validation_accepts_light_domain(self, ha_client, entity_matcher, entity_index):
+        """Entity in light domain should pass domain validation."""
+        action = {"action": "turn_on", "entity": "kitchen light", "parameters": {}}
+        result = await execute_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        assert result["entity_id"] == "light.kitchen_ceiling"
+
+    @pytest.mark.asyncio
+    async def test_domain_validation_accepts_switch_domain(self, ha_client):
+        """Entity in switch domain should pass domain validation."""
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "switch.kitchen_outlet"
+        match_result.friendly_name = "Kitchen Outlet"
+        matcher.match = AsyncMock(return_value=[match_result])
+        index = MagicMock()
+
+        ha_client.get_state = AsyncMock(return_value={"state": "on", "attributes": {}})
+        action = {"action": "turn_on", "entity": "kitchen outlet", "parameters": {}}
+        result = await execute_action(action, ha_client, index, matcher)
+
+        assert result["success"] is True
+        assert result["entity_id"] == "switch.kitchen_outlet"
+
+
+# ---------------------------------------------------------------------------
+# Climate executor domain validation tests
+# ---------------------------------------------------------------------------
+
+from app.agents.climate_executor import execute_climate_action  # noqa: E402
+
+
+class TestClimateExecutorDomainValidation:
+    """Tests for climate executor domain validation."""
+
+    @pytest.fixture()
+    def ha_client(self):
+        client = AsyncMock()
+        client.call_service = AsyncMock(return_value={})
+        client.get_state = AsyncMock(return_value={
+            "state": "heat",
+            "attributes": {"friendly_name": "Living Room Climate", "current_temperature": 21.5}
+        })
+        return client
+
+    @pytest.mark.asyncio
+    async def test_rejects_media_player_entity(self, ha_client):
+        """Climate executor should reject media_player entities."""
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "media_player.wohnzimmer_tv"
+        match_result.friendly_name = "TV Wohnzimmer-TV"
+        matcher.match = AsyncMock(return_value=[match_result])
+        index = MagicMock()
+
+        action = {"action": "query_climate_state", "entity": "Wohnzimmer", "parameters": {}}
+        result = await execute_climate_action(action, ha_client, index, matcher, agent_id="climate-agent")
+
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_accepts_climate_entity(self, ha_client):
+        """Climate executor should accept climate domain entities."""
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "climate.living_room"
+        match_result.friendly_name = "Living Room Climate"
+        matcher.match = AsyncMock(return_value=[match_result])
+        index = MagicMock()
+
+        action = {"action": "query_climate_state", "entity": "living room", "parameters": {}}
+        result = await execute_climate_action(action, ha_client, index, matcher, agent_id="climate-agent")
+
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_accepts_sensor_entity(self, ha_client):
+        """Climate executor should accept sensor domain entities."""
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "sensor.living_room_temperature"
+        match_result.friendly_name = "Living Room Temperature"
+        matcher.match = AsyncMock(return_value=[match_result])
+        index = MagicMock()
+
+        ha_client.get_state = AsyncMock(return_value={
+            "state": "21.5",
+            "attributes": {"friendly_name": "Living Room Temperature", "unit_of_measurement": "C"}
+        })
+        action = {"action": "query_climate_state", "entity": "living room temp", "parameters": {}}
+        result = await execute_climate_action(action, ha_client, index, matcher, agent_id="climate-agent")
+
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_no_fallback_to_unfiltered_index(self, ha_client):
+        """When matcher returns empty, should NOT fall back to entity_index.search()."""
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        index = MagicMock()
+
+        action = {"action": "query_climate_state", "entity": "Wohnzimmer", "parameters": {}}
+        result = await execute_climate_action(action, ha_client, index, matcher, agent_id="climate-agent")
+
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
+        index.search.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Media executor domain validation tests
+# ---------------------------------------------------------------------------
+
+from app.agents.media_executor import execute_media_action  # noqa: E402
+
+
+class TestMediaExecutorDomainValidation:
+    """Tests for media executor domain validation."""
+
+    @pytest.fixture()
+    def ha_client(self):
+        client = AsyncMock()
+        client.call_service = AsyncMock(return_value={})
+        client.get_state = AsyncMock(return_value={"state": "playing", "attributes": {}})
+        return client
+
+    @pytest.mark.asyncio
+    async def test_rejects_light_entity(self, ha_client):
+        """Media executor should reject light entities."""
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "light.living_room"
+        match_result.friendly_name = "Living Room Light"
+        matcher.match = AsyncMock(return_value=[match_result])
+        index = MagicMock()
+
+        action = {"action": "play", "entity": "living room", "parameters": {}}
+        result = await execute_media_action(action, ha_client, index, matcher, agent_id="media-agent")
+
+        assert result["success"] is False
+        assert "Could not find" in result["speech"]
 
 
 # ---------------------------------------------------------------------------
@@ -376,3 +538,137 @@ class TestMusicExecutor:
 
         assert result["success"] is True
         entity_matcher.match.assert_awaited_once_with("kitchen speaker", agent_id="music-agent")
+
+
+# ---------------------------------------------------------------------------
+# Entity match span verification tests
+# ---------------------------------------------------------------------------
+
+from app.analytics.tracer import SpanCollector  # noqa: E402
+
+
+class TestEntityMatchSpan:
+    """Tests that entity_match spans are recorded with correct metadata."""
+
+    @pytest.fixture()
+    def ha_client(self):
+        client = AsyncMock()
+        client.call_service = AsyncMock(return_value={})
+        client.get_state = AsyncMock(return_value={"state": "on", "attributes": {}})
+        return client
+
+    @pytest.fixture()
+    def entity_matcher(self):
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "light.kitchen_ceiling"
+        match_result.friendly_name = "Kitchen Ceiling"
+        match_result.score = 0.95
+        match_result.signal_scores = {"levenshtein": 0.9, "embedding": 0.8}
+        matcher.match = AsyncMock(return_value=[match_result])
+        return matcher
+
+    @pytest.fixture()
+    def entity_index(self):
+        return MagicMock()
+
+    @pytest.mark.asyncio
+    async def test_entity_match_span_recorded(self, ha_client, entity_matcher, entity_index):
+        """Verify entity_match span is recorded with correct metadata when SpanCollector is passed."""
+        span_collector = SpanCollector(trace_id="test-trace-123")
+        action = {"action": "turn_on", "entity": "kitchen light", "parameters": {}}
+
+        result = await execute_action(
+            action, ha_client, entity_index, entity_matcher,
+            agent_id="light-agent", span_collector=span_collector,
+        )
+
+        assert result["success"] is True
+
+        # Find the entity_match span
+        em_spans = [s for s in span_collector._spans if s["span_name"] == "entity_match"]
+        assert len(em_spans) == 1
+        span = em_spans[0]
+
+        assert span["agent_id"] == "light-agent"
+        assert span["status"] == "ok"
+        assert span["metadata"]["query"] == "kitchen light"
+        assert span["metadata"]["match_count"] == 1
+        assert span["metadata"]["top_entity_id"] == "light.kitchen_ceiling"
+        assert span["metadata"]["top_friendly_name"] == "Kitchen Ceiling"
+        assert span["metadata"]["top_score"] == 0.95
+        assert span["metadata"]["signal_scores"] == {"levenshtein": 0.9, "embedding": 0.8}
+
+    @pytest.mark.asyncio
+    async def test_entity_match_span_no_match(self, ha_client, entity_index):
+        """Verify entity_match span records zero matches correctly."""
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        span_collector = SpanCollector(trace_id="test-trace-456")
+        action = {"action": "turn_on", "entity": "nonexistent", "parameters": {}}
+
+        result = await execute_action(
+            action, ha_client, entity_index, matcher,
+            agent_id="light-agent", span_collector=span_collector,
+        )
+
+        assert result["success"] is False
+        em_spans = [s for s in span_collector._spans if s["span_name"] == "entity_match"]
+        assert len(em_spans) == 1
+        assert em_spans[0]["metadata"]["match_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_no_span_without_collector(self, ha_client, entity_matcher, entity_index):
+        """Verify execute_action works without span_collector (backward compatible)."""
+        action = {"action": "turn_on", "entity": "kitchen light", "parameters": {}}
+        result = await execute_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        assert result["entity_id"] == "light.kitchen_ceiling"
+
+
+# ---------------------------------------------------------------------------
+# Read-only actions return cacheable=False
+# ---------------------------------------------------------------------------
+
+class TestReadActionCacheable:
+    """Tests that read-only executor actions return cacheable=False."""
+
+    @pytest.fixture()
+    def ha_client(self):
+        client = AsyncMock()
+        client.get_state = AsyncMock(return_value={
+            "state": "on", "attributes": {"friendly_name": "Kitchen Light", "brightness": 200},
+        })
+        client.get_states = AsyncMock(return_value=[
+            {"entity_id": "light.kitchen", "state": "on",
+             "attributes": {"friendly_name": "Kitchen Light"}},
+        ])
+        return client
+
+    @pytest.fixture()
+    def entity_matcher(self):
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "light.kitchen"
+        match_result.friendly_name = "Kitchen Light"
+        match_result.score = 0.95
+        match_result.signal_scores = {}
+        matcher.match = AsyncMock(return_value=[match_result])
+        return matcher
+
+    @pytest.fixture()
+    def entity_index(self):
+        return MagicMock()
+
+    @pytest.mark.asyncio
+    async def test_query_light_state_cacheable_false(self, ha_client, entity_matcher, entity_index):
+        action = {"action": "query_light_state", "entity": "kitchen light"}
+        result = await execute_action(action, ha_client, entity_index, entity_matcher)
+        assert result["cacheable"] is False
+
+    @pytest.mark.asyncio
+    async def test_list_lights_cacheable_false(self, ha_client, entity_matcher, entity_index):
+        action = {"action": "list_lights", "entity": ""}
+        result = await execute_action(action, ha_client, entity_index, entity_matcher)
+        assert result["cacheable"] is False

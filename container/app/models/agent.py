@@ -69,6 +69,7 @@ class ActionExecuted(BaseModel):
     entity_id: str = Field(..., description="Target entity ID (e.g. light.kitchen)")
     success: bool = Field(True, description="Whether the action succeeded")
     new_state: str | None = Field(None, description="Entity state after action")
+    cacheable: bool = Field(True, description="Whether response may be stored in the response cache")
 
 
 class AgentErrorCode(str, Enum):

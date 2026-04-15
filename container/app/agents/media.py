@@ -10,8 +10,8 @@ class MediaAgent(ActionableAgent):
 
     _prompt_name = "media"
 
-    async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id):
-        return await execute_media_action(action, ha_client, entity_index, entity_matcher, agent_id=agent_id)
+    async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
+        return await execute_media_action(action, ha_client, entity_index, entity_matcher, agent_id=agent_id, span_collector=span_collector)
 
     @property
     def agent_card(self) -> AgentCard:

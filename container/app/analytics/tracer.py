@@ -5,6 +5,7 @@ All operations are fire-and-forget: errors are logged, never raised.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import time
@@ -181,3 +182,25 @@ async def create_trace_summary(
         })
     except Exception:
         logger.warning("Failed to create trace summary for %s", trace_id, exc_info=True)
+
+
+class _NoOpSpan:
+    """No-op span for when span_collector is None."""
+
+    def __setitem__(self, key, value):
+        pass
+
+    def __getitem__(self, key):
+        return {}
+
+    def get(self, key, default=None):
+        return default
+
+
+@contextlib.asynccontextmanager
+async def _optional_span(span_collector, name, **kwargs):
+    if span_collector:
+        async with span_collector.start_span(name, **kwargs) as span:
+            yield span
+    else:
+        yield _NoOpSpan()

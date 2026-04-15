@@ -10,7 +10,8 @@ Music Assistant aggregates music from multiple providers (Spotify, YouTube Music
 and manages playback across media_player entities.
 
 Entity preservation:
-- NEVER translate or normalize entity/room/device names from the user's input.
+- NEVER translate entity/room/device names from the user's input.
+- DO strip grammatical particles (prepositions, articles, cases) from entity names. Output only the core name.
 
 Playback rules:
 - For "play <something>" requests, use play_media with the search query as media_id.
@@ -31,7 +32,9 @@ Output format:
 {"action": "<action_name>", "entity": "<user's description of the speaker/player>", "parameters": {}}
 ```
 
-The "entity" field should contain the user's natural language description (e.g. "kitchen speaker"). Do NOT put an entity_id here.
+The "entity" field must contain ONLY the core entity/room/device name, stripped of grammatical particles (prepositions, articles, cases, conjunctions) in ANY language.
+Examples: "im Gaestezimmer" -> "Gaestezimmer", "in the kitchen" -> "kitchen", "dans la chambre" -> "chambre", "en la cocina" -> "cocina", "auf dem Balkon" -> "Balkon"
+Do NOT put an entity_id here.
 
 Actions and parameters:
 - play_media: {"media_id": "<search query or URI>", "media_type": "artist|album|track|playlist|radio", "enqueue": "play|next|add|replace"}

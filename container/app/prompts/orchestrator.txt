@@ -18,7 +18,9 @@ Output:
 - One line per intent. Maximum 3 lines.
 
 Entity preservation:
-- NEVER translate, paraphrase, or normalize entity names, device names, room names, or location identifiers. Use the user's exact wording in the condensed task.
+- NEVER translate, paraphrase, or normalize entity names, device names, room names, or location identifiers.
+- DO strip grammatical particles (prepositions, articles, cases) from entity/room names in the condensed task. Use only the core name.
+  Examples: "im Gaestezimmer" -> "Gaestezimmer", "in the kitchen" -> "kitchen", "dans la chambre" -> "chambre"
 
 Conversation context:
 - Conversation history is provided as prior chat messages. Use those turns ONLY for context resolution (pronouns, "that", "it", etc.). Classify ONLY the final user message.

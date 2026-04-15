@@ -68,7 +68,7 @@ class CacheManager:
         self._response_cache_enabled = raw.lower() == "true"
 
     async def process(self, query_text: str) -> CacheResult:
-        """Check both cache tiers in order: response first, then routing.
+        """Check both cache tiers in order: routing first, then response.
 
         Returns a CacheResult indicating what was found.
         Rewrite is NOT applied here; call apply_rewrite() separately.
@@ -116,7 +116,18 @@ class CacheManager:
 
     def _process_inner(self, query_text: str) -> CacheResult:
         """Internal cache lookup logic."""
-        # 1. Check response cache first (higher value hit)
+        # 1. Check routing cache first (cheaper -- just agent_id + condensed_task)
+        routing_entry, routing_similarity = self._routing_cache.lookup(query_text)
+        if routing_entry:
+            return CacheResult(
+                hit_type="routing_hit",
+                agent_id=routing_entry.agent_id,
+                entry=routing_entry,
+                condensed_task=routing_entry.condensed_task,
+                similarity=routing_similarity,
+            )
+
+        # 2. Check response cache (full response + cached action)
         hit_type, resp_entry, resp_similarity = self._response_cache.lookup(query_text)
         if hit_type == "hit":
             return CacheResult(
@@ -135,17 +146,6 @@ class CacheManager:
                 cached_action=resp_entry.cached_action,
                 entry=resp_entry,
                 similarity=resp_similarity,
-            )
-
-        # 2. Check routing cache
-        routing_entry, routing_similarity = self._routing_cache.lookup(query_text)
-        if routing_entry:
-            return CacheResult(
-                hit_type="routing_hit",
-                agent_id=routing_entry.agent_id,
-                entry=routing_entry,
-                condensed_task=routing_entry.condensed_task,
-                similarity=routing_similarity,
             )
 
         # 3. Complete miss -- return best similarity seen
@@ -191,9 +191,21 @@ class CacheManager:
                     self._vector_store.delete(COLLECTION_RESPONSE_CACHE, ids=all_data["ids"])
             logger.info("Response cache flushed")
 
+    def flush_pending(self) -> None:
+        """Flush buffered hit-count updates (call at shutdown)."""
+        self._routing_cache.flush_pending()
+        self._response_cache.flush_pending()
+
     def get_stats(self) -> dict:
         """Return combined stats for both tiers."""
         return {
             "routing": self._routing_cache.get_stats(),
             "response": self._response_cache.get_stats(),
         }
+
+    async def purge_readonly_entries(self) -> int:
+        """Purge stale read-only response cache entries (no cached action).
+
+        Returns the number of purged entries.
+        """
+        return await asyncio.to_thread(self._response_cache.purge_readonly_entries)

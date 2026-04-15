@@ -43,11 +43,16 @@ async def require_api_key(request: Request) -> str:
 
 
 async def require_api_key_ws(websocket: WebSocket) -> str:
-    token = websocket.query_params.get("token")
+    token = None
+    auth_header = websocket.headers.get(API_KEY_HEADER)
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:]
     if not token:
-        auth_header = websocket.headers.get(API_KEY_HEADER)
-        if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header[7:]
+        token = websocket.query_params.get("token")
+        if token:
+            logger.warning(
+                "WebSocket auth via query string is deprecated; use Authorization header"
+            )
     if not token:
         await websocket.close(code=4001, reason="Unauthorized")
         raise HTTPException(status_code=401, detail="Unauthorized")

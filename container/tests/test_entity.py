@@ -14,7 +14,7 @@ from app.entity.signals import (
     LevenshteinSignal,
     PhoneticSignal,
 )
-from app.entity.matcher import EntityMatcher, MatchResult
+from app.entity.matcher import EntityMatcher, MatchResult, _normalize_for_containment, _digraphs_to_umlauts
 from app.entity.aliases import AliasResolver
 from app.entity.index import EntityIndex
 from app.models.entity_index import EntityIndexEntry
@@ -109,36 +109,36 @@ class TestPhoneticSignal:
 
 class TestEmbeddingSignal:
 
-    def test_returns_scored_results(self):
+    async def test_returns_scored_results(self):
         mock_index = MagicMock(spec=EntityIndex)
         entry = make_entity_index_entry()
-        mock_index.search.return_value = [(entry, 0.1)]
+        mock_index.search_async = AsyncMock(return_value=[(entry, 0.1)])
 
-        results = EmbeddingSignal.score("kitchen light", mock_index, n=5)
+        results = await EmbeddingSignal.score("kitchen light", mock_index, n=5)
         assert len(results) == 1
         eid, name, sim = results[0]
         assert eid == entry.entity_id
         assert sim == pytest.approx(0.9)  # 1 - 0.1
 
-    def test_zero_distance_returns_similarity_1(self):
+    async def test_zero_distance_returns_similarity_1(self):
         mock_index = MagicMock(spec=EntityIndex)
         entry = make_entity_index_entry()
-        mock_index.search.return_value = [(entry, 0.0)]
+        mock_index.search_async = AsyncMock(return_value=[(entry, 0.0)])
 
-        results = EmbeddingSignal.score("kitchen light", mock_index)
+        results = await EmbeddingSignal.score("kitchen light", mock_index)
         assert results[0][2] == pytest.approx(1.0)
 
-    def test_empty_results(self):
+    async def test_empty_results(self):
         mock_index = MagicMock(spec=EntityIndex)
-        mock_index.search.return_value = []
-        results = EmbeddingSignal.score("nonexistent", mock_index)
+        mock_index.search_async = AsyncMock(return_value=[])
+        results = await EmbeddingSignal.score("nonexistent", mock_index)
         assert results == []
 
-    def test_similarity_clamped_at_zero(self):
+    async def test_similarity_clamped_at_zero(self):
         mock_index = MagicMock(spec=EntityIndex)
         entry = make_entity_index_entry()
-        mock_index.search.return_value = [(entry, 1.5)]  # distance > 1
-        results = EmbeddingSignal.score("test", mock_index)
+        mock_index.search_async = AsyncMock(return_value=[(entry, 1.5)])  # distance > 1
+        results = await EmbeddingSignal.score("test", mock_index)
         assert results[0][2] == pytest.approx(0.0)
 
 
@@ -196,7 +196,7 @@ class TestEntityMatcher:
 
         entry1 = make_entity_index_entry("light.kitchen", "Kitchen Light")
         entry2 = make_entity_index_entry("light.bedroom", "Bedroom Light")
-        mock_index.search.return_value = [(entry1, 0.05), (entry2, 0.3)]
+        mock_index.search_async = AsyncMock(return_value=[(entry1, 0.05), (entry2, 0.3)])
 
         with patch("app.entity.matcher.EntityVisibilityRepository"):
             results = await matcher.match("kitchen light")
@@ -207,7 +207,7 @@ class TestEntityMatcher:
     async def test_match_empty_entity_list(self):
         matcher, mock_index, mock_alias = self._make_matcher()
         mock_alias.resolve = AsyncMock(return_value=None)
-        mock_index.search.return_value = []
+        mock_index.search_async = AsyncMock(return_value=[])
 
         with patch("app.entity.matcher.EntityVisibilityRepository"):
             results = await matcher.match("nonexistent thing")
@@ -216,7 +216,7 @@ class TestEntityMatcher:
     async def test_match_alias_fast_path(self):
         matcher, mock_index, mock_alias = self._make_matcher()
         mock_alias.resolve = AsyncMock(return_value="light.nightstand")
-        mock_index.search.return_value = []
+        mock_index.search_async = AsyncMock(return_value=[])
 
         with patch("app.entity.matcher.EntityVisibilityRepository"):
             results = await matcher.match("nightstand lamp")
@@ -234,7 +234,7 @@ class TestEntityMatcher:
         mock_alias.resolve = AsyncMock(return_value=None)
 
         entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
-        mock_index.search.return_value = [(entry, 0.5)]  # similarity = 0.5
+        mock_index.search_async = AsyncMock(return_value=[(entry, 0.5)])  # similarity = 0.5
 
         with patch("app.entity.matcher.EntityVisibilityRepository"):
             results = await matcher.match("kitchen liiight")
@@ -251,7 +251,7 @@ class TestEntityMatcher:
         mock_alias.resolve = AsyncMock(return_value=None)
 
         entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
-        mock_index.search.return_value = [(entry, 0.1)]  # sim = 0.9
+        mock_index.search_async = AsyncMock(return_value=[(entry, 0.1)])  # sim = 0.9
 
         with patch("app.entity.matcher.EntityVisibilityRepository"):
             results = await matcher.match("kitchen light")
@@ -271,7 +271,7 @@ class TestEntityMatcher:
         ])
         mock_db.execute = AsyncMock(return_value=mock_cursor)
 
-        with patch("app.db.schema.get_db") as mock_get_db, \
+        with patch("app.db.schema.get_db_read") as mock_get_db, \
              patch("app.entity.matcher.SettingsRepository") as mock_settings:
             from contextlib import asynccontextmanager
 
@@ -290,12 +290,135 @@ class TestEntityMatcher:
         mock_alias.resolve = AsyncMock(return_value=None)
 
         entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
-        mock_index.search.return_value = [(entry, 0.05)]
+        mock_index.search_async = AsyncMock(return_value=[(entry, 0.05)])
 
         with patch("app.entity.matcher.EntityVisibilityRepository"):
             results = await matcher.match("Kitchen Light")
         assert len(results) >= 1
         assert "embedding" in results[0].signal_scores
+
+    async def test_match_digraph_query_dual_embedding_search(self):
+        """Digraph query triggers second embedding search with umlauts."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.0
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        entry_wrong = make_entity_index_entry("light.garage", "Garage Light")
+        entry_correct = make_entity_index_entry(
+            "sensor.gastezimmer_temp", "G\u00e4stezimmer Temperatur"
+        )
+
+        call_count = 0
+        async def mock_search(query, n_results=6):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return [(entry_wrong, 0.7)]
+            else:
+                return [(entry_correct, 0.1)]
+
+        mock_index.search_async = AsyncMock(side_effect=mock_search)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("gaestezimmer")
+
+        assert call_count == 2, "Should have called embedding search twice"
+        entity_ids = [r.entity_id for r in results]
+        assert "sensor.gastezimmer_temp" in entity_ids
+
+    async def test_match_no_digraph_single_embedding_search(self):
+        """Non-digraph query does NOT trigger a second embedding search."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.0
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
+        mock_index.search_async = AsyncMock(return_value=[(entry, 0.05)])
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("kitchen light")
+
+        mock_index.search_async.assert_called_once()
+
+    async def test_match_digraph_deduplicates_results(self):
+        """When both searches return the same entity, keep the better score."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.0
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        entry = make_entity_index_entry(
+            "sensor.gastezimmer_temp", "G\u00e4stezimmer Temperatur"
+        )
+
+        call_count = 0
+        async def mock_search(query, n_results=6):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return [(entry, 0.6)]  # sim = 0.4 (bad)
+            else:
+                return [(entry, 0.1)]  # sim = 0.9 (good)
+
+        mock_index.search_async = AsyncMock(side_effect=mock_search)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("gaestezimmer")
+
+        assert len(results) == 1
+        assert results[0].signal_scores["embedding"] == pytest.approx(0.9, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Normalize for containment
+# ---------------------------------------------------------------------------
+
+class TestNormalizeForContainment:
+    """Tests for the _normalize_for_containment helper used by containment bonus."""
+
+    def test_digraph_ae_collapsed(self):
+        assert _normalize_for_containment("gaestezimmer") == "gastezimmer"
+
+    def test_unicode_umlaut_stripped(self):
+        assert _normalize_for_containment("G\u00e4stezimmer") == "gastezimmer"
+
+    def test_plain_vowel_unchanged(self):
+        assert _normalize_for_containment("Gastezimmer") == "gastezimmer"
+
+    def test_containment_bonus_fires_with_digraph(self):
+        query_cont = _normalize_for_containment("gaestezimmer")
+        fn_cont = _normalize_for_containment("Gastezimmer Temperatur")
+        assert query_cont in fn_cont
+
+
+# ---------------------------------------------------------------------------
+# Digraphs to umlauts
+# ---------------------------------------------------------------------------
+
+class TestDigraphsToUmlauts:
+    """Tests for the _digraphs_to_umlauts helper."""
+
+    def test_ae_converted(self):
+        assert _digraphs_to_umlauts("gaestezimmer") == "g\u00e4stezimmer"
+
+    def test_oe_converted(self):
+        assert _digraphs_to_umlauts("schoenes") == "sch\u00f6nes"
+
+    def test_ue_converted(self):
+        assert _digraphs_to_umlauts("kueche") == "k\u00fcche"
+
+    def test_multiple_digraphs(self):
+        result = _digraphs_to_umlauts("gaestezimmer oeffentlich")
+        assert result == "g\u00e4stezimmer \u00f6ffentlich"
+
+    def test_no_digraphs_returns_none(self):
+        assert _digraphs_to_umlauts("kitchen") is None
+
+    def test_plain_vowels_no_false_positive(self):
+        result = _digraphs_to_umlauts("blue")
+        assert result == "bl\u00fc"
+
+    def test_case_preserved(self):
+        assert _digraphs_to_umlauts("Aeusserung") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -905,9 +1028,9 @@ class TestPeriodicEntitySync:
             {"entity_id": "light.kitchen", "attributes": {"friendly_name": "Kitchen"}},
         ])
         mock_app.state.entity_index = MagicMock()
-        mock_app.state.entity_index.sync.return_value = {
+        mock_app.state.entity_index.sync_async = AsyncMock(return_value={
             "added": 1, "updated": 0, "removed": 0, "unchanged": 0,
-        }
+        })
 
         with patch("app.main.SettingsRepository") as mock_settings, \
              patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
@@ -915,7 +1038,7 @@ class TestPeriodicEntitySync:
             with pytest.raises(asyncio.CancelledError):
                 await _periodic_entity_sync(mock_app)
 
-        mock_app.state.entity_index.sync.assert_called_once()
+        mock_app.state.entity_index.sync_async.assert_called_once()
 
     async def test_periodic_sync_disabled_when_zero(self):
         """Interval=0 skips sync and re-checks after 5 min."""
@@ -965,3 +1088,78 @@ class TestPeriodicEntitySync:
 
         # sync was NOT called because get_states failed
         mock_app.state.entity_index.sync.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# EntityIndex async wrappers and batch_add
+# ---------------------------------------------------------------------------
+
+class TestEntityIndexAsync:
+
+    def _make_index(self) -> tuple[EntityIndex, MagicMock]:
+        mock_store = MagicMock()
+        index = EntityIndex(mock_store)
+        return index, mock_store
+
+    async def test_add_async(self):
+        index, store = self._make_index()
+        entry = make_entity_index_entry("light.new", "New Light")
+        await index.add_async(entry)
+        store.upsert.assert_called_once()
+
+    async def test_remove_async(self):
+        index, store = self._make_index()
+        await index.remove_async("light.old")
+        store.delete.assert_called_once_with(COLLECTION_ENTITY_INDEX, ids=["light.old"])
+
+    async def test_populate_async(self):
+        index, store = self._make_index()
+        entities = [
+            make_entity_index_entry("light.kitchen", "Kitchen Light"),
+            make_entity_index_entry("light.bedroom", "Bedroom Light"),
+        ]
+        await index.populate_async(entities)
+        store.upsert.assert_called_once()
+
+    async def test_sync_async(self):
+        index, store = self._make_index()
+        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
+        entities = [make_entity_index_entry("light.kitchen", "Kitchen Light")]
+        result = await index.sync_async(entities)
+        assert isinstance(result, dict)
+        assert "added" in result
+
+    async def test_search_async(self):
+        index, store = self._make_index()
+        store.query.return_value = {
+            "ids": [["light.kitchen"]],
+            "metadatas": [[{"friendly_name": "Kitchen Light", "domain": "light", "area": "kitchen", "device_class": "", "aliases": ""}]],
+            "distances": [[0.1]],
+            "documents": [["Kitchen Light light kitchen"]],
+        }
+        results = await index.search_async("kitchen light")
+        assert len(results) == 1
+        entry, dist = results[0]
+        assert entry.entity_id == "light.kitchen"
+        assert dist == 0.1
+
+    def test_batch_add(self):
+        index, store = self._make_index()
+        entries = [
+            make_entity_index_entry("light.kitchen", "Kitchen Light"),
+            make_entity_index_entry("light.kitchen", "Kitchen Light Updated"),
+            make_entity_index_entry("light.bedroom", "Bedroom Light"),
+        ]
+        index.batch_add(entries)
+        store.upsert.assert_called_once()
+        call_kwargs = store.upsert.call_args
+        # Should deduplicate: 2 unique entity IDs
+        ids = call_kwargs[1]["ids"] if "ids" in call_kwargs[1] else call_kwargs[0][1]
+        assert len(ids) == 2
+        assert "light.kitchen" in ids
+        assert "light.bedroom" in ids
+
+    def test_batch_add_empty(self):
+        index, store = self._make_index()
+        index.batch_add([])
+        store.upsert.assert_not_called()

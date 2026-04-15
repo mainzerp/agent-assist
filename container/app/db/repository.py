@@ -13,7 +13,7 @@ from typing import Any
 
 import aiosqlite
 
-from app.db.schema import get_db
+from app.db.schema import get_db_read, get_db_write
 
 
 def _now() -> str:
@@ -26,7 +26,7 @@ class SettingsRepository:
 
     @staticmethod
     async def get(key: str) -> dict[str, Any] | None:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT key, value, value_type, category, description FROM settings WHERE key = ?",
                 (key,),
@@ -38,7 +38,7 @@ class SettingsRepository:
 
     @staticmethod
     async def get_value(key: str, default: str | None = None) -> str | None:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT value FROM settings WHERE key = ?", (key,)
             )
@@ -48,19 +48,19 @@ class SettingsRepository:
     @staticmethod
     async def set(key: str, value: str, value_type: str = "string",
                   category: str = "general", description: str | None = None) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO settings (key, value, value_type, category, description, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=?, value_type=?, updated_at=?",
+                "ON CONFLICT(key) DO UPDATE SET value=?, updated_at=?",
                 (key, value, value_type, category, description, _now(),
-                 value, value_type, _now()),
+                 value, _now()),
             )
             await db.commit()
 
     @staticmethod
     async def get_by_category(category: str) -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT key, value, value_type, description FROM settings WHERE category = ?",
                 (category,),
@@ -69,7 +69,7 @@ class SettingsRepository:
 
     @staticmethod
     async def get_all() -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT key, value, value_type, category, description FROM settings"
             )
@@ -81,7 +81,7 @@ class AgentConfigRepository:
 
     @staticmethod
     async def get(agent_id: str) -> dict[str, Any] | None:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT * FROM agent_configs WHERE agent_id = ?", (agent_id,)
             )
@@ -90,13 +90,13 @@ class AgentConfigRepository:
 
     @staticmethod
     async def list_all() -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute("SELECT * FROM agent_configs")
             return [dict(row) for row in await cursor.fetchall()]
 
     @staticmethod
     async def list_enabled() -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT * FROM agent_configs WHERE enabled = 1"
             )
@@ -117,7 +117,7 @@ class AgentConfigRepository:
         updates = ", ".join(f"{k}=excluded.{k}" for k in fields)
 
         values = [agent_id] + list(fields.values())
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 f"INSERT INTO agent_configs ({columns}) VALUES ({placeholders}) "
                 f"ON CONFLICT(agent_id) DO UPDATE SET {updates}",
@@ -131,7 +131,7 @@ class SecretsRepository:
 
     @staticmethod
     async def get(key: str) -> bytes | None:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT encrypted_value FROM secrets WHERE key = ?", (key,)
             )
@@ -140,7 +140,7 @@ class SecretsRepository:
 
     @staticmethod
     async def set(key: str, encrypted_value: bytes) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO secrets (key, encrypted_value, updated_at) "
                 "VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET encrypted_value=?, updated_at=?",
@@ -150,13 +150,13 @@ class SecretsRepository:
 
     @staticmethod
     async def delete(key: str) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute("DELETE FROM secrets WHERE key = ?", (key,))
             await db.commit()
 
     @staticmethod
     async def list_keys() -> list[str]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute("SELECT key FROM secrets")
             return [row[0] for row in await cursor.fetchall()]
 
@@ -166,7 +166,7 @@ class AdminAccountRepository:
 
     @staticmethod
     async def create(username: str, password_hash: str) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "INSERT OR REPLACE INTO admin_accounts (username, password_hash, created_at) "
                 "VALUES (?, ?, ?)",
@@ -176,7 +176,7 @@ class AdminAccountRepository:
 
     @staticmethod
     async def get(username: str) -> dict[str, Any] | None:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT * FROM admin_accounts WHERE username = ?", (username,)
             )
@@ -185,7 +185,7 @@ class AdminAccountRepository:
 
     @staticmethod
     async def update_last_login(username: str) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "UPDATE admin_accounts SET last_login = ? WHERE username = ?",
                 (_now(), username),
@@ -194,7 +194,7 @@ class AdminAccountRepository:
 
     @staticmethod
     async def list_all() -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT username, created_at, last_login FROM admin_accounts"
             )
@@ -206,7 +206,7 @@ class SetupStateRepository:
 
     @staticmethod
     async def get_step(step: str) -> dict[str, Any] | None:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT * FROM setup_state WHERE step = ?", (step,)
             )
@@ -215,7 +215,7 @@ class SetupStateRepository:
 
     @staticmethod
     async def set_step_completed(step: str) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "UPDATE setup_state SET completed = 1, completed_at = ? WHERE step = ?",
                 (_now(), step),
@@ -224,7 +224,7 @@ class SetupStateRepository:
 
     @staticmethod
     async def is_complete() -> bool:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM setup_state WHERE completed = 0"
             )
@@ -233,7 +233,7 @@ class SetupStateRepository:
 
     @staticmethod
     async def get_all_steps() -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute("SELECT * FROM setup_state")
             return [dict(row) for row in await cursor.fetchall()]
 
@@ -243,7 +243,7 @@ class AliasRepository:
 
     @staticmethod
     async def get(alias: str) -> str | None:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT entity_id FROM aliases WHERE alias = ?", (alias,)
             )
@@ -252,7 +252,7 @@ class AliasRepository:
 
     @staticmethod
     async def set(alias: str, entity_id: str) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO aliases (alias, entity_id, created_at) VALUES (?, ?, ?) "
                 "ON CONFLICT(alias) DO UPDATE SET entity_id=?",
@@ -262,13 +262,13 @@ class AliasRepository:
 
     @staticmethod
     async def delete(alias: str) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute("DELETE FROM aliases WHERE alias = ?", (alias,))
             await db.commit()
 
     @staticmethod
     async def list_all() -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute("SELECT alias, entity_id FROM aliases")
             return [dict(row) for row in await cursor.fetchall()]
 
@@ -278,7 +278,7 @@ class CustomAgentRepository:
 
     @staticmethod
     async def get(name: str) -> dict[str, Any] | None:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT * FROM custom_agents WHERE name = ?", (name,)
             )
@@ -293,7 +293,7 @@ class CustomAgentRepository:
 
     @staticmethod
     async def list_all() -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute("SELECT * FROM custom_agents")
             rows = [dict(row) for row in await cursor.fetchall()]
             for row in rows:
@@ -304,7 +304,7 @@ class CustomAgentRepository:
 
     @staticmethod
     async def list_enabled() -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT * FROM custom_agents WHERE enabled = 1"
             )
@@ -328,7 +328,7 @@ class CustomAgentRepository:
         placeholders = ", ".join(["?"] * (len(data) + 2))
         values = [name, system_prompt] + list(data.values())
 
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 f"INSERT INTO custom_agents ({columns}) VALUES ({placeholders})",
                 values,
@@ -350,7 +350,7 @@ class CustomAgentRepository:
         set_clause = ", ".join(f"{k} = ?" for k in data)
         values = list(data.values()) + [name]
 
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 f"UPDATE custom_agents SET {set_clause} WHERE name = ?",
                 values,
@@ -359,7 +359,7 @@ class CustomAgentRepository:
 
     @staticmethod
     async def delete(name: str) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute("DELETE FROM custom_agents WHERE name = ?", (name,))
             await db.commit()
 
@@ -369,7 +369,7 @@ class McpServerRepository:
 
     @staticmethod
     async def get(name: str) -> dict[str, Any] | None:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT * FROM mcp_servers WHERE name = ?", (name,)
             )
@@ -383,7 +383,7 @@ class McpServerRepository:
 
     @staticmethod
     async def list_all() -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute("SELECT * FROM mcp_servers")
             rows = [dict(row) for row in await cursor.fetchall()]
             for row in rows:
@@ -394,7 +394,7 @@ class McpServerRepository:
     @staticmethod
     async def create(name: str, transport: str, command_or_url: str,
                      env_vars: dict | None = None, timeout: int = 30) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO mcp_servers (name, transport, command_or_url, env_vars, timeout) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -405,13 +405,13 @@ class McpServerRepository:
 
     @staticmethod
     async def delete(name: str) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute("DELETE FROM mcp_servers WHERE name = ?", (name,))
             await db.commit()
 
     @staticmethod
     async def list_enabled() -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT * FROM mcp_servers WHERE enabled = 1"
             )
@@ -424,7 +424,7 @@ class McpServerRepository:
     @staticmethod
     async def upsert(name: str, transport: str, command_or_url: str,
                      env_vars: dict | None = None, timeout: int = 30) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO mcp_servers (name, transport, command_or_url, env_vars, timeout, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?) "
@@ -438,7 +438,7 @@ class McpServerRepository:
 
     @staticmethod
     async def set_enabled(name: str, enabled: bool) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "UPDATE mcp_servers SET enabled = ?, updated_at = ? WHERE name = ?",
                 (1 if enabled else 0, _now(), name),
@@ -452,7 +452,7 @@ class AgentMcpToolsRepository:
     @staticmethod
     async def get_tools(agent_id: str) -> list[dict[str, str]]:
         """Return list of {server_name, tool_name} for an agent."""
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT server_name, tool_name FROM agent_mcp_tools WHERE agent_id = ?",
                 (agent_id,),
@@ -462,7 +462,7 @@ class AgentMcpToolsRepository:
 
     @staticmethod
     async def assign_tool(agent_id: str, server_name: str, tool_name: str) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "INSERT OR IGNORE INTO agent_mcp_tools (agent_id, server_name, tool_name) VALUES (?, ?, ?)",
                 (agent_id, server_name, tool_name),
@@ -471,7 +471,7 @@ class AgentMcpToolsRepository:
 
     @staticmethod
     async def unassign_tool(agent_id: str, server_name: str, tool_name: str) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "DELETE FROM agent_mcp_tools WHERE agent_id = ? AND server_name = ? AND tool_name = ?",
                 (agent_id, server_name, tool_name),
@@ -480,7 +480,7 @@ class AgentMcpToolsRepository:
 
     @staticmethod
     async def get_all_assignments() -> list[dict[str, str]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute("SELECT agent_id, server_name, tool_name FROM agent_mcp_tools")
             return [dict(row) for row in await cursor.fetchall()]
 
@@ -490,7 +490,7 @@ class EntityVisibilityRepository:
 
     @staticmethod
     async def get_rules(agent_id: str) -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT rule_type, rule_value FROM entity_visibility_rules WHERE agent_id = ?",
                 (agent_id,),
@@ -499,7 +499,7 @@ class EntityVisibilityRepository:
 
     @staticmethod
     async def set_rules(agent_id: str, rules: list[dict[str, str]]) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "DELETE FROM entity_visibility_rules WHERE agent_id = ?",
                 (agent_id,),
@@ -514,7 +514,7 @@ class EntityVisibilityRepository:
 
     @staticmethod
     async def add_rule(agent_id: str, rule_type: str, rule_value: str) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) "
                 "VALUES (?, ?, ?)",
@@ -524,7 +524,7 @@ class EntityVisibilityRepository:
 
     @staticmethod
     async def remove_rule(agent_id: str, rule_type: str, rule_value: str) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "DELETE FROM entity_visibility_rules "
                 "WHERE agent_id = ? AND rule_type = ? AND rule_value = ?",
@@ -534,7 +534,7 @@ class EntityVisibilityRepository:
 
     @staticmethod
     async def list_all() -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT agent_id, rule_type, rule_value FROM entity_visibility_rules"
             )
@@ -543,7 +543,7 @@ class EntityVisibilityRepository:
     @staticmethod
     async def list_domain_include_rules() -> list[dict[str, Any]]:
         """Return all domain_include rules: [{agent_id, rule_value}]."""
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT agent_id, rule_value FROM entity_visibility_rules "
                 "WHERE rule_type = 'domain_include'"
@@ -553,7 +553,7 @@ class EntityVisibilityRepository:
     @staticmethod
     async def list_device_class_include_rules() -> list[dict[str, Any]]:
         """Return all device_class_include rules: [{agent_id, rule_value}]."""
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT agent_id, rule_value FROM entity_visibility_rules "
                 "WHERE rule_type = 'device_class_include'"
@@ -563,7 +563,7 @@ class EntityVisibilityRepository:
     @staticmethod
     async def set_domain_agents(domain: str, agent_ids: list[str]) -> None:
         """Set which agents have domain_include for a given domain."""
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "DELETE FROM entity_visibility_rules "
                 "WHERE rule_type = 'domain_include' AND rule_value = ?",
@@ -584,7 +584,7 @@ class EntityVisibilityRepository:
         Also ensures each agent has domain_include:sensor so the matcher
         can reach the device_class filter stage.
         """
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "DELETE FROM entity_visibility_rules "
                 "WHERE rule_type = 'device_class_include' AND rule_value = ?",
@@ -610,7 +610,7 @@ class PluginRepository:
 
     @staticmethod
     async def get(name: str) -> dict[str, Any] | None:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT * FROM plugins WHERE name = ?", (name,)
             )
@@ -619,13 +619,13 @@ class PluginRepository:
 
     @staticmethod
     async def list_all() -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute("SELECT * FROM plugins")
             return [dict(row) for row in await cursor.fetchall()]
 
     @staticmethod
     async def upsert(name: str, file_path: str, **kwargs: Any) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO plugins (name, file_path, enabled, version, description, loaded_at) "
                 "VALUES (?, ?, ?, ?, ?, ?) "
@@ -648,7 +648,7 @@ class ConversationRepository:
                      action_executed: str | None = None,
                      cache_hit: str | None = None,
                      latency_ms: float | None = None) -> int:
-        async with get_db() as db:
+        async with get_db_write() as db:
             cursor = await db.execute(
                 "INSERT INTO conversations "
                 "(conversation_id, user_text, agent_id, response_text, "
@@ -662,7 +662,7 @@ class ConversationRepository:
 
     @staticmethod
     async def list_recent(limit: int = 50) -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT * FROM conversations ORDER BY created_at DESC LIMIT ?",
                 (limit,),
@@ -671,7 +671,7 @@ class ConversationRepository:
 
     @staticmethod
     async def get_by_conversation_id(conversation_id: str) -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT * FROM conversations WHERE conversation_id = ? ORDER BY created_at",
                 (conversation_id,),
@@ -707,7 +707,7 @@ class ConversationRepository:
         offset = (page - 1) * per_page
         params.extend([per_page, offset])
 
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 f"SELECT * FROM conversations {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
                 params,
@@ -738,7 +738,7 @@ class ConversationRepository:
             params.append(end_date)
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 f"SELECT COUNT(*) FROM conversations {where}", params,
             )
@@ -752,7 +752,7 @@ class AnalyticsRepository:
     @staticmethod
     async def insert(event_type: str, agent_id: str | None = None,
                      data: dict | None = None) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO analytics (event_type, agent_id, data) VALUES (?, ?, ?)",
                 (event_type, agent_id, json.dumps(data) if data else None),
@@ -779,7 +779,7 @@ class AnalyticsRepository:
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         params.append(limit)
 
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 f"SELECT * FROM analytics {where} ORDER BY created_at DESC LIMIT ?",
                 params,
@@ -796,7 +796,7 @@ class EntityMatchingConfigRepository:
 
     @staticmethod
     async def get(key: str) -> str | None:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT value FROM entity_matching_config WHERE key = ?", (key,)
             )
@@ -805,7 +805,7 @@ class EntityMatchingConfigRepository:
 
     @staticmethod
     async def set(key: str, value: str, description: str | None = None) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO entity_matching_config (key, value, description, updated_at) "
                 "VALUES (?, ?, ?, ?) "
@@ -816,7 +816,7 @@ class EntityMatchingConfigRepository:
 
     @staticmethod
     async def get_all() -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT key, value, description FROM entity_matching_config"
             )
@@ -834,7 +834,7 @@ class TraceSpanRepository:
                      status: str = "ok",
                      metadata: dict | None = None,
                      end_time: str | None = None) -> int:
-        async with get_db() as db:
+        async with get_db_write() as db:
             cursor = await db.execute(
                 "INSERT INTO trace_spans "
                 "(trace_id, span_name, agent_id, parent_span, start_time, "
@@ -848,7 +848,7 @@ class TraceSpanRepository:
 
     @staticmethod
     async def insert_batch(spans: list[dict[str, Any]]) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             for span in spans:
                 meta = dict(span.get("metadata") or {})
                 if span.get("span_id"):
@@ -869,7 +869,7 @@ class TraceSpanRepository:
     @staticmethod
     async def list_traces(page: int = 1, per_page: int = 50) -> list[dict[str, Any]]:
         offset = (page - 1) * per_page
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT trace_id, MIN(start_time) as start_time, "
                 "COUNT(*) as span_count, "
@@ -883,7 +883,7 @@ class TraceSpanRepository:
 
     @staticmethod
     async def get_trace_spans(trace_id: str) -> list[dict[str, Any]]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT * FROM trace_spans WHERE trace_id = ? ORDER BY start_time",
                 (trace_id,),
@@ -896,7 +896,7 @@ class TraceSpanRepository:
 
     @staticmethod
     async def count_traces() -> int:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT COUNT(DISTINCT trace_id) FROM trace_spans"
             )
@@ -905,7 +905,7 @@ class TraceSpanRepository:
 
     @staticmethod
     async def cleanup_old(days: int = 30) -> int:
-        async with get_db() as db:
+        async with get_db_write() as db:
             cursor = await db.execute(
                 "DELETE FROM trace_spans WHERE created_at < datetime('now', ?)",
                 (f"-{days} days",),
@@ -928,7 +928,7 @@ class TraceSummaryRepository:
         conversation_turns = data.get("conversation_turns")
         if isinstance(conversation_turns, list):
             conversation_turns = json.dumps(conversation_turns)
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO trace_summary "
                 "(trace_id, conversation_id, user_input, final_response, "
@@ -987,7 +987,7 @@ class TraceSummaryRepository:
         offset = (page - 1) * per_page
         params.extend([per_page, offset])
 
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 f"SELECT * FROM trace_summary {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
                 params,
@@ -1033,7 +1033,7 @@ class TraceSummaryRepository:
             params.append(date_to)
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 f"SELECT COUNT(*) FROM trace_summary {where}", params,
             )
@@ -1042,7 +1042,7 @@ class TraceSummaryRepository:
 
     @staticmethod
     async def get(trace_id: str) -> dict[str, Any] | None:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT * FROM trace_summary WHERE trace_id = ?", (trace_id,)
             )
@@ -1069,7 +1069,7 @@ class TraceSummaryRepository:
 
     @staticmethod
     async def update_label(trace_id: str, label: str | None) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "UPDATE trace_summary SET label = ? WHERE trace_id = ?",
                 (label, trace_id),
@@ -1078,7 +1078,7 @@ class TraceSummaryRepository:
 
     @staticmethod
     async def list_labels() -> list[str]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT DISTINCT label FROM trace_summary "
                 "WHERE label IS NOT NULL AND label != '' ORDER BY label"
@@ -1087,7 +1087,7 @@ class TraceSummaryRepository:
 
     @staticmethod
     async def list_agents() -> list[str]:
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT DISTINCT routing_agent FROM trace_summary "
                 "WHERE routing_agent IS NOT NULL AND routing_agent != '' "
@@ -1127,7 +1127,7 @@ class TraceSummaryRepository:
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         params.append(10000)
 
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 f"SELECT * FROM trace_summary {where} ORDER BY created_at DESC LIMIT ?",
                 params,
@@ -1148,7 +1148,7 @@ class TraceSummaryRepository:
 
     @staticmethod
     async def cleanup_old(days: int = 30) -> int:
-        async with get_db() as db:
+        async with get_db_write() as db:
             cursor = await db.execute(
                 "DELETE FROM trace_summary WHERE created_at < datetime('now', ?)",
                 (f"-{days} days",),
@@ -1158,7 +1158,7 @@ class TraceSummaryRepository:
 
     @staticmethod
     async def update_duration(trace_id: str, duration_ms: float) -> None:
-        async with get_db() as db:
+        async with get_db_write() as db:
             await db.execute(
                 "UPDATE trace_summary SET total_duration_ms = ? WHERE trace_id = ?",
                 (duration_ms, trace_id),
@@ -1177,7 +1177,7 @@ class SendDeviceMappingRepository:
     @staticmethod
     async def list_all() -> list[dict[str, Any]]:
         """Return all device mappings."""
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT id, display_name, device_type, ha_service_target, created_at "
                 "FROM send_device_mappings ORDER BY display_name"
@@ -1187,7 +1187,7 @@ class SendDeviceMappingRepository:
     @staticmethod
     async def get(mapping_id: int) -> dict[str, Any] | None:
         """Get a single mapping by ID."""
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT id, display_name, device_type, ha_service_target, created_at "
                 "FROM send_device_mappings WHERE id = ?",
@@ -1199,7 +1199,7 @@ class SendDeviceMappingRepository:
     @staticmethod
     async def find_by_name(name: str) -> dict[str, Any] | None:
         """Find a mapping by display_name (case-insensitive, with normalized fallback)."""
-        async with get_db() as db:
+        async with get_db_read() as db:
             cursor = await db.execute(
                 "SELECT id, display_name, device_type, ha_service_target, created_at "
                 "FROM send_device_mappings WHERE display_name = ? COLLATE NOCASE",
@@ -1224,7 +1224,7 @@ class SendDeviceMappingRepository:
     @staticmethod
     async def create(display_name: str, device_type: str, ha_service_target: str) -> int:
         """Insert a new mapping. Returns the new row ID."""
-        async with get_db() as db:
+        async with get_db_write() as db:
             cursor = await db.execute(
                 "INSERT INTO send_device_mappings (display_name, device_type, ha_service_target, created_at) "
                 "VALUES (?, ?, ?, ?)",
@@ -1242,7 +1242,7 @@ class SendDeviceMappingRepository:
             return False
         set_clause = ", ".join(f"{k} = ?" for k in fields)
         values = list(fields.values()) + [mapping_id]
-        async with get_db() as db:
+        async with get_db_write() as db:
             cursor = await db.execute(
                 f"UPDATE send_device_mappings SET {set_clause} WHERE id = ?",
                 values,
@@ -1253,7 +1253,7 @@ class SendDeviceMappingRepository:
     @staticmethod
     async def delete(mapping_id: int) -> bool:
         """Delete a mapping by ID. Returns True if row existed."""
-        async with get_db() as db:
+        async with get_db_write() as db:
             cursor = await db.execute(
                 "DELETE FROM send_device_mappings WHERE id = ?",
                 (mapping_id,),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -85,6 +86,30 @@ class TestMCPClient:
         result = await client.call_tool("my_tool", {"arg": "val"})
         assert result == {"result": "ok"}
         session.call_tool.assert_awaited_once_with("my_tool", arguments={"arg": "val"})
+
+    def test_timeout_property_returns_configured_value(self):
+        client = MCPClient(name="test", transport="stdio", command_or_url="echo", timeout=60)
+        assert client.timeout == 60
+
+    async def test_connect_http_transport_returns_false(self):
+        """http transport is no longer supported; only stdio and sse are valid."""
+        client = MCPClient(name="test", transport="http", command_or_url="http://localhost")
+        result = await client.connect()
+        assert result is False
+        assert client.connected is False
+
+    @patch("app.mcp.client.MCPClient._connect_stdio", new_callable=AsyncMock)
+    async def test_connect_timeout_returns_false(self, mock_stdio):
+        """If connection takes longer than timeout, connect() returns False."""
+        async def slow_connect():
+            await asyncio.sleep(10)
+            return True
+
+        mock_stdio.side_effect = slow_connect
+        client = MCPClient(name="test", transport="stdio", command_or_url="echo", timeout=1)
+        result = await client.connect()
+        assert result is False
+        assert client.connected is False
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +199,37 @@ class TestMCPToolManager:
         registry.get_client.return_value = client
         manager = MCPToolManager(registry)
         with pytest.raises(ConnectionError, match="not connected"):
+            await manager.call_tool("server1", "tool1")
+
+    async def test_call_tool_uses_per_server_timeout(self):
+        """call_tool should use the client's configured timeout, not a hardcoded value."""
+        registry = MagicMock(spec=MCPServerRegistry)
+        client = MagicMock()
+        client.connected = True
+        client.timeout = 10
+        client.call_tool = AsyncMock(return_value={"result": "ok"})
+        registry.get_client.return_value = client
+
+        manager = MCPToolManager(registry)
+        result = await manager.call_tool("server1", "tool1", {"arg": "val"})
+        assert result == {"result": "ok"}
+
+    async def test_call_tool_raises_timeout_error(self):
+        """call_tool should raise TimeoutError when tool execution exceeds server timeout."""
+        registry = MagicMock(spec=MCPServerRegistry)
+        client = MagicMock()
+        client.connected = True
+        client.timeout = 1
+
+        async def slow_tool(*args, **kwargs):
+            await asyncio.sleep(10)
+            return {}
+
+        client.call_tool = AsyncMock(side_effect=slow_tool)
+        registry.get_client.return_value = client
+
+        manager = MCPToolManager(registry)
+        with pytest.raises(asyncio.TimeoutError):
             await manager.call_tool("server1", "tool1")
 
 

@@ -13,41 +13,71 @@ from typing import AsyncGenerator
 
 from app.config import settings
 
-_db_pool: aiosqlite.Connection | None = None
-_db_lock = asyncio.Lock()
+_write_conn: aiosqlite.Connection | None = None
+_read_conn: aiosqlite.Connection | None = None
+_write_lock = asyncio.Lock()
 
 
-async def _get_or_create_connection() -> aiosqlite.Connection:
-    """Get or create the shared database connection."""
-    global _db_pool
-    if _db_pool is None:
+async def _get_or_create_write_connection() -> aiosqlite.Connection:
+    """Get or create the shared write connection."""
+    global _write_conn
+    if _write_conn is None:
         db_path = Path(settings.sqlite_db_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        _db_pool = await aiosqlite.connect(str(db_path))
-        _db_pool.row_factory = aiosqlite.Row
-        await _db_pool.execute("PRAGMA journal_mode=WAL")
-        await _db_pool.execute("PRAGMA foreign_keys=ON")
-    return _db_pool
+        _write_conn = await aiosqlite.connect(str(db_path))
+        _write_conn.row_factory = aiosqlite.Row
+        await _write_conn.execute("PRAGMA journal_mode=WAL")
+        await _write_conn.execute("PRAGMA foreign_keys=ON")
+    return _write_conn
+
+
+async def _get_or_create_read_connection() -> aiosqlite.Connection:
+    """Get or create the shared read connection."""
+    global _read_conn
+    if _read_conn is None:
+        db_path = Path(settings.sqlite_db_path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        _read_conn = await aiosqlite.connect(str(db_path))
+        _read_conn.row_factory = aiosqlite.Row
+        await _read_conn.execute("PRAGMA journal_mode=WAL")
+        await _read_conn.execute("PRAGMA foreign_keys=ON")
+    return _read_conn
 
 
 @asynccontextmanager
-async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
-    """Async context manager returning the shared database connection.
+async def get_db_read() -> AsyncGenerator[aiosqlite.Connection, None]:
+    """Async context manager returning a read-only database connection.
 
-    Uses WAL mode which allows concurrent readers with one writer.
-    The connection is not closed -- it lives for the process lifetime.
+    No lock is acquired -- WAL mode allows concurrent readers.
     """
-    async with _db_lock:
-        db = await _get_or_create_connection()
+    db = await _get_or_create_read_connection()
+    yield db
+
+
+@asynccontextmanager
+async def get_db_write() -> AsyncGenerator[aiosqlite.Connection, None]:
+    """Async context manager returning the write database connection.
+
+    Acquires _write_lock to serialize writes.
+    """
+    async with _write_lock:
+        db = await _get_or_create_write_connection()
         yield db
 
 
+# Backward-compatible alias -- points to the write path (safe default).
+get_db = get_db_write
+
+
 async def close_db() -> None:
-    """Close the shared connection. Call on shutdown."""
-    global _db_pool
-    if _db_pool is not None:
-        await _db_pool.close()
-        _db_pool = None
+    """Close both connections. Call on shutdown."""
+    global _write_conn, _read_conn
+    if _write_conn is not None:
+        await _write_conn.close()
+        _write_conn = None
+    if _read_conn is not None:
+        await _read_conn.close()
+        _read_conn = None
 
 
 async def init_db() -> None:
@@ -710,4 +740,54 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             pass  # Column may already exist
         await db.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (13)"
+        )
+
+    if current_version < 14:
+        # Migration 14: Ensure device_class_include rules exist for all agents
+        dc_rules = [
+            # climate-agent sensor filtering
+            ("climate-agent", "device_class_include", "temperature"),
+            ("climate-agent", "device_class_include", "humidity"),
+            ("climate-agent", "device_class_include", "pressure"),
+            ("climate-agent", "device_class_include", "dew_point"),
+            ("climate-agent", "device_class_include", "atmospheric_pressure"),
+            ("climate-agent", "device_class_include", "moisture"),
+            ("climate-agent", "device_class_include", "precipitation_intensity"),
+            ("climate-agent", "device_class_include", "wind_speed"),
+            ("climate-agent", "device_class_include", "wind_direction"),
+            # security-agent sensor filtering
+            ("security-agent", "device_class_include", "motion"),
+            ("security-agent", "device_class_include", "occupancy"),
+            ("security-agent", "device_class_include", "door"),
+            ("security-agent", "device_class_include", "window"),
+            ("security-agent", "device_class_include", "tamper"),
+            ("security-agent", "device_class_include", "vibration"),
+            ("security-agent", "device_class_include", "smoke"),
+            ("security-agent", "device_class_include", "gas"),
+            ("security-agent", "device_class_include", "carbon_monoxide"),
+            ("security-agent", "device_class_include", "doorbell"),
+            ("security-agent", "device_class_include", "opening"),
+            ("security-agent", "device_class_include", "safety"),
+            # light-agent sensor filtering
+            ("light-agent", "device_class_include", "illuminance"),
+        ]
+        await db.executemany(
+            "INSERT OR IGNORE INTO entity_visibility_rules "
+            "(agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            dc_rules,
+        )
+        # Also ensure domain_include sensor rules exist for agents that need device_class filtering
+        sensor_domain_rules = [
+            ("climate-agent", "domain_include", "sensor"),
+            ("security-agent", "domain_include", "sensor"),
+            ("security-agent", "domain_include", "binary_sensor"),
+            ("light-agent", "domain_include", "sensor"),
+        ]
+        await db.executemany(
+            "INSERT OR IGNORE INTO entity_visibility_rules "
+            "(agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            sensor_domain_rules,
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (14)"
         )

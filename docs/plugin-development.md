@@ -97,7 +97,11 @@ hooks. It provides access to:
 | `agent_registry`  | `AgentRegistry`     | Register/unregister agents         |
 | `mcp_registry`    | `MCPServerRegistry` | Access MCP server connections      |
 | `settings`        | `SettingsRepository`| Read/write system settings         |
-| `app`             | `FastAPI`           | The FastAPI application instance   |
+| `event_bus`       | `EventBus`          | Subscribe/publish plugin events    |
+
+To add API routes, use the `add_api_route(path, endpoint, **kwargs)` or
+`include_router(router, **kwargs)` methods on `PluginContext`. Direct access
+to the FastAPI application object is not supported.
 
 ### Registering a Custom Agent
 
@@ -164,8 +168,8 @@ Plugins can communicate via the `EventBus` available on the plugin loader:
 
 ```python
 async def ready(self, ctx: PluginContext) -> None:
-    # Access event bus via the plugin loader stored on app.state
-    event_bus = ctx.app.state.plugin_loader.event_bus
+    # Access event bus directly from the plugin context
+    event_bus = ctx.event_bus
 
     async def on_custom_event(data):
         print(f"Received: {data}")
@@ -178,6 +182,26 @@ async def ready(self, ctx: PluginContext) -> None:
 
 Event handlers are also error-isolated: one handler failing does not affect
 other handlers subscribed to the same event.
+
+## Trust Model
+
+Plugins are **fully trusted code** running in the same Python process as the
+agent-assist container. There is no sandbox, filesystem isolation, or resource
+limiting.
+
+What this means in practice:
+
+- A plugin can import any Python module, read any file on disk, and make
+  arbitrary network calls.
+- The `PluginContext` API surface is a **convention** for clean integration,
+  not a security boundary.
+- Plugin files should be reviewed before deployment, just like any other code
+  you deploy into your container.
+- The admin dashboard allows enabling and disabling plugins. A disabled plugin
+  is never imported or instantiated.
+
+If you are distributing plugins to others, document the permissions your
+plugin requires and any external services it contacts.
 
 ## Database Tracking
 

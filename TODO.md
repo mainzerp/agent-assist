@@ -6,11 +6,6 @@
 - [ ] **HA Entities auf Exposed Entities beschraenken**: Entity-Zugriff auf die in Home Assistant als "exposed" markierten Entities einschraenken, damit nur freigegebene Geraete gesteuert/abgefragt werden koennen.
 
 
-Send-Agent
+default location und current time für general agent
 
-user fragt nach einem rezept und will das es auf sein smartphone (z.b. lauras handy) gesendet wird
-
-orchestrator lässt general-agent nach rezept und link suchen
-orchestrator nutzt send agent um die infos an ein smartphone zu schicken (notify über companion app), oder via tts auf einen satellite
-
-nben dem agent wird eine ui page benötigt die alle notify devices anzeigt um ein mapping zu einem benutzer namen machen zu können. 
+climate-agent scheint keine wetter fragen beantwortn zu können

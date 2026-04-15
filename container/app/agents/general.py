@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from app.agents.base import BaseAgent
+from app.analytics.tracer import _optional_span
 from app.models.agent import AgentCard, AgentTask, TaskResult
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ class GeneralAgent(BaseAgent):
         )
 
     async def handle_task(self, task: AgentTask) -> TaskResult:
+        span_collector = task.span_collector
         system_prompt = self._load_prompt("general")
 
         # Inject language directive for non-English users
@@ -68,9 +70,16 @@ class GeneralAgent(BaseAgent):
         tools = await self._get_mcp_tools()
         if tools:
             tool_schemas = self._mcp_tools_to_openai_format(tools)
-            response = await self._call_llm_with_tools(messages, tool_schemas, tools, **llm_kwargs)
+            async with _optional_span(span_collector, "llm_call", agent_id="general-agent") as span:
+                response = await self._call_llm_with_tools(messages, tool_schemas, tools, span_collector=span_collector, **llm_kwargs)
+                span["metadata"]["model"] = "general-agent"
+                span["metadata"]["llm_response"] = response[:500] if response else ""
+                span["metadata"]["tools_available"] = len(tool_schemas)
         else:
-            response = await self._call_llm(messages, **llm_kwargs)
+            async with _optional_span(span_collector, "llm_call", agent_id="general-agent") as span:
+                response = await self._call_llm(messages, span_collector=span_collector, **llm_kwargs)
+                span["metadata"]["model"] = "general-agent"
+                span["metadata"]["llm_response"] = response[:500] if response else ""
 
         return TaskResult(speech=response)
 
@@ -99,7 +108,7 @@ class GeneralAgent(BaseAgent):
             })
         return openai_tools
 
-    async def _call_llm_with_tools(self, messages, tool_schemas, mcp_tools, **overrides):
+    async def _call_llm_with_tools(self, messages, tool_schemas, mcp_tools, span_collector=None, **overrides):
         """Call LLM with tool calling support."""
         from app.llm.client import complete_with_tools
 
@@ -124,10 +133,21 @@ class GeneralAgent(BaseAgent):
                 logger.warning("MCP tool '%s' failed: %s", name, e)
                 return f"Tool error: {e}"
 
+        _inner_executor = execute_tool
+
+        async def _traced_executor(name: str, arguments: dict) -> str:
+            async with _optional_span(span_collector, "mcp_tool_call", agent_id="general-agent") as tool_span:
+                tool_span["metadata"]["tool_name"] = name
+                tool_span["metadata"]["arguments"] = str(arguments)[:300]
+                result = await _inner_executor(name, arguments)
+                tool_span["metadata"]["result"] = result[:500] if result else ""
+                return result
+
         return await complete_with_tools(
             self.agent_card.agent_id,
             messages,
             tools=tool_schemas,
-            tool_executor=execute_tool,
+            tool_executor=_traced_executor,
+            span_collector=span_collector,
             **overrides,
         )

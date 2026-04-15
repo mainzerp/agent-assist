@@ -37,7 +37,7 @@ class ActionableAgent(BaseAgent):
         super().__init__(ha_client=ha_client, entity_index=entity_index)
         self._entity_matcher = entity_matcher
 
-    async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id):
+    async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         """Execute the parsed action. Subclasses must override."""
         raise NotImplementedError
 
@@ -69,7 +69,7 @@ class ActionableAgent(BaseAgent):
 
         if span_collector:
             async with span_collector.start_span("llm_call", agent_id=agent_id) as span:
-                response = await self._call_llm(messages)
+                response = await self._call_llm(messages, span_collector=span_collector)
                 span["metadata"]["model"] = agent_id
                 span["metadata"]["llm_response"] = response[:500] if response else ""
         else:
@@ -92,6 +92,7 @@ class ActionableAgent(BaseAgent):
                         result = await self._do_execute(
                             action, self._ha_client, self._entity_index,
                             self._entity_matcher, agent_id=agent_id,
+                            span_collector=span_collector,
                         )
                         span["metadata"]["action"] = action.get("action")
                         span["metadata"]["entity"] = action.get("entity")
@@ -105,14 +106,16 @@ class ActionableAgent(BaseAgent):
                     result = await self._do_execute(
                         action, self._ha_client, self._entity_index,
                         self._entity_matcher, agent_id=agent_id,
+                        span_collector=span_collector,
                     )
                 return TaskResult(
                     speech=result["speech"],
                     action_executed=ActionExecuted(
                         action=action.get("action", ""),
-                        entity_id=result.get("entity_id", ""),
+                        entity_id=result.get("entity_id") or "",
                         success=result.get("success", False),
                         new_state=result.get("new_state"),
+                        cacheable=result.get("cacheable", True),
                     ),
                 )
             except Exception:

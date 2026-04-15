@@ -20,11 +20,13 @@ Admin endpoints require a session cookie obtained by logging in through the dash
 
 ### WebSocket
 
-Pass the API key as a `token` query parameter or in the `Authorization` header:
+Pass the API key in the `Authorization` header (recommended):
 
 ```
-ws://<host>:8080/ws/conversation?token=<api_key>
+Authorization: Bearer <api_key>
 ```
+
+**Deprecated:** The `token` query parameter is still accepted but will be removed in a future release. Query-string credentials can leak through proxy logs and browser history. Migrate to header-based auth.
 
 ---
 
@@ -92,7 +94,7 @@ data: {"token": "", "done": true, "conversation_id": "abc123"}
 
 WebSocket endpoint for streaming conversation.
 
-**Auth:** Bearer token via `token` query parameter or `Authorization` header
+**Auth:** Bearer token via `Authorization` header (preferred). Query-string `token` parameter is deprecated.
 
 **Send:**
 

@@ -153,6 +153,26 @@ class TestSettingsRepository:
         results = await SettingsRepository.get_all()
         assert len(results) > 10
 
+    async def test_set_preserves_value_type_on_conflict(self, db_repository):
+        """ON CONFLICT update should preserve existing value_type."""
+        before = await SettingsRepository.get("cache.routing.threshold")
+        assert before is not None
+        assert before["value_type"] == "float"
+
+        await SettingsRepository.set("cache.routing.threshold", "0.80")
+        after = await SettingsRepository.get("cache.routing.threshold")
+        assert after["value"] == "0.80"
+        assert after["value_type"] == "float"
+
+    async def test_set_preserves_category_on_conflict(self, db_repository):
+        """ON CONFLICT update should preserve existing category."""
+        before = await SettingsRepository.get("cache.routing.threshold")
+        assert before["category"] == "cache"
+
+        await SettingsRepository.set("cache.routing.threshold", "0.75")
+        after = await SettingsRepository.get("cache.routing.threshold")
+        assert after["category"] == "cache"
+
 
 # ---------------------------------------------------------------------------
 # Repository CRUD -- agent_configs
@@ -824,3 +844,33 @@ class TestSendDeviceMappingRepository:
         result = await SendDeviceMappingRepository.find_by_name("Patric's Handy")
         assert result is not None
         assert result["display_name"] == "Patric's Handy"
+
+
+# ---------------------------------------------------------------------------
+# Read/Write Split
+# ---------------------------------------------------------------------------
+
+class TestReadWriteSplit:
+    """Verify that read and write paths function correctly."""
+
+    async def test_concurrent_reads_do_not_block(self, db_repository):
+        """Multiple concurrent reads should complete without serialization issues."""
+        import asyncio
+
+        async def read_settings():
+            return await SettingsRepository.get_all()
+
+        # Run 5 concurrent reads
+        results = await asyncio.gather(*[read_settings() for _ in range(5)])
+        # All should return the same seeded data
+        assert all(len(r) > 0 for r in results)
+        assert all(len(r) == len(results[0]) for r in results)
+
+    async def test_write_then_read_consistent(self, db_repository):
+        """A write followed by a read should see the written data."""
+        await SettingsRepository.set(
+            "test.rw_split", "hello", value_type="string",
+            category="test", description="rw split test"
+        )
+        result = await SettingsRepository.get_value("test.rw_split")
+        assert result == "hello"

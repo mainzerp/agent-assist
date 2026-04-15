@@ -9,6 +9,7 @@ from app.db.repository import AgentConfigRepository
 from app.llm.providers import resolve_provider_params
 from app.models.agent import AgentConfig
 from app.analytics.collector import track_token_usage
+from app.analytics.tracer import _optional_span
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ async def complete(
     messages: list[dict],
     **overrides: object,
 ) -> str:
+    span_collector = overrides.pop("span_collector", None)
     row = await AgentConfigRepository.get(agent_id)
     if row is None:
         raise ValueError(f"No config found for agent: {agent_id}")
@@ -49,7 +51,10 @@ async def complete(
         if reasoning_effort:
             call_kwargs["reasoning_effort"] = reasoning_effort
             call_kwargs["drop_params"] = True
-        response = await litellm.acompletion(**call_kwargs)
+        async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+            response = await litellm.acompletion(**call_kwargs)
+            pspan["metadata"]["model"] = model
+            pspan["metadata"]["provider"] = model.split('/')[0] if '/' in model else 'unknown'
         if response.choices and response.choices[0].finish_reason == "length":
             logger.warning(
                 "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
@@ -64,7 +69,10 @@ async def complete(
                 agent_id, model, response.choices[0].finish_reason,
             )
             await asyncio.sleep(1)
-            response = await litellm.acompletion(**call_kwargs)
+            async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+                response = await litellm.acompletion(**call_kwargs)
+                pspan["metadata"]["model"] = model
+                pspan["metadata"]["retry"] = True
             if response.choices and response.choices[0].finish_reason == "length":
                 logger.warning(
                     "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
@@ -115,6 +123,7 @@ async def complete_with_tools(
     Returns:
         Final text response from the LLM.
     """
+    span_collector = overrides.pop("span_collector", None)
     row = await AgentConfigRepository.get(agent_id)
     if row is None:
         raise ValueError(f"No config found for agent: {agent_id}")
@@ -149,7 +158,10 @@ async def complete_with_tools(
         if reasoning_effort:
             tool_call_kwargs["reasoning_effort"] = reasoning_effort
             tool_call_kwargs["drop_params"] = True
-        response = await litellm.acompletion(**tool_call_kwargs)
+        async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+            response = await litellm.acompletion(**tool_call_kwargs)
+            pspan["metadata"]["model"] = model
+            pspan["metadata"]["round"] = _round + 1
         if hasattr(response, 'usage') and response.usage:
             await track_token_usage(
                 agent_id=agent_id,
@@ -217,7 +229,11 @@ async def complete_with_tools(
     if reasoning_effort:
         final_kwargs["reasoning_effort"] = reasoning_effort
         final_kwargs["drop_params"] = True
-    response = await litellm.acompletion(**final_kwargs)
+    async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
+        response = await litellm.acompletion(**final_kwargs)
+        pspan["metadata"]["model"] = model
+        pspan["metadata"]["round"] = max_tool_rounds + 1
+        pspan["metadata"]["forced_final"] = True
     if hasattr(response, 'usage') and response.usage:
         await track_token_usage(
             agent_id=agent_id,

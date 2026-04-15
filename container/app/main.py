@@ -100,7 +100,7 @@ async def _periodic_entity_sync(app: FastAPI) -> None:
 
             states = await ha_client.get_states()
             entities = _parse_ha_states(states)
-            result = entity_index.sync(entities)
+            result = await entity_index.sync_async(entities)
             logger.info(
                 "Periodic entity sync: +%d ~%d -%d =%d",
                 result["added"], result["updated"],
@@ -108,6 +108,18 @@ async def _periodic_entity_sync(app: FastAPI) -> None:
             )
         except Exception:
             logger.warning("Periodic entity sync failed", exc_info=True)
+
+
+async def _purge_stale_response_cache(cache_manager) -> None:
+    """One-time startup task: purge stale read-only response cache entries."""
+    try:
+        count = await cache_manager.purge_readonly_entries()
+        if count:
+            logger.info("Purged %d stale read-only response cache entries", count)
+        else:
+            logger.info("No stale read-only response cache entries to purge")
+    except Exception:
+        logger.warning("Failed to purge stale response cache entries", exc_info=True)
 
 
 @asynccontextmanager
@@ -222,7 +234,7 @@ async def lifespan(app: FastAPI):
         try:
             states = await ha_client.get_states()
             entities = _parse_ha_states(states)
-            entity_index.populate(entities)
+            await entity_index.populate_async(entities)
             logger.info("Entity index populated with %d entities", len(entities))
         except Exception:
             logger.warning("Failed to populate entity index from HA", exc_info=True)
@@ -239,6 +251,11 @@ async def lifespan(app: FastAPI):
         rewrite_agent = RewriteAgent(ha_client=ha_client, entity_index=entity_index)
         cache_manager = CacheManager(vector_store, rewrite_agent=rewrite_agent)
         await cache_manager.initialize()
+
+    # One-time startup: purge stale read-only response cache entries
+    purge_task = None
+    if setup_complete and cache_manager:
+        purge_task = asyncio.create_task(_purge_stale_response_cache(cache_manager))
 
     # Initialize A2A layer
     transport = InProcessTransport(registry)
@@ -355,12 +372,34 @@ async def lifespan(app: FastAPI):
     # Start WebSocket client for real-time entity index refresh (Batch 5B)
     ws_client = None
     ws_task = None
+    flush_task = None
     if setup_complete and entity_index is not None:
         from app.ha_client.websocket import HAWebSocketClient
 
         ws_client = HAWebSocketClient()
 
-        def on_state_changed(event: dict) -> None:
+        _entity_update_queue: asyncio.Queue[EntityIndexEntry] = asyncio.Queue()
+
+        async def _flush_entity_updates() -> None:
+            """Background task: drain queued entity updates and batch-upsert."""
+            while True:
+                await asyncio.sleep(0.5)
+                batch: list[EntityIndexEntry] = []
+                while not _entity_update_queue.empty():
+                    try:
+                        batch.append(_entity_update_queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+                if batch:
+                    try:
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(
+                            None, entity_index.batch_add, batch
+                        )
+                    except Exception:
+                        logger.warning("Batch entity index update failed", exc_info=True)
+
+        async def on_state_changed(event: dict) -> None:
             """Handle state_changed events for entity index refresh."""
             data = event.get("data", {})
             new_state = data.get("new_state")
@@ -368,7 +407,7 @@ async def lifespan(app: FastAPI):
             entity_id = data.get("entity_id", "")
 
             if new_state is None and old_state is not None:
-                entity_index.remove(entity_id)
+                await entity_index.remove_async(entity_id)
             elif new_state is not None:
                 attrs = new_state.get("attributes", {})
                 domain = entity_id.split(".")[0] if "." in entity_id else ""
@@ -380,7 +419,7 @@ async def lifespan(app: FastAPI):
                     device_class=attrs.get("device_class"),
                     aliases=[],
                 )
-                entity_index.add(entry)
+                _entity_update_queue.put_nowait(entry)
 
         ws_client.on_event("state_changed", on_state_changed)
 
@@ -418,6 +457,7 @@ async def lifespan(app: FastAPI):
         ws_client.on_event("timer.cancelled", _on_timer_cancelled_event)
 
         ws_task = asyncio.create_task(ws_client.run())
+        flush_task = asyncio.create_task(_flush_entity_updates())
 
     # Start periodic entity sync task
     sync_task = None
@@ -509,6 +549,12 @@ async def lifespan(app: FastAPI):
 
     # Cancel background tasks and await them to ensure cleanup completes
     tasks_to_cancel = []
+    if purge_task and not purge_task.done():
+        purge_task.cancel()
+        tasks_to_cancel.append(purge_task)
+    if flush_task and not flush_task.done():
+        flush_task.cancel()
+        tasks_to_cancel.append(flush_task)
     if ws_task and not ws_task.done():
         ws_task.cancel()
         tasks_to_cancel.append(ws_task)
@@ -517,6 +563,13 @@ async def lifespan(app: FastAPI):
         tasks_to_cancel.append(sync_task)
     if tasks_to_cancel:
         await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+
+    # Flush buffered cache hit-count updates before closing stores
+    try:
+        if cache_manager:
+            cache_manager.flush_pending()
+    except Exception:
+        logger.warning("Cache flush_pending failed at shutdown", exc_info=True)
 
     await mcp_registry.disconnect_all()
     if ha_client:

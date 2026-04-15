@@ -114,6 +114,36 @@ class TestRoutingCache:
         assert cache._threshold == 0.90
         assert cache._max_entries == 1000
 
+    def test_store_uses_deterministic_id(self):
+        """Calling store() twice with the same query should upsert the same ID."""
+        cache, store = self._make_cache()
+        store.count.return_value = 0
+        cache.store("turn on kitchen light", "light-agent", 0.95)
+        cache.store("turn on kitchen light", "light-agent", 0.96)
+        assert store.upsert.call_count == 2
+        id1 = store.upsert.call_args_list[0][1]["ids"][0]
+        id2 = store.upsert.call_args_list[1][1]["ids"][0]
+        assert id1 == id2  # same deterministic hash
+
+    def test_store_flushes_pending_updates(self):
+        """store() should flush pending hit-count updates."""
+        cache, store = self._make_cache()
+        store.count.return_value = 0
+        cache._pending_updates = {"old-id": ("old query", {"hit_count": "5"})}
+        cache._hit_since_flush = 1
+        cache.store("new query", "agent", 0.9)
+        # First upsert is from flush, second from store
+        assert store.upsert.call_count == 2
+        assert cache._hit_since_flush == 0
+
+    def test_flush_pending_public_method(self):
+        """flush_pending() should delegate to _flush_pending_updates."""
+        cache, store = self._make_cache()
+        cache._pending_updates = {"id-1": ("q", {"hit_count": "3"})}
+        cache.flush_pending()
+        store.upsert.assert_called_once()
+        assert len(cache._pending_updates) == 0
+
 
 # ---------------------------------------------------------------------------
 # Response cache
@@ -251,6 +281,27 @@ class TestResponseCache:
         assert cache._hit_threshold == 0.90
         assert cache._partial_threshold == 0.75
         assert cache._max_entries == 5000
+
+    def test_store_uses_deterministic_id(self):
+        """Calling store() twice with same query should upsert same ID."""
+        cache, store = self._make_cache()
+        store.count.return_value = 0
+        entry1 = make_response_cache_entry(query_text="turn on kitchen light")
+        entry2 = make_response_cache_entry(query_text="turn on kitchen light")
+        cache.store(entry1)
+        cache.store(entry2)
+        assert store.upsert.call_count == 2
+        id1 = store.upsert.call_args_list[0][1]["ids"][0]
+        id2 = store.upsert.call_args_list[1][1]["ids"][0]
+        assert id1 == id2
+
+    def test_flush_pending_public_method(self):
+        """flush_pending() should delegate to _flush_pending_updates."""
+        cache, store = self._make_cache()
+        cache._pending_updates = {"id-1": ("q", {"hit_count": "3"})}
+        cache.flush_pending()
+        store.upsert.assert_called_once()
+        assert len(cache._pending_updates) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +457,16 @@ class TestCacheManager:
             mock_cms.get_value = AsyncMock(side_effect=mgr_get_value)
             await manager.reload_config()
 
+    def test_flush_pending_delegates_to_both_caches(self):
+        """flush_pending() should call flush_pending() on both caches."""
+        manager, store = self._make_manager()
+        manager._routing_cache._pending_updates = {"r-1": ("q", {"hit_count": "2"})}
+        manager._response_cache._pending_updates = {"s-1": ("q", {"hit_count": "3"})}
+        manager.flush_pending()
+        # Both should have been flushed
+        assert len(manager._routing_cache._pending_updates) == 0
+        assert len(manager._response_cache._pending_updates) == 0
+
     def test_routing_cache_stores_condensed_task(self):
         """Routing cache should persist condensed_task in the ChromaDB metadata."""
         cache, store = TestRoutingCache()._make_cache()
@@ -441,9 +502,7 @@ class TestCacheManager:
         """CacheResult should propagate condensed_task from routing entry."""
         manager, store = self._make_manager()
         store.query.side_effect = [
-            # Response cache miss
-            {"ids": [[]], "distances": [[]], "documents": [[]], "metadatas": [[]]},
-            # Routing cache hit
+            # Routing cache hit (now checked first)
             {
                 "ids": [["r-1"]],
                 "distances": [[0.03]],
@@ -707,10 +766,8 @@ class TestCacheTraceSimilarity:
         """CacheResult.similarity is populated on a routing cache hit."""
         store = MagicMock(spec=VectorStore)
         manager = CacheManager(store)
-        # Response cache miss
+        # Routing cache hit (now checked first, distance 0.05 = similarity 0.95)
         store.query.side_effect = [
-            {"ids": [[]], "distances": [[]], "documents": [[]], "metadatas": [[]]},
-            # Routing cache hit  (distance 0.05 = similarity 0.95)
             {
                 "ids": [["r-1"]],
                 "distances": [[0.05]],
@@ -733,8 +790,18 @@ class TestCacheTraceSimilarity:
         """CacheResult.similarity is populated even on a complete miss."""
         store = MagicMock(spec=VectorStore)
         manager = CacheManager(store)
-        # Response cache miss with similarity 0.70
+        # Routing cache miss with similarity 0.80 (now checked first)
         store.query.side_effect = [
+            {
+                "ids": [["r-1"]],
+                "distances": [[0.20]],
+                "documents": [["other"]],
+                "metadatas": [[{
+                    "agent_id": "general-agent", "confidence": "0.80",
+                    "hit_count": "0", "created_at": "", "last_accessed": "",
+                }]],
+            },
+            # Response cache miss with similarity 0.70
             {
                 "ids": [["resp-1"]],
                 "distances": [[0.30]],
@@ -743,16 +810,6 @@ class TestCacheTraceSimilarity:
                     "response_text": "x", "agent_id": "gen", "confidence": "0.7",
                     "hit_count": "0", "entity_ids": "", "cached_action": "",
                     "created_at": "", "last_accessed": "",
-                }]],
-            },
-            # Routing cache miss with similarity 0.80
-            {
-                "ids": [["r-1"]],
-                "distances": [[0.20]],
-                "documents": [["other"]],
-                "metadatas": [[{
-                    "agent_id": "general-agent", "confidence": "0.80",
-                    "hit_count": "0", "created_at": "", "last_accessed": "",
                 }]],
             },
         ]
@@ -918,3 +975,155 @@ class TestResponseCacheEviction:
         cache._enforce_lru()
         # 590 excess / 500 = 2 chunks
         assert store.delete.call_count >= 2
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator _store_response_cache cacheable flag
+# ---------------------------------------------------------------------------
+
+class TestStoreResponseCacheCacheable:
+    """Test that _store_response_cache respects the cacheable flag."""
+
+    def _make_orchestrator(self):
+        from app.agents.orchestrator import OrchestratorAgent
+        orch = OrchestratorAgent.__new__(OrchestratorAgent)
+        orch._cache_manager = MagicMock()
+        return orch
+
+    def test_skips_non_cacheable_action(self):
+        orch = self._make_orchestrator()
+        stored = orch._store_response_cache(
+            user_text="what is the temperature",
+            speech="It is 22 degrees.",
+            target_agent="climate-agent",
+            confidence=0.95,
+            action_executed={"action": "query_climate_state", "entity_id": "sensor.temp",
+                             "success": True, "cacheable": False},
+            has_error=False,
+        )
+        assert stored is False
+        orch._cache_manager.store_response.assert_not_called()
+
+    def test_stores_cacheable_action(self):
+        orch = self._make_orchestrator()
+        stored = orch._store_response_cache(
+            user_text="turn on kitchen light",
+            speech="Done, kitchen light is on.",
+            target_agent="light-agent",
+            confidence=0.95,
+            action_executed={"action": "turn_on", "entity_id": "light.kitchen",
+                             "success": True, "cacheable": True},
+            has_error=False,
+        )
+        assert stored is True
+        orch._cache_manager.store_response.assert_called_once()
+
+    def test_stores_action_without_cacheable_field(self):
+        orch = self._make_orchestrator()
+        stored = orch._store_response_cache(
+            user_text="turn off bedroom light",
+            speech="Done, bedroom light is off.",
+            target_agent="light-agent",
+            confidence=0.95,
+            action_executed={"action": "turn_off", "entity_id": "light.bedroom",
+                             "success": True},
+            has_error=False,
+        )
+        assert stored is True
+        orch._cache_manager.store_response.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Response cache purge readonly entries
+# ---------------------------------------------------------------------------
+
+class TestResponseCachePurgeReadonly:
+    """Tests for ResponseCache.purge_readonly_entries()."""
+
+    def _make_cache(self) -> tuple[ResponseCache, MagicMock]:
+        store = MagicMock(spec=VectorStore)
+        cache = ResponseCache(store)
+        return cache, store
+
+    def test_purge_removes_readonly_entries(self):
+        cache, store = self._make_cache()
+        store.get.return_value = {
+            "ids": ["id-1", "id-2", "id-3"],
+            "metadatas": [
+                {"cached_action": "", "response_text": "It is 22 degrees."},
+                {"cached_action": '{"service":"light/turn_on","entity_id":"light.kitchen","service_data":{}}', "response_text": "Done."},
+                {"cached_action": "", "response_text": "The door is locked."},
+            ],
+        }
+        count = cache.purge_readonly_entries()
+        assert count == 2
+        store.delete.assert_called_once_with(COLLECTION_RESPONSE_CACHE, ids=["id-1", "id-3"])
+
+    def test_purge_skips_entries_with_cached_action(self):
+        cache, store = self._make_cache()
+        store.get.return_value = {
+            "ids": ["id-1"],
+            "metadatas": [
+                {"cached_action": '{"service":"light/turn_on","entity_id":"light.kitchen","service_data":{}}'},
+            ],
+        }
+        count = cache.purge_readonly_entries()
+        assert count == 0
+        store.delete.assert_not_called()
+
+    def test_purge_empty_collection(self):
+        cache, store = self._make_cache()
+        store.get.return_value = {"ids": [], "metadatas": []}
+        count = cache.purge_readonly_entries()
+        assert count == 0
+        store.delete.assert_not_called()
+
+    def test_purge_handles_missing_cached_action_key(self):
+        """Entries without cached_action key (pre-v0.14.0) should be purged."""
+        cache, store = self._make_cache()
+        store.get.return_value = {
+            "ids": ["id-1", "id-2"],
+            "metadatas": [
+                {"response_text": "Old entry without cached_action field."},
+                {"cached_action": '{"service":"light/turn_on","entity_id":"light.k","service_data":{}}'},
+            ],
+        }
+        count = cache.purge_readonly_entries()
+        assert count == 1
+        store.delete.assert_called_once_with(COLLECTION_RESPONSE_CACHE, ids=["id-1"])
+
+    async def test_cache_manager_purge_delegates(self):
+        """CacheManager.purge_readonly_entries() should delegate to ResponseCache."""
+        store = MagicMock(spec=VectorStore)
+        manager = CacheManager(store)
+        store.get.return_value = {
+            "ids": ["id-1"],
+            "metadatas": [{"cached_action": ""}],
+        }
+        count = await manager.purge_readonly_entries()
+        assert count == 1
+
+    def test_purge_removes_readonly_service_entries(self):
+        """Entries with read-only service (query_*, list_*) should be purged."""
+        cache, store = self._make_cache()
+        store.get.return_value = {
+            "ids": ["id-1", "id-2", "id-3", "id-4"],
+            "metadatas": [
+                {"cached_action": '{"service":"sensor/query_status","entity_id":"sensor.temp","service_data":{}}'},
+                {"cached_action": '{"service":"light/turn_on","entity_id":"light.kitchen","service_data":{}}'},
+                {"cached_action": '{"service":"media/list_sources","entity_id":"media_player.tv","service_data":{}}'},
+                {"cached_action": ""},
+            ],
+        }
+        count = cache.purge_readonly_entries()
+        assert count == 3  # id-1 (query_status), id-3 (list_sources), id-4 (empty)
+        store.delete.assert_called_once_with(COLLECTION_RESPONSE_CACHE, ids=["id-1", "id-3", "id-4"])
+
+    def test_is_readonly_action_helper(self):
+        """Unit test for _is_readonly_action static method."""
+        assert ResponseCache._is_readonly_action("") is True
+        assert ResponseCache._is_readonly_action('{"service":"sensor/query_status","entity_id":"x","service_data":{}}') is True
+        assert ResponseCache._is_readonly_action('{"service":"media/list_sources","entity_id":"x","service_data":{}}') is True
+        assert ResponseCache._is_readonly_action('{"service":"light/turn_on","entity_id":"x","service_data":{}}') is False
+        assert ResponseCache._is_readonly_action('{"service":"climate/set_temperature","entity_id":"x","service_data":{}}') is False
+        assert ResponseCache._is_readonly_action("invalid json") is False

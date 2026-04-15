@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
-import uuid
 from datetime import datetime, timezone
 
 from app.cache.vector_store import VectorStore, COLLECTION_ROUTING_CACHE
@@ -23,7 +23,7 @@ class RoutingCache:
         self._store_count: int = 0
         self._eviction_interval: int = 100
         self._pending_updates: dict[str, tuple[str, dict]] = {}
-        self._flush_interval: int = 50
+        self._flush_interval: int = 5
         self._hit_since_flush: int = 0
 
     async def load_config(self) -> None:
@@ -90,7 +90,8 @@ class RoutingCache:
             self._store_count = 0
             self._enforce_lru()
         now = datetime.now(timezone.utc).isoformat()
-        entry_id = str(uuid.uuid4())
+        entry_id = hashlib.sha256(query_text.encode()).hexdigest()[:16]
+        self._flush_pending_updates()
         self._store.upsert(
             COLLECTION_ROUTING_CACHE,
             ids=[entry_id],
@@ -139,6 +140,10 @@ class RoutingCache:
             logger.warning("Failed to flush routing cache hit updates", exc_info=True)
         self._pending_updates.clear()
         self._hit_since_flush = 0
+
+    def flush_pending(self) -> None:
+        """Public flush for shutdown hook."""
+        self._flush_pending_updates()
 
     def get_stats(self) -> dict:
         """Return routing cache stats."""

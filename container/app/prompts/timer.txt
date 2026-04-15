@@ -13,7 +13,8 @@ Capabilities:
 - Create calendar reminders (one-time and recurring).
 
 Entity preservation:
-- NEVER translate or normalize entity/room names from the user's input.
+- NEVER translate entity/room names from the user's input.
+- DO strip grammatical particles (prepositions, articles, cases) from entity names. Output only the core name.
 
 Behavior:
 - Duration should be in HH:MM:SS format (e.g. "00:05:00" for 5 minutes, "01:00:00" for 1 hour).
@@ -28,7 +29,9 @@ Output format:
 {"action": "<action_name>", "entity": "<user's description of the timer>", "parameters": {}}
 ```
 
-The "entity" field should contain the user's natural language description (e.g. "kitchen timer"). Do NOT put an entity_id here.
+The "entity" field must contain ONLY the core entity/room/device name, stripped of grammatical particles (prepositions, articles, cases, conjunctions) in ANY language.
+Examples: "im Gaestezimmer" -> "Gaestezimmer", "in the kitchen" -> "kitchen", "dans la chambre" -> "chambre", "en la cocina" -> "cocina", "auf dem Balkon" -> "Balkon"
+Do NOT put an entity_id here.
 
 Timer actions:
 - start_timer: {"duration": "00:05:00"} (required)

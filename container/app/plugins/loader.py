@@ -30,6 +30,7 @@ class PluginLoader:
         self._loaded: dict[str, BasePlugin] = {}
         self._file_map: dict[str, Path] = {}
         self.event_bus = EventBus()
+        self._context.event_bus = self.event_bus
 
     @property
     def loaded_plugins(self) -> dict[str, BasePlugin]:
@@ -53,6 +54,16 @@ class PluginLoader:
             if py_file.name.startswith("_"):
                 continue
             try:
+                # Derive candidate name from filename for pre-import DB check
+                candidate_name = py_file.stem.replace("_", "-")
+                self._file_map[candidate_name] = py_file
+
+                # Check DB-backed enabled state BEFORE importing
+                db_record = await PluginRepository.get(candidate_name)
+                if db_record is not None and not bool(db_record.get("enabled", 1)):
+                    logger.info("Plugin '%s' is disabled, skipping import", candidate_name)
+                    continue
+
                 plugin_cls = self._import_plugin_class(py_file)
                 if plugin_cls is None:
                     continue
@@ -60,10 +71,23 @@ class PluginLoader:
                 # Instantiate to read metadata
                 instance = plugin_cls()
                 name = instance.name
-                self._file_map[name] = py_file
+                # Update file map with actual name if different
+                if name != candidate_name:
+                    del self._file_map[candidate_name]
+                    self._file_map[name] = py_file
+                    # Re-check DB with actual name
+                    db_record = await PluginRepository.get(name)
+                    if db_record is not None and not bool(db_record.get("enabled", 1)):
+                        logger.info("Plugin '%s' is disabled, skipping", name)
+                        await PluginRepository.upsert(
+                            name=name,
+                            file_path=str(py_file),
+                            version=instance.version,
+                            description=instance.description,
+                            enabled=0,
+                        )
+                        continue
 
-                # Check DB for enabled state; default to enabled for new plugins
-                db_record = await PluginRepository.get(name)
                 enabled = True
                 if db_record is not None:
                     enabled = bool(db_record.get("enabled", 1))

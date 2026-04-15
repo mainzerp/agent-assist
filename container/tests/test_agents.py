@@ -1004,6 +1004,12 @@ class TestRewriteAgent:
 
 class TestOrchestratorAgent:
 
+    @pytest.fixture(autouse=True)
+    def _mock_conversation_repo(self):
+        with patch("app.agents.orchestrator.ConversationRepository") as mock_repo:
+            mock_repo.insert = AsyncMock(return_value=1)
+            yield mock_repo
+
     def _make_orchestrator(self, dispatch_result=None):
         dispatcher = AsyncMock()
         registry = AsyncMock()
@@ -1342,6 +1348,36 @@ class TestOrchestratorAgent:
         assert ret_span["metadata"]["from_agent"] == "light-agent"
         assert "final_response" in ret_span["metadata"]
         assert "mediated" in ret_span["metadata"]
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_cache_fallthrough_span(self, mock_complete, mock_track, mock_settings):
+        """handle_task should create a 'cache_fallthrough' span when cached action replay fails."""
+        from app.analytics.tracer import SpanCollector
+        from app.cache.cache_manager import CacheResult
+        orch, *_ = self._make_orchestrator()
+        mock_complete.return_value = "light-agent: Turn on light"
+        mock_settings.get_value = AsyncMock(return_value="false")
+        collector = SpanCollector("trace-fallthrough-test")
+        task = _make_task("turn on light")
+        task.span_collector = collector
+        task.conversation_id = "conv-ft"
+        # Simulate response cache hit where action replay fails
+        with patch.object(orch, "_do_cache_lookup", new_callable=AsyncMock) as mock_lookup, \
+             patch.object(orch, "_handle_response_cache_hit", new_callable=AsyncMock) as mock_hit, \
+             patch("app.analytics.tracer.create_trace_summary", new_callable=AsyncMock):
+            mock_lookup.return_value = (
+                CacheResult(hit_type="response_hit", agent_id="light-agent", response_text="Done."),
+                None,
+            )
+            mock_hit.return_value = None  # Simulate replay failure
+            await orch.handle_task(task)
+        span_names = [s["span_name"] for s in collector._spans]
+        assert "cache_fallthrough" in span_names
+        ft_span = [s for s in collector._spans if s["span_name"] == "cache_fallthrough"][0]
+        assert ft_span["agent_id"] == "orchestrator"
+        assert ft_span["metadata"]["reason"] == "cached_action_replay_failed"
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -1806,7 +1842,7 @@ class TestOrchestratorAgent:
         mock_complete.return_value = "general-agent (90%): provide the link to the cream puff recipe"
 
         # Pre-populate conversation history
-        orch._store_turn("conv-ctx", "find me a recipe for cream puffs", "Here is a recipe for cream puffs: https://example.com/cream-puffs", agent_id="general-agent")
+        await orch._store_turn("conv-ctx", "find me a recipe for cream puffs", "Here is a recipe for cream puffs: https://example.com/cream-puffs", agent_id="general-agent")
 
         classifications, _ = await orch._classify("can you give me the link?", conversation_id="conv-ctx")
         assert classifications[0][0] == "general-agent"
@@ -1852,7 +1888,7 @@ class TestOrchestratorAgent:
 
     async def test_store_turn_includes_agent_id(self):
         orch, *_ = self._make_orchestrator()
-        orch._store_turn("conv-agent-id", "hello", "world", agent_id="general-agent")
+        await orch._store_turn("conv-agent-id", "hello", "world", agent_id="general-agent")
         turns = orch._get_turns("conv-agent-id")
         assert len(turns) == 2
         assert turns[0] == {"role": "user", "content": "hello"}
@@ -1862,7 +1898,7 @@ class TestOrchestratorAgent:
 
     async def test_store_turn_no_agent_id_when_none(self):
         orch, *_ = self._make_orchestrator()
-        orch._store_turn("conv-no-aid", "hello", "world")
+        await orch._store_turn("conv-no-aid", "hello", "world")
         turns = orch._get_turns("conv-no-aid")
         assert len(turns) == 2
         assert "agent_id" not in turns[1]
@@ -1875,7 +1911,7 @@ class TestOrchestratorAgent:
         orch, dispatcher, *_ = self._make_orchestrator()
 
         # Pre-populate a conversation turn with agent_id
-        orch._store_turn("conv-dispatch", "find a recipe for cream puffs",
+        await orch._store_turn("conv-dispatch", "find a recipe for cream puffs",
                          "Here is a recipe: https://example.com/cream-puffs",
                          agent_id="general-agent")
 
@@ -1893,6 +1929,112 @@ class TestOrchestratorAgent:
         assert conv_turns[0]["content"] == "find a recipe for cream puffs"
         assert "cream-puffs" in conv_turns[1]["content"]
         assert conv_turns[1].get("agent_id") == "general-agent"
+
+    # --- Fix 1: Streaming error propagation tests ---
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_stream_propagates_agent_error(self, mock_complete, mock_track, mock_settings):
+        """Streaming error chunk should propagate error in final done chunk."""
+        orch, dispatcher, _, cache_manager = self._make_orchestrator()
+        mock_complete.return_value = "light-agent (95%): turn on kitchen light"
+        mock_settings.get_value = AsyncMock(return_value="")
+
+        async def mock_stream(request):
+            yield MagicMock(result={"token": "partial ", "done": False})
+            yield MagicMock(result={"token": "", "done": True, "error": "Agent error: light-agent"})
+        dispatcher.dispatch_stream = mock_stream
+
+        task = _make_task("turn on kitchen light")
+        task.conversation_id = "conv-stream-err"
+        chunks = [c async for c in orch.handle_task_stream(task)]
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        assert done_chunks[0].get("error") == "Agent error: light-agent"
+        # Cache should NOT be stored on error
+        cache_manager.store_response.assert_not_called()
+
+    # --- Fix 2: Multi-agent partial failure tests ---
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_multi_agent_one_branch_raises(self, mock_complete, mock_track, mock_settings):
+        """When one agent fails in multi-dispatch, surviving agent output is returned with partial_failure."""
+        orch, dispatcher, *_ = self._make_orchestrator()
+        mock_complete.side_effect = [
+            "light-agent (95%): turn on shelf\nmusic-agent (90%): play jazz",
+            "The shelf light is now on.",
+        ]
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {
+            "personality.prompt": "",
+            "rewrite.model": "groq/llama-3.1-8b-instant",
+            "rewrite.temperature": "0.3",
+        }.get(k, d))
+
+        response_music = MagicMock()
+        response_music.error = None
+        response_music.result = {"speech": "Playing jazz."}
+        dispatcher.dispatch = AsyncMock(side_effect=[RuntimeError("light-agent down"), response_music])
+
+        task = _make_task("turn on shelf and play jazz", user_text="turn on shelf and play jazz")
+        task.conversation_id = "conv-partial"
+        result = await orch.handle_task(task)
+        assert result.get("partial_failure") is not None
+        failed = result["partial_failure"]["failed_agents"]
+        assert len(failed) == 1
+        assert failed[0]["agent_id"] == "light-agent"
+        assert "light-agent down" in failed[0]["error"]
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_multi_agent_all_branches_raise(self, mock_complete, mock_track, mock_settings):
+        """When all agents fail in multi-dispatch, fallback error speech is returned."""
+        orch, dispatcher, *_ = self._make_orchestrator()
+        mock_complete.side_effect = [
+            "light-agent (95%): turn on shelf\nmusic-agent (90%): play jazz",
+        ]
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {
+            "personality.prompt": "",
+            "rewrite.model": "groq/llama-3.1-8b-instant",
+            "rewrite.temperature": "0.3",
+        }.get(k, d))
+
+        dispatcher.dispatch = AsyncMock(side_effect=[RuntimeError("light down"), RuntimeError("music down")])
+
+        task = _make_task("turn on shelf and play jazz", user_text="turn on shelf and play jazz")
+        task.conversation_id = "conv-all-fail"
+        result = await orch.handle_task(task)
+        assert "couldn't complete" in result["speech"].lower() or "error" in result["speech"].lower()
+        assert result.get("partial_failure") is not None
+        assert len(result["partial_failure"]["failed_agents"]) == 2
+
+    # --- Fix 3: Conversation persistence tests ---
+
+    async def test_store_turn_persists_to_db(self, _mock_conversation_repo):
+        """_store_turn should call ConversationRepository.insert with correct args."""
+        orch, *_ = self._make_orchestrator()
+        await orch._store_turn("conv-db", "hello", "world", agent_id="test-agent")
+        _mock_conversation_repo.insert.assert_awaited_once_with(
+            conversation_id="conv-db",
+            user_text="hello",
+            agent_id="test-agent",
+            response_text="world",
+        )
+
+    async def test_store_turn_db_failure_does_not_break_runtime(self, _mock_conversation_repo):
+        """DB insert failure should not raise -- just log a warning."""
+        _mock_conversation_repo.insert = AsyncMock(side_effect=Exception("DB error"))
+        orch, *_ = self._make_orchestrator()
+        # Should NOT raise
+        await orch._store_turn("conv-db-fail", "hello", "world", agent_id="test-agent")
+        # In-memory store should still work
+        entry = orch._conversations.get("conv-db-fail")
+        assert entry is not None
+        _, turns = entry
+        assert len(turns) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -3194,15 +3336,17 @@ class TestConversationMemoryEviction:
         )
         return orchestrator
 
-    def test_conversations_evicted_after_ttl(self):
+    @patch("app.agents.orchestrator.ConversationRepository")
+    async def test_conversations_evicted_after_ttl(self, mock_conv_repo):
         """Conversations older than TTL should be evicted on next _store_turn."""
+        mock_conv_repo.insert = AsyncMock(return_value=1)
         import app.agents.orchestrator as orch_mod
         orch = self._make_orchestrator()
         # Seed a conversation with old timestamp
         old_ts = _time.monotonic() - orch_mod._CONVERSATION_TTL_SECONDS - 1
         orch._conversations["old-conv"] = (old_ts, [{"role": "user", "content": "hi"}])
         # Store a new turn triggers eviction
-        orch._store_turn("new-conv", "hello", "world")
+        await orch._store_turn("new-conv", "hello", "world")
         assert "old-conv" not in orch._conversations
         assert "new-conv" in orch._conversations
 
@@ -4083,4 +4227,282 @@ class TestSpanEndTime:
             if mock_summary.update_duration.called:
                 total_ms = mock_summary.update_duration.call_args[0][1]
                 assert total_ms >= 1000.0
+
+
+# ---------------------------------------------------------------------------
+# GeneralAgent span instrumentation
+# ---------------------------------------------------------------------------
+
+class TestGeneralAgentSpans:
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="The weather is nice.")
+    async def test_handle_task_creates_llm_call_span(self, mock_complete):
+        from app.analytics.tracer import SpanCollector
+        collector = SpanCollector("trace-general-span")
+        agent = GeneralAgent()
+        task = _make_task("what is the weather?")
+        task.span_collector = collector
+        result = await agent.handle_task(task)
+        assert result.speech == "The weather is nice."
+        llm_spans = [s for s in collector._spans if s["span_name"] == "llm_call"]
+        assert len(llm_spans) == 1
+        assert llm_spans[0]["agent_id"] == "general-agent"
+
+    @patch("app.llm.client.complete_with_tools", new_callable=AsyncMock, return_value="tool answer")
+    async def test_handle_task_creates_llm_call_span_with_tools(self, mock_cwt):
+        from app.analytics.tracer import SpanCollector
+        collector = SpanCollector("trace-general-tools-span")
+        mock_manager = MagicMock()
+        mock_manager.get_tools_for_agent = AsyncMock(return_value=[
+            {"name": "web_search", "description": "Search", "input_schema": {}, "_server_name": "ddg"}
+        ])
+        agent = GeneralAgent(mcp_tool_manager=mock_manager)
+        task = _make_task("latest news")
+        task.span_collector = collector
+        result = await agent.handle_task(task)
+        assert result.speech == "tool answer"
+        llm_spans = [s for s in collector._spans if s["span_name"] == "llm_call"]
+        assert len(llm_spans) == 1
+        assert llm_spans[0]["agent_id"] == "general-agent"
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="No crash.")
+    async def test_handle_task_works_without_span_collector(self, mock_complete):
+        agent = GeneralAgent()
+        task = _make_task("hello")
+        task.span_collector = None
+        result = await agent.handle_task(task)
+        assert result.speech == "No crash."
+
+
+# ---------------------------------------------------------------------------
+# SendAgent span instrumentation
+# ---------------------------------------------------------------------------
+
+class TestSendAgentSpans:
+
+    @patch("app.agents.send.SendDeviceMappingRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="formatted content")
+    async def test_handle_task_creates_llm_and_ha_call_spans(self, mock_complete, mock_repo):
+        from app.analytics.tracer import SpanCollector
+        collector = SpanCollector("trace-send-spans")
+        ha_client = AsyncMock()
+        agent = SendAgent(ha_client=ha_client, entity_index=None)
+        mock_repo.find_by_name = AsyncMock(return_value={
+            "display_name": "Laura Handy",
+            "device_type": "notify",
+            "ha_service_target": "mobile_app_lauras_iphone",
+        })
+        task = _make_task(
+            description=f"send to Laura Handy{_CONTENT_SEPARATOR}Here is the recipe...",
+        )
+        task.span_collector = collector
+        result = await agent.handle_task(task)
+        assert "Laura Handy" in result.speech
+        llm_spans = [s for s in collector._spans if s["span_name"] == "llm_call"]
+        ha_spans = [s for s in collector._spans if s["span_name"] == "ha_call"]
+        assert len(llm_spans) == 1
+        assert llm_spans[0]["agent_id"] == "send-agent"
+        assert len(ha_spans) == 1
+        assert ha_spans[0]["agent_id"] == "send-agent"
+        assert ha_spans[0]["metadata"]["service"] == "notify"
+
+    @patch("app.agents.send.SendDeviceMappingRepository")
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="formatted")
+    async def test_handle_task_works_without_span_collector(self, mock_complete, mock_repo):
+        ha_client = AsyncMock()
+        agent = SendAgent(ha_client=ha_client, entity_index=None)
+        mock_repo.find_by_name = AsyncMock(return_value={
+            "display_name": "Laura Handy",
+            "device_type": "notify",
+            "ha_service_target": "mobile_app_lauras_iphone",
+        })
+        task = _make_task(
+            description=f"send to Laura Handy{_CONTENT_SEPARATOR}content",
+        )
+        task.span_collector = None
+        result = await agent.handle_task(task)
+        assert "Laura Handy" in result.speech
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator mediation span instrumentation
+# ---------------------------------------------------------------------------
+
+class TestMediationSpan:
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="mediated speech")
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_mediate_response_creates_mediation_span(self, mock_settings, mock_complete):
+        from app.analytics.tracer import SpanCollector
+        mock_settings.get_value = AsyncMock(return_value="Be friendly and warm")
+        collector = SpanCollector("trace-mediation")
+        orch = OrchestratorAgent.__new__(OrchestratorAgent)
+        orch._mediation_temperature = 0.7
+        orch._mediation_max_tokens = 256
+        orch._mediation_model = None
+        result = await orch._mediate_response(
+            "original speech", "user question", "light-agent",
+            language="en", span_collector=collector,
+        )
+        assert result == "mediated speech"
+        med_spans = [s for s in collector._spans if s["span_name"] == "mediation"]
+        assert len(med_spans) == 1
+        assert med_spans[0]["agent_id"] == "orchestrator"
+        assert med_spans[0]["metadata"]["personality_active"] is True
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_mediate_response_no_span_when_no_personality(self, mock_settings):
+        from app.analytics.tracer import SpanCollector
+        mock_settings.get_value = AsyncMock(return_value="")
+        collector = SpanCollector("trace-mediation-none")
+        orch = OrchestratorAgent.__new__(OrchestratorAgent)
+        orch._mediation_temperature = 0.7
+        orch._mediation_max_tokens = 256
+        orch._mediation_model = None
+        result = await orch._mediate_response(
+            "original speech", "user question", "light-agent",
+            language="en", span_collector=collector,
+        )
+        assert result == "original speech"
+        med_spans = [s for s in collector._spans if s["span_name"] == "mediation"]
+        assert len(med_spans) == 0
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator _classify span instrumentation
+# ---------------------------------------------------------------------------
+
+class TestClassifySpan:
+
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="light-agent (95%): turn on kitchen light")
+    async def test_classify_creates_llm_call_span(self, mock_complete):
+        from app.analytics.tracer import SpanCollector
+        collector = SpanCollector("trace-classify-llm")
+        orch = OrchestratorAgent.__new__(OrchestratorAgent)
+        orch._cache_manager = None
+        orch._agents = {"light-agent": MagicMock()}
+        orch._custom_loader = None
+        orch._conversation_store = {}
+        orch._max_turns = 10
+        orch._agent_descriptions_cache = None
+        orch._agent_descriptions_cache_time = 0
+        orch._registry = None
+        classifications, cached = await orch._classify(
+            "turn on kitchen light", span_collector=collector,
+        )
+        assert not cached
+        assert classifications[0][0] == "light-agent"
+        llm_spans = [s for s in collector._spans if s["span_name"] == "llm_call"]
+        assert len(llm_spans) == 1
+        assert llm_spans[0]["agent_id"] == "orchestrator"
+
+
+# ---------------------------------------------------------------------------
+# Response cache fall-through on failed action replay
+# ---------------------------------------------------------------------------
+
+class TestResponseCacheFallThrough:
+
+    @pytest.fixture(autouse=True)
+    def _mock_conversation_repo(self):
+        with patch("app.agents.orchestrator.ConversationRepository") as mock_repo:
+            mock_repo.insert = AsyncMock(return_value=1)
+            yield mock_repo
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_falls_through_on_failed_replay(self, mock_complete, mock_track, mock_settings):
+        """When _handle_response_cache_hit returns None, handle_task falls through to classify+dispatch."""
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+
+        dispatcher = AsyncMock()
+        registry = AsyncMock()
+        cache_manager = MagicMock()
+
+        # First call: process returns a response_hit
+        cache_hit = MagicMock(hit_type="response_hit", agent_id="light-agent", similarity=0.98)
+        cache_hit.cached_action = MagicMock()
+        cache_hit.response_text = "Done, kitchen light is on."
+        cache_hit.rewrite_applied = False
+        cache_hit.original_response_text = None
+        cache_hit.rewrite_latency_ms = None
+        cache_manager.process = AsyncMock(return_value=cache_hit)
+        cache_manager.apply_rewrite = AsyncMock()
+        cache_manager.store_response = MagicMock()
+
+        response_mock = MagicMock()
+        response_mock.error = None
+        response_mock.result = {"speech": "Fresh response!"}
+        dispatcher.dispatch = AsyncMock(return_value=response_mock)
+
+        registry.list_agents = AsyncMock(return_value=[
+            AgentCard(agent_id="light-agent", name="Light Agent", description="", skills=["light"]),
+            AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"]),
+        ])
+
+        orch = OrchestratorAgent(dispatcher=dispatcher, registry=registry, cache_manager=cache_manager)
+        # Make _execute_cached_action return None (failed)
+        orch._execute_cached_action = AsyncMock(return_value=None)
+
+        mock_complete.return_value = "light-agent: turn on kitchen light"
+        task = _make_task("turn on kitchen light", user_text="turn on kitchen light")
+        task.conversation_id = "conv-fallthrough"
+        result = await orch.handle_task(task)
+
+        # Should have fallen through to dispatch since cache replay failed
+        assert result["speech"] == "Fresh response!"
+        dispatcher.dispatch.assert_awaited_once()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_failed_replay_resets_cache_result_for_routing(self, mock_complete, mock_track, mock_settings):
+        """After failed response-hit replay, _classify() should re-check routing cache (not skip it)."""
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+
+        dispatcher = AsyncMock()
+        registry = AsyncMock()
+        cache_manager = MagicMock()
+
+        # First call: process returns a response_hit (will fail replay)
+        cache_hit = MagicMock(hit_type="response_hit", agent_id="light-agent", similarity=0.98)
+        cache_hit.cached_action = MagicMock()
+        cache_hit.response_text = "Done, kitchen light is on."
+        cache_hit.rewrite_applied = False
+        cache_hit.original_response_text = None
+        cache_hit.rewrite_latency_ms = None
+
+        # Second call (from _classify fallback): returns routing_hit
+        from app.cache.cache_manager import CacheResult
+        routing_hit = CacheResult(
+            hit_type="routing_hit", agent_id="light-agent",
+            condensed_task="Turn on kitchen light", similarity=0.96,
+        )
+        cache_manager.process = AsyncMock(side_effect=[cache_hit, routing_hit])
+        cache_manager.apply_rewrite = AsyncMock()
+        cache_manager.store_response = MagicMock()
+        cache_manager.store_routing = MagicMock()
+
+        response_mock = MagicMock()
+        response_mock.error = None
+        response_mock.result = {"speech": "Light is on!"}
+        dispatcher.dispatch = AsyncMock(return_value=response_mock)
+
+        registry.list_agents = AsyncMock(return_value=[
+            AgentCard(agent_id="light-agent", name="Light Agent", description="", skills=["light"]),
+            AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"]),
+        ])
+
+        orch = OrchestratorAgent(dispatcher=dispatcher, registry=registry, cache_manager=cache_manager)
+        orch._execute_cached_action = AsyncMock(return_value=None)
+
+        mock_complete.return_value = "light-agent: turn on kitchen light"
+        task = _make_task("turn on kitchen light", user_text="turn on kitchen light")
+        task.conversation_id = "conv-routing-recheck"
+        result = await orch.handle_task(task)
+
+        # Should have used dispatch (routing cache re-checked via _classify)
+        assert result["speech"] == "Light is on!"
+        dispatcher.dispatch.assert_awaited_once()
 

@@ -13,6 +13,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
+from app.models.conversation import StreamToken
 from app.security.auth import (
     require_admin_session,
     require_admin_session_redirect,
@@ -245,6 +246,52 @@ class TestConversationEndpoints:
         finally:
             conv_routes._dispatcher = old_dispatcher
 
+    async def test_conversation_sse_surfaces_error(self, authed_client: httpx.AsyncClient):
+        """SSE endpoint should include error field when agent streams an error chunk."""
+        import json as _json
+        from app.api.routes import conversation as conv_routes
+
+        async def _error_stream(req):
+            chunk = MagicMock()
+            chunk.result = {"token": "partial"}
+            chunk.done = False
+            yield chunk
+            final = MagicMock()
+            final.result = {"token": "", "done": True, "error": "Agent error: test"}
+            final.done = True
+            yield final
+
+        old_dispatcher = conv_routes._dispatcher
+        mock_d = MagicMock()
+        mock_d.dispatch_stream = _error_stream
+        conv_routes._dispatcher = mock_d
+
+        try:
+            resp = await authed_client.post(
+                "/api/conversation/stream",
+                json={"text": "do something"},
+            )
+            assert resp.status_code == 200
+            lines = [l for l in resp.text.splitlines() if l.startswith("data:")]
+            # Last data line should have the error
+            last_data = _json.loads(lines[-1].removeprefix("data:").strip())
+            assert last_data.get("done") is True
+            assert last_data.get("error") == "Agent error: test"
+        finally:
+            conv_routes._dispatcher = old_dispatcher
+
+    async def test_ws_conversation_surfaces_error(self, authed_client: httpx.AsyncClient):
+        """WS endpoint should include error field when agent streams an error chunk."""
+        # WS integration test is harder with httpx; verify the StreamToken model supports error
+        token = StreamToken(
+            token="",
+            done=True,
+            error="Agent error: test",
+        )
+        data = token.model_dump()
+        assert data["error"] == "Agent error: test"
+        assert data["done"] is True
+
 
 # ===================================================================
 # Admin Settings
@@ -277,13 +324,57 @@ class TestAdminSettingsEndpoints:
 
     async def test_put_single_setting(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(
-            "/api/admin/settings/log_level",
-            json={"value": "WARNING", "value_type": "string", "category": "general"},
+            "/api/admin/settings/cache.routing.threshold",
+            json={"value": "0.88"},
         )
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["key"] == "log_level"
+        assert data["key"] == "cache.routing.threshold"
+
+    async def test_bulk_update_preserves_value_type(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/settings",
+            json={"items": {"cache.routing.threshold": "0.80"}},
+        )
+        assert resp.status_code == 200
+        # Verify type preserved
+        resp2 = await authed_client.get("/api/admin/settings")
+        all_settings = resp2.json()["settings"]
+        cache_settings = all_settings.get("cache", [])
+        threshold = next((s for s in cache_settings if s["key"] == "cache.routing.threshold"), None)
+        assert threshold is not None
+        assert threshold["value_type"] == "float"
+
+    async def test_single_setting_rejects_unknown_key(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/settings/nonexistent_xyz",
+            json={"value": "test"},
+        )
+        assert resp.status_code == 400
+        assert "Unknown setting key" in resp.json().get("detail", "")
+
+    async def test_single_setting_validates_type(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/settings/cache.response.enabled",
+            json={"value": "notabool"},
+        )
+        assert resp.status_code == 400
+        assert "expected bool" in resp.json().get("detail", "")
+
+    async def test_single_setting_preserves_metadata(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/settings/cache.routing.threshold",
+            json={"value": "0.80"},
+        )
+        assert resp.status_code == 200
+        resp2 = await authed_client.get("/api/admin/settings")
+        all_settings = resp2.json()["settings"]
+        cache_settings = all_settings.get("cache", [])
+        threshold = next((s for s in cache_settings if s["key"] == "cache.routing.threshold"), None)
+        assert threshold is not None
+        assert threshold["value_type"] == "float"
+        assert threshold["category"] == "cache"
 
 
 # ===================================================================

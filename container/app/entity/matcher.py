@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from app.db.repository import SettingsRepository, EntityVisibilityRepository
@@ -12,6 +14,33 @@ from app.entity.signals import LevenshteinSignal, JaroWinklerSignal, PhoneticSig
 from app.models.entity_index import EntityIndexEntry
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_for_containment(text: str) -> str:
+    """Normalize text for containment checks: lowercase, strip diacritics, collapse German digraphs."""
+    text = text.lower().strip()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    text = text.replace("ae", "a").replace("oe", "o").replace("ue", "u")
+    return text
+
+
+_DIGRAPH_RE = re.compile(r"(ae|oe|ue)", re.IGNORECASE)
+
+
+def _digraphs_to_umlauts(text: str) -> str | None:
+    """Convert German digraphs to umlauts: ae->a, oe->o, ue->u.
+    Returns None if no digraphs are found in the text.
+    """
+    if not _DIGRAPH_RE.search(text):
+        return None
+    mapping = {"ae": "\u00e4", "oe": "\u00f6", "ue": "\u00fc",
+               "Ae": "\u00c4", "Oe": "\u00d6", "Ue": "\u00dc"}
+    result = text
+    for digraph, umlaut in mapping.items():
+        result = result.replace(digraph, umlaut)
+    return result
+
 
 # Domains where device_class filtering applies (sensor-like domains)
 DEVICE_CLASS_DOMAINS = {"sensor", "binary_sensor", "cover", "number"}
@@ -46,8 +75,8 @@ class EntityMatcher:
 
     async def load_config(self) -> None:
         """Load matching weights and thresholds from DB."""
-        from app.db.schema import get_db
-        async with get_db() as db:
+        from app.db.schema import get_db_read
+        async with get_db_read() as db:
             cursor = await db.execute("SELECT key, value FROM entity_matching_config")
             rows = await cursor.fetchall()
             raw_weights = {row[0]: float(row[1]) for row in rows}
@@ -106,7 +135,7 @@ class EntityMatcher:
 
         # 2. Embedding signal -- vector search
         try:
-            embedding_results = EmbeddingSignal.score(query, self._entity_index, n=self._top_n * 2)
+            embedding_results = await EmbeddingSignal.score(query, self._entity_index, n=self._top_n * 2)
         except Exception:
             logger.warning("Embedding signal unavailable, proceeding with remaining signals")
             embedding_results = []
@@ -121,6 +150,29 @@ class EntityMatcher:
                     score=0.0,
                     signal_scores={"embedding": emb_score},
                 )
+
+        # 2b. Digraph->umlaut dual embedding search
+        umlaut_query = _digraphs_to_umlauts(query)
+        if umlaut_query:
+            try:
+                umlaut_results = await EmbeddingSignal.score(
+                    umlaut_query, self._entity_index, n=self._top_n * 2
+                )
+            except Exception:
+                umlaut_results = []
+            for entity_id, friendly_name, emb_score in umlaut_results:
+                if entity_id in results:
+                    existing = results[entity_id].signal_scores.get("embedding", 0.0)
+                    if emb_score > existing:
+                        results[entity_id].signal_scores["embedding"] = emb_score
+                        results[entity_id].friendly_name = friendly_name
+                else:
+                    results[entity_id] = MatchResult(
+                        entity_id=entity_id,
+                        friendly_name=friendly_name,
+                        score=0.0,
+                        signal_scores={"embedding": emb_score},
+                    )
 
         # 3. Levenshtein signal -- compare query against each candidate friendly_name
         for entity_id, result in results.items():
@@ -141,6 +193,8 @@ class EntityMatcher:
                 result.signal_scores["phonetic"] = ph_score
 
         # Compute weighted score for each candidate
+        query_norm = query.lower().strip()
+        query_containment = _normalize_for_containment(query)
         for result in results.values():
             weighted_sum = 0.0
             for signal_name, weight in self._weights.items():
@@ -148,15 +202,20 @@ class EntityMatcher:
                 weighted_sum += weight * signal_score
             result.score = weighted_sum
 
+            # Containment bonus: query is a substring of friendly name
+            fn_containment = _normalize_for_containment(result.friendly_name or "")
+            if query_containment and fn_containment and query_containment in fn_containment:
+                result.score = min(1.0, result.score + 0.3)
+
         # Filter by confidence and sort
         filtered = [r for r in results.values() if r.score >= self._confidence_threshold]
         filtered.sort(key=lambda r: r.score, reverse=True)
 
-        top_results = filtered[:self._top_n]
-
         # Apply entity visibility filtering if agent_id is provided
-        if agent_id and top_results:
-            top_results = await self._apply_visibility_rules(agent_id, top_results)
+        if agent_id:
+            filtered = await self._apply_visibility_rules(agent_id, filtered)
+
+        top_results = filtered[:self._top_n]
 
         return top_results
 

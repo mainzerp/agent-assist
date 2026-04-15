@@ -37,7 +37,7 @@ class EmbeddingSignal:
     """Vector similarity signal from the pre-embedded entity index."""
 
     @staticmethod
-    def score(
+    async def score(
         query: str,
         entity_index: EntityIndex,
         n: int = 10,
@@ -46,7 +46,7 @@ class EmbeddingSignal:
 
         ChromaDB returns cosine distance (0=identical). Convert to similarity: 1 - distance.
         """
-        results = entity_index.search(query, n_results=n)
+        results = await entity_index.search_async(query, n_results=n)
         scored = []
         for entry, distance in results:
             similarity = max(0.0, 1.0 - distance)

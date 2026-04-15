@@ -49,13 +49,17 @@ class MCPToolManager:
             raise ValueError(f"MCP server '{server_name}' not found")
         if not client.connected:
             raise ConnectionError(f"MCP server '{server_name}' is not connected")
+        timeout = float(client.timeout)
         try:
             return await asyncio.wait_for(
                 client.call_tool(tool_name, arguments),
-                timeout=30.0,
+                timeout=timeout,
             )
         except asyncio.TimeoutError:
-            logger.error("MCP tool '%s.%s' timed out after 30s", server_name, tool_name)
+            logger.error(
+                "MCP tool '%s.%s' timed out after %ds",
+                server_name, tool_name, int(timeout),
+            )
             raise
 
     async def get_tools_for_agent(self, agent_id: str) -> list[dict[str, Any]]:

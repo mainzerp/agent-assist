@@ -23,6 +23,59 @@ router = APIRouter(
 )
 
 
+# --- Module-level constants for Agent Executions ---
+
+_response_key_map = {
+    "return": "final_response",
+    "rewrite": "rewritten_text",
+    "ha_action": "result_speech",
+    "filler_generate": "filler_text",
+    "filler_send": "filler_text",
+}
+
+_included_span_names = {
+    "dispatch", "dispatch_content", "dispatch_send", "classify", "return",
+    "rewrite", "ha_action", "filler_generate", "filler_send",
+    "mediation", "mcp_tool_call", "ha_call",
+}
+
+
+def _build_response(span_name: str, metadata: dict) -> str:
+    """Build a human-readable response string for the Agent Executions table."""
+    key = _response_key_map.get(span_name)
+    if key:
+        return str(metadata.get(key, "") or "")
+
+    if span_name == "mediation":
+        lang = metadata.get("language", "")
+        orig = metadata.get("original_length", "")
+        med = metadata.get("mediated_length", "")
+        if lang and orig and med:
+            return f"Personality rewrite ({lang}), {orig} -> {med} chars"
+        if lang:
+            return f"Personality rewrite ({lang})"
+        return "Personality rewrite"
+
+    if span_name == "mcp_tool_call":
+        tool = metadata.get("tool_name", "")
+        result = str(metadata.get("result", "") or "")
+        if tool and result:
+            truncated = result[:120] + "..." if len(result) > 120 else result
+            return f"{tool}: {truncated}"
+        if tool:
+            return tool
+        return result
+
+    if span_name == "ha_call":
+        service = metadata.get("service", "")
+        target = metadata.get("target", "")
+        if service and target:
+            return f"{service} -> {target}"
+        return target or service or ""
+
+    return str(metadata.get("agent_response", "") or "")
+
+
 # --- Models ---
 
 class LabelUpdate(BaseModel):
@@ -128,14 +181,14 @@ async def get_trace_detail(trace_id: str):
     # Build agent_executions from spans
     agent_executions = []
     for span in spans:
-        if span.get("agent_id") and span["span_name"] in ("dispatch", "dispatch_content", "dispatch_send", "classify", "return", "rewrite", "ha_action", "filler_generate", "filler_send"):
-            response_key = "final_response" if span["span_name"] == "return" else ("rewritten_text" if span["span_name"] == "rewrite" else ("result_speech" if span["span_name"] == "ha_action" else ("filler_text" if span["span_name"] in ("filler_generate", "filler_send") else "agent_response")))
+        if span.get("agent_id") and span["span_name"] in _included_span_names:
+            meta = span.get("metadata") or {}
             agent_executions.append({
                 "agent_id": span["agent_id"],
                 "span_name": span["span_name"],
                 "duration_ms": span["duration_ms"],
                 "status": span["status"],
-                "response": (span.get("metadata") or {}).get(response_key, ""),
+                "response": _build_response(span["span_name"], meta),
             })
 
     # Build inter-agent communication from spans

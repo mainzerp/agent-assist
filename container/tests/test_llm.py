@@ -413,3 +413,85 @@ class TestCompleteWithTools:
             max_tool_rounds=2,
         )
         assert result == "Forced answer"
+
+
+# ---------------------------------------------------------------------------
+# LLM provider span instrumentation
+# ---------------------------------------------------------------------------
+
+class TestLLMProviderSpans:
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_complete_creates_provider_span(self, mock_repo, mock_params, mock_acompletion):
+        from app.analytics.tracer import SpanCollector
+        mock_repo.get = AsyncMock(return_value={
+            "agent_id": "light-agent", "enabled": True,
+            "model": "openrouter/openai/gpt-4o-mini",
+            "timeout": 5, "max_iterations": 3,
+            "temperature": 0.7, "max_tokens": 256,
+            "description": "Light agent",
+        })
+        choice = MagicMock()
+        choice.message.content = "Done!"
+        mock_acompletion.return_value = MagicMock(choices=[choice], usage=None)
+
+        collector = SpanCollector("trace-provider")
+        from app.llm.client import complete
+        result = await complete("light-agent", [{"role": "user", "content": "test"}], span_collector=collector)
+        assert result == "Done!"
+        prov_spans = [s for s in collector._spans if s["span_name"] == "llm_provider_call"]
+        assert len(prov_spans) == 1
+        assert prov_spans[0]["agent_id"] == "light-agent"
+        assert prov_spans[0]["metadata"]["model"] == "openrouter/openai/gpt-4o-mini"
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_complete_works_without_span_collector(self, mock_repo, mock_params, mock_acompletion):
+        mock_repo.get = AsyncMock(return_value={
+            "agent_id": "light-agent", "enabled": True,
+            "model": "openrouter/openai/gpt-4o-mini",
+            "timeout": 5, "max_iterations": 3,
+            "temperature": 0.7, "max_tokens": 256,
+            "description": "Light agent",
+        })
+        choice = MagicMock()
+        choice.message.content = "Done!"
+        mock_acompletion.return_value = MagicMock(choices=[choice], usage=None)
+
+        from app.llm.client import complete
+        result = await complete("light-agent", [{"role": "user", "content": "test"}])
+        assert result == "Done!"
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_complete_creates_two_provider_spans_on_retry(self, mock_repo, mock_params, mock_acompletion):
+        from app.analytics.tracer import SpanCollector
+        mock_repo.get = AsyncMock(return_value={
+            "agent_id": "light-agent", "enabled": True,
+            "model": "openrouter/openai/gpt-4o-mini",
+            "timeout": 5, "max_iterations": 3,
+            "temperature": 0.2, "max_tokens": 256,
+            "description": "Light agent",
+        })
+        empty_choice = MagicMock()
+        empty_choice.message.content = ""
+        empty_choice.finish_reason = "length"
+        empty_response = MagicMock(choices=[empty_choice], usage=None)
+
+        valid_choice = MagicMock()
+        valid_choice.message.content = "Light is on!"
+        valid_response = MagicMock(choices=[valid_choice], usage=None)
+
+        mock_acompletion.side_effect = [empty_response, valid_response]
+
+        collector = SpanCollector("trace-provider-retry")
+        from app.llm.client import complete
+        result = await complete("light-agent", [{"role": "user", "content": "test"}], span_collector=collector)
+        assert result == "Light is on!"
+        prov_spans = [s for s in collector._spans if s["span_name"] == "llm_provider_call"]
+        assert len(prov_spans) == 2
+        assert prov_spans[1]["metadata"].get("retry") is True

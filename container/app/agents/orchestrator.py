@@ -14,10 +14,11 @@ from typing import AsyncGenerator
 
 from app.agents.base import BaseAgent
 from app.a2a.protocol import JsonRpcRequest
-from app.db.repository import SettingsRepository
+from app.db.repository import ConversationRepository, SettingsRepository
 from app.agents.sanitize import strip_markdown
 from app.agents.language_detect import detect_user_language
 from app.analytics.collector import track_request, track_agent_timeout
+from app.analytics.tracer import _NoOpSpan, _optional_span
 from app.models.agent import AgentCard, AgentTask, TaskContext
 from app.models.cache import ResponseCacheEntry, CachedAction
 
@@ -32,28 +33,6 @@ _CONVERSATION_TTL_SECONDS = 1800  # 30 minutes
 
 # Fallback agent when classification fails
 _FALLBACK_AGENT = "general-agent"
-
-
-class _NoOpSpan:
-    """No-op span for when span_collector is None."""
-
-    def __setitem__(self, key, value):
-        pass
-
-    def __getitem__(self, key):
-        return {}
-
-    def get(self, key, default=None):
-        return default
-
-
-@contextlib.asynccontextmanager
-async def _optional_span(span_collector, name, **kwargs):
-    if span_collector:
-        async with span_collector.start_span(name, **kwargs) as span:
-            yield span
-    else:
-        yield _NoOpSpan()
 
 
 class OrchestratorAgent(BaseAgent):
@@ -426,6 +405,11 @@ class OrchestratorAgent(BaseAgent):
 
         ha_result, _ = await asyncio.gather(_do_ha(), _do_rewrite())
         action_executed = ha_result
+
+        # If a cached action existed but replay failed, fall through to live dispatch
+        if cache_result.cached_action and action_executed is None:
+            return None
+
         speech = cache_result.response_text or ""
 
         if cache_result.cached_action:
@@ -467,7 +451,7 @@ class OrchestratorAgent(BaseAgent):
             ret_span["metadata"]["mediated"] = False
             ret_span["metadata"]["response_cache_hit"] = True
             prior_turns = self._get_turns(conversation_id)
-            self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
+            await self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
             if span_collector:
                 try:
                     from app.analytics.tracer import create_trace_summary
@@ -509,6 +493,8 @@ class OrchestratorAgent(BaseAgent):
             or not speech
             or has_error
         ):
+            return False
+        if action_executed and not action_executed.get("cacheable", True):
             return False
         try:
             cached_action = None
@@ -602,7 +588,13 @@ class OrchestratorAgent(BaseAgent):
             result = await self._handle_response_cache_hit(
                 cache_result, conversation_id, user_text, span_collector, cache_span_ref,
             )
-            return result
+            if result is not None:
+                return result
+            # Cached action replay failed -- fall through to classify + dispatch
+            async with _optional_span(span_collector, "cache_fallthrough", agent_id="orchestrator") as ft_span:
+                ft_span["metadata"]["reason"] = "cached_action_replay_failed"
+            logger.info("Cached action replay failed, falling through to live dispatch")
+            cache_result = None  # Reset so _classify() can re-check routing cache
 
         # 1. Classify intent (skip if pre-classified by handle_task_stream)
         if _pre_classified is not None:
@@ -610,7 +602,7 @@ class OrchestratorAgent(BaseAgent):
             target_agent, condensed_task, confidence = classifications[0]
         else:
             async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
-                classifications, routing_cached = await self._classify(user_text, cache_result=cache_result, conversation_id=conversation_id)
+                classifications, routing_cached = await self._classify(user_text, cache_result=cache_result, conversation_id=conversation_id, span_collector=span_collector)
                 target_agent, condensed_task, confidence = classifications[0]
                 span["metadata"]["target_agent"] = ", ".join(a for a, _, _ in classifications)
                 span["metadata"]["user_input"] = user_text[:500]
@@ -639,6 +631,8 @@ class OrchestratorAgent(BaseAgent):
 
         # 3-4. Dispatch
         incoming_context = task.context
+        failed_agents: list[tuple[str, str]] = []
+        agent_error = None
         if is_sequential_send:
             # --- Sequential send dispatch (content agent -> send agent) ---
             routed_to, speech, result = await self._handle_sequential_send(
@@ -672,9 +666,11 @@ class OrchestratorAgent(BaseAgent):
             agent_responses: list[tuple[str, str, bool]] = []
             action_executed = None
             routed_agents: list[str] = []
-            for dr in dispatch_results:
+            for idx, dr in enumerate(dispatch_results):
+                agent_id_for_idx = classifications[idx][0]
                 if isinstance(dr, Exception):
-                    logger.warning("Multi-agent dispatch error: %s", dr)
+                    logger.warning("Multi-agent dispatch error for %s: %s", agent_id_for_idx, dr)
+                    failed_agents.append((agent_id_for_idx, str(dr)))
                     continue
                 aid, sp, res = dr
                 routed_agents.append(aid)
@@ -686,7 +682,7 @@ class OrchestratorAgent(BaseAgent):
             target_agent = routed_agents[0] if routed_agents else _FALLBACK_AGENT
             routed_to = ", ".join(routed_agents) if routed_agents else _FALLBACK_AGENT
             speech = ""  # Will be set by _merge_responses inside return span
-            has_error = False
+            has_error = len(failed_agents) > 0
 
         # 5. Mediate response, store turn, trace
         original_speech = speech
@@ -694,13 +690,19 @@ class OrchestratorAgent(BaseAgent):
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = routed_to
             if len(classifications) > 1 and not is_sequential_send:
-                speech = await self._merge_responses(agent_responses, user_text)
+                if not agent_responses and failed_agents:
+                    speech = "I'm sorry, I couldn't complete that request. All agents encountered errors."
+                else:
+                    speech = await self._merge_responses(agent_responses, user_text, span_collector=span_collector)
+                    if failed_agents:
+                        failed_names = ", ".join(aid for aid, _ in failed_agents)
+                        speech += f"\n\n(Note: {failed_names} could not be reached.)"
                 result = {"speech": speech}
             ret_span["metadata"]["agent_response"] = speech[:500]
             if (len(classifications) <= 1 or is_sequential_send) and not has_error:
                 mediation_agent = "send-agent" if is_sequential_send else target_agent
                 mediation_language = detected_language
-                speech = await self._mediate_response(speech, user_text, mediation_agent, language=mediation_language)
+                speech = await self._mediate_response(speech, user_text, mediation_agent, language=mediation_language, span_collector=span_collector)
             ret_span["metadata"]["final_response"] = speech[:500]
             ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1
             if len(classifications) == 1:
@@ -708,7 +710,7 @@ class OrchestratorAgent(BaseAgent):
                     user_text, speech, target_agent, confidence, action_executed, has_error,
                 )
             ret_span["metadata"]["cache_stored_response"] = cache_stored_response
-            self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
+            await self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
             if span_collector:
                 await self._create_trace(
                     span_collector, conversation_id, user_text, speech,
@@ -725,6 +727,10 @@ class OrchestratorAgent(BaseAgent):
             response["error"] = {
                 "code": agent_error.get("code", "unknown") if agent_error else "unknown",
                 "recoverable": agent_error.get("recoverable", True) if agent_error else True,
+            }
+        if failed_agents:
+            response["partial_failure"] = {
+                "failed_agents": [{"agent_id": aid, "error": msg} for aid, msg in failed_agents],
             }
         return response
 
@@ -755,16 +761,22 @@ class OrchestratorAgent(BaseAgent):
             result = await self._handle_response_cache_hit(
                 cache_result, conversation_id, user_text, span_collector, cache_span_ref,
             )
-            yield {
-                "token": strip_markdown(result["speech"]),
-                "done": True,
-                "conversation_id": conversation_id,
-            }
-            return
+            if result is not None:
+                yield {
+                    "token": strip_markdown(result["speech"]),
+                    "done": True,
+                    "conversation_id": conversation_id,
+                }
+                return
+            # Cached action replay failed -- fall through to classify + dispatch
+            async with _optional_span(span_collector, "cache_fallthrough", agent_id="orchestrator") as ft_span:
+                ft_span["metadata"]["reason"] = "cached_action_replay_failed"
+            logger.info("Cached action replay failed, falling through to live dispatch (stream)")
+            cache_result = None  # Reset so _classify() can re-check routing cache
 
         # 1. Classify (non-streaming -- fast via Groq)
         async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
-            classifications, routing_cached = await self._classify(user_text, cache_result=cache_result, conversation_id=conversation_id)
+            classifications, routing_cached = await self._classify(user_text, cache_result=cache_result, conversation_id=conversation_id, span_collector=span_collector)
             target_agent, condensed_task, confidence = classifications[0]
             span["metadata"]["target_agent"] = ", ".join(a for a, _, _ in classifications)
             span["metadata"]["user_input"] = user_text[:500]
@@ -925,6 +937,7 @@ class OrchestratorAgent(BaseAgent):
         t0_dispatch = time.perf_counter()
         collected_speech = []
         action_executed = None
+        stream_error = None
         use_filler = await self._should_send_filler(target_agent)
         filler_sent = False
         filler_text_sent = ""
@@ -936,12 +949,13 @@ class OrchestratorAgent(BaseAgent):
 
         async def _process_chunk(chunk):
             """Process a single stream chunk: collect speech and detect actions."""
-            nonlocal action_executed
+            nonlocal action_executed, stream_error
             token = chunk.result.get("token", "")
             done = chunk.result.get("done", False)
             error = chunk.result.get("error")
             if error:
                 logger.warning("Agent streaming error: %s", error)
+                stream_error = error
             if token:
                 collected_speech.append(token)
             if done and chunk.result.get("action_executed"):
@@ -1084,18 +1098,18 @@ class OrchestratorAgent(BaseAgent):
 
         # 4. Store conversation turn and create trace summary
         full_speech = "".join(collected_speech)
-        has_error = False  # streaming path does not propagate agent errors yet
+        has_error = stream_error is not None
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = target_agent
             ret_span["metadata"]["agent_response"] = full_speech[:500]
-            full_speech = await self._mediate_response(full_speech, user_text, target_agent, language=language)
+            full_speech = await self._mediate_response(full_speech, user_text, target_agent, language=language, span_collector=span_collector)
             ret_span["metadata"]["final_response"] = full_speech[:500]
             ret_span["metadata"]["mediated"] = (full_speech != "".join(collected_speech))
             cache_stored_response = self._store_response_cache(
                 user_text, full_speech, target_agent, confidence, action_executed, has_error,
             )
             ret_span["metadata"]["cache_stored_response"] = cache_stored_response
-            self._store_turn(conversation_id, user_text, full_speech, agent_id=target_agent)
+            await self._store_turn(conversation_id, user_text, full_speech, agent_id=target_agent)
             if span_collector:
                 classifications = [(target_agent, condensed_task, confidence)]
                 await self._create_trace(
@@ -1113,6 +1127,8 @@ class OrchestratorAgent(BaseAgent):
         }
         if mediated_text != strip_markdown(raw_text):
             final_chunk["mediated_speech"] = mediated_text
+        if stream_error:
+            final_chunk["error"] = stream_error
         yield final_chunk
 
     async def _should_send_filler(self, target_agent: str) -> bool:
@@ -1190,7 +1206,7 @@ class OrchestratorAgent(BaseAgent):
             lines.append("- general-agent: fallback for general questions and unroutable requests")
         return "\n".join(lines)
 
-    async def _classify(self, user_text: str, *, cache_result=None, conversation_id: str | None = None) -> tuple[list[tuple[str, str, float]], bool]:
+    async def _classify(self, user_text: str, *, cache_result=None, conversation_id: str | None = None, span_collector=None) -> tuple[list[tuple[str, str, float]], bool]:
         """Classify user intent and produce a condensed task.
 
         The condensed task is a clear, actionable English description of
@@ -1244,7 +1260,10 @@ class OrchestratorAgent(BaseAgent):
         messages.append({"role": "user", "content": user_text})
 
         try:
-            response = await self._call_llm(messages)
+            async with _optional_span(span_collector, "llm_call", agent_id="orchestrator") as llm_span:
+                response = await self._call_llm(messages, span_collector=span_collector)
+                llm_span["metadata"]["model"] = "orchestrator"
+                llm_span["metadata"]["routing_cached"] = False
             logger.info("Classification LLM response for '%s': %s", user_text[:60], repr(response[:300]))
             classifications = await self._parse_classification(response, user_text)
             # Store routing decision only for single-agent results
@@ -1342,7 +1361,7 @@ class OrchestratorAgent(BaseAgent):
             return []
         return list(turns)
 
-    def _store_turn(self, conversation_id: str | None, user_text: str, assistant_text: str, agent_id: str | None = None) -> None:
+    async def _store_turn(self, conversation_id: str | None, user_text: str, assistant_text: str, agent_id: str | None = None) -> None:
         """Store a conversation turn, keeping last _MAX_TURNS exchanges."""
         if not conversation_id:
             return
@@ -1363,6 +1382,17 @@ class OrchestratorAgent(BaseAgent):
             turns = turns[-max_messages:]
         self._conversations[conversation_id] = (now, turns)
 
+        # Persist to DB for admin/analytics visibility
+        try:
+            await ConversationRepository.insert(
+                conversation_id=conversation_id,
+                user_text=user_text,
+                agent_id=agent_id,
+                response_text=assistant_text,
+            )
+        except Exception:
+            logger.warning("Failed to persist conversation turn to DB", exc_info=True)
+
     def _evict_stale_conversations(self) -> None:
         """Remove conversations older than TTL and enforce max count."""
         now = time.monotonic()
@@ -1380,6 +1410,7 @@ class OrchestratorAgent(BaseAgent):
         self,
         agent_responses: list[tuple[str, str, bool]],
         user_text: str,
+        span_collector=None,
     ) -> str:
         """Merge multiple agent responses into a single natural answer via LLM.
 
@@ -1433,7 +1464,7 @@ class OrchestratorAgent(BaseAgent):
             }
             if self._mediation_model:
                 overrides["model"] = self._mediation_model
-            result = await self._call_llm(messages, **overrides)
+            result = await self._call_llm(messages, span_collector=span_collector, **overrides)
             return result.strip() if result and result.strip() else self._format_fallback(agent_responses)
         except Exception:
             logger.warning("Multi-agent response merge failed, using fallback format", exc_info=True)
@@ -1445,7 +1476,7 @@ class OrchestratorAgent(BaseAgent):
         parts = [f"[{aid}] {sp}" for aid, sp, _ in agent_responses if sp and sp.strip()]
         return "\n\n".join(parts) if parts else "I couldn't process that request."
 
-    async def _mediate_response(self, agent_speech: str, user_text: str, agent_id: str, language: str = "en") -> str:
+    async def _mediate_response(self, agent_speech: str, user_text: str, agent_id: str, language: str = "en", span_collector=None) -> str:
         """Optionally mediate the domain agent response with personality.
 
         When personality.prompt is non-empty, passes the agent speech through
@@ -1480,7 +1511,12 @@ class OrchestratorAgent(BaseAgent):
             }
             if self._mediation_model:
                 overrides["model"] = self._mediation_model
-            result = await self._call_llm(messages, **overrides)
+            async with _optional_span(span_collector, "mediation", agent_id="orchestrator") as span:
+                result = await self._call_llm(messages, span_collector=span_collector, **overrides)
+                span["metadata"]["personality_active"] = True
+                span["metadata"]["language"] = language or "en"
+                span["metadata"]["original_length"] = len(agent_speech)
+                span["metadata"]["mediated_length"] = len(result.strip()) if result else 0
             return result.strip() if result and result.strip() else agent_speech
         except Exception:
             logger.warning("Response mediation failed, using original speech", exc_info=True)

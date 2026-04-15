@@ -30,6 +30,7 @@ class PluginContext:
         self.mcp_registry = mcp_registry
         self.settings = settings_repo
         self._app = app
+        self.event_bus = None  # Set by PluginLoader after construction
 
     def add_api_route(self, path: str, endpoint, **kwargs):
         """Add an API route to the application (restricted interface)."""
@@ -41,14 +42,14 @@ class PluginContext:
 
     @property
     def app(self):
-        """Deprecated: use add_api_route() or include_router() instead."""
-        import warnings
-        warnings.warn(
-            "PluginContext.app is deprecated. Use add_api_route() or include_router().",
-            DeprecationWarning,
-            stacklevel=2,
+        """Direct app access has been removed.
+
+        Use add_api_route() or include_router() instead.
+        """
+        raise AttributeError(
+            "PluginContext.app has been removed. "
+            "Use add_api_route() or include_router() instead."
         )
-        return self._app
 
 
 class BasePlugin(ABC):

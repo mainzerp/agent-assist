@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from cryptography.fernet import Fernet
+from fastapi import WebSocket
 
 import app.security.auth  # noqa: F401 -- force module load for patch targets
 from app.security.hashing import hash_password, verify_password
@@ -308,3 +309,119 @@ class TestSettingsAllowlist:
                 )
                 assert resp.status_code == 400
                 assert "Unknown setting key" in resp.json().get("detail", "")
+
+    async def test_single_setting_unknown_key_rejected(self, db_repository):
+        """PUT /settings/{key} should reject non-existent keys."""
+        from contextlib import asynccontextmanager
+        from app.main import create_app
+        from app.security.auth import require_admin_session, require_api_key
+
+        app = create_app()
+
+        @asynccontextmanager
+        async def _noop_lifespan(a):
+            yield
+
+        app.router.lifespan_context = _noop_lifespan
+        app.state.startup_time = 0
+        app.state.registry = MagicMock()
+        app.state.dispatcher = MagicMock()
+        app.state.ha_client = MagicMock()
+        app.state.entity_index = None
+        app.state.cache_manager = None
+        app.state.entity_matcher = None
+        app.state.alias_resolver = None
+        app.state.custom_loader = None
+        app.state.mcp_registry = MagicMock()
+        app.state.mcp_registry.list_servers.return_value = []
+        app.state.mcp_tool_manager = MagicMock()
+        app.state.ws_client = None
+        app.state.presence_detector = None
+        app.state.plugin_loader = MagicMock()
+        app.state.plugin_loader.loaded_plugins = {}
+        app.dependency_overrides[require_admin_session] = lambda: {"username": "admin"}
+        app.dependency_overrides[require_api_key] = lambda: "test-key"
+
+        import httpx
+
+        with patch(
+            "app.db.repository.SetupStateRepository.is_complete",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver"
+            ) as client:
+                resp = await client.put(
+                    "/api/admin/settings/fake_key_xyz",
+                    json={"value": "anything"},
+                )
+                assert resp.status_code == 400
+                assert "Unknown setting key" in resp.json().get("detail", "")
+
+
+# ---------------------------------------------------------------------------
+# WebSocket auth (require_api_key_ws)
+# ---------------------------------------------------------------------------
+
+class TestWebSocketAuth:
+
+    @patch("app.security.auth.retrieve_secret", new_callable=AsyncMock, return_value="valid-key")
+    async def test_ws_auth_header_accepted(self, mock_retrieve):
+        from app.security.auth import require_api_key_ws
+        ws = MagicMock(spec=WebSocket)
+        ws.headers = {"Authorization": "Bearer valid-key"}
+        ws.query_params = {}
+        result = await require_api_key_ws(ws)
+        assert result == "valid-key"
+        ws.close.assert_not_called()
+
+    @patch("app.security.auth.logger")
+    @patch("app.security.auth.retrieve_secret", new_callable=AsyncMock, return_value="valid-key")
+    async def test_ws_auth_query_string_accepted_with_deprecation_warning(self, mock_retrieve, mock_logger):
+        from app.security.auth import require_api_key_ws
+        ws = MagicMock(spec=WebSocket)
+        ws.headers = {}
+        ws.query_params = {"token": "valid-key"}
+        result = await require_api_key_ws(ws)
+        assert result == "valid-key"
+        mock_logger.warning.assert_called()
+        assert "deprecated" in mock_logger.warning.call_args[0][0].lower()
+
+    @patch("app.security.auth.retrieve_secret", new_callable=AsyncMock, return_value="valid-key")
+    async def test_ws_auth_no_credentials_rejected(self, mock_retrieve):
+        from app.security.auth import require_api_key_ws
+        from fastapi import HTTPException
+        ws = MagicMock(spec=WebSocket)
+        ws.headers = {}
+        ws.query_params = {}
+        ws.close = AsyncMock()
+        with pytest.raises(HTTPException) as exc_info:
+            await require_api_key_ws(ws)
+        assert exc_info.value.status_code == 401
+        ws.close.assert_awaited_once()
+
+    @patch("app.security.auth.retrieve_secret", new_callable=AsyncMock, return_value="real-key")
+    async def test_ws_auth_wrong_key_rejected(self, mock_retrieve):
+        from app.security.auth import require_api_key_ws
+        from fastapi import HTTPException
+        ws = MagicMock(spec=WebSocket)
+        ws.headers = {"Authorization": "Bearer wrong-key"}
+        ws.query_params = {}
+        ws.close = AsyncMock()
+        with pytest.raises(HTTPException) as exc_info:
+            await require_api_key_ws(ws)
+        assert exc_info.value.status_code == 401
+        ws.close.assert_awaited_once()
+
+    @patch("app.security.auth.logger")
+    @patch("app.security.auth.retrieve_secret", new_callable=AsyncMock, return_value="header-key")
+    async def test_ws_auth_header_preferred_over_query(self, mock_retrieve, mock_logger):
+        from app.security.auth import require_api_key_ws
+        ws = MagicMock(spec=WebSocket)
+        ws.headers = {"Authorization": "Bearer header-key"}
+        ws.query_params = {"token": "query-key"}
+        result = await require_api_key_ws(ws)
+        assert result == "header-key"
+        mock_logger.warning.assert_not_called()

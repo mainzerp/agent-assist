@@ -10,7 +10,7 @@ class TimerAgent(ActionableAgent):
 
     _prompt_name = "timer"
 
-    async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id):
+    async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
         device_id = None
         area_id = None
         if hasattr(self, "_current_task_context") and self._current_task_context:
@@ -19,6 +19,7 @@ class TimerAgent(ActionableAgent):
         return await execute_timer_action(
             action, ha_client, entity_index, entity_matcher,
             agent_id=agent_id, device_id=device_id, area_id=area_id,
+            span_collector=span_collector,
         )
 
     async def handle_task(self, task: AgentTask) -> TaskResult:

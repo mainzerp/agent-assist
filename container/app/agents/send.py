@@ -6,6 +6,7 @@ import logging
 import re
 
 from app.agents.base import BaseAgent
+from app.analytics.tracer import _optional_span
 from app.db.repository import SendDeviceMappingRepository
 from app.models.agent import (
     AgentCard, AgentError, AgentErrorCode, AgentTask, TaskResult,
@@ -48,6 +49,7 @@ class SendAgent(BaseAgent):
     async def handle_task(self, task: AgentTask) -> TaskResult:
         """Deliver content to the target device."""
         description = task.description or ""
+        span_collector = task.span_collector
 
         # Parse target and content from the orchestrator-assembled description
         if _CONTENT_SEPARATOR in description:
@@ -78,13 +80,20 @@ class SendAgent(BaseAgent):
         # Format content for channel (optional LLM call)
         formatted_content = await self._format_content(
             content.strip(), mapping["device_type"], mapping["display_name"],
+            span_collector=span_collector,
         )
 
         # Deliver
         if mapping["device_type"] == "notify":
-            await self._deliver_notify(mapping["ha_service_target"], formatted_content)
+            async with _optional_span(span_collector, "ha_call", agent_id="send-agent") as span:
+                await self._deliver_notify(mapping["ha_service_target"], formatted_content)
+                span["metadata"]["service"] = "notify"
+                span["metadata"]["target"] = mapping["ha_service_target"]
         elif mapping["device_type"] == "tts":
-            await self._deliver_tts(mapping["ha_service_target"], formatted_content)
+            async with _optional_span(span_collector, "ha_call", agent_id="send-agent") as span:
+                await self._deliver_tts(mapping["ha_service_target"], formatted_content)
+                span["metadata"]["service"] = "tts"
+                span["metadata"]["target"] = mapping["ha_service_target"]
 
         language = (task.context.language if task.context else "en") or "en"
         if language.startswith("de"):
@@ -108,6 +117,7 @@ class SendAgent(BaseAgent):
 
     async def _format_content(
         self, content: str, delivery_type: str, target_name: str,
+        span_collector=None,
     ) -> str:
         """Optionally format content via LLM for the delivery channel."""
         try:
@@ -121,7 +131,11 @@ class SendAgent(BaseAgent):
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": content},
             ]
-            result = await self._call_llm(messages, max_tokens=1024 if delivery_type == "notify" else 512)
+            async with _optional_span(span_collector, "llm_call", agent_id="send-agent") as span:
+                result = await self._call_llm(messages, span_collector=span_collector, max_tokens=1024 if delivery_type == "notify" else 512)
+                span["metadata"]["model"] = "send-agent"
+                span["metadata"]["delivery_type"] = delivery_type
+                span["metadata"]["llm_response"] = (result or "")[:500]
             if result and result.strip():
                 return result.strip()
         except Exception:

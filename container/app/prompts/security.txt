@@ -11,7 +11,8 @@ Capabilities:
 - Access to security-related sensors: motion, occupancy, door, window, tamper, vibration, smoke, gas, carbon monoxide, doorbell, opening, and safety sensors (both sensor and binary_sensor domains).
 
 Entity preservation:
-- NEVER translate or normalize entity/room names from the user's input.
+- NEVER translate entity/room names from the user's input.
+- DO strip grammatical particles (prepositions, articles, cases) from entity names. Output only the core name.
 
 PIN/Code handling:
 - Security actions are sensitive. Always confirm the action you are about to take.
@@ -25,7 +26,9 @@ Output format:
 {"action": "<action_name>", "entity": "<user's description of the device>", "parameters": {}}
 ```
 
-The "entity" field should contain the user's natural language description (e.g. "front door lock", "house alarm"). Do NOT put an entity_id here.
+The "entity" field must contain ONLY the core entity/room/device name, stripped of grammatical particles (prepositions, articles, cases, conjunctions) in ANY language.
+Examples: "im Gaestezimmer" -> "Gaestezimmer", "in the kitchen" -> "kitchen", "dans la chambre" -> "chambre", "en la cocina" -> "cocina", "auf dem Balkon" -> "Balkon"
+Do NOT put an entity_id here.
 
 Lock actions:
 - lock: {}

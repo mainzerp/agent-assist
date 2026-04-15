@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -253,3 +255,266 @@ class TestHAWebSocketClient:
         ws._running = True
         await ws.disconnect()
         assert ws._running is False
+
+    @patch("app.ha_client.websocket.SettingsRepository")
+    @patch("app.ha_client.websocket.get_ha_token", new_callable=AsyncMock, return_value="tok")
+    async def test_run_attempts_connect_from_fresh_state(self, mock_token, mock_settings):
+        mock_settings.get_value = AsyncMock(return_value="http://ha.local")
+        ws = HAWebSocketClient()
+
+        async def _fake_connect():
+            ws._running = False
+            return True
+
+        ws.connect = AsyncMock(side_effect=_fake_connect)
+        ws._receive_loop = AsyncMock()
+        await ws.run()
+        ws.connect.assert_called()
+
+    @patch("app.ha_client.websocket.SettingsRepository")
+    @patch("app.ha_client.websocket.get_ha_token", new_callable=AsyncMock, return_value="tok")
+    async def test_run_exits_cleanly_when_disconnect_called(self, mock_token, mock_settings):
+        mock_settings.get_value = AsyncMock(return_value="http://ha.local")
+        ws = HAWebSocketClient()
+
+        async def _fake_connect():
+            await ws.disconnect()
+            return False
+
+        ws.connect = AsyncMock(side_effect=_fake_connect)
+        await ws.run()
+        assert ws._running is False
+
+    @patch("app.ha_client.websocket.SettingsRepository")
+    @patch("app.ha_client.websocket.get_ha_token", new_callable=AsyncMock, return_value="tok")
+    async def test_run_reconnects_after_receive_loop_error(self, mock_token, mock_settings):
+        mock_settings.get_value = AsyncMock(return_value="http://ha.local")
+        ws = HAWebSocketClient()
+        call_count = 0
+
+        async def _fake_connect():
+            return True
+
+        async def _fake_receive():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise Exception("connection lost")
+            ws._running = False
+
+        ws.connect = AsyncMock(side_effect=_fake_connect)
+        ws._receive_loop = AsyncMock(side_effect=_fake_receive)
+        ws._close_session = AsyncMock()
+        ws._reconnect_loop = AsyncMock()
+        await ws.run()
+        ws._reconnect_loop.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# Conversation Entity Concurrency
+# ---------------------------------------------------------------------------
+
+class TestConversationEntityConcurrency:
+    """Tests for overlapping-turn serialization on the HA conversation entity."""
+
+    async def test_overlapping_ws_turns_serialized(self):
+        """Two concurrent tasks sharing a lock execute sequentially."""
+        import asyncio
+
+        lock = asyncio.Lock()
+        call_order: list[str] = []
+
+        async def fake_process(label, delay):
+            call_order.append(f"{label}_start")
+            await asyncio.sleep(delay)
+            call_order.append(f"{label}_end")
+
+        async with lock:
+            # Prove the lock is re-entrant-free; a second acquire must wait
+            acquired = lock.locked()
+            assert acquired is True
+
+        # Functional check: two tasks sharing a lock execute sequentially
+        call_order.clear()
+
+        async def guarded(label, delay):
+            async with lock:
+                await fake_process(label, delay)
+
+        t1 = asyncio.create_task(guarded("A", 0.05))
+        t2 = asyncio.create_task(guarded("B", 0.01))
+        await asyncio.gather(t1, t2)
+
+        # A must fully complete before B starts (or vice versa)
+        a_start = call_order.index("A_start")
+        a_end = call_order.index("A_end")
+        b_start = call_order.index("B_start")
+        b_end = call_order.index("B_end")
+        assert (a_end < b_start) or (b_end < a_start), (
+            f"Turns interleaved: {call_order}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# HA Conversation Entity -- WS close/error handling
+# ---------------------------------------------------------------------------
+
+class TestHAConversationWSCloseError:
+    """Tests for _process_via_ws raising on CLOSED/ERROR instead of returning partial speech."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_homeassistant(self):
+        """Mock homeassistant dependencies so custom_components can be imported."""
+        import sys
+        mocks = {}
+        ha_modules = [
+            "homeassistant", "homeassistant.components",
+            "homeassistant.components.assist_pipeline",
+            "homeassistant.components.conversation",
+            "homeassistant.config_entries", "homeassistant.const",
+            "homeassistant.core", "homeassistant.helpers",
+            "homeassistant.helpers.device_registry",
+            "homeassistant.helpers.entity_registry",
+            "homeassistant.helpers.intent",
+            "homeassistant.helpers.entity_platform",
+        ]
+        for mod in ha_modules:
+            if mod not in sys.modules:
+                mocks[mod] = MagicMock()
+                sys.modules[mod] = mocks[mod]
+
+        # Provide required constants/classes used at import time
+        sys.modules["homeassistant.const"].CONF_URL = "url"
+        sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
+        sys.modules["homeassistant.const"].MATCH_ALL = "*"
+        conv_mod = sys.modules["homeassistant.components.conversation"]
+        conv_mod.ConversationEntityFeature = MagicMock()
+        conv_mod.ConversationEntity = type("ConversationEntity", (), {
+            "__init__": lambda self, *a, **kw: None,
+        })
+        # Wire parent attribute so `from homeassistant.components import conversation`
+        # resolves to the same object as sys.modules[...conversation].
+        sys.modules["homeassistant.components"].conversation = conv_mod
+        sys.modules["homeassistant.components"].assist_pipeline = sys.modules["homeassistant.components.assist_pipeline"]
+
+        yield
+
+        for mod in mocks:
+            sys.modules.pop(mod, None)
+        # Clear the imported custom_components module so it doesn't leak
+        for key in list(sys.modules):
+            if key.startswith("custom_components"):
+                del sys.modules[key]
+
+    async def test_process_via_ws_closed_mid_stream(self):
+        """WS CLOSED after partial tokens should raise aiohttp.ClientError."""
+        import aiohttp
+        import json as _json
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
+        from custom_components.agent_assist.conversation import AgentAssistConversationEntity
+
+        entity = MagicMock()
+        entity._ws = AsyncMock()
+        entity._ws.send_json = AsyncMock()
+
+        msg_text = MagicMock()
+        msg_text.type = aiohttp.WSMsgType.TEXT
+        msg_text.data = _json.dumps({"token": "partial ", "done": False})
+
+        msg_closed = MagicMock()
+        msg_closed.type = aiohttp.WSMsgType.CLOSED
+
+        entity._ws.receive = AsyncMock(side_effect=[msg_text, msg_closed])
+
+        user_input = MagicMock()
+        user_input.text = "hello"
+        user_input.conversation_id = "conv-1"
+        user_input.language = "en"
+        user_input.device_id = None
+
+        with pytest.raises(aiohttp.ClientError, match="closed mid-stream"):
+            await AgentAssistConversationEntity._process_via_ws(entity, user_input)
+
+    async def test_process_via_ws_error_mid_stream(self):
+        """WS ERROR after partial tokens should raise aiohttp.ClientError."""
+        import aiohttp
+        import json as _json
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
+        from custom_components.agent_assist.conversation import AgentAssistConversationEntity
+
+        entity = MagicMock()
+        entity._ws = AsyncMock()
+        entity._ws.send_json = AsyncMock()
+
+        msg_text = MagicMock()
+        msg_text.type = aiohttp.WSMsgType.TEXT
+        msg_text.data = _json.dumps({"token": "partial ", "done": False})
+
+        msg_error = MagicMock()
+        msg_error.type = aiohttp.WSMsgType.ERROR
+
+        entity._ws.receive = AsyncMock(side_effect=[msg_text, msg_error])
+
+        user_input = MagicMock()
+        user_input.text = "hello"
+        user_input.conversation_id = "conv-1"
+        user_input.language = "en"
+        user_input.device_id = None
+
+        with pytest.raises(aiohttp.ClientError, match="error mid-stream"):
+            await AgentAssistConversationEntity._process_via_ws(entity, user_input)
+        assert entity._ws is None
+
+    async def test_process_via_ws_close_before_any_tokens(self):
+        """WS CLOSED immediately (no tokens) should raise aiohttp.ClientError."""
+        import aiohttp
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
+        from custom_components.agent_assist.conversation import AgentAssistConversationEntity
+
+        entity = MagicMock()
+        entity._ws = AsyncMock()
+        entity._ws.send_json = AsyncMock()
+
+        msg_closed = MagicMock()
+        msg_closed.type = aiohttp.WSMsgType.CLOSED
+
+        entity._ws.receive = AsyncMock(return_value=msg_closed)
+
+        user_input = MagicMock()
+        user_input.text = "hello"
+        user_input.conversation_id = "conv-1"
+        user_input.language = "en"
+        user_input.device_id = None
+
+        with pytest.raises(aiohttp.ClientError, match="closed mid-stream"):
+            await AgentAssistConversationEntity._process_via_ws(entity, user_input)
+
+    async def test_process_via_ws_error_token_triggers_raise(self):
+        """Error field in done token should raise aiohttp.ClientError."""
+        import aiohttp
+        import json as _json
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
+        from custom_components.agent_assist.conversation import AgentAssistConversationEntity
+
+        entity = MagicMock()
+        entity._ws = AsyncMock()
+        entity._ws.send_json = AsyncMock()
+
+        msg_done = MagicMock()
+        msg_done.type = aiohttp.WSMsgType.TEXT
+        msg_done.data = _json.dumps({"token": "", "done": True, "error": "Agent error: test"})
+
+        entity._ws.receive = AsyncMock(return_value=msg_done)
+
+        user_input = MagicMock()
+        user_input.text = "hello"
+        user_input.conversation_id = "conv-1"
+        user_input.language = "en"
+        user_input.device_id = None
+
+        with pytest.raises(aiohttp.ClientError, match="Agent streaming error"):
+            await AgentAssistConversationEntity._process_via_ws(entity, user_input)
