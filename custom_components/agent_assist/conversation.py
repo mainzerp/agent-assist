@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from typing import Any, Literal
 
 import aiohttp
@@ -23,6 +24,8 @@ from .const import (
     WS_PATH,
     RECONNECT_BASE_DELAY,
     RECONNECT_MAX_DELAY,
+    WS_HEARTBEAT_INTERVAL,
+    WS_IDLE_THRESHOLD,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,6 +92,7 @@ class AgentAssistConversationEntity(
         self._attr_unique_id = entry.entry_id
         self._reconnect_delay = RECONNECT_BASE_DELAY
         self._ws_lock = asyncio.Lock()
+        self._ws_last_active: float = 0.0
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
@@ -127,30 +131,33 @@ class AgentAssistConversationEntity(
 
     async def _connect_ws(self) -> bool:
         """Establish persistent WebSocket connection to the container."""
-        try:
-            if self._session is None:
-                self._session = aiohttp.ClientSession()
+        async with self._ws_lock:
+            try:
+                if self._session is None:
+                    self._session = aiohttp.ClientSession()
 
-            ws_url = self._url.replace("http://", "ws://").replace("https://", "wss://")
-            self._ws = await self._session.ws_connect(
-                f"{ws_url}{WS_PATH}",
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                timeout=aiohttp.ClientTimeout(total=10),
-            )
-            self._reconnect_delay = RECONNECT_BASE_DELAY
-            logger.info("Connected to agent-assist container at %s", self._url)
-            return True
-        except (aiohttp.ClientError, TimeoutError):
-            logger.warning("Failed to connect to container at %s", self._url)
-            # Clean up session to prevent resource leak
-            if self._session:
-                try:
-                    await self._session.close()
-                except Exception:
-                    pass
-                self._session = None
-            self._ws = None
-            return False
+                ws_url = self._url.replace("http://", "ws://").replace("https://", "wss://")
+                self._ws = await self._session.ws_connect(
+                    f"{ws_url}{WS_PATH}",
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                    heartbeat=WS_HEARTBEAT_INTERVAL,
+                )
+                self._reconnect_delay = RECONNECT_BASE_DELAY
+                self._ws_last_active = time.monotonic()
+                logger.info("Connected to agent-assist container at %s", self._url)
+                return True
+            except (aiohttp.ClientError, TimeoutError):
+                logger.warning("Failed to connect to container at %s", self._url)
+                # Clean up session to prevent resource leak
+                if self._session:
+                    try:
+                        await self._session.close()
+                    except Exception:
+                        pass
+                    self._session = None
+                self._ws = None
+                return False
 
     async def _disconnect_ws(self) -> None:
         """Close the WebSocket and session."""
@@ -178,12 +185,31 @@ class AgentAssistConversationEntity(
     async def _ensure_connected(self) -> bool:
         """Ensure WebSocket is connected, reconnect if needed."""
         if self._ws is not None and not self._ws.closed:
+            # If idle too long, verify the connection with a ping
+            if time.monotonic() - self._ws_last_active > WS_IDLE_THRESHOLD:
+                try:
+                    pong = await self._ws.ping()
+                    await asyncio.wait_for(pong, timeout=2.0)
+                    self._ws_last_active = time.monotonic()
+                except (asyncio.TimeoutError, Exception):
+                    logger.warning("WebSocket idle ping failed, reconnecting")
+                    await self._disconnect_ws()
+                    return await self._connect_ws()
             return True
         # Attempt reconnect
         connected = await self._connect_ws()
         if not connected:
             self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
         return connected
+
+    def _schedule_reconnect(self) -> None:
+        """Schedule an immediate background WS reconnect."""
+        self._reconnect_delay = RECONNECT_BASE_DELAY
+        self._entry.async_create_background_task(
+            self.hass,
+            self._connect_ws(),
+            name="agent_assist_ws_immediate_reconnect",
+        )
 
     async def _async_handle_message(
         self,
@@ -192,7 +218,9 @@ class AgentAssistConversationEntity(
     ) -> conversation.ConversationResult:
         """Process a conversation turn by forwarding to the container."""
         if not await self._ensure_connected():
-            return await self._process_via_rest(user_input)
+            result = await self._process_via_rest(user_input)
+            self._schedule_reconnect()
+            return result
 
         try:
             async with self._ws_lock:
@@ -200,7 +228,9 @@ class AgentAssistConversationEntity(
         except (aiohttp.ClientError, asyncio.TimeoutError):
             logger.warning("WebSocket error, falling back to REST")
             await self._disconnect_ws()
-            return await self._process_via_rest(user_input)
+            result = await self._process_via_rest(user_input)
+            self._schedule_reconnect()
+            return result
 
     async def _process_via_ws(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         """Send request via WebSocket and accumulate streaming tokens."""
@@ -262,6 +292,7 @@ class AgentAssistConversationEntity(
             self._ws = None
             raise aiohttp.ClientError("WebSocket stream ended without done token")
 
+        self._ws_last_active = time.monotonic()
         speech = "".join(speech_parts)
         return self._build_result(speech, final_conversation_id, user_input.language)
 

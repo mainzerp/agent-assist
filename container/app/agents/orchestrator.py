@@ -48,8 +48,6 @@ class OrchestratorAgent(BaseAgent):
         self._conversations: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
         self._default_timeout: int = 5
         self._max_iterations: int = 3
-        self._filler_enabled: bool = False
-        self._filler_threshold_ms: int = 1000
         self._mediation_model: str | None = None
         self._mediation_temperature: float = 0.3
         self._mediation_max_tokens: int = 2048
@@ -57,7 +55,6 @@ class OrchestratorAgent(BaseAgent):
     async def initialize(self) -> None:
         """Load reliability config from DB. Call during startup."""
         await self._load_reliability_config()
-        await self._load_filler_config()
         await self._load_mediation_config()
 
     async def _load_reliability_config(self) -> None:
@@ -75,23 +72,6 @@ class OrchestratorAgent(BaseAgent):
         logger.info(
             "Orchestrator reliability config: timeout=%ds max_iterations=%d",
             self._default_timeout, self._max_iterations,
-        )
-
-    async def _load_filler_config(self) -> None:
-        """Read filler/interim response settings from DB."""
-        try:
-            val = await SettingsRepository.get_value("filler.enabled", "false")
-            self._filler_enabled = val.lower() == "true"
-        except (ValueError, TypeError):
-            self._filler_enabled = False
-        try:
-            val = await SettingsRepository.get_value("filler.threshold_ms", "1000")
-            self._filler_threshold_ms = int(val)
-        except (ValueError, TypeError):
-            self._filler_threshold_ms = 1000
-        logger.info(
-            "Filler config: enabled=%s threshold=%dms",
-            self._filler_enabled, self._filler_threshold_ms,
         )
 
     async def _load_mediation_config(self) -> None:
@@ -820,14 +800,16 @@ class OrchestratorAgent(BaseAgent):
             seq_filler_end_ms = 0.0
             seq_filler_generated = False
             seq_filler_send_ms = 0.0
+            seq_filler_threshold_ms = 1000
 
             if seq_use_filler:
+                seq_filler_threshold_ms = await self._get_filler_threshold_ms()
                 # Race handle_task against filler threshold
                 task_coro = self.handle_task(task, _pre_classified=(classifications, routing_cached))
                 task_future = asyncio.ensure_future(task_coro)
 
                 elapsed = time.perf_counter() - t0_request
-                remaining = max(0, self._filler_threshold_ms / 1000 - elapsed)
+                remaining = max(0, seq_filler_threshold_ms / 1000 - elapsed)
 
                 done_set, _ = await asyncio.wait({task_future}, timeout=remaining)
                 if done_set:
@@ -863,7 +845,7 @@ class OrchestratorAgent(BaseAgent):
             # Record filler_generate span
             if seq_filler_generated:
                 async with _optional_span(span_collector, "filler_generate", agent_id="filler-agent") as fg_span:
-                    fg_span["metadata"]["threshold_ms"] = self._filler_threshold_ms
+                    fg_span["metadata"]["threshold_ms"] = seq_filler_threshold_ms
                     fg_span["metadata"]["target_agent"] = content_agent_for_filler
                     fg_span["metadata"]["filler_text"] = seq_filler_text
                     fg_span["metadata"]["sequential_send"] = True
@@ -890,6 +872,7 @@ class OrchestratorAgent(BaseAgent):
                 "token": result["speech"],
                 "done": True,
                 "conversation_id": conversation_id,
+                "mediated_speech": result["speech"],
             }
             return
 
@@ -906,6 +889,7 @@ class OrchestratorAgent(BaseAgent):
                 "token": result["speech"],
                 "done": True,
                 "conversation_id": conversation_id,
+                "mediated_speech": result["speech"],
             }
             return
 
@@ -939,13 +923,14 @@ class OrchestratorAgent(BaseAgent):
         action_executed = None
         stream_error = None
         use_filler = await self._should_send_filler(target_agent)
+        filler_threshold_ms = await self._get_filler_threshold_ms() if use_filler else 1000
         filler_sent = False
         filler_text_sent = ""
         filler_start_ms = 0.0
         filler_end_ms = 0.0
         filler_generated = False
         filler_send_ms = 0.0
-        logger.info("Filler decision for %s: use_filler=%s (enabled=%s)", target_agent, use_filler, self._filler_enabled)
+        logger.info("Filler decision for %s: use_filler=%s", target_agent, use_filler)
 
         async def _process_chunk(chunk):
             """Process a single stream chunk: collect speech and detect actions."""
@@ -1000,7 +985,7 @@ class OrchestratorAgent(BaseAgent):
                 # Wait for first chunk or threshold (accounting for time already spent on classify)
                 first_chunk = None
                 elapsed_since_request = time.perf_counter() - t0_request
-                remaining_threshold = max(0, self._filler_threshold_ms / 1000 - elapsed_since_request)
+                remaining_threshold = max(0, filler_threshold_ms / 1000 - elapsed_since_request)
                 logger.info("Filler remaining threshold: %.1fms (elapsed %.0fms)", remaining_threshold * 1000, elapsed_since_request * 1000)
                 try:
                     item = await asyncio.wait_for(
@@ -1077,7 +1062,7 @@ class OrchestratorAgent(BaseAgent):
         # Record filler_generate span (always, if filler was generated -- even if not sent)
         if filler_generated:
             async with _optional_span(span_collector, "filler_generate", agent_id="filler-agent") as fg_span:
-                fg_span["metadata"]["threshold_ms"] = self._filler_threshold_ms
+                fg_span["metadata"]["threshold_ms"] = filler_threshold_ms
                 fg_span["metadata"]["target_agent"] = target_agent
                 fg_span["metadata"]["filler_text"] = filler_text_sent
                 fg_span["metadata"]["was_sent"] = filler_sent
@@ -1117,23 +1102,26 @@ class OrchestratorAgent(BaseAgent):
                     target_agent, confidence, condensed_task, classifications, turns,
                 )
 
-        # Yield final done chunk with optional mediated_speech
+        # Yield final done chunk with mediated_speech (always included)
         mediated_text = strip_markdown(full_speech)
-        raw_text = "".join(collected_speech)
         final_chunk = {
             "token": "",
             "done": True,
             "conversation_id": conversation_id,
+            "mediated_speech": mediated_text,
         }
-        if mediated_text != strip_markdown(raw_text):
-            final_chunk["mediated_speech"] = mediated_text
         if stream_error:
             final_chunk["error"] = stream_error
         yield final_chunk
 
     async def _should_send_filler(self, target_agent: str) -> bool:
         """Check if filler is enabled and the target agent is expected to be slow."""
-        if not self._filler_enabled:
+        try:
+            val = await SettingsRepository.get_value("filler.enabled", "false")
+            enabled = val.lower() == "true"
+        except (ValueError, TypeError):
+            enabled = False
+        if not enabled:
             return False
         if not self._registry:
             return False
@@ -1142,6 +1130,14 @@ class OrchestratorAgent(BaseAgent):
             if card.agent_id == target_agent:
                 return card.expected_latency == "high"
         return False
+
+    async def _get_filler_threshold_ms(self) -> int:
+        """Read filler threshold from DB (live, not cached)."""
+        try:
+            val = await SettingsRepository.get_value("filler.threshold_ms", "1000")
+            return int(val)
+        except (ValueError, TypeError):
+            return 1000
 
     async def _invoke_filler_agent(self, user_text: str, target_agent: str, language: str) -> str | None:
         """Call the filler-agent directly to generate a filler phrase.

@@ -9,3 +9,9 @@
 default location und current time für general agent
 
 climate-agent scheint keine wetter fragen beantwortn zu können
+
+
+
+
+
+beim starten des container werden embeeding tasks ausgeführt warum?

@@ -2241,30 +2241,61 @@ class TestOrchestratorFiller:
         )
         return orchestrator, dispatcher, registry
 
-    async def test_should_send_filler_true_for_high_latency(self):
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_should_send_filler_true_for_high_latency(self, mock_settings):
         orch, _, _ = self._make_filler_orchestrator()
-        orch._filler_enabled = True
+        mock_settings.get_value = AsyncMock(return_value="true")
         result = await orch._should_send_filler("general-agent")
         assert result is True
 
-    async def test_should_send_filler_false_for_low_latency(self):
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_should_send_filler_false_for_low_latency(self, mock_settings):
         orch, _, _ = self._make_filler_orchestrator()
-        orch._filler_enabled = True
+        mock_settings.get_value = AsyncMock(return_value="true")
         result = await orch._should_send_filler("light-agent")
         assert result is False
 
-    async def test_should_send_filler_false_when_disabled(self):
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_should_send_filler_false_when_disabled(self, mock_settings):
         orch, _, _ = self._make_filler_orchestrator()
-        orch._filler_enabled = False
+        mock_settings.get_value = AsyncMock(return_value="false")
         result = await orch._should_send_filler("general-agent")
         assert result is False
 
-    async def test_should_send_filler_false_when_no_registry(self):
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_should_send_filler_false_when_no_registry(self, mock_settings):
         orch, _, _ = self._make_filler_orchestrator()
-        orch._filler_enabled = True
+        mock_settings.get_value = AsyncMock(return_value="true")
         orch._registry = None
         result = await orch._should_send_filler("general-agent")
         assert result is False
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_should_send_filler_picks_up_db_change(self, mock_settings):
+        """Filler enabled/disabled follows live DB value, no restart needed."""
+        orch, _, _ = self._make_filler_orchestrator()
+
+        # Initially disabled
+        mock_settings.get_value = AsyncMock(return_value="false")
+        result = await orch._should_send_filler("general-agent")
+        assert result is False
+
+        # User enables via dashboard (DB now returns "true")
+        mock_settings.get_value = AsyncMock(return_value="true")
+        result = await orch._should_send_filler("general-agent")
+        assert result is True
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    async def test_get_filler_threshold_ms_reads_from_db(self, mock_settings):
+        orch, _, _ = self._make_filler_orchestrator()
+
+        mock_settings.get_value = AsyncMock(return_value="2000")
+        result = await orch._get_filler_threshold_ms()
+        assert result == 2000
+
+        mock_settings.get_value = AsyncMock(return_value="500")
+        result = await orch._get_filler_threshold_ms()
+        assert result == 500
 
     @patch("app.agents.filler.SettingsRepository")
     @patch("app.llm.client.complete", new_callable=AsyncMock)
@@ -2300,40 +2331,12 @@ class TestOrchestratorFiller:
         assert result is None
 
     @patch("app.agents.orchestrator.SettingsRepository")
-    async def test_load_filler_config_defaults(self, mock_settings):
-        mock_settings.get_value = AsyncMock(side_effect=lambda key, default=None: {
-            "a2a.default_timeout": "5",
-            "a2a.max_iterations": "3",
-            "filler.enabled": "false",
-            "filler.threshold_ms": "1000",
-        }.get(key, default))
-        orch = OrchestratorAgent(dispatcher=AsyncMock())
-        await orch.initialize()
-        assert orch._filler_enabled is False
-        assert orch._filler_threshold_ms == 1000
-
-    @patch("app.agents.orchestrator.SettingsRepository")
-    async def test_load_filler_config_enabled(self, mock_settings):
-        mock_settings.get_value = AsyncMock(side_effect=lambda key, default=None: {
-            "a2a.default_timeout": "5",
-            "a2a.max_iterations": "3",
-            "filler.enabled": "true",
-            "filler.threshold_ms": "1500",
-        }.get(key, default))
-        orch = OrchestratorAgent(dispatcher=AsyncMock())
-        await orch.initialize()
-        assert orch._filler_enabled is True
-        assert orch._filler_threshold_ms == 1500
-
-    @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_stream_no_filler_when_agent_responds_fast(self, mock_complete, mock_track, mock_settings):
         """When the agent responds before the filler threshold, no filler is yielded."""
-        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {"filler.enabled": "true", "filler.threshold_ms": "5000", "language": "auto"}.get(k, d))
         orch, dispatcher, _ = self._make_filler_orchestrator()
-        orch._filler_enabled = True
-        orch._filler_threshold_ms = 5000  # 5s threshold
 
         # Classification returns general-agent
         mock_complete.return_value = "general-agent: search the web"
@@ -2372,10 +2375,8 @@ class TestOrchestratorFiller:
     async def test_stream_filler_when_agent_is_slow(self, mock_complete, mock_track, mock_settings):
         """When the agent exceeds the threshold, a filler token is yielded."""
         orch, dispatcher, _ = self._make_filler_orchestrator()
-        orch._filler_enabled = True
-        orch._filler_threshold_ms = 50  # 50ms threshold (very short for test)
 
-        mock_settings.get_value = AsyncMock(return_value="groq/llama-3.1-8b-instant")
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {"filler.enabled": "true", "filler.threshold_ms": "50"}.get(k, "groq/llama-3.1-8b-instant"))
 
         # Classification call only
         mock_complete.return_value = "general-agent: search the web"
@@ -2415,10 +2416,8 @@ class TestOrchestratorFiller:
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_stream_no_filler_for_fast_agent(self, mock_complete, mock_track, mock_settings):
         """Filler is never sent for agents with expected_latency != high."""
-        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {"filler.enabled": "true", "filler.threshold_ms": "10", "language": "auto"}.get(k, d))
         orch, dispatcher, _ = self._make_filler_orchestrator()
-        orch._filler_enabled = True
-        orch._filler_threshold_ms = 10
 
         mock_complete.return_value = "light-agent: Turn on kitchen light"
 
@@ -2448,10 +2447,8 @@ class TestOrchestratorFiller:
     async def test_stream_filler_generation_failure_still_yields_agent_tokens(self, mock_complete, mock_track, mock_settings):
         """When filler generation fails, agent tokens are still yielded normally."""
         orch, dispatcher, _ = self._make_filler_orchestrator()
-        orch._filler_enabled = True
-        orch._filler_threshold_ms = 50
 
-        mock_settings.get_value = AsyncMock(return_value="groq/llama-3.1-8b-instant")
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {"filler.enabled": "true", "filler.threshold_ms": "50"}.get(k, "groq/llama-3.1-8b-instant"))
 
         # Classification call only
         mock_complete.return_value = "general-agent: search the web"
@@ -2495,10 +2492,8 @@ class TestOrchestratorFiller:
         from app.analytics.tracer import SpanCollector
 
         orch, dispatcher, _ = self._make_filler_orchestrator()
-        orch._filler_enabled = True
-        orch._filler_threshold_ms = 50
 
-        mock_settings.get_value = AsyncMock(return_value="groq/llama-3.1-8b-instant")
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {"filler.enabled": "true", "filler.threshold_ms": "50"}.get(k, "groq/llama-3.1-8b-instant"))
         mock_complete.return_value = "general-agent: search the web"
 
         # Filler agent returns text, but agent responds during filler generation
@@ -2556,10 +2551,8 @@ class TestOrchestratorFiller:
         from app.analytics.tracer import SpanCollector
 
         orch, dispatcher, _ = self._make_filler_orchestrator()
-        orch._filler_enabled = True
-        orch._filler_threshold_ms = 50
 
-        mock_settings.get_value = AsyncMock(return_value="groq/llama-3.1-8b-instant")
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {"filler.enabled": "true", "filler.threshold_ms": "50"}.get(k, "groq/llama-3.1-8b-instant"))
         mock_complete.return_value = "general-agent: search the web"
 
         orch._invoke_filler_agent = AsyncMock(return_value="Let me look that up for you.")
@@ -3558,7 +3551,7 @@ class TestStreamMediatedSpeech:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_stream_no_mediated_speech_when_no_mediation(self, mock_complete, mock_track, mock_settings):
-        """Final done chunk does NOT include mediated_speech when personality is empty."""
+        """Final done chunk includes mediated_speech even when personality is empty."""
         orch, dispatcher, _ = self._make_orchestrator()
         mock_complete.return_value = "light-agent (95%): Turn on light"
         mock_settings.get_value = AsyncMock(return_value="")
@@ -3573,7 +3566,29 @@ class TestStreamMediatedSpeech:
 
         final = [c for c in chunks if c["done"]]
         assert len(final) == 1
-        assert final[0].get("mediated_speech") is None
+        assert final[0].get("mediated_speech") is not None
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_stream_always_includes_mediated_speech(self, mock_complete, mock_track, mock_settings):
+        """Final done chunk ALWAYS includes mediated_speech, even without personality mediation."""
+        orch, dispatcher, _ = self._make_orchestrator()
+        mock_complete.return_value = "light-agent (95%): Turn on light"
+        mock_settings.get_value = AsyncMock(return_value="")
+
+        async def mock_stream(request):
+            yield MagicMock(result={"token": "Light is on.", "done": True})
+        dispatcher.dispatch_stream = mock_stream
+
+        task = _make_task("turn on light")
+        task.conversation_id = "conv-always-mediated"
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        final = [c for c in chunks if c["done"]]
+        assert len(final) == 1
+        assert final[0].get("mediated_speech") is not None
+        assert final[0]["mediated_speech"] == "Light is on."
 
     def test_stream_token_model_with_mediated_speech(self):
         """StreamToken accepts and serializes mediated_speech field."""
@@ -3895,8 +3910,6 @@ class TestSequentialSendFiller:
             registry=registry,
             cache_manager=cache_manager,
         )
-        orchestrator._filler_enabled = True
-        orchestrator._filler_threshold_ms = 50  # 50ms for fast tests
         return orchestrator
 
     def _seq_classifications(self):
@@ -3909,7 +3922,7 @@ class TestSequentialSendFiller:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_seq_send_filler_fires_when_slow(self, mock_complete, mock_track, mock_settings):
-        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {"filler.enabled": "true", "filler.threshold_ms": "50", "language": "auto"}.get(k, d))
         """Filler is yielded when handle_task takes longer than the threshold."""
         orch = self._make_orchestrator()
         classifications = self._seq_classifications()
@@ -3952,10 +3965,9 @@ class TestSequentialSendFiller:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_seq_send_no_filler_when_fast(self, mock_complete, mock_track, mock_settings):
-        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {"filler.enabled": "true", "filler.threshold_ms": "5000", "language": "auto"}.get(k, d))
         """No filler when handle_task finishes before threshold."""
         orch = self._make_orchestrator()
-        orch._filler_threshold_ms = 5000  # very high threshold
 
         mock_complete.return_value = "general-agent: find recipe\nsend-agent: send"
 
@@ -4010,10 +4022,9 @@ class TestSequentialSendFiller:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_seq_send_filler_skipped_if_task_done_during_gen(self, mock_complete, mock_track, mock_settings):
-        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {"filler.enabled": "true", "filler.threshold_ms": "50", "language": "auto"}.get(k, d))
         """Filler is skipped if handle_task completes while filler is being generated."""
         orch = self._make_orchestrator()
-        orch._filler_threshold_ms = 50
 
         mock_complete.return_value = "general-agent: find recipe\nsend-agent: send"
 
@@ -4047,7 +4058,7 @@ class TestSequentialSendFiller:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_seq_send_filler_span_recorded(self, mock_complete, mock_track, mock_settings):
-        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {"filler.enabled": "true", "filler.threshold_ms": "50", "language": "auto"}.get(k, d))
         """When filler fires, analytics span records sequential_send=True."""
         from app.analytics.tracer import SpanCollector
 

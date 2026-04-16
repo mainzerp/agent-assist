@@ -1,8 +1,16 @@
 # Version
 
-**Current Version:** 0.14.4
+**Current Version:** 0.14.5
 
 ## Version History
+
+### 0.14.5 -- Filler Safety + WS Keepalive
+
+- **Always include mediated_speech in done chunks**: All three streaming done-chunk paths (streaming, sequential-send, multi-agent) now unconditionally include `mediated_speech`, ensuring consumers always have a clean final text override regardless of whether mediation changed the text or filler was sent.
+- **WS heartbeat**: Added `heartbeat=15` to `ws_connect()` so aiohttp sends pings every 15s and marks the connection closed if no pong is received, reducing stale-connection detection from minutes to ~30s.
+- **Idle connection verification**: `_ensure_connected()` now tracks `_ws_last_active` and sends a ping to verify the connection if idle for >60s before allowing a request to use it.
+- **Immediate reconnect after REST fallback**: After a WS failure triggers REST fallback, a background reconnect task is scheduled immediately so the next request can use WS instead of waiting up to 30s for the reconnect loop.
+- **Race protection**: `_connect_ws()` now acquires `_ws_lock` to prevent concurrent connection attempts from `_reconnect_loop()` and `_ensure_connected()`.
 
 ### 0.14.4 -- Cache Dedup + Hit Counter Flush
 
