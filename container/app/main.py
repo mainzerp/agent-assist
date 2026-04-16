@@ -41,6 +41,7 @@ from app.api.routes import health as health_routes
 from app.api.routes import dashboard_api as dashboard_api_routes
 from app.dashboard.routes import router as dashboard_router
 from app.setup.routes import router as setup_router
+from app.cache.vector_store import COLLECTION_ENTITY_INDEX
 from app.models.entity_index import EntityIndexEntry
 
 logger = logging.getLogger(__name__)
@@ -234,10 +235,27 @@ async def lifespan(app: FastAPI):
         try:
             states = await ha_client.get_states()
             entities = _parse_ha_states(states)
-            await entity_index.populate_async(entities)
-            logger.info("Entity index populated with %d entities", len(entities))
+            existing_count = vector_store.count(COLLECTION_ENTITY_INDEX)
+            if existing_count > 0:
+                result = await entity_index.sync_async(entities)
+                logger.info(
+                    "Entity index synced (existing=%d): +%d ~%d -%d =%d",
+                    existing_count,
+                    result["added"], result["updated"],
+                    result["removed"], result["unchanged"],
+                )
+            else:
+                await entity_index.populate_async(entities)
+                logger.info("Entity index populated with %d entities", len(entities))
         except Exception:
             logger.warning("Failed to populate entity index from HA", exc_info=True)
+
+        # Pre-warm home context cache (location/timezone)
+        from app.ha_client.home_context import home_context_provider
+        try:
+            await home_context_provider.refresh(ha_client)
+        except Exception:
+            logger.warning("Failed to pre-warm HomeContext cache", exc_info=True)
 
         # Initialize alias resolver
         alias_resolver = AliasResolver()

@@ -19,6 +19,7 @@ from app.agents.sanitize import strip_markdown
 from app.agents.language_detect import detect_user_language
 from app.analytics.collector import track_request, track_agent_timeout
 from app.analytics.tracer import _NoOpSpan, _optional_span
+from app.ha_client.home_context import home_context_provider
 from app.models.agent import AgentCard, AgentTask, TaskContext
 from app.models.cache import ResponseCacheEntry, CachedAction
 
@@ -156,6 +157,23 @@ class OrchestratorAgent(BaseAgent):
             context.area_id = incoming_context.area_id
             context.language = incoming_context.language
 
+        # Populate home location/time context
+        if self._ha_client:
+            try:
+                from zoneinfo import ZoneInfo
+
+                home_ctx = await home_context_provider.get(self._ha_client)
+                context.timezone = home_ctx.timezone
+                context.location_name = home_ctx.location_name
+                try:
+                    tz = ZoneInfo(home_ctx.timezone)
+                    now = datetime.now(tz)
+                    context.local_time = now.strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    context.local_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                logger.debug("Failed to populate home context", exc_info=True)
+
         agent_task = AgentTask(
             description=condensed_task,
             user_text=user_text,
@@ -265,6 +283,23 @@ class OrchestratorAgent(BaseAgent):
                 room = self._presence_detector.get_most_likely_room()
                 if room:
                     content_context.presence_room = room
+
+            # Populate home location/time context
+            if self._ha_client:
+                try:
+                    from zoneinfo import ZoneInfo
+
+                    home_ctx = await home_context_provider.get(self._ha_client)
+                    content_context.timezone = home_ctx.timezone
+                    content_context.location_name = home_ctx.location_name
+                    try:
+                        tz = ZoneInfo(home_ctx.timezone)
+                        now = datetime.now(tz)
+                        content_context.local_time = now.strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        content_context.local_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    logger.debug("Failed to populate home context for sequential send", exc_info=True)
             async with _optional_span(span_collector, "dispatch_content", agent_id=content_aid) as span:
                 content_agent_id, content_speech, _content_result = await self._dispatch_single(
                     content_aid, content_task, user_text, conversation_id, turns, span_collector,
@@ -900,6 +935,25 @@ class OrchestratorAgent(BaseAgent):
         if task.context:
             context.device_id = task.context.device_id
             context.area_id = task.context.area_id
+        if self._presence_detector:
+            room = self._presence_detector.get_most_likely_room()
+            if room:
+                context.presence_room = room
+        if self._ha_client:
+            try:
+                from zoneinfo import ZoneInfo
+
+                home_ctx = await home_context_provider.get(self._ha_client)
+                context.timezone = home_ctx.timezone
+                context.location_name = home_ctx.location_name
+                try:
+                    tz = ZoneInfo(home_ctx.timezone)
+                    now = datetime.now(tz)
+                    context.local_time = now.strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    context.local_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                logger.debug("Failed to populate home context for streaming", exc_info=True)
         agent_task = AgentTask(
             description=condensed_task,
             user_text=user_text,

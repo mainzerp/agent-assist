@@ -126,22 +126,24 @@ class TestRoutingCache:
         assert id1 == id2  # same deterministic hash
 
     def test_store_flushes_pending_updates(self):
-        """store() should flush pending hit-count updates."""
+        """store() should flush pending hit-count updates via update_metadata."""
         cache, store = self._make_cache()
         store.count.return_value = 0
         cache._pending_updates = {"old-id": ("old query", {"hit_count": "5"})}
         cache._hit_since_flush = 1
         cache.store("new query", "agent", 0.9)
-        # First upsert is from flush, second from store
-        assert store.upsert.call_count == 2
+        # Flush uses update_metadata, store uses upsert
+        store.update_metadata.assert_called_once()
+        store.upsert.assert_called_once()  # only the store() upsert
         assert cache._hit_since_flush == 0
 
     def test_flush_pending_public_method(self):
-        """flush_pending() should delegate to _flush_pending_updates."""
+        """flush_pending() should delegate to _flush_pending_updates via update_metadata."""
         cache, store = self._make_cache()
         cache._pending_updates = {"id-1": ("q", {"hit_count": "3"})}
         cache.flush_pending()
-        store.upsert.assert_called_once()
+        store.update_metadata.assert_called_once()
+        store.upsert.assert_not_called()
         assert len(cache._pending_updates) == 0
 
 
@@ -296,11 +298,12 @@ class TestResponseCache:
         assert id1 == id2
 
     def test_flush_pending_public_method(self):
-        """flush_pending() should delegate to _flush_pending_updates."""
+        """flush_pending() should delegate to _flush_pending_updates via update_metadata."""
         cache, store = self._make_cache()
         cache._pending_updates = {"id-1": ("q", {"hit_count": "3"})}
         cache.flush_pending()
-        store.upsert.assert_called_once()
+        store.update_metadata.assert_called_once()
+        store.upsert.assert_not_called()
         assert len(cache._pending_updates) == 0
 
 
@@ -463,9 +466,10 @@ class TestCacheManager:
         manager._routing_cache._pending_updates = {"r-1": ("q", {"hit_count": "2"})}
         manager._response_cache._pending_updates = {"s-1": ("q", {"hit_count": "3"})}
         manager.flush_pending()
-        # Both should have been flushed
+        # Both should have been flushed via update_metadata
         assert len(manager._routing_cache._pending_updates) == 0
         assert len(manager._response_cache._pending_updates) == 0
+        assert store.update_metadata.call_count == 2
 
     def test_routing_cache_stores_condensed_task(self):
         """Routing cache should persist condensed_task in the ChromaDB metadata."""
@@ -755,6 +759,55 @@ class TestVectorStore:
         with pytest.raises(KeyError):
             store.get_collection("nonexistent")
 
+    def test_update_metadata_delegates_to_collection(self):
+        store = VectorStore()
+        mock_col = MagicMock()
+        store._collections = {COLLECTION_ENTITY_INDEX: mock_col}
+        store.update_metadata(
+            COLLECTION_ENTITY_INDEX,
+            ids=["a", "b"],
+            metadatas=[{"key": "v1"}, {"key": "v2"}],
+        )
+        mock_col.update.assert_called_once_with(
+            ids=["a", "b"], metadatas=[{"key": "v1"}, {"key": "v2"}]
+        )
+
+    def test_update_metadata_reconnects_on_closed(self):
+        store = VectorStore()
+        mock_col = MagicMock()
+        mock_col.update.side_effect = RuntimeError("connection closed")
+        store._collections = {COLLECTION_ENTITY_INDEX: mock_col}
+        mock_col2 = MagicMock()
+        original_get = store.get_collection
+        call_count = 0
+        def side_effect_get(name):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                return original_get(name)
+            return mock_col2
+        with patch.object(store, "_reinitialize_sync") as mock_reinit, \
+             patch.object(store, "get_collection", side_effect=side_effect_get):
+            store.update_metadata(
+                COLLECTION_ENTITY_INDEX,
+                ids=["a"],
+                metadatas=[{"key": "v1"}],
+            )
+        mock_reinit.assert_called_once()
+        mock_col2.update.assert_called_once()
+
+    def test_update_metadata_raises_non_closed_error(self):
+        store = VectorStore()
+        mock_col = MagicMock()
+        mock_col.update.side_effect = ValueError("bad data")
+        store._collections = {COLLECTION_ENTITY_INDEX: mock_col}
+        with pytest.raises(ValueError, match="bad data"):
+            store.update_metadata(
+                COLLECTION_ENTITY_INDEX,
+                ids=["a"],
+                metadatas=[{"key": "v1"}],
+            )
+
 
 # ---------------------------------------------------------------------------
 # Cache trace visibility -- similarity propagation tests
@@ -920,9 +973,8 @@ class TestRoutingCacheEviction:
             }
             cache.lookup(f"query-{i}")
 
-        # After flush_interval lookups, upsert should have been called for flush
-        # (The lookup calls upsert for buffered updates)
-        assert store.upsert.call_count >= 1
+        # After flush_interval lookups, update_metadata should have been called for flush
+        assert store.update_metadata.call_count >= 1
 
     def test_batch_delete_in_chunks(self):
         """When evicting many entries, delete should be called in chunks of 500."""

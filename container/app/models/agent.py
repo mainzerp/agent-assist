@@ -60,6 +60,9 @@ class TaskContext(BaseModel):
     area_id: str | None = None
     language: str = "en"
     sequential_send: bool = False
+    timezone: str = "UTC"
+    location_name: str = ""
+    local_time: str = ""
 
 
 class ActionExecuted(BaseModel):

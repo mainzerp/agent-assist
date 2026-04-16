@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import AsyncGenerator
 
-from app.models.agent import AgentCard, AgentTask, TaskResult, AgentError, AgentErrorCode
+from app.models.agent import AgentCard, AgentTask, TaskResult, AgentError, AgentErrorCode, TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,18 @@ class BaseAgent(ABC):
             speech=speech,
             error=AgentError(code=code, message=speech, recoverable=recoverable),
         )
+
+    @staticmethod
+    def _build_time_location_context(context: TaskContext | None) -> str:
+        """Build a short context block for local time and location."""
+        if not context or not context.local_time:
+            return ""
+        parts = [f"Current local time: {context.local_time}"]
+        if context.timezone and context.timezone != "UTC":
+            parts.append(f"Timezone: {context.timezone}")
+        if context.location_name:
+            parts.append(f"Home location: {context.location_name}")
+        return "\n".join(parts)
 
     async def _call_llm(self, messages: list[dict], **overrides) -> str:
         """Call the LLM using this agent's config.

@@ -167,14 +167,13 @@ class ResponseCache:
             logger.info("Response cache LRU evicted %d entries", len(to_delete))
 
     def _flush_pending_updates(self) -> None:
-        """Batch-flush pending hit count updates to ChromaDB."""
+        """Batch-flush pending hit count updates to ChromaDB (metadata only)."""
         if not self._pending_updates:
             return
         ids = list(self._pending_updates.keys())
-        docs = [self._pending_updates[i][0] for i in ids]
         metas = [self._pending_updates[i][1] for i in ids]
         try:
-            self._store.upsert(COLLECTION_RESPONSE_CACHE, ids=ids, documents=docs, metadatas=metas)
+            self._store.update_metadata(COLLECTION_RESPONSE_CACHE, ids=ids, metadatas=metas)
         except Exception:
             logger.warning("Failed to flush response cache hit updates", exc_info=True)
         self._pending_updates.clear()

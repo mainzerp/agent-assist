@@ -86,6 +86,8 @@ class HARestClient:
         service: str,
         entity_id: str | None = None,
         service_data: dict[str, Any] | None = None,
+        *,
+        return_response: bool = False,
     ) -> dict[str, Any]:
         """POST /api/services/<domain>/<service>."""
         payload: dict[str, Any] = {}
@@ -93,9 +95,22 @@ class HARestClient:
             payload["entity_id"] = entity_id
         if service_data:
             payload.update(service_data)
-        resp = await self._client.post(f"/api/services/{domain}/{service}", json=payload)
+        url = f"/api/services/{domain}/{service}"
+        if return_response:
+            url += "?return_response"
+        resp = await self._client.post(url, json=payload)
         resp.raise_for_status()
         return resp.json()
+
+    async def get_config(self) -> dict[str, Any]:
+        """GET /api/config -- returns HA core configuration."""
+        try:
+            resp = await self._client.get("/api/config")
+            resp.raise_for_status()
+            return resp.json()
+        except Exception:
+            logger.warning("Failed to fetch HA config", exc_info=True)
+            return {}
 
     async def fire_event(
         self,

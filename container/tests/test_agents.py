@@ -87,6 +87,37 @@ class TestBaseAgent:
         assert agent._ha_client is None
         assert agent._entity_index is None
 
+    def test_build_time_location_context_with_full_context(self):
+        ctx = TaskContext(
+            timezone="Europe/Berlin",
+            location_name="Berlin",
+            local_time="2025-01-15 14:30",
+        )
+        result = BaseAgent._build_time_location_context(ctx)
+        assert "Current local time: 2025-01-15 14:30" in result
+        assert "Timezone: Europe/Berlin" in result
+        assert "Home location: Berlin" in result
+
+    def test_build_time_location_context_empty_when_no_local_time(self):
+        ctx = TaskContext(timezone="Europe/Berlin", location_name="Berlin")
+        result = BaseAgent._build_time_location_context(ctx)
+        assert result == ""
+
+    def test_build_time_location_context_none_context(self):
+        result = BaseAgent._build_time_location_context(None)
+        assert result == ""
+
+    def test_build_time_location_context_utc_timezone_omitted(self):
+        ctx = TaskContext(
+            timezone="UTC",
+            location_name="",
+            local_time="2025-01-15 14:30",
+        )
+        result = BaseAgent._build_time_location_context(ctx)
+        assert "Current local time: 2025-01-15 14:30" in result
+        assert "Timezone" not in result
+        assert "Home location" not in result
+
 
 # ---------------------------------------------------------------------------
 # Agent card validation (all agents)
@@ -353,6 +384,13 @@ class TestClimateAgent:
         mock_exec.assert_awaited_once()
         _, kwargs = mock_exec.call_args
         assert kwargs.get("agent_id") == "climate-agent"
+
+    def test_agent_card_weather_skills(self):
+        agent = ClimateAgent()
+        card = agent.agent_card
+        assert "current_weather" in card.skills
+        assert "weather_forecast" in card.skills
+        assert "weather" in card.description.lower()
 
 
 class TestMediaAgent:
@@ -2961,6 +2999,65 @@ class TestClimateExecutorQueries:
         )
         assert result["success"]
         assert "No climate" in result["speech"]
+
+    async def test_query_weather_success(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(return_value={
+            "state": "sunny",
+            "attributes": {"friendly_name": "Home", "temperature": 22, "temperature_unit": "C",
+                           "humidity": 60, "wind_speed": 10, "wind_speed_unit": "km/h"},
+        })
+        ha.get_states = AsyncMock(return_value=[
+            {"entity_id": "weather.home", "state": "sunny", "attributes": {"friendly_name": "Home"}},
+        ])
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="weather.home", friendly_name="Home")])
+        result = await execute_climate_action(
+            {"action": "query_weather", "entity": "home"},
+            ha, None, matcher, agent_id="climate-agent",
+        )
+        assert result["success"]
+        assert "sunny" in result["speech"]
+        assert "22" in result["speech"]
+
+    async def test_query_weather_auto_discover(self):
+        ha = AsyncMock()
+        ha.get_state = AsyncMock(return_value={
+            "state": "cloudy",
+            "attributes": {"friendly_name": "Home Weather", "temperature": 15},
+        })
+        ha.get_states = AsyncMock(return_value=[
+            {"entity_id": "weather.home", "state": "cloudy", "attributes": {"friendly_name": "Home Weather"}},
+        ])
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+        result = await execute_climate_action(
+            {"action": "query_weather", "entity": ""},
+            ha, None, matcher, agent_id="climate-agent",
+        )
+        assert result["success"]
+        assert "cloudy" in result["speech"]
+
+    async def test_query_weather_forecast_success(self):
+        ha = AsyncMock()
+        ha.call_service = AsyncMock(return_value={
+            "weather.home": {
+                "forecast": [
+                    {"datetime": "2025-01-16T00:00:00", "condition": "rainy", "temperature": 14, "templow": 5},
+                ],
+            },
+        })
+        ha.get_states = AsyncMock(return_value=[
+            {"entity_id": "weather.home", "state": "sunny", "attributes": {"friendly_name": "Home"}},
+        ])
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="weather.home", friendly_name="Home")])
+        result = await execute_climate_action(
+            {"action": "query_weather_forecast", "entity": "home"},
+            ha, None, matcher, agent_id="climate-agent",
+        )
+        assert result["success"]
+        assert "rainy" in result["speech"]
 
 
 class TestAutomationExecutorQueries:

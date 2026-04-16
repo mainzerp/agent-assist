@@ -1145,6 +1145,8 @@ class TestEntityIndexAsync:
 
     def test_batch_add(self):
         index, store = self._make_index()
+        # New entities not in ChromaDB
+        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
         entries = [
             make_entity_index_entry("light.kitchen", "Kitchen Light"),
             make_entity_index_entry("light.kitchen", "Kitchen Light Updated"),
@@ -1163,3 +1165,107 @@ class TestEntityIndexAsync:
         index, store = self._make_index()
         index.batch_add([])
         store.upsert.assert_not_called()
+
+    def test_batch_add_skips_unchanged_entities(self):
+        """Entities with same doc + metadata in ChromaDB are skipped entirely."""
+        index, store = self._make_index()
+        entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
+        store.get.return_value = {
+            "ids": ["light.kitchen"],
+            "documents": [entry.embedding_text],
+            "metadatas": [EntityIndex._build_metadata(entry)],
+        }
+        index.batch_add([entry])
+        store.upsert.assert_not_called()
+        store.update_metadata.assert_not_called()
+
+    def test_batch_add_metadata_only_update(self):
+        """Entity with same doc but different metadata uses update_metadata."""
+        index, store = self._make_index()
+        entry = make_entity_index_entry("light.kitchen", "Kitchen Light", area="kitchen")
+        old_meta = EntityIndex._build_metadata(entry)
+        old_meta["area"] = "old_area"  # different metadata
+        store.get.return_value = {
+            "ids": ["light.kitchen"],
+            "documents": [entry.embedding_text],
+            "metadatas": [old_meta],
+        }
+        index.batch_add([entry])
+        store.upsert.assert_not_called()
+        store.update_metadata.assert_called_once()
+        call_kwargs = store.update_metadata.call_args
+        assert call_kwargs[1]["ids"] == ["light.kitchen"]
+
+    def test_batch_add_doc_changed_triggers_upsert(self):
+        """Entity with different embedding text triggers full upsert."""
+        index, store = self._make_index()
+        entry = make_entity_index_entry("light.kitchen", "New Kitchen Light")
+        store.get.return_value = {
+            "ids": ["light.kitchen"],
+            "documents": ["Old Kitchen Light light kitchen"],
+            "metadatas": [{"friendly_name": "Old Kitchen Light", "domain": "light", "area": "kitchen", "device_class": "", "aliases": ""}],
+        }
+        index.batch_add([entry])
+        store.upsert.assert_called_once()
+        store.update_metadata.assert_not_called()
+
+    def test_batch_add_new_entity_triggers_upsert(self):
+        """Entity not in ChromaDB triggers full upsert."""
+        index, store = self._make_index()
+        entry = make_entity_index_entry("light.new", "New Light")
+        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
+        index.batch_add([entry])
+        store.upsert.assert_called_once()
+
+    def test_batch_add_mixed_operations(self):
+        """Mixed batch: 1 unchanged, 1 metadata-only, 1 doc-changed, 1 new."""
+        index, store = self._make_index()
+
+        unchanged = make_entity_index_entry("light.unchanged", "Unchanged")
+        meta_only = make_entity_index_entry("light.meta_only", "Meta Only", area="new_area")
+        doc_changed = make_entity_index_entry("light.doc_changed", "New Doc Name")
+        new_entry = make_entity_index_entry("light.new_one", "New One")
+
+        old_meta_only_meta = EntityIndex._build_metadata(meta_only)
+        old_meta_only_meta["area"] = "old_area"
+
+        store.get.return_value = {
+            "ids": ["light.unchanged", "light.meta_only", "light.doc_changed"],
+            "documents": [
+                unchanged.embedding_text,
+                meta_only.embedding_text,
+                "Old Doc Name light",
+            ],
+            "metadatas": [
+                EntityIndex._build_metadata(unchanged),
+                old_meta_only_meta,
+                {"friendly_name": "Old Doc Name", "domain": "light", "area": "", "device_class": "", "aliases": ""},
+            ],
+        }
+
+        index.batch_add([unchanged, meta_only, doc_changed, new_entry])
+
+        # upsert for doc_changed + new_entry
+        store.upsert.assert_called_once()
+        upsert_ids = store.upsert.call_args[1]["ids"]
+        assert "light.doc_changed" in upsert_ids
+        assert "light.new_one" in upsert_ids
+        assert len(upsert_ids) == 2
+
+        # update_metadata for meta_only
+        store.update_metadata.assert_called_once()
+        meta_ids = store.update_metadata.call_args[1]["ids"]
+        assert meta_ids == ["light.meta_only"]
+
+    def test_batch_add_get_failure_falls_back_to_upsert(self):
+        """If ChromaDB get() fails, all entries go through upsert."""
+        index, store = self._make_index()
+        store.get.side_effect = RuntimeError("ChromaDB error")
+        entries = [
+            make_entity_index_entry("light.kitchen", "Kitchen Light"),
+            make_entity_index_entry("light.bedroom", "Bedroom Light"),
+        ]
+        index.batch_add(entries)
+        store.upsert.assert_called_once()
+        ids = store.upsert.call_args[1]["ids"]
+        assert len(ids) == 2

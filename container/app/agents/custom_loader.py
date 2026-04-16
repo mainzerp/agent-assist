@@ -43,6 +43,12 @@ class DynamicAgent(BaseAgent):
 
     async def handle_task(self, task: AgentTask) -> TaskResult:
         prompt = self._system_prompt + "\nNEVER translate or normalize entity/room names."
+
+        # Inject time/location context
+        time_location = self._build_time_location_context(task.context)
+        if time_location:
+            prompt += f"\n\n{time_location}"
+
         messages = [{"role": "system", "content": prompt}]
 
         if task.context and task.context.conversation_turns:

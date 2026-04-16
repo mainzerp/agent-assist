@@ -402,6 +402,9 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("a2a.max_iterations", "3", "int", "a2a", "Max iterations per agent to prevent loops"),
         # General settings
         ("general.conversation_context_turns", "3", "int", "general", "Number of conversation turns to keep"),
+        # Home context settings
+        ("home.timezone", "", "string", "home", "Manual timezone override (e.g., Europe/Berlin). Empty = auto-detect from HA."),
+        ("home.location_name", "", "string", "home", "Manual home location name override. Empty = auto-detect from HA."),
     ]
 
     await db.executemany(
@@ -474,6 +477,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("light-agent", "domain_include", "switch"),
         ("music-agent", "domain_include", "media_player"),
         ("climate-agent", "domain_include", "climate"),
+        ("climate-agent", "domain_include", "weather"),
         ("media-agent", "domain_include", "media_player"),
         ("scene-agent", "domain_include", "scene"),
         ("automation-agent", "domain_include", "automation"),
@@ -790,4 +794,15 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         )
         await db.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (14)"
+        )
+
+    if current_version < 15:
+        # Migration 15: Add weather domain visibility for climate-agent
+        await db.execute(
+            "INSERT OR IGNORE INTO entity_visibility_rules "
+            "(agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            ("climate-agent", "domain_include", "weather"),
+        )
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (15)"
         )

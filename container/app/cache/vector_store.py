@@ -168,6 +168,23 @@ class VectorStore:
                 return self.get_collection(collection_name).count()
             raise
 
+    def update_metadata(
+        self,
+        collection_name: str,
+        ids: list[str],
+        metadatas: list[dict],
+    ) -> None:
+        """Update only metadata for existing entries (no re-embedding)."""
+        col = self.get_collection(collection_name)
+        try:
+            col.update(ids=ids, metadatas=metadatas)
+        except Exception as exc:
+            if "closed" in str(exc).lower():
+                self._reinitialize_sync()
+                self.get_collection(collection_name).update(ids=ids, metadatas=metadatas)
+            else:
+                raise
+
     def get(
         self,
         collection_name: str,

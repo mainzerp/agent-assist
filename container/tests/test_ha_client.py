@@ -104,6 +104,32 @@ class TestHARestClient:
         await client.close()
 
     @respx.mock
+    async def test_get_config_returns_ha_config(self):
+        config = {"time_zone": "Europe/Berlin", "location_name": "Berlin", "latitude": 52.52}
+        respx.get("http://ha.local/api/config").mock(return_value=httpx.Response(200, json=config))
+
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+
+        result = await client.get_config()
+        assert result["time_zone"] == "Europe/Berlin"
+        assert result["location_name"] == "Berlin"
+        await client.close()
+
+    @respx.mock
+    async def test_get_config_returns_empty_dict_on_error(self):
+        respx.get("http://ha.local/api/config").mock(return_value=httpx.Response(500))
+
+        client = HARestClient()
+        client._base_url = "http://ha.local"
+        client._client = httpx.AsyncClient(base_url="http://ha.local", headers={})
+
+        result = await client.get_config()
+        assert result == {}
+        await client.close()
+
+    @respx.mock
     async def test_test_connection_returns_true_on_200(self):
         respx.get("http://ha.local/api/").mock(return_value=httpx.Response(200, json={"message": "API running."}))
 

@@ -25,6 +25,8 @@ Project definition: .github/instructions/project-definition.md
 ```
 User Request
     ↓
+ORCHESTRATOR: Receive request, spawn subagent
+    ↓
 SUBAGENT #1: Research & Analysis
     - Reads files, analyzes codebase
     - Creates analysis doc in docs/SubAgent/[NAME_ANALYSIS].md
@@ -55,6 +57,7 @@ ORCHESTRATOR: Confirm with user via ask_user tool UNTIL user confirms task compl
 ### Research Subagent Template
 ```
 Research [topic]. Analyze relevant files in the codebase.
+Think thoroughly and consider all edge cases, dependencies, and implications.
 Create a analysis doc at: docs/SubAgent/[NAME_ANALYSIS].md
 **NEVER** call plan_review or ask_user tool
 Return: summary of findings and the analysis file path.
@@ -63,6 +66,7 @@ Return: summary of findings and the analysis file path.
 ### Planning Subagent Template
 ```
 Read the analysis at: docs/SubAgent/[NAME_ANALYSIS].md
+Think deeply and comprehensively. Consider all edge cases, risks, and ordering constraints.
 Create a detailed step-by-step implementation plan in docs/SubAgent/[NAME_PLAN].md.
 **NEVER** call plan_review or ask_user tool.
 Return: summary of the plan and the plan file path.
@@ -71,6 +75,7 @@ Return: summary of the plan and the plan file path.
 ### Implementation Subagent Template
 ```
 Read the approved plan at: docs/SubAgent/[NAME_PLAN].md
+Be efficient and direct. Follow the plan precisely without re-analyzing decisions already made.
 Implement according to the plan.
 **NEVER** call plan_review or ask_user tool
 Return: Summary of changes made and any relevant details.

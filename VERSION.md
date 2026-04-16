@@ -1,8 +1,22 @@
 # Version
 
-**Current Version:** 0.14.5
+**Current Version:** 0.16.0
 
 ## Version History
+
+### 0.16.0 -- Location/Time Context, Weather Support, Embedding Warmup
+
+- **Location/Time context for all agents**: All agents now receive city, timezone, and local datetime in their system prompts. Fetched from HA `/api/config` endpoint and cached (1h TTL) via `HomeContextProvider`. Manual override via `home.timezone` and `home.location_name` DB settings. Agents can answer time/location questions directly.
+- **Climate agent weather support**: Climate agent can now query HA `weather.*` entities for current conditions (`query_weather`) and multi-day forecasts (`query_weather_forecast`). Weather questions are routed to climate-agent instead of general-agent. Uses HA-native weather data from the user's own integrations.
+- **Embedding model preload at startup**: Local embedding model (`all-MiniLM-L6-v2`) is now loaded eagerly during `EmbeddingEngine.initialize()` instead of lazy-loading on first query, eliminating the ~7s cold-start penalty on the first cache lookup after container restart.
+- **HA service response support**: `HARestClient.call_service()` now supports `return_response=True` parameter for HA response services like `weather.get_forecasts`.
+
+### 0.15.0 -- Embedding Optimization
+
+- **Startup: sync instead of populate**: When ChromaDB already has entity data from a previous run, startup now uses `sync()` (smart diff) instead of `populate()` (full re-embed), reducing startup embeddings from hundreds/thousands to only genuinely changed entities.
+- **state_changed: skip unchanged embeddings**: `batch_add()` now compares incoming entity embedding text and metadata against what is in ChromaDB before upserting. Entities with unchanged embedding text are either skipped entirely or get metadata-only updates (no re-embedding).
+- **Cache flush: metadata-only updates**: `RoutingCache._flush_pending_updates()` and `ResponseCache._flush_pending_updates()` now use `update_metadata()` instead of `upsert()` with documents, preventing re-embedding when only hit_count/last_accessed metadata changes.
+- **VectorStore.update_metadata()**: New method that calls ChromaDB `update()` with only metadata, skipping the embedding function entirely.
 
 ### 0.14.5 -- Filler Safety + WS Keepalive
 

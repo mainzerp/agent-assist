@@ -282,22 +282,69 @@ class EntityIndex:
     # ------------------------------------------------------------------
 
     def batch_add(self, entries: list[EntityIndexEntry]) -> None:
-        """Add or update multiple entities in a single upsert call."""
+        """Add or update multiple entities, skipping unchanged embedding text."""
         if not entries:
             return
         seen: dict[str, EntityIndexEntry] = {}
         for e in entries:
             seen[e.entity_id] = e
         deduped = list(seen.values())
-        ids = [e.entity_id for e in deduped]
-        documents = [e.embedding_text for e in deduped]
-        metadatas = [self._build_metadata(e) for e in deduped]
-        self._store.upsert(
-            COLLECTION_ENTITY_INDEX,
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas,
-        )
+
+        # Fetch current docs/metadata from ChromaDB to diff
+        all_ids = [e.entity_id for e in deduped]
+        try:
+            current = self._store.get(
+                COLLECTION_ENTITY_INDEX,
+                ids=all_ids,
+                include=["documents", "metadatas"],
+            )
+            current_map: dict[str, tuple[str, dict]] = {}
+            for i, eid in enumerate(current.get("ids", [])):
+                current_map[eid] = (
+                    current["documents"][i],
+                    current["metadatas"][i],
+                )
+        except Exception:
+            current_map = {}
+
+        # Split into: needs re-embed (doc changed) vs metadata-only vs new
+        to_upsert: list[EntityIndexEntry] = []
+        meta_only_ids: list[str] = []
+        meta_only_metas: list[dict] = []
+
+        for entry in deduped:
+            new_doc = entry.embedding_text
+            new_meta = self._build_metadata(entry)
+            if entry.entity_id in current_map:
+                old_doc, old_meta = current_map[entry.entity_id]
+                if new_doc == old_doc and new_meta == old_meta:
+                    continue  # Unchanged -- skip entirely
+                if new_doc == old_doc:
+                    # Only metadata changed -- no re-embedding needed
+                    meta_only_ids.append(entry.entity_id)
+                    meta_only_metas.append(new_meta)
+                else:
+                    to_upsert.append(entry)
+            else:
+                to_upsert.append(entry)
+
+        if to_upsert:
+            ids = [e.entity_id for e in to_upsert]
+            documents = [e.embedding_text for e in to_upsert]
+            metadatas = [self._build_metadata(e) for e in to_upsert]
+            self._store.upsert(
+                COLLECTION_ENTITY_INDEX,
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas,
+            )
+
+        if meta_only_ids:
+            self._store.update_metadata(
+                COLLECTION_ENTITY_INDEX,
+                ids=meta_only_ids,
+                metadatas=meta_only_metas,
+            )
 
     # ------------------------------------------------------------------
     # Async wrappers (offload to thread pool via run_in_executor)

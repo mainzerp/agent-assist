@@ -672,3 +672,162 @@ class TestReadActionCacheable:
         action = {"action": "list_lights", "entity": ""}
         result = await execute_action(action, ha_client, entity_index, entity_matcher)
         assert result["cacheable"] is False
+
+
+# ---------------------------------------------------------------------------
+# Climate executor weather action tests
+# ---------------------------------------------------------------------------
+
+
+class TestClimateExecutorWeatherActions:
+    """Tests for climate executor weather query actions."""
+
+    @pytest.fixture()
+    def ha_client(self):
+        client = AsyncMock()
+        client.call_service = AsyncMock(return_value={})
+        client.get_state = AsyncMock(return_value={
+            "state": "sunny",
+            "attributes": {
+                "friendly_name": "Home",
+                "temperature": 22.5,
+                "temperature_unit": "C",
+                "humidity": 55,
+                "wind_speed": 12.3,
+                "wind_speed_unit": "km/h",
+                "pressure": 1013,
+                "pressure_unit": "hPa",
+            },
+        })
+        client.get_states = AsyncMock(return_value=[
+            {"entity_id": "weather.home", "state": "sunny",
+             "attributes": {"friendly_name": "Home"}},
+        ])
+        return client
+
+    @pytest.mark.asyncio
+    async def test_weather_domain_validation_accepts(self):
+        from app.agents.climate_executor import _validate_domain
+        assert _validate_domain("weather.home") is True
+
+    @pytest.mark.asyncio
+    async def test_query_weather_with_entity_match(self, ha_client):
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "weather.home"
+        match_result.friendly_name = "Home"
+        match_result.score = 0.9
+        match_result.signal_scores = {}
+        matcher.match = AsyncMock(return_value=[match_result])
+
+        result = await execute_climate_action(
+            {"action": "query_weather", "entity": "home weather"},
+            ha_client, None, matcher, agent_id="climate-agent",
+        )
+        assert result["success"] is True
+        assert "sunny" in result["speech"]
+        assert "22.5" in result["speech"]
+        assert "55%" in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_query_weather_auto_discover(self, ha_client):
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+
+        result = await execute_climate_action(
+            {"action": "query_weather", "entity": ""},
+            ha_client, None, matcher, agent_id="climate-agent",
+        )
+        assert result["success"] is True
+        assert "sunny" in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_query_weather_no_entity_found(self, ha_client):
+        ha_client.get_states = AsyncMock(return_value=[])
+        matcher = AsyncMock()
+        matcher.match = AsyncMock(return_value=[])
+
+        result = await execute_climate_action(
+            {"action": "query_weather", "entity": ""},
+            ha_client, None, matcher, agent_id="climate-agent",
+        )
+        assert result["success"] is False
+        assert "No weather entities" in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_query_weather_forecast_service_call(self, ha_client):
+        ha_client.call_service = AsyncMock(return_value={
+            "weather.home": {
+                "forecast": [
+                    {"datetime": "2025-01-16T00:00:00", "condition": "cloudy",
+                     "temperature": 18, "templow": 8, "precipitation": 2.5, "wind_speed": 15},
+                    {"datetime": "2025-01-17T00:00:00", "condition": "rainy",
+                     "temperature": 15, "templow": 6, "precipitation": 10, "wind_speed": 20},
+                ],
+            },
+        })
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "weather.home"
+        match_result.friendly_name = "Home"
+        match_result.score = 0.9
+        match_result.signal_scores = {}
+        matcher.match = AsyncMock(return_value=[match_result])
+
+        result = await execute_climate_action(
+            {"action": "query_weather_forecast", "entity": "home"},
+            ha_client, None, matcher, agent_id="climate-agent",
+        )
+        assert result["success"] is True
+        assert "cloudy" in result["speech"]
+        assert "rainy" in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_query_weather_forecast_fallback_to_state(self, ha_client):
+        ha_client.call_service = AsyncMock(side_effect=Exception("Service not found"))
+        ha_client.get_state = AsyncMock(return_value={
+            "state": "sunny",
+            "attributes": {
+                "friendly_name": "Home",
+                "forecast": [
+                    {"datetime": "2025-01-16T00:00:00", "condition": "partly_cloudy",
+                     "temperature": 20, "templow": 10},
+                ],
+            },
+        })
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "weather.home"
+        match_result.friendly_name = "Home"
+        match_result.score = 0.9
+        match_result.signal_scores = {}
+        matcher.match = AsyncMock(return_value=[match_result])
+
+        result = await execute_climate_action(
+            {"action": "query_weather_forecast", "entity": "home"},
+            ha_client, None, matcher, agent_id="climate-agent",
+        )
+        assert result["success"] is True
+        assert "partly_cloudy" in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_query_weather_forecast_no_data(self, ha_client):
+        ha_client.call_service = AsyncMock(side_effect=Exception("Service not found"))
+        ha_client.get_state = AsyncMock(return_value={
+            "state": "sunny",
+            "attributes": {"friendly_name": "Home"},
+        })
+        matcher = AsyncMock()
+        match_result = MagicMock()
+        match_result.entity_id = "weather.home"
+        match_result.friendly_name = "Home"
+        match_result.score = 0.9
+        match_result.signal_scores = {}
+        matcher.match = AsyncMock(return_value=[match_result])
+
+        result = await execute_climate_action(
+            {"action": "query_weather_forecast", "entity": "home"},
+            ha_client, None, matcher, agent_id="climate-agent",
+        )
+        assert result["success"] is False
+        assert "not available" in result["speech"]

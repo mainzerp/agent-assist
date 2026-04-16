@@ -68,7 +68,7 @@ light-agent (95%): turn off the bedroom lamp
 
 Input: "what's the weather like tomorrow?"
 Output:
-general-agent (90%): weather forecast for tomorrow
+climate-agent (90%): weather forecast for tomorrow
 
 Input: "turn on the kitchen light and play some jazz music"
 Output:

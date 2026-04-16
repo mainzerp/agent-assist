@@ -46,6 +46,11 @@ class ActionableAgent(BaseAgent):
         span_collector = task.span_collector
         system_prompt = self._load_prompt(self._prompt_name)
 
+        # Inject time/location context
+        time_location = self._build_time_location_context(task.context)
+        if time_location:
+            system_prompt += f"\n\n{time_location}"
+
         # Inject language directive for non-English users
         language = None
         if task.context:

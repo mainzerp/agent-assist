@@ -41,8 +41,10 @@ class EmbeddingEngine:
         return self._local_model
 
     async def initialize(self) -> None:
-        """Load config from DB. Must call before embed/embed_batch."""
+        """Load config from DB and pre-load the model. Must call before embed/embed_batch."""
         await self._load_config()
+        if self._provider == "local":
+            self._get_local_model()
 
     def get_info(self) -> dict:
         """Return embedding model configuration info."""
