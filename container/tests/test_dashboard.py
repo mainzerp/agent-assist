@@ -59,6 +59,7 @@ def _build_dashboard_app(*, override_session: bool = True):
     app.state.presence_detector = None
     app.state.plugin_loader = MagicMock()
     app.state.plugin_loader.loaded_plugins = {}
+    app.state.setup_runtime_initialized = True
     return app
 
 
@@ -295,6 +296,16 @@ class TestOverviewExtended:
         assert isinstance(data["entity_count"], int)
         assert isinstance(data["avg_latency_ms"], (int, float))
         assert isinstance(data["total_conversations"], int)
+
+    async def test_overview_extended_attempts_runtime_bootstrap(self, dashboard_client: httpx.AsyncClient):
+        with patch(
+            "app.api.routes.dashboard_api.ensure_setup_runtime_initialized",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_init:
+            resp = await dashboard_client.get("/api/admin/overview/extended")
+            assert resp.status_code == 200
+            mock_init.assert_awaited_once()
 
 
 # ===================================================================

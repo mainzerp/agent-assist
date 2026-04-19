@@ -30,6 +30,7 @@ from app.db.repository import (
 )
 from app.models.agent import AgentTask, TaskContext
 from app.models.conversation import StreamToken
+from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import require_admin_session
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,7 @@ class PersonalityConfigUpdate(BaseModel):
 @router.get("/overview")
 async def get_overview(request: Request):
     """Aggregated overview metrics for the dashboard home page."""
+    await ensure_setup_runtime_initialized(request.app)
     registry = request.app.state.registry
     entity_index = request.app.state.entity_index
     cache_manager = request.app.state.cache_manager
@@ -225,6 +227,7 @@ async def get_overview_extended(request: Request):
     Returns all data the overview needs in a single call: metrics, agent
     distribution, cache tier stats, recent traces, and error/warning info.
     """
+    await ensure_setup_runtime_initialized(request.app)
     registry = request.app.state.registry
     entity_index = request.app.state.entity_index
     mcp_registry = request.app.state.mcp_registry
@@ -476,6 +479,7 @@ async def update_agent_prompt(agent_id: str, payload: PromptUpdate):
 @router.get("/health/extended")
 async def get_extended_health(request: Request):
     """Extended health check for all subsystems."""
+    await ensure_setup_runtime_initialized(request.app)
     ha_client = request.app.state.ha_client
     entity_index = request.app.state.entity_index
     cache_manager = request.app.state.cache_manager

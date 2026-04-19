@@ -11,6 +11,7 @@ from app.cache.vector_store import (
     COLLECTION_RESPONSE_CACHE,
     COLLECTION_ROUTING_CACHE,
 )
+from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import require_admin_session
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ class FlushRequest(BaseModel):
 @router.get("/stats")
 async def get_cache_stats(request: Request):
     """Cache stats per tier."""
+    await ensure_setup_runtime_initialized(request.app)
     cache_manager = request.app.state.cache_manager
     if not cache_manager:
         return {"routing": {}, "response": {}, "status": "not_initialized"}

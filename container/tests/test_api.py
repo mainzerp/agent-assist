@@ -99,6 +99,7 @@ def _build_test_app(
     plugin_ldr = MagicMock()
     plugin_ldr.loaded_plugins = {}
     app.state.plugin_loader = plugin_ldr
+    app.state.setup_runtime_initialized = True
     return app
 
 

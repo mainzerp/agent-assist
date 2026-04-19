@@ -11,6 +11,7 @@ from app.cache.embedding import get_embedding_info
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX
 from app.db.repository import EntityVisibilityRepository, SettingsRepository
 from app.entity.ingest import parse_ha_states
+from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import require_admin_session
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ router = APIRouter(
 @router.get("/stats")
 async def get_entity_index_stats(request: Request):
     """Entity index stats with per-domain breakdown."""
+    await ensure_setup_runtime_initialized(request.app)
     entity_index = request.app.state.entity_index
     if not entity_index:
         return {"count": 0, "status": "not_initialized", "domains": {}, "embedding": None, "sync": {}}

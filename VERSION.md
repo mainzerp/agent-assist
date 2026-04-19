@@ -1,8 +1,18 @@
 # Version
 
-**Current Version:** 0.18.21
+**Current Version:** 0.18.22
 
 ## Version History
+
+### 0.18.22 -- In-process post-setup runtime bootstrap
+
+- Completing the setup wizard now initializes the HA-dependent runtime in the
+  running process instead of leaving `ha_client`, `entity_index`, and
+  `cache_manager` uninitialized until container restart.
+- Admin overview/health/cache/entity-index routes now attempt the same guarded
+  bootstrap when setup is complete but the runtime is still stale.
+- Dashboard overview health badges no longer throw Alpine errors before the
+  health payload finishes loading.
 
 ### 0.18.21 -- Docker Compose GHCR tag
 

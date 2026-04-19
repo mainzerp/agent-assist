@@ -194,6 +194,8 @@ async def lifespan(app: FastAPI):
 
     # Check if setup is complete before initializing HA-dependent components
     setup_complete = await SetupStateRepository.is_complete()
+    app.state.setup_runtime_init_lock = asyncio.Lock()
+    app.state.setup_runtime_initialized = False
 
     ha_client = None
     entity_index = None
@@ -266,6 +268,7 @@ async def lifespan(app: FastAPI):
     purge_task = None
     if setup_complete and cache_manager:
         purge_task = asyncio.create_task(_purge_stale_response_cache(cache_manager))
+        app.state.purge_task = purge_task
 
     # Initialize A2A layer
     transport = InProcessTransport(registry)
@@ -467,6 +470,8 @@ async def lifespan(app: FastAPI):
 
         ws_task = asyncio.create_task(ws_client.run())
         flush_task = asyncio.create_task(_flush_entity_updates())
+        app.state.ws_task = ws_task
+        app.state.flush_task = flush_task
 
         # FLOW-VERIFY-1: let the REST client use the live WS stream for
         # post-action state verification (see ``HARestClient.expect_state``).
@@ -527,6 +532,7 @@ async def lifespan(app: FastAPI):
     app.state.presence_detector = presence_detector
     app.state.sync_task = sync_task
     app.state.alarm_monitor = alarm_monitor
+    app.state.setup_runtime_initialized = bool(setup_complete)
 
     # --- Plugin System (Batch F) ---
     from app.plugins.base import PluginContext
@@ -558,6 +564,12 @@ async def lifespan(app: FastAPI):
         await plugin_loader.run_lifecycle(LifecyclePhase.SHUTDOWN)
     except Exception:
         logger.warning("Plugin shutdown error (continuing cleanup)", exc_info=True)
+
+    purge_task = getattr(app.state, "purge_task", purge_task)
+    flush_task = getattr(app.state, "flush_task", flush_task)
+    ws_task = getattr(app.state, "ws_task", ws_task)
+    sync_task = getattr(app.state, "sync_task", sync_task)
+    alarm_monitor = getattr(app.state, "alarm_monitor", alarm_monitor)
 
     if alarm_monitor:
         await alarm_monitor.stop()

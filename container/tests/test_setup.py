@@ -58,6 +58,7 @@ def _build_setup_app(*, setup_complete: bool = False):
     app.state.presence_detector = None
     app.state.plugin_loader = MagicMock()
     app.state.plugin_loader.loaded_plugins = {}
+    app.state.setup_runtime_initialized = setup_complete
     return app
 
 
@@ -203,6 +204,23 @@ class TestSetupStepSubmissions:
             )
             assert resp.status_code == 303
             assert "/setup/step/3" in resp.headers.get("location", "")
+
+    async def test_step5_triggers_runtime_initialization(self, setup_client: httpx.AsyncClient):
+        with (
+            patch(
+                "app.setup.routes.SetupStateRepository.set_step_completed",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.setup.routes.ensure_setup_runtime_initialized",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_init,
+        ):
+            resp = await csrf_post(setup_client, "/setup/step/5", get_url="/setup/step/5")
+            assert resp.status_code == 303
+            assert "/dashboard/" in resp.headers.get("location", "")
+            mock_init.assert_awaited_once()
 
     async def test_step3_api_key_generation(self, setup_client: httpx.AsyncClient):
         with (

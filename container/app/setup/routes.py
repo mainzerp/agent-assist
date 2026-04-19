@@ -18,6 +18,7 @@ from app.db.repository import (
     SetupStateRepository,
 )
 from app.ha_client.rest import test_ha_connection
+from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import (
     ensure_csrf_token,
     require_admin_or_setup_open,
@@ -164,6 +165,10 @@ async def complete_setup(request: Request):
     """Step 5: Mark setup complete and trigger post-setup initialization."""
     await SetupStateRepository.set_step_completed("review_complete")
     logger.info("Setup wizard completed, triggering post-setup initialization")
+    try:
+        await ensure_setup_runtime_initialized(request.app)
+    except Exception:
+        logger.warning("Post-setup runtime initialization failed", exc_info=True)
     return RedirectResponse(url="/dashboard/", status_code=303)
 
 

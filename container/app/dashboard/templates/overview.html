@@ -97,9 +97,9 @@
     </div>
     <div class="health-bar" x-show="health">
         <template x-for="comp in healthComponents" :key="comp.key">
-            <div class="health-badge" :class="getBadgeClass(health[comp.key])">
-                <span class="status-dot" :class="getStatusClass(health[comp.key])"></span>
-                <span x-text="comp.label + getDetail(comp.key, health[comp.key])"></span>
+            <div class="health-badge" :class="getBadgeClass(health ? health[comp.key] : null)">
+                <span class="status-dot" :class="getStatusClass(health ? health[comp.key] : null)"></span>
+                <span x-text="comp.label + getDetail(comp.key, health ? health[comp.key] : null)"></span>
             </div>
         </template>
     </div>
