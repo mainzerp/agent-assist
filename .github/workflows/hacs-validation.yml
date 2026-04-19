@@ -28,3 +28,6 @@ jobs:
         uses: hacs/action@main
         with:
           category: integration
+          # GitHub repository description and topics are org-level metadata, not files in this repo.
+          # Add them on github.com/.../settings before submitting to hacs/default; then drop this line.
+          ignore: topics description

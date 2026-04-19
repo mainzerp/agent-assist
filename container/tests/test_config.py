@@ -26,17 +26,32 @@ class TestSettingsDefaults:
         s = Settings()
         assert s.log_level == "INFO"
 
-    def test_default_chromadb_persist_dir(self):
+    def test_default_chromadb_persist_dir(self, monkeypatch):
+        monkeypatch.delenv("CHROMADB_PERSIST_DIR", raising=False)
+        monkeypatch.delenv("SQLITE_DB_PATH", raising=False)
+        monkeypatch.delenv("FERNET_KEY_PATH", raising=False)
         from app.config import Settings
 
         s = Settings()
         assert s.chromadb_persist_dir == "/data/chromadb"
 
-    def test_default_sqlite_db_path(self):
+    def test_default_sqlite_db_path(self, monkeypatch):
+        monkeypatch.delenv("CHROMADB_PERSIST_DIR", raising=False)
+        monkeypatch.delenv("SQLITE_DB_PATH", raising=False)
+        monkeypatch.delenv("FERNET_KEY_PATH", raising=False)
         from app.config import Settings
 
         s = Settings()
         assert s.sqlite_db_path == "/data/agent_assist.db"
+
+    def test_default_fernet_key_path(self, monkeypatch):
+        monkeypatch.delenv("CHROMADB_PERSIST_DIR", raising=False)
+        monkeypatch.delenv("SQLITE_DB_PATH", raising=False)
+        monkeypatch.delenv("FERNET_KEY_PATH", raising=False)
+        from app.config import Settings
+
+        s = Settings()
+        assert s.fernet_key_path == "/data/.fernet_key"
 
 
 class TestSettingsEnvOverrides:
@@ -76,6 +91,13 @@ class TestSettingsEnvOverrides:
 
         s = Settings()
         assert s.sqlite_db_path == "/tmp/test.db"
+
+    def test_override_fernet_key_path(self, monkeypatch):
+        monkeypatch.setenv("FERNET_KEY_PATH", "/tmp/.fernet_key_test")
+        from app.config import Settings
+
+        s = Settings()
+        assert s.fernet_key_path == "/tmp/.fernet_key_test"
 
 
 class TestSettingsValidation:

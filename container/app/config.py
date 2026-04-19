@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     chromadb_persist_dir: str = "/data/chromadb"
     sqlite_db_path: str = "/data/agent_assist.db"
+    fernet_key_path: str = "/data/.fernet_key"
     # SEC-3: Defaults to False so local HTTP development still works.
     # Production deployments behind HTTPS / a reverse proxy MUST set
     # ``COOKIE_SECURE=true`` so the admin session and CSRF cookies are

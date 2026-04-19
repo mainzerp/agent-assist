@@ -6,13 +6,14 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from app.config import settings
 from app.db.repository import SecretsRepository
 
 SESSION_SIGNING_INFO = b"agent-assist session signing"
 
 logger = logging.getLogger(__name__)
 
-FERNET_KEY_PATH = Path("/data/.fernet_key")
+FERNET_KEY_PATH = Path(settings.fernet_key_path)
 
 _fernet: Fernet | None = None
 _key_lock = threading.Lock()
