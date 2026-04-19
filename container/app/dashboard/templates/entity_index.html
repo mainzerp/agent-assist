@@ -140,6 +140,202 @@
     </div>
 
     <!-- ================================================================== -->
+    <!-- Entity Match Preview                                               -->
+    <!-- ================================================================== -->
+    <div class="card mb-lg">
+        <h3 class="card-title mb-md">Entity Match Preview</h3>
+        <p class="text-dim mb-md">
+            Run the live resolver and hybrid matcher against a query and see
+            exactly what an agent would receive. Pick an agent to apply its
+            visibility rules.
+        </p>
+        <div class="flex-center gap-sm mb-md" style="flex-wrap: wrap;">
+            <input type="text"
+                   class="form-input"
+                   style="flex: 1; min-width: 220px;"
+                   placeholder='e.g. "Keller", "schlafzimmer licht", "light.keller"'
+                   x-model="previewQuery"
+                   @keydown.enter.prevent="runPreview()">
+            <select class="form-input"
+                    style="width: auto; min-width: 180px;"
+                    x-model="previewAgent">
+                <option value="">All (no visibility filter)</option>
+                <template x-for="a in allAgents" :key="'preview-agent-' + a">
+                    <option :value="a" x-text="a"></option>
+                </template>
+            </select>
+            <button class="btn btn-primary btn-sm"
+                    @click="runPreview()"
+                    :disabled="previewing || !previewQuery.trim()">
+                <span x-show="!previewing">Preview</span>
+                <span x-show="previewing">Running...</span>
+            </button>
+        </div>
+
+        <template x-if="previewError">
+            <div class="alert alert-error mb-md" x-text="previewError"></div>
+        </template>
+
+        <template x-if="previewResult">
+            <div>
+                <!-- Deterministic block (light-agent path) -->
+                <div class="mb-md">
+                    <h4 class="mb-sm" style="font-size: 0.95rem;">
+                        Deterministic Resolution
+                        <span class="text-dim" style="font-size: 0.75rem; font-weight: normal;">
+                            (light / switch / sensor executor path)
+                        </span>
+                    </h4>
+                    <div class="stat-grid-3">
+                        <div class="stat-card">
+                            <div class="stat-card-header">
+                                <span class="stat-card-label">Entity ID</span>
+                            </div>
+                            <div class="stat-card-value" style="font-size: 0.9rem; word-break: break-all;">
+                                <template x-if="previewResult.deterministic.entity_id">
+                                    <span class="badge badge-teal" x-text="previewResult.deterministic.entity_id"></span>
+                                </template>
+                                <template x-if="!previewResult.deterministic.entity_id">
+                                    <span class="text-dim">-</span>
+                                </template>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-card-header">
+                                <span class="stat-card-label">Friendly Name</span>
+                            </div>
+                            <div class="stat-card-value" style="font-size: 0.95rem;"
+                                 x-text="previewResult.deterministic.friendly_name || '-'"></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-card-header">
+                                <span class="stat-card-label">Resolution Path</span>
+                            </div>
+                            <div class="stat-card-value" style="font-size: 0.9rem;"
+                                 x-text="previewResult.deterministic.metadata?.resolution_path || '-'"></div>
+                        </div>
+                    </div>
+                    <div class="flex-center gap-sm mt-sm" style="flex-wrap: wrap;">
+                        <span class="badge"
+                              :class="previewResult.deterministic.domain_allowed ? 'badge-green' : 'badge-red'">
+                            <span x-show="previewResult.deterministic.domain_allowed">domain gate: ok</span>
+                            <span x-show="!previewResult.deterministic.domain_allowed">domain gate: rejected</span>
+                        </span>
+                        <template x-if="previewResult.deterministic.metadata?.top_score !== undefined">
+                            <span class="badge badge-blue">
+                                top_score:
+                                <span x-text="previewResult.deterministic.metadata.top_score"></span>
+                            </span>
+                        </template>
+                        <template x-if="previewResult.deterministic.metadata?.match_count !== undefined">
+                            <span class="badge">
+                                match_count:
+                                <span x-text="previewResult.deterministic.metadata.match_count"></span>
+                            </span>
+                        </template>
+                    </div>
+                    <template x-if="previewResult.deterministic.speech">
+                        <div class="alert alert-warning mt-sm"
+                             x-text="previewResult.deterministic.speech"></div>
+                    </template>
+                    <template x-if="previewResult.deterministic.error">
+                        <div class="alert alert-error mt-sm"
+                             x-text="'Resolver error: ' + previewResult.deterministic.error"></div>
+                    </template>
+                </div>
+
+                <!-- Hybrid matcher candidates -->
+                <div class="mb-md">
+                    <h4 class="mb-sm" style="font-size: 0.95rem;">
+                        Hybrid Matcher Candidates
+                        <span class="text-dim" style="font-size: 0.75rem; font-weight: normal;">
+                            (climate / media / security / … executor path)
+                        </span>
+                    </h4>
+                    <template x-if="previewResult.hybrid_error">
+                        <div class="alert alert-error"
+                             x-text="'Matcher error: ' + previewResult.hybrid_error"></div>
+                    </template>
+                    <template x-if="!previewResult.hybrid_error && previewResult.hybrid.length === 0">
+                        <div class="empty-state"><p>No candidates above confidence threshold.</p></div>
+                    </template>
+                    <div class="table-container" x-show="previewResult.hybrid.length > 0">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Entity ID</th>
+                                    <th>Friendly Name</th>
+                                    <th>Domain</th>
+                                    <th>Area</th>
+                                    <th style="text-align: right;">Score</th>
+                                    <th>Signals</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="(c, idx) in previewResult.hybrid" :key="'hc-' + idx + '-' + c.entity_id">
+                                    <tr>
+                                        <td style="white-space: nowrap;">
+                                            <span class="badge badge-teal" x-text="c.entity_id"></span>
+                                        </td>
+                                        <td x-text="c.friendly_name"></td>
+                                        <td><span class="badge" x-text="c.domain || '-'"></span></td>
+                                        <td x-text="c.area || '-'"></td>
+                                        <td style="text-align: right; font-variant-numeric: tabular-nums;"
+                                            x-text="c.score.toFixed(3)"></td>
+                                        <td>
+                                            <div style="display: flex; flex-wrap: wrap; gap: 0.25rem;">
+                                                <template x-for="(v, k) in c.signal_scores" :key="'sig-' + idx + '-' + k">
+                                                    <span class="badge"
+                                                          style="font-size: 0.7rem;"
+                                                          x-text="k + ': ' + Number(v).toFixed(2)"></span>
+                                                </template>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Visibility summary -->
+                <div>
+                    <h4 class="mb-sm" style="font-size: 0.95rem;">Visibility</h4>
+                    <div class="flex-center gap-sm" style="flex-wrap: wrap;">
+                        <template x-if="previewResult.agent_id">
+                            <span class="badge badge-blue"
+                                  x-text="'agent: ' + previewResult.agent_id"></span>
+                        </template>
+                        <template x-if="!previewResult.agent_id">
+                            <span class="badge text-dim">no agent selected (no visibility filter)</span>
+                        </template>
+                        <template x-if="previewResult.visibility.total_entity_count !== null">
+                            <span class="badge">
+                                <span x-text="previewResult.visibility.visible_entity_count !== null
+                                    ? previewResult.visibility.visible_entity_count + ' / ' + previewResult.visibility.total_entity_count + ' visible'
+                                    : previewResult.visibility.total_entity_count + ' entities indexed'"></span>
+                            </span>
+                        </template>
+                    </div>
+                    <template x-if="previewResult.agent_id && previewResult.visibility.rules.length > 0">
+                        <div class="mt-sm" style="display: flex; flex-wrap: wrap; gap: 0.25rem;">
+                            <template x-for="(r, ri) in previewResult.visibility.rules" :key="'vr-' + ri">
+                                <span class="badge"
+                                      x-text="r.rule_type + ' = ' + r.rule_value"></span>
+                            </template>
+                        </div>
+                    </template>
+                    <template x-if="previewResult.agent_id && previewResult.visibility.rules.length === 0">
+                        <p class="text-dim mt-sm" style="font-size: 0.8rem;">
+                            No visibility rules defined for this agent (full access).
+                        </p>
+                    </template>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- ================================================================== -->
     <!-- Domain Agent Mapping                                               -->
     <!-- ================================================================== -->
     <div class="card mb-lg">
@@ -296,9 +492,39 @@ function entityIndexPage() {
         dcMapLoading: false,
         dcMapMessage: '',
 
+        // --- Match Preview state ---
+        previewQuery: '',
+        previewAgent: '',
+        previewing: false,
+        previewResult: null,
+        previewError: '',
+
         init() {
             this.loadStats();
             this.loadDomainAgentMap();
+        },
+
+        async runPreview() {
+            const q = (this.previewQuery || '').trim();
+            if (!q) return;
+            this.previewing = true;
+            this.previewError = '';
+            this.previewResult = null;
+            try {
+                const params = new URLSearchParams({ q });
+                if (this.previewAgent) params.set('agent_id', this.previewAgent);
+                const resp = await fetch('/api/admin/entity-index/match-preview?' + params.toString());
+                if (!resp.ok) {
+                    const detail = await resp.text();
+                    this.previewError = 'HTTP ' + resp.status + ': ' + detail;
+                } else {
+                    this.previewResult = await resp.json();
+                }
+            } catch (e) {
+                this.previewError = 'Request failed: ' + e;
+                console.error('match-preview failed', e);
+            }
+            this.previewing = false;
         },
 
         // --- Entity Index methods ---

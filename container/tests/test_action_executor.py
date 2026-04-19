@@ -4,9 +4,47 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+def _attach_expect_state_shim(client):
+    """Install an ``expect_state`` async context manager on a mocked client.
+
+    The shim mimics :meth:`HARestClient.expect_state` in "no WS observer"
+    mode: it yields a mutable dict to the ``with`` body and, on exit, fills
+    ``new_state`` from a single call to ``client.get_state`` (or leaves it
+    ``None`` if ``get_state`` raises). That keeps ``execute_action`` tests
+    deterministic without pulling the real REST client into the unit test.
+    """
+
+    @asynccontextmanager
+    async def _expect_state(
+        entity_id,
+        *,
+        expected=None,
+        timeout=0.05,
+        poll_interval=0.01,
+        poll_max=0.05,
+    ):
+        result = {"new_state": None}
+        yield result
+        try:
+            state_resp = await client.get_state(entity_id)
+        except Exception:
+            return
+        if isinstance(state_resp, dict):
+            state = state_resp.get("state")
+            if expected is None or state == expected:
+                result["new_state"] = state
+            else:
+                result["new_state"] = state
+
+    client.expect_state = _expect_state
+    client.set_state_observer = MagicMock()
+    return client
 
 # Mock litellm before importing app modules
 _litellm_mock = MagicMock()
@@ -137,12 +175,26 @@ class TestParseAction:
 class TestExecuteAction:
     """Tests for execute_action() with mocked dependencies."""
 
+    @pytest.fixture(autouse=True)
+    def _fast_state_verify(self, monkeypatch):
+        """Shrink FLOW-VERIFY-1 timing knobs so tests stay fast."""
+        from app.agents import action_executor as _ae
+
+        async def _fast(key, *, default):
+            return {
+                "state_verify.ws_timeout_sec": 0.05,
+                "state_verify.poll_interval_sec": 0.01,
+                "state_verify.poll_max_sec": 0.05,
+            }.get(key, default)
+
+        monkeypatch.setattr(_ae, "_settings_float", _fast)
+
     @pytest.fixture()
     def ha_client(self):
         client = AsyncMock()
-        client.call_service = AsyncMock(return_value={})
+        client.call_service = AsyncMock(return_value=[])
         client.get_state = AsyncMock(return_value={"state": "on", "attributes": {}})
-        return client
+        return _attach_expect_state_shim(client)
 
     @pytest.fixture()
     def entity_matcher(self):
@@ -421,6 +473,87 @@ class TestExecuteAction:
         assert result["success"] is True
         assert result["entity_id"] == "light.keller"
         matcher.match.assert_not_awaited()
+
+    # ------------------------------------------------------------------
+    # FLOW-VERIFY-1: post-action state verification and speech tests
+    # ------------------------------------------------------------------
+    @pytest.mark.asyncio
+    async def test_uses_call_service_response_state(
+        self, ha_client, entity_matcher, entity_index
+    ):
+        """call_service returning a state list is authoritative over get_state."""
+        ha_client.call_service = AsyncMock(return_value=[
+            {"entity_id": "light.kitchen_ceiling", "state": "off"}
+        ])
+        ha_client.get_state = AsyncMock(
+            return_value={"state": "on", "attributes": {}},
+        )
+
+        action = {"action": "turn_off", "entity": "kitchen light"}
+        result = await execute_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        assert result["new_state"] == "off"
+        assert "Kitchen Ceiling is now off" in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_uses_ws_waiter_when_available(
+        self, ha_client, entity_matcher, entity_index
+    ):
+        """If a WS observer resolves the waiter, get_state must not be consulted."""
+        ha_client.call_service = AsyncMock(return_value=None)
+        ha_client.get_state = AsyncMock(
+            return_value={"state": "on", "attributes": {}},
+        )
+
+        @asynccontextmanager
+        async def _ws_expect_state(entity_id, *, expected=None, **_kw):
+            result = {"new_state": None}
+            yield result
+            result["new_state"] = expected or "off"
+
+        ha_client.expect_state = _ws_expect_state
+
+        action = {"action": "turn_off", "entity": "kitchen light"}
+        result = await execute_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        assert result["new_state"] == "off"
+        ha_client.get_state.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_intent_speech_when_verified_state_is_stale(
+        self, ha_client, entity_matcher, entity_index
+    ):
+        """turn_off + observed 'on' must not speak 'is now on'."""
+        ha_client.call_service = AsyncMock(return_value=None)
+        ha_client.get_state = AsyncMock(
+            return_value={"state": "on", "attributes": {}},
+        )
+
+        action = {"action": "turn_off", "entity": "kitchen light"}
+        result = await execute_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        assert "is now on" not in result["speech"]
+        assert "turned off Kitchen Ceiling" in result["speech"]
+
+    @pytest.mark.asyncio
+    async def test_toggle_uses_observed_state(
+        self, ha_client, entity_matcher, entity_index
+    ):
+        """toggle has no expected state; observed state drives the speech."""
+        ha_client.call_service = AsyncMock(return_value=None)
+        ha_client.get_state = AsyncMock(
+            return_value={"state": "off", "attributes": {}},
+        )
+
+        action = {"action": "toggle", "entity": "kitchen light"}
+        result = await execute_action(action, ha_client, entity_index, entity_matcher)
+
+        assert result["success"] is True
+        assert result["new_state"] == "off"
+        assert "Kitchen Ceiling is now off" in result["speech"]
 
 
 # ---------------------------------------------------------------------------
@@ -708,12 +841,25 @@ from app.analytics.tracer import SpanCollector  # noqa: E402
 class TestEntityMatchSpan:
     """Tests that entity_match spans are recorded with correct metadata."""
 
+    @pytest.fixture(autouse=True)
+    def _fast_state_verify(self, monkeypatch):
+        from app.agents import action_executor as _ae
+
+        async def _fast(key, *, default):
+            return {
+                "state_verify.ws_timeout_sec": 0.05,
+                "state_verify.poll_interval_sec": 0.01,
+                "state_verify.poll_max_sec": 0.05,
+            }.get(key, default)
+
+        monkeypatch.setattr(_ae, "_settings_float", _fast)
+
     @pytest.fixture()
     def ha_client(self):
         client = AsyncMock()
-        client.call_service = AsyncMock(return_value={})
+        client.call_service = AsyncMock(return_value=[])
         client.get_state = AsyncMock(return_value={"state": "on", "attributes": {}})
-        return client
+        return _attach_expect_state_shim(client)
 
     @pytest.fixture()
     def entity_matcher(self):

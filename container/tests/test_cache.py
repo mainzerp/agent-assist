@@ -503,10 +503,26 @@ class TestCacheManager:
         assert similarity == pytest.approx(0.95)
 
     def test_cache_result_carries_condensed_task(self):
-        """CacheResult should propagate condensed_task from routing entry."""
+        """CacheResult should propagate condensed_task from routing entry.
+
+        FLOW-CACHE-1: response cache is now checked first, so we feed a
+        response miss and then a routing hit. The condensed_task must
+        still surface from the routing entry.
+        """
         manager, store = self._make_manager()
         store.query.side_effect = [
-            # Routing cache hit (now checked first)
+            # 1. Response cache miss (distance 0.5 -> similarity 0.5 < partial 0.8)
+            {
+                "ids": [["s-1"]],
+                "distances": [[0.50]],
+                "documents": [["unrelated"]],
+                "metadatas": [[{
+                    "response_text": "x", "agent_id": "gen", "confidence": "0.5",
+                    "hit_count": "0", "entity_ids": "", "cached_action": "",
+                    "created_at": "", "last_accessed": "",
+                }]],
+            },
+            # 2. Routing cache hit (distance 0.03 -> similarity 0.97 > 0.92)
             {
                 "ids": [["r-1"]],
                 "distances": [[0.03]],
@@ -525,6 +541,120 @@ class TestCacheManager:
         assert result.hit_type == "routing_hit"
         assert result.condensed_task == "Turn on the light"
 
+    def test_response_hit_with_cached_action_shadows_routing(self):
+        """FLOW-CACHE-1: a response_hit carrying a cached_action wins over
+        any routing_hit. Replay + rewrite is strictly more valuable than
+        a routing short-circuit (which still dispatches the agent)."""
+        manager, store = self._make_manager()
+        action_json = CachedAction(
+            service="light/turn_on",
+            entity_id="light.keller",
+            service_data={},
+        ).model_dump_json()
+        store.query.side_effect = [
+            # 1. Response cache hit with cached_action (similarity 0.97 > 0.95)
+            {
+                "ids": [["s-1"]],
+                "distances": [[0.03]],
+                "documents": [["schalte keller ein"]],
+                "metadatas": [[{
+                    "response_text": "Keller ist an.",
+                    "agent_id": "light-agent",
+                    "confidence": "0.95",
+                    "hit_count": "0",
+                    "entity_ids": "light.keller",
+                    "cached_action": action_json,
+                    "created_at": "2025-01-01T00:00:00",
+                    "last_accessed": "2025-01-01T00:00:00",
+                }]],
+            },
+        ]
+        result = manager._process_inner("schalte keller ein")
+        assert result.hit_type == "response_hit"
+        assert result.agent_id == "light-agent"
+        assert result.cached_action is not None
+        assert result.cached_action.entity_id == "light.keller"
+        # Routing cache must NOT have been queried -- response_hit short-circuits
+        assert store.query.call_count == 1
+
+    def test_response_hit_without_cached_action_falls_through_to_routing(self):
+        """State queries (no cached_action) must not replay stale response
+        text. They fall through to routing so the agent runs against live
+        HA state and recomputes the answer."""
+        manager, store = self._make_manager()
+        store.query.side_effect = [
+            # 1. Response cache hit WITHOUT cached_action (stale-risk entry)
+            {
+                "ids": [["s-1"]],
+                "distances": [[0.02]],
+                "documents": [["wie warm ist es im schlafzimmer"]],
+                "metadatas": [[{
+                    "response_text": "Es sind 21 Grad.",
+                    "agent_id": "climate-agent",
+                    "confidence": "0.95",
+                    "hit_count": "0",
+                    "entity_ids": "climate.bedroom",
+                    "cached_action": "",
+                    "created_at": "2025-01-01T00:00:00",
+                    "last_accessed": "2025-01-01T00:00:00",
+                }]],
+            },
+            # 2. Routing cache hit -> this is what we expect to surface
+            {
+                "ids": [["r-1"]],
+                "distances": [[0.03]],
+                "documents": [["wie warm ist es im schlafzimmer"]],
+                "metadatas": [[{
+                    "agent_id": "climate-agent",
+                    "confidence": "0.95",
+                    "hit_count": "0",
+                    "condensed_task": "Read bedroom temperature",
+                    "created_at": "2025-01-01T00:00:00",
+                    "last_accessed": "2025-01-01T00:00:00",
+                }]],
+            },
+        ]
+        result = manager._process_inner("wie warm ist es im schlafzimmer")
+        assert result.hit_type == "routing_hit"
+        assert result.agent_id == "climate-agent"
+        assert result.condensed_task == "Read bedroom temperature"
+
+    def test_response_partial_surfaces_only_when_routing_misses(self):
+        """response_partial must not short-circuit and only surfaces as a
+        diagnostic when routing also misses."""
+        manager, store = self._make_manager()
+        store.query.side_effect = [
+            # 1. Response partial (similarity 0.85, above partial 0.80 but
+            #    below hit 0.95)
+            {
+                "ids": [["s-1"]],
+                "distances": [[0.15]],
+                "documents": [["dim lights"]],
+                "metadatas": [[{
+                    "response_text": "Lights dimmed.",
+                    "agent_id": "light-agent",
+                    "confidence": "0.85",
+                    "hit_count": "0",
+                    "entity_ids": "",
+                    "cached_action": "",
+                    "created_at": "", "last_accessed": "",
+                }]],
+            },
+            # 2. Routing miss (similarity 0.5)
+            {
+                "ids": [["r-1"]],
+                "distances": [[0.50]],
+                "documents": [["unrelated"]],
+                "metadatas": [[{
+                    "agent_id": "general-agent", "confidence": "0.5",
+                    "hit_count": "0", "created_at": "", "last_accessed": "",
+                }]],
+            },
+        ]
+        result = manager._process_inner("dim the lights")
+        assert result.hit_type == "response_partial"
+        assert result.response_text == "Lights dimmed."
+
     def test_store_response_disabled_skips_store(self):
         """store_response should no-op when _response_cache_enabled is False."""
         manager, store = self._make_manager()
@@ -537,8 +667,22 @@ class TestCacheManager:
         """COR-3: a full miss must report similarity=None instead of leaking
         the best cross-tier similarity into the trace UI."""
         manager, store = self._make_manager()
-        # Routing miss: returns a result with low similarity (below threshold)
+        # FLOW-CACHE-1: response cache is queried first now.
         store.query.side_effect = [
+            # Response miss (similarity 0.4 < partial 0.8)
+            {
+                "ids": [["s-1"]],
+                "distances": [[0.6]],
+                "documents": [["yet another"]],
+                "metadatas": [[{
+                    "agent_id": "light-agent",
+                    "response_text": "x",
+                    "hit_count": "0",
+                    "created_at": "2025-01-01T00:00:00",
+                    "last_accessed": "2025-01-01T00:00:00",
+                }]],
+            },
+            # Routing miss (similarity 0.5 < threshold 0.92)
             {
                 "ids": [["r-1"]],
                 "distances": [[0.5]],
@@ -548,19 +692,6 @@ class TestCacheManager:
                     "confidence": "0.5",
                     "hit_count": "0",
                     "condensed_task": "",
-                    "created_at": "2025-01-01T00:00:00",
-                    "last_accessed": "2025-01-01T00:00:00",
-                }]],
-            },
-            # Response miss as well
-            {
-                "ids": [["s-1"]],
-                "distances": [[0.6]],
-                "documents": [["yet another"]],
-                "metadatas": [[{
-                    "agent_id": "light-agent",
-                    "response_text": "x",
-                    "hit_count": "0",
                     "created_at": "2025-01-01T00:00:00",
                     "last_accessed": "2025-01-01T00:00:00",
                 }]],
@@ -853,11 +984,26 @@ class TestVectorStore:
 class TestCacheTraceSimilarity:
 
     def test_cache_result_includes_similarity_on_routing_hit(self):
-        """CacheResult.similarity is populated on a routing cache hit."""
+        """CacheResult.similarity is populated on a routing cache hit.
+
+        FLOW-CACHE-1: response cache is queried first, so we feed a
+        response miss and then a routing hit.
+        """
         store = MagicMock(spec=VectorStore)
         manager = CacheManager(store)
-        # Routing cache hit (now checked first, distance 0.05 = similarity 0.95)
         store.query.side_effect = [
+            # Response miss
+            {
+                "ids": [["s-1"]],
+                "distances": [[0.5]],
+                "documents": [["unrelated"]],
+                "metadatas": [[{
+                    "response_text": "x", "agent_id": "gen", "confidence": "0.5",
+                    "hit_count": "0", "entity_ids": "", "cached_action": "",
+                    "created_at": "", "last_accessed": "",
+                }]],
+            },
+            # Routing hit (distance 0.05 -> similarity 0.95)
             {
                 "ids": [["r-1"]],
                 "distances": [[0.05]],
@@ -879,21 +1025,14 @@ class TestCacheTraceSimilarity:
     def test_cache_result_includes_similarity_on_miss(self):
         """COR-3: CacheResult.similarity is None on a complete miss; the
         previous behavior of leaking the best cross-tier similarity was
-        misleading in the trace UI."""
+        misleading in the trace UI.
+
+        FLOW-CACHE-1: query order is now response -> routing.
+        """
         store = MagicMock(spec=VectorStore)
         manager = CacheManager(store)
-        # Routing cache miss with similarity 0.80 (now checked first)
         store.query.side_effect = [
-            {
-                "ids": [["r-1"]],
-                "distances": [[0.20]],
-                "documents": [["other"]],
-                "metadatas": [[{
-                    "agent_id": "general-agent", "confidence": "0.80",
-                    "hit_count": "0", "created_at": "", "last_accessed": "",
-                }]],
-            },
-            # Response cache miss with similarity 0.70
+            # Response cache miss with similarity 0.70 (below partial 0.80)
             {
                 "ids": [["resp-1"]],
                 "distances": [[0.30]],
@@ -902,6 +1041,16 @@ class TestCacheTraceSimilarity:
                     "response_text": "x", "agent_id": "gen", "confidence": "0.7",
                     "hit_count": "0", "entity_ids": "", "cached_action": "",
                     "created_at": "", "last_accessed": "",
+                }]],
+            },
+            # Routing cache miss with similarity 0.80 (below threshold 0.92)
+            {
+                "ids": [["r-1"]],
+                "distances": [[0.20]],
+                "documents": [["other"]],
+                "metadatas": [[{
+                    "agent_id": "general-agent", "confidence": "0.80",
+                    "hit_count": "0", "created_at": "", "last_accessed": "",
                 }]],
             },
         ]

@@ -33,6 +33,14 @@ class HAWebSocketClient:
         self._logger = logging.getLogger("ha_client.websocket")
         self._ws_lock: asyncio.Lock = asyncio.Lock()
         self._ws_last_active: float = time.monotonic()
+        # FLOW-VERIFY-1: per-entity state waiters, resolved from the single
+        # WebSocket receive task. Key = entity_id, value = list of
+        # (future, expected_state_or_None) tuples. Ordered FIFO so multiple
+        # concurrent actions on the same entity resolve in the order they
+        # registered.
+        self._state_waiters: dict[
+            str, list[tuple[asyncio.Future[str], str | None]]
+        ] = {}
 
     def is_connected(self) -> bool:
         """Return True if the WebSocket connection is active and running."""
@@ -168,6 +176,8 @@ class HAWebSocketClient:
                     if event_type == "event":
                         event = data.get("event", {})
                         et = event.get("event_type", "")
+                        if et == "state_changed":
+                            self._dispatch_state_waiters(event)
                         for callback in self._listeners.get(et, []):
                             try:
                                 result = callback(event)
@@ -194,3 +204,77 @@ class HAWebSocketClient:
         if event_type not in self._listeners:
             self._listeners[event_type] = []
         self._listeners[event_type].append(callback)
+
+    # -----------------------------------------------------------------
+    # FLOW-VERIFY-1: state-change waiters for post-action verification
+    # -----------------------------------------------------------------
+    def register_state_waiter(
+        self,
+        entity_id: str,
+        *,
+        expected: str | None = None,
+    ) -> asyncio.Future[str]:
+        """Register a waiter that resolves on the next matching state_changed.
+
+        Call this BEFORE issuing the action that is expected to cause the
+        state change, to avoid a race where the event arrives before the
+        waiter is registered.
+
+        Args:
+            entity_id: Entity to watch (e.g. ``"light.keller"``).
+            expected: If given, only events whose ``new_state.state`` equals
+                this string resolve the waiter. ``None`` resolves on the
+                first ``state_changed`` event for the entity.
+
+        Returns:
+            An ``asyncio.Future`` that resolves with the observed
+            ``new_state.state`` string. The caller is responsible for
+            awaiting it with a timeout and for cancelling on its own error
+            paths if desired.
+        """
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[str] = loop.create_future()
+        self._state_waiters.setdefault(entity_id, []).append((future, expected))
+        return future
+
+    def _dispatch_state_waiters(self, event: dict) -> None:
+        """Resolve pending waiters for a ``state_changed`` event."""
+        data = event.get("data") or {}
+        entity_id = data.get("entity_id") or ""
+        new_state = data.get("new_state") or {}
+        if not entity_id or not isinstance(new_state, dict):
+            return
+        state_value = new_state.get("state")
+        if not isinstance(state_value, str):
+            return
+        waiters = self._state_waiters.get(entity_id)
+        if not waiters:
+            return
+        kept: list[tuple[asyncio.Future[str], str | None]] = []
+        for future, expected in waiters:
+            if future.done():
+                continue
+            if expected is not None and state_value != expected:
+                kept.append((future, expected))
+                continue
+            try:
+                future.set_result(state_value)
+            except asyncio.InvalidStateError:
+                pass
+        if kept:
+            self._state_waiters[entity_id] = kept
+        else:
+            self._state_waiters.pop(entity_id, None)
+
+    def cancel_state_waiter(self, entity_id: str, future: asyncio.Future[str]) -> None:
+        """Remove a pending waiter (e.g. on timeout) without resolving it."""
+        waiters = self._state_waiters.get(entity_id)
+        if not waiters:
+            return
+        remaining = [(f, exp) for f, exp in waiters if f is not future]
+        if remaining:
+            self._state_waiters[entity_id] = remaining
+        else:
+            self._state_waiters.pop(entity_id, None)
+        if not future.done():
+            future.cancel()

@@ -136,8 +136,49 @@ class CacheManager:
             logger.warning("Rewrite failed, using original cached text", exc_info=True)
 
     def _process_inner(self, query_text: str, language: str = "en") -> CacheResult:
-        """Internal cache lookup logic."""
-        # 1. Check routing cache first (cheaper -- just agent_id + condensed_task)
+        """Internal cache lookup logic.
+
+        FLOW-CACHE-1: Response cache is checked FIRST because a
+        response_hit is strictly more valuable than a routing_hit --
+        it replays the HA action AND runs the cached text through the
+        rewrite-agent for variation, skipping classify + agent dispatch
+        + the agent's own LLM turn. The previous routing-first ordering
+        silently shadowed the response cache for every repeated action
+        query because the routing threshold (0.92) is lower than the
+        response threshold (0.95), so routing always matched first.
+
+        A response_hit is only surfaced when the entry carries a
+        ``cached_action``. State queries ("what's the temperature in
+        the bedroom?") have no replayable action; replaying the cached
+        response text would leak stale entity state. Those fall through
+        to routing_hit, which re-dispatches the agent so the response
+        is recomputed against live HA state.
+        """
+        # 1. Check response cache first, but only honor hits that can be
+        #    replayed deterministically (cached_action present).
+        hit_type, resp_entry, resp_similarity = self._response_cache.lookup(
+            query_text, language=language,
+        )
+        if (
+            hit_type == "hit"
+            and resp_entry is not None
+            and resp_entry.cached_action is not None
+        ):
+            return CacheResult(
+                hit_type="response_hit",
+                agent_id=resp_entry.agent_id,
+                response_text=resp_entry.response_text,
+                cached_action=resp_entry.cached_action,
+                entry=resp_entry,
+                similarity=resp_similarity,
+            )
+
+        # 2. Fall through to routing cache. This covers:
+        #    - response_hit entries without cached_action (state queries
+        #      that accidentally made it in; replaying would be stale)
+        #    - response miss / response_partial (no deterministic replay)
+        #    Routing still skips classify; the agent runs against live
+        #    state for speech and any downstream reads.
         routing_entry, routing_similarity = self._routing_cache.lookup(
             query_text, language=language,
         )
@@ -150,20 +191,10 @@ class CacheManager:
                 similarity=routing_similarity,
             )
 
-        # 2. Check response cache (full response + cached action)
-        hit_type, resp_entry, resp_similarity = self._response_cache.lookup(
-            query_text, language=language,
-        )
-        if hit_type == "hit":
-            return CacheResult(
-                hit_type="response_hit",
-                agent_id=resp_entry.agent_id,
-                response_text=resp_entry.response_text,
-                cached_action=resp_entry.cached_action,
-                entry=resp_entry,
-                similarity=resp_similarity,
-            )
-        if hit_type == "partial":
+        # 3. No routing hit -- surface a response_partial if we have
+        #    one so downstream consumers can factor it into confidence
+        #    / tracing. Partial never short-circuits dispatch.
+        if hit_type == "partial" and resp_entry is not None:
             return CacheResult(
                 hit_type="response_partial",
                 agent_id=resp_entry.agent_id,
@@ -173,7 +204,7 @@ class CacheManager:
                 similarity=resp_similarity,
             )
 
-        # 3. Complete miss -- do not surface a cross-tier similarity (COR-3).
+        # 4. Complete miss -- do not surface a cross-tier similarity (COR-3).
         # Mixing routing vs response similarities was misleading in the trace UI;
         # downstream consumers already treat ``similarity is None`` as N/A.
         return CacheResult(hit_type="miss", similarity=None)

@@ -459,6 +459,11 @@ async def lifespan(app: FastAPI):
         ws_task = asyncio.create_task(ws_client.run())
         flush_task = asyncio.create_task(_flush_entity_updates())
 
+        # FLOW-VERIFY-1: let the REST client use the live WS stream for
+        # post-action state verification (see ``HARestClient.expect_state``).
+        if ha_client is not None:
+            ha_client.set_state_observer(ws_client)
+
     # Start periodic entity sync task
     sync_task = None
     if setup_complete and entity_index is not None:

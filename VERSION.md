@@ -1,8 +1,97 @@
 # Version
 
-**Current Version:** 0.18.0
+**Current Version:** 0.18.4
 
 ## Version History
+
+### 0.18.4 -- Cached Action Replay Uses WS State Verification
+
+- `_execute_cached_action` now registers a WebSocket state waiter via
+  `ha_client.expect_state` **before** calling the HA service, mirroring
+  the live `action_executor.execute_action` path. Previously, when
+  HA's REST `call_service` returned an empty list (the normal case for
+  async-bus aktors like KNX/ABB/Zigbee2MQTT, where `state_changed`
+  fires *after* the REST response), the replay was treated as failure
+  and fell through to live dispatch. Result: the response-cache fast
+  path was dead for exactly the hardware that needs it most.
+- Empty REST response is now resolved against the WS observer: if the
+  observed state matches the action's expected target (`turn_on` ->
+  `on`, `turn_off` -> `off`, etc.), the replay is confirmed. `toggle`
+  and other untargeted actions accept any observed change.
+- Targeted actions with a mismatched observed state fall through to
+  live dispatch so the user gets a truthful response instead of a
+  stale confirmation.
+- Covered by new tests in ``tests/test_agents.py ::
+  TestExecuteCachedActionVerification`` (8 tests): non-empty REST
+  authoritative, empty REST + observer confirms, empty REST + observer
+  mismatch falls through, no observer evidence falls through, `None`
+  call_result, toggle with / without observer, malformed cached actions.
+
+### 0.18.3 -- Response Cache Priority + Read-Only Guard
+
+- `CacheManager._process_inner` now checks the **response cache
+  first**, then the routing cache. The previous routing-first order
+  silently shadowed every response-cache entry, because the routing
+  threshold (0.92) is below the response threshold (0.95): once a
+  query had a routing entry, repeated hits never reached the response
+  tier. Consequence: cached action replay + rewrite-agent variation
+  were effectively dead code for repeated action queries -- every
+  "schalte keller ein" re-ran the light-agent LLM turn.
+- Response-cache hits only short-circuit when the entry carries a
+  ``cached_action``. State queries (no replayable action) fall
+  through to the routing tier so the agent recomputes against live
+  HA state -- no more stale "Es sind 21 Grad" from a snapshot taken
+  hours ago.
+- ``response_partial`` still never short-circuits; it now surfaces
+  only when the routing cache also misses, as a diagnostic signal
+  for downstream consumers.
+- Covered by new tests in ``tests/test_cache.py``:
+  ``test_response_hit_with_cached_action_shadows_routing``,
+  ``test_response_hit_without_cached_action_falls_through_to_routing``,
+  ``test_response_partial_surfaces_only_when_routing_misses``.
+  Pre-existing ``_process_inner`` tests were updated for the new
+  query order (response first, routing second).
+
+### 0.18.2 -- Entity Match Preview in Admin UI
+
+- New **Entity Match Preview** card on `Entity Index` admin page:
+  input a query and optional agent id, see exactly what an agent
+  would receive -- the deterministic light-resolver result
+  (`entity_id`, `friendly_name`, `resolution_path`, domain gate
+  status) and the hybrid matcher's top-N candidates with per-signal
+  scores (alias / embedding / levenshtein / jaro_winkler / phonetic).
+- New endpoint `GET /api/admin/entity-index/match-preview?q=...&agent_id=...`
+  runs both resolution paths and returns a visibility summary
+  (rules and visible-entity count for the chosen agent) so operators
+  can pinpoint why a query fails (visibility rule vs. matcher score
+  vs. domain gate).
+- Covered by `tests/test_entity_index_match_preview.py` (4 tests:
+  happy path, empty query, domain gate reject, uninitialized index).
+
+### 0.18.1 -- Post-Action State Verification via WebSocket
+
+- Light/switch action verification now uses the live HA WebSocket
+  stream (`state_changed` waiter registered **before** the service
+  call) and falls back to short REST polling when the WS client is
+  disconnected. The fixed `asyncio.sleep(0.3)` + single `get_state`
+  is gone; stale post-action reads no longer contradict the user's
+  intent on slow bus aktors (KNX/ABB).
+- `HARestClient.expect_state(...)` async context manager centralises
+  the verification and is wired to the running `HAWebSocketClient`
+  from `main.py` at startup.
+- `HAWebSocketClient.register_state_waiter` / `cancel_state_waiter`
+  expose the per-entity waiter API used by `expect_state`.
+- Intent-first speech in `execute_action`: when the verified state
+  is unavailable or does not match the intent, the response reports
+  the action ("turned off Keller") instead of asserting a stale
+  observed state ("is now on").
+- HA's synchronous `call_service` response is consulted as an
+  authoritative source when it contains the target entity, before
+  falling back to the WS/polling observer.
+- New settings with sensible defaults:
+  - `state_verify.ws_timeout_sec` (default `"1.5"`)
+  - `state_verify.poll_interval_sec` (default `"0.25"`)
+  - `state_verify.poll_max_sec` (default `"1.0"`)
 
 ### 0.18.0 -- Request-Flow Bug Fixes
 
@@ -401,6 +490,6 @@ New send-agent enables content delivery to smartphones (via HA notify) and satel
 - Project scaffolding and directory structure
 - Project definition document
 
-## Recent Changes (since 0.18.0)
+## Recent Changes (since 0.18.4)
 
 (none yet)

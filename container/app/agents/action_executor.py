@@ -102,6 +102,17 @@ _ACTION_SERVICE_MAP: dict[str, str] = {
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"light", "switch", "sensor"})
 
+# FLOW-VERIFY-1: map each action to the state we expect HA to end up in.
+# ``toggle`` has no deterministic target, so it is intentionally absent and
+# the caller must treat ``expected`` as ``None`` (= "any next change").
+_EXPECTED_STATE_BY_ACTION: dict[str, str] = {
+    "turn_on": "on",
+    "turn_off": "off",
+    "set_brightness": "on",
+    "set_color": "on",
+    "set_color_temp": "on",
+}
+
 
 def _validate_domain(entity_id: str) -> bool:
     """Check that entity_id belongs to an allowed domain for this executor."""
@@ -399,6 +410,72 @@ async def _resolve_light_entity(
     return _build_resolution_result(entity_query=entity_query, metadata=metadata)
 
 
+# ---------------------------------------------------------------------------
+# FLOW-VERIFY-1: helpers for post-action state verification and speech.
+# ---------------------------------------------------------------------------
+async def _settings_float(key: str, *, default: float) -> float:
+    """Read a float setting by key, falling back to ``default`` on any error."""
+    try:
+        from app.db.repository import SettingsRepository
+
+        raw = await SettingsRepository.get_value(key, str(default))
+        if raw is None:
+            return default
+        return float(raw)
+    except (TypeError, ValueError, Exception):
+        return default
+
+
+def _extract_state_from_call_result(
+    call_result: Any, entity_id: str,
+) -> str | None:
+    """Pick the target entity's state out of HA's ``call_service`` response.
+
+    HA returns a JSON list of states it considered changed. We look for our
+    exact entity_id and return its state string; anything else is ignored
+    because a state reported on a *different* entity tells us nothing about
+    the one we actually commanded.
+    """
+    if not isinstance(call_result, list):
+        return None
+    for entry in call_result:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("entity_id") != entity_id:
+            continue
+        state = entry.get("state")
+        if isinstance(state, str):
+            return state
+    return None
+
+
+def _build_action_speech(
+    *,
+    action_name: str,
+    friendly_name: str,
+    expected_state: str | None,
+    new_state: str | None,
+) -> str:
+    """Build an intent-first speech line for a completed action.
+
+    We deliberately avoid claiming a state we did not observe. If the
+    observed state matches the intent, we report it. Otherwise we fall
+    back to intent language ("turned off X") so that a stale or slow
+    state update does not contradict what the user asked for.
+    """
+    if expected_state and new_state == expected_state:
+        return f"Done, {friendly_name} is now {new_state}."
+    if expected_state:
+        # Covers both "observed but mismatching" and "not observed at all".
+        return f"Done, turned {expected_state} {friendly_name}."
+    # ``toggle`` path: no deterministic target. Report what we saw if any.
+    if new_state:
+        return f"Done, {friendly_name} is now {new_state}."
+    if action_name:
+        return f"Done, {action_name.replace('_', ' ')} {friendly_name}."
+    return f"Done, updated {friendly_name}."
+
+
 async def execute_action(
     action: dict,
     ha_client,
@@ -472,11 +549,39 @@ async def execute_action(
     # Build service data
     service_data = _build_service_data(action)
 
-    # Execute the service call
+    # FLOW-VERIFY-1: the expected target state lets us (a) register a
+    # WebSocket waiter that only fires on a *matching* state_changed event
+    # and (b) formulate intent-first speech when the observed state is
+    # stale or missing. ``toggle`` has no deterministic target.
+    expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
+
+    ws_timeout = await _settings_float(
+        "state_verify.ws_timeout_sec", default=1.5,
+    )
+    poll_interval = await _settings_float(
+        "state_verify.poll_interval_sec", default=0.25,
+    )
+    poll_max = await _settings_float(
+        "state_verify.poll_max_sec", default=1.0,
+    )
+
+    call_result: Any = None
     try:
-        await ha_client.call_service(domain, service, entity_id, service_data or None)
+        async with ha_client.expect_state(
+            entity_id,
+            expected=expected_state,
+            timeout=ws_timeout,
+            poll_interval=poll_interval,
+            poll_max=poll_max,
+        ) as observer:
+            call_result = await ha_client.call_service(
+                domain, service, entity_id, service_data or None,
+            )
     except Exception as exc:
-        logger.error("Service call failed: %s/%s on %s", domain, service, entity_id, exc_info=True)
+        logger.error(
+            "Service call failed: %s/%s on %s",
+            domain, service, entity_id, exc_info=True,
+        )
         return {
             "success": False,
             "entity_id": entity_id,
@@ -484,21 +589,32 @@ async def execute_action(
             "speech": f"Failed to execute {action_name} on {friendly_name}: {exc}",
         }
 
-    # Brief wait for state propagation, then verify
-    await asyncio.sleep(0.3)
-    new_state = None
-    try:
-        state_resp = await ha_client.get_state(entity_id)
-        if state_resp:
-            new_state = state_resp.get("state")
-    except Exception:
-        logger.warning("State verification failed for %s", entity_id, exc_info=True)
+    # Priority:
+    #   1. HA's synchronous call_service response (authoritative list of
+    #      changed states). Slightly more trustworthy than a follow-up
+    #      poll because it is the value HA committed before returning.
+    #   2. The state observed via the WS waiter or polling fallback set up
+    #      by ``expect_state``.
+    new_state: str | None = _extract_state_from_call_result(call_result, entity_id)
+    if new_state is None:
+        new_state = observer.get("new_state")
+
+    if expected_state and new_state is not None and new_state != expected_state:
+        logger.info(
+            "State verify mismatch for %s: expected=%s observed=%s",
+            entity_id, expected_state, new_state,
+        )
 
     return {
         "success": True,
         "entity_id": entity_id,
         "new_state": new_state,
-        "speech": f"Done, {friendly_name} is now {new_state or action_name.replace('_', ' ')}.",
+        "speech": _build_action_speech(
+            action_name=action_name,
+            friendly_name=friendly_name,
+            expected_state=expected_state,
+            new_state=new_state,
+        ),
     }
 
 
