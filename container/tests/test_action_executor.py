@@ -690,7 +690,7 @@ class TestMusicExecutor:
         client = AsyncMock()
         client.call_service = AsyncMock(return_value={})
         client.get_state = AsyncMock(return_value={"state": "playing", "attributes": {}})
-        return client
+        return _attach_expect_state_shim(client)
 
     @pytest.fixture()
     def entity_matcher(self):

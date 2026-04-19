@@ -956,8 +956,9 @@ class TraceSummaryRepository:
                 "(trace_id, conversation_id, user_input, final_response, "
                 "agents, total_duration_ms, label, source, routing_agent, "
                 "routing_confidence, routing_duration_ms, routing_reasoning, "
-                "agent_instructions, conversation_turns) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "agent_instructions, conversation_turns, "
+                "device_id, area_id, device_name, area_name) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     data.get("trace_id"),
                     data.get("conversation_id"),
@@ -973,6 +974,10 @@ class TraceSummaryRepository:
                     data.get("routing_reasoning"),
                     agent_instructions,
                     conversation_turns,
+                    data.get("device_id"),
+                    data.get("area_id"),
+                    data.get("device_name"),
+                    data.get("area_name"),
                 ),
             )
             await db.commit()

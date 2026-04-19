@@ -16,7 +16,7 @@ from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_URL, CONF_API_KEY, MATCH_ALL
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr, entity_registry as er, intent
+from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er, intent
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
@@ -276,24 +276,53 @@ class AgentAssistConversationEntity(
         self._schedule_reconnect()
         return result
 
-    async def _process_via_ws(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
-        """Send request via WebSocket and accumulate streaming tokens."""
+    def _resolve_origin_context(self, user_input: conversation.ConversationInput) -> dict[str, str]:
+        """Resolve device_id/area_id and their human-readable names.
+
+        FLOW-CTX-1 (0.18.6): IDs alone were not enough for traces or
+        area-aware entity resolution. Adding the display names here
+        means the container can annotate speech and the trace UI
+        with "Kitchen Satellite / Kitchen" instead of opaque UUIDs.
+        Lookup failures degrade silently -- the IDs stay authoritative.
+        """
+        extra: dict[str, str] = {}
         device_id = getattr(user_input, "device_id", None)
-        area_id = None
-        if device_id:
+        if not device_id:
+            return extra
+        extra["device_id"] = device_id
+        try:
             device_reg = dr.async_get(self.hass)
             device = device_reg.async_get(device_id)
-            if device:
-                area_id = device.area_id
-        payload = {
+        except Exception:
+            device = None
+        if not device:
+            return extra
+
+        device_name = device.name_by_user or device.name
+        if device_name:
+            extra["device_name"] = device_name
+
+        area_id = device.area_id
+        if not area_id:
+            return extra
+        extra["area_id"] = area_id
+        try:
+            area_reg = ar.async_get(self.hass)
+            area = area_reg.async_get_area(area_id)
+            if area and area.name:
+                extra["area_name"] = area.name
+        except Exception:
+            logger.debug("area_registry lookup failed for %s", area_id, exc_info=True)
+        return extra
+
+    async def _process_via_ws(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
+        """Send request via WebSocket and accumulate streaming tokens."""
+        payload: dict[str, Any] = {
             "text": user_input.text,
             "conversation_id": user_input.conversation_id,
             "language": user_input.language or "en",
         }
-        if device_id:
-            payload["device_id"] = device_id
-        if area_id:
-            payload["area_id"] = area_id
+        payload.update(self._resolve_origin_context(user_input))
         await self._ws.send_json(payload)
 
         speech_parts: list[str] = []
@@ -342,26 +371,16 @@ class AgentAssistConversationEntity(
 
     async def _process_via_rest(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         """Fallback: send request via REST and get full response."""
-        device_id = getattr(user_input, "device_id", None)
-        area_id = None
-        if device_id:
-            device_reg = dr.async_get(self.hass)
-            device = device_reg.async_get(device_id)
-            if device:
-                area_id = device.area_id
         try:
             if self._session is None:
                 self._session = aiohttp.ClientSession()
             headers = {"Authorization": f"Bearer {self._api_key}"}
-            payload = {
+            payload: dict[str, Any] = {
                 "text": user_input.text,
                 "conversation_id": user_input.conversation_id,
                 "language": user_input.language or "en",
             }
-            if device_id:
-                payload["device_id"] = device_id
-            if area_id:
-                payload["area_id"] = area_id
+            payload.update(self._resolve_origin_context(user_input))
             async with self._session.post(
                 f"{self._url}/api/conversation",
                 json=payload,

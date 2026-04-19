@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
+from app.agents.action_executor import (
+    build_verified_speech,
+    call_service_with_verification,
+)
 from app.agents.delayed_tasks import delayed_task_manager
 from app.analytics.tracer import _optional_span
 
@@ -21,6 +24,26 @@ _TIMER_ACTION_MAP: dict[str, tuple[str, str]] = {
     "resume_timer":  ("timer", "start"),
     "finish_timer":  ("timer", "finish"),
     "set_datetime":  ("input_datetime", "set_datetime"),
+}
+
+# FLOW-VERIFY-SHARED (0.18.5): HA timer entities expose
+# "active"/"paused"/"idle". input_datetime has no fixed target state
+# (the "state" is the datetime itself), so we leave it open.
+_EXPECTED_STATE_BY_ACTION: dict[str, str] = {
+    "start_timer":   "active",
+    "cancel_timer":  "idle",
+    "pause_timer":   "paused",
+    "resume_timer":  "active",
+    "finish_timer":  "idle",
+}
+
+_ACTION_PHRASES: dict[str, str] = {
+    "start_timer":  "started",
+    "cancel_timer": "cancelled",
+    "pause_timer":  "paused",
+    "resume_timer": "resumed",
+    "finish_timer": "finished",
+    "set_datetime": "updated",
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"timer", "input_datetime"})
@@ -543,19 +566,24 @@ async def _snooze_timer(
         state_resp = await ha_client.get_state(entity_id)
         current_state = state_resp.get("state") if state_resp else None
         if current_state and current_state != "idle":
-            await ha_client.call_service("timer", "cancel", entity_id)
-            await asyncio.sleep(0.2)
+            # FLOW-VERIFY-SHARED: verified cancel -> idle
+            await call_service_with_verification(
+                ha_client, "timer", "cancel", entity_id,
+                expected_state="idle",
+            )
 
-        # Restart with snooze duration
-        await ha_client.call_service("timer", "start", entity_id, {"duration": snooze_duration})
-        await asyncio.sleep(0.3)
+        # Restart with snooze duration (verified -> active)
+        verify = await call_service_with_verification(
+            ha_client, "timer", "start", entity_id,
+            service_data={"duration": snooze_duration},
+            expected_state="active",
+        )
 
         # Re-register in pool if it was expired
         if not _timer_pool.get_name(entity_id):
             _timer_pool.assign(friendly_name, entity_id)
 
-        state_resp = await ha_client.get_state(entity_id)
-        new_state = state_resp.get("state") if state_resp else None
+        new_state = verify.get("observed_state") if verify.get("success") else None
 
         secs = _parse_duration_seconds(snooze_duration)
         human_dur = _format_duration_human(secs) if secs else snooze_duration
@@ -1063,27 +1091,21 @@ async def execute_timer_action(
     # Build service data
     service_data = _build_timer_service_data(action)
 
-    # Execute the service call
-    try:
-        await ha_client.call_service(domain, service, entity_id, service_data or None)
-    except Exception as exc:
-        logger.error("Service call failed: %s/%s on %s", domain, service, entity_id, exc_info=True)
+    expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
+    verify = await call_service_with_verification(
+        ha_client, domain, service, entity_id,
+        service_data=service_data,
+        expected_state=expected_state,
+    )
+    if not verify["success"]:
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {exc}",
+            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
         }
 
-    # Brief wait for state propagation, then verify
-    await asyncio.sleep(0.3)
-    new_state = None
-    try:
-        state_resp = await ha_client.get_state(entity_id)
-        if state_resp:
-            new_state = state_resp.get("state")
-    except Exception:
-        logger.warning("State verification failed for %s", entity_id, exc_info=True)
+    new_state = verify["observed_state"]
 
     # Release pool mapping and cancel delayed tasks when timer is cancelled or finished
     if action_name in ("cancel_timer", "finish_timer") and entity_id:
@@ -1094,5 +1116,12 @@ async def execute_timer_action(
         "success": True,
         "entity_id": entity_id,
         "new_state": new_state,
-        "speech": f"Done, {friendly_name} is now {new_state or action_name.replace('_', ' ')}.",
+        "speech": build_verified_speech(
+            friendly_name=friendly_name,
+            action_name=action_name,
+            expected_state=expected_state,
+            observed_state=new_state,
+            verified=verify["verified"],
+            action_phrases=_ACTION_PHRASES,
+        ),
     }

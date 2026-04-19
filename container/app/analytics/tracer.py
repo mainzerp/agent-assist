@@ -200,8 +200,17 @@ async def create_trace_summary(
     source: str,
     agent_instructions: dict[str, str] | None = None,
     conversation_turns: list[dict] | None = None,
+    device_id: str | None = None,
+    area_id: str | None = None,
+    device_name: str | None = None,
+    area_name: str | None = None,
 ) -> None:
-    """Create a trace_summary record. Fire-and-forget."""
+    """Create a trace_summary record. Fire-and-forget.
+
+    FLOW-CTX-1 (0.18.6): ``device_*``/``area_*`` identify which
+    satellite originated the trace. They default to ``None`` so
+    existing call sites (tests, unauthenticated REST) stay valid.
+    """
     try:
         await TraceSummaryRepository.create({
             "trace_id": trace_id,
@@ -217,6 +226,10 @@ async def create_trace_summary(
             "routing_reasoning": None,
             "agent_instructions": agent_instructions or {routing_agent: condensed_task},
             "conversation_turns": conversation_turns,
+            "device_id": device_id,
+            "area_id": area_id,
+            "device_name": device_name,
+            "area_name": area_name,
         })
     except Exception:
         logger.warning("Failed to create trace summary for %s", trace_id, exc_info=True)

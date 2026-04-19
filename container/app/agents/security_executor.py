@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
+from app.agents.action_executor import (
+    build_verified_speech,
+    call_service_with_verification,
+)
 from app.analytics.tracer import _optional_span
 
 logger = logging.getLogger(__name__)
@@ -22,6 +25,30 @@ _SECURITY_ACTION_MAP: dict[str, tuple[str, str]] = {
     # Cameras
     "camera_turn_on":   ("camera", "turn_on"),
     "camera_turn_off":  ("camera", "turn_off"),
+}
+
+# FLOW-VERIFY-SHARED (0.18.5): security actions have strong deterministic
+# targets -- correct speech matters here more than anywhere else.
+_EXPECTED_STATE_BY_ACTION: dict[str, str] = {
+    "lock":             "locked",
+    "unlock":           "unlocked",
+    "alarm_arm_home":   "armed_home",
+    "alarm_arm_away":   "armed_away",
+    "alarm_arm_night":  "armed_night",
+    "alarm_disarm":     "disarmed",
+    "camera_turn_off":  "off",
+    # camera_turn_on can end in "idle"/"streaming"/"recording" -- leave open
+}
+
+_ACTION_PHRASES: dict[str, str] = {
+    "lock":             "locked",
+    "unlock":           "unlocked",
+    "alarm_arm_home":   "armed in home mode",
+    "alarm_arm_away":   "armed in away mode",
+    "alarm_arm_night":  "armed in night mode",
+    "alarm_disarm":     "disarmed",
+    "camera_turn_on":   "turned on",
+    "camera_turn_off":  "turned off",
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"alarm_control_panel", "lock", "camera", "binary_sensor", "sensor"})
@@ -119,33 +146,33 @@ async def execute_security_action(
     # Build service data
     service_data = _build_security_service_data(action)
 
-    # Execute the service call
-    try:
-        await ha_client.call_service(domain, service, entity_id, service_data or None)
-    except Exception as exc:
-        logger.error("Service call failed: %s/%s on %s", domain, service, entity_id, exc_info=True)
+    expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
+    verify = await call_service_with_verification(
+        ha_client, domain, service, entity_id,
+        service_data=service_data,
+        expected_state=expected_state,
+    )
+    if not verify["success"]:
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {exc}",
+            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
         }
 
-    # Brief wait for state propagation, then verify
-    await asyncio.sleep(0.3)
-    new_state = None
-    try:
-        state_resp = await ha_client.get_state(entity_id)
-        if state_resp:
-            new_state = state_resp.get("state")
-    except Exception:
-        logger.warning("State verification failed for %s", entity_id, exc_info=True)
-
+    new_state = verify["observed_state"]
     return {
         "success": True,
         "entity_id": entity_id,
         "new_state": new_state,
-        "speech": f"Done, {friendly_name} is now {new_state or action_name.replace('_', ' ')}.",
+        "speech": build_verified_speech(
+            friendly_name=friendly_name,
+            action_name=action_name,
+            expected_state=expected_state,
+            observed_state=new_state,
+            verified=verify["verified"],
+            action_phrases=_ACTION_PHRASES,
+        ),
     }
 
 

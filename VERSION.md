@@ -1,8 +1,85 @@
 # Version
 
-**Current Version:** 0.18.4
+**Current Version:** 0.18.6
 
 ## Version History
+
+### 0.18.6 -- Request Origin + Spatial Context End-to-End
+
+- Adds end-to-end awareness of *where* a request originates: the
+  chat UI, an HA conversation call from a voice satellite, or a
+  raw API client. ``TaskContext`` grows a ``source`` literal
+  (``"ha" | "chat" | "api"``) plus optional ``device_name`` /
+  ``area_name`` alongside the existing ``device_id`` / ``area_id``.
+  ``ConversationRequest`` accepts the same display names so the
+  HA integration can ship them without a container-side registry
+  lookup. The ``TracingMiddleware`` already derived ``source`` from
+  the URL path; ``conversation.py`` and ``dashboard_api.py`` now
+  forward that value into the ``TaskContext``.
+- The HA custom component (``custom_components/agent_assist/
+  conversation.py``) resolves the originating satellite's
+  ``device_name`` via the device registry and its ``area_name`` via
+  the area registry. Both flow through WS and REST fallbacks via a
+  shared ``_resolve_origin_context`` helper. Dashboard chat is
+  explicitly marked ``source="chat"`` with no spatial anchor, so
+  agents don't silently pin a chat query to a previous satellite's
+  area.
+- Area-aware entity resolution: a new ``rerank_matches_by_area``
+  helper in ``action_executor.py`` re-orders the hybrid matcher's
+  candidate list so a same-area entity wins when it scores within
+  0.05 of the top result. ``_select_deterministic_candidate`` gains
+  a ``preferred_area_id`` tie-breaker applied to exact-name /
+  exact-area matches. Light, climate and scene agents feed the
+  satellite's ``area_id`` into their executors; ``ActionableAgent``
+  now sets ``_current_task_context`` on every subclass so any
+  executor can reach it without plumbing extra kwargs. Timer agent's
+  historical override is removed in favour of the shared hook.
+- Trace persistence: migration 16 adds ``device_id``, ``area_id``,
+  ``device_name``, ``area_name`` columns to ``trace_summary`` and the
+  insert path writes them for both live dispatch and response-cache
+  replay. ``traces_api`` surfaces them, and the traces UI renders
+  dedicated "Satellite" / "Area" tiles next to the existing Source
+  badge (with the raw IDs in tooltips for debugging).
+- New ``tests/test_area_tiebreaker.py`` (15 tests) covers the
+  reranker edge cases (no area, single match, already-same-area,
+  near-tie win, far-behind loss, no mutation of input), the
+  deterministic tie-breaker, and the new ``TaskContext`` /
+  ``ConversationRequest`` fields including source literal validation.
+
+### 0.18.5 -- Unified Verified Service Call Across All Domain Executors
+
+- Introduces a shared ``call_service_with_verification`` helper in
+  ``app/agents/action_executor.py`` that centralises the pattern:
+  register a WS ``state_changed`` waiter via ``ha_client.expect_state``
+  **before** the REST call, invoke the service, then merge the REST
+  reply with the observer's evidence into a uniform result dict
+  (``success`` / ``entity_id`` / ``action`` / ``state`` / ``source``).
+  The helper gracefully degrades when ``expect_state`` is not a real
+  async context manager (legacy tests / bare ``AsyncMock``) so it can
+  be adopted everywhere without breaking existing harnesses.
+- ``build_verified_speech`` is the matching speech builder: it prefers
+  the verified ``expected_state`` over the observed state, falls back
+  to an action-specific intent phrase (``triggered``, ``snoozed``,
+  ``activated`` …) when no target state is known, and never echoes a
+  stale observation that contradicts the commanded intent.
+- All seven domain executors now use both helpers instead of the old
+  ``asyncio.sleep(0.3) + get_state`` pattern: **climate, media,
+  music, security, scene, automation, timer**. Each executor declares
+  a domain-local ``_EXPECTED_STATE_BY_ACTION`` map and ``_ACTION_PHRASES``
+  table so that e.g. ``trigger_automation`` says "triggered" rather
+  than a misleading "is now on" based on a coincidentally matching
+  pre-existing state. ``timer_executor._snooze_timer`` routes its
+  internal cancel/start pair through the same helper.
+- ``orchestrator._execute_cached_action`` was migrated to the shared
+  helper too, so cached replay and live dispatch share identical
+  verification semantics.
+- New ``tests/test_domain_executors_verify.py`` covers the helper
+  directly (non-empty REST, empty REST + WS observer, exceptions,
+  unsupported async-CM fallback) and adds one per-domain integration
+  test for the "empty REST + observer confirms" scenario. Legacy
+  fixtures in ``tests/test_action_executor.py`` and
+  ``tests/test_agents.py`` were updated to share the new
+  ``attach_expect_state_shim`` helper in ``tests/helpers.py``.
 
 ### 0.18.4 -- Cached Action Replay Uses WS State Verification
 

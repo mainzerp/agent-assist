@@ -34,17 +34,19 @@ def set_dispatcher(dispatcher) -> None:
 
 def _build_a2a_request(conv_request: ConversationRequest, method: str, span_collector=None) -> tuple[JsonRpcRequest, AgentTask]:
     """Convert a ConversationRequest into an A2A JsonRpcRequest + AgentTask."""
-    context = None
-    if conv_request.device_id or conv_request.area_id:
-        context = TaskContext(
-            device_id=conv_request.device_id,
-            area_id=conv_request.area_id,
-            language=conv_request.language or "en",
-        )
-    else:
-        context = TaskContext(
-            language=conv_request.language or "en",
-        )
+    # FLOW-CTX-1 (0.18.6): source comes from the SpanCollector that
+    # the TracingMiddleware already derived from the route path.
+    # Falling back to "ha" keeps behavior stable for anyone hitting
+    # this helper with a hand-crafted span_collector (tests).
+    source = getattr(span_collector, "source", "ha") if span_collector else "ha"
+    context = TaskContext(
+        device_id=conv_request.device_id,
+        area_id=conv_request.area_id,
+        device_name=conv_request.device_name,
+        area_name=conv_request.area_name,
+        language=conv_request.language or "en",
+        source=source,
+    )
     task = AgentTask(
         description=conv_request.text,
         user_text=conv_request.text,

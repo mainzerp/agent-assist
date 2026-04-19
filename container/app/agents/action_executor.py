@@ -114,6 +114,196 @@ _EXPECTED_STATE_BY_ACTION: dict[str, str] = {
 }
 
 
+async def call_service_with_verification(
+    ha_client: Any,
+    domain: str,
+    service: str,
+    entity_id: str,
+    *,
+    service_data: dict | None = None,
+    expected_state: str | None = None,
+    ws_timeout: float | None = None,
+    poll_interval: float | None = None,
+    poll_max: float | None = None,
+) -> dict[str, Any]:
+    """Shared primitive for domain executors: REST ``call_service`` + WS verify.
+
+    FLOW-VERIFY-SHARED (0.18.5): every domain executor used to call
+    ``ha_client.call_service`` followed by a fixed ``asyncio.sleep(0.3)``
+    and a single ``get_state``. On async-bus aktors (KNX/ABB/Zigbee2MQTT,
+    Matter over Thread, slow cloud integrations…) the ``state_changed``
+    event fires *after* the REST call returns, so the poll routinely
+    captured the *previous* state. Callers then produced stale speech
+    like "light is off" right after a successful ``turn_on``.
+
+    This helper registers a WebSocket state-change waiter *before* the
+    REST call via ``ha_client.expect_state``, runs the call inside the
+    context, and merges evidence from three sources (in priority order):
+
+    1. HA's synchronous ``call_service`` response (a list of changed
+       state objects -- authoritative when non-empty).
+    2. The state observed by the WS waiter / polling fallback that
+       ``expect_state`` sets up.
+    3. ``None`` (verification inconclusive -- callers should fall back
+       to intent-first speech using ``expected_state`` when available).
+
+    Args:
+        ha_client: HARestClient / HAWebSocketClient composite.
+        domain: HA service domain (e.g. ``"light"``).
+        service: HA service name (e.g. ``"turn_on"``).
+        entity_id: Target entity id.
+        service_data: Optional service payload; ``None``/empty is fine.
+        expected_state: Deterministic target state (``"on"``/``"locked"``
+            /``"armed_home"``/…). When ``None`` the WS waiter fires on
+            *any* state change (``toggle``-like semantics).
+        ws_timeout / poll_interval / poll_max: Override the corresponding
+            ``state_verify.*`` settings; ``None`` means "read from
+            SettingsRepository defaults".
+
+    Returns:
+        Dict with:
+            success: False iff an exception was raised during the call.
+            entity_id: echoed for convenience.
+            call_result: raw REST response (``list``/``dict``/``None``).
+            observed_state: merged state from REST / WS / poll.
+            verified: True iff ``observed_state`` matches
+                ``expected_state`` (or ``expected_state is None`` and
+                *something* was observed). Use this to decide between
+                observed-state speech and intent-first speech.
+            error: the exception when ``success`` is False, else ``None``.
+    """
+    if ws_timeout is None:
+        ws_timeout = await _settings_float(
+            "state_verify.ws_timeout_sec", default=1.5,
+        )
+    if poll_interval is None:
+        poll_interval = await _settings_float(
+            "state_verify.poll_interval_sec", default=0.25,
+        )
+    if poll_max is None:
+        poll_max = await _settings_float(
+            "state_verify.poll_max_sec", default=1.0,
+        )
+
+    call_result: Any = None
+    observer: dict[str, Any] = {}
+    expect_state_fn = getattr(ha_client, "expect_state", None)
+    try:
+        if expect_state_fn is None:
+            call_result = await ha_client.call_service(
+                domain, service, entity_id, service_data or None,
+            )
+        else:
+            try:
+                cm = expect_state_fn(
+                    entity_id,
+                    expected=expected_state,
+                    timeout=ws_timeout,
+                    poll_interval=poll_interval,
+                    poll_max=poll_max,
+                )
+                aenter = getattr(cm, "__aenter__", None)
+                aexit = getattr(cm, "__aexit__", None)
+            except TypeError:
+                cm = None
+                aenter = aexit = None
+            if callable(aenter) and callable(aexit):
+                async with cm as obs:
+                    observer = obs if isinstance(obs, dict) else {}
+                    call_result = await ha_client.call_service(
+                        domain, service, entity_id, service_data or None,
+                    )
+            else:
+                # ``expect_state`` is mocked with a non-CM return (legacy
+                # tests) -- fall back to the simple call path; the caller
+                # still gets the REST response, just without WS verification.
+                call_result = await ha_client.call_service(
+                    domain, service, entity_id, service_data or None,
+                )
+    except Exception as exc:
+        logger.error(
+            "Service call failed: %s/%s on %s", domain, service, entity_id,
+            exc_info=True,
+        )
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "call_result": None,
+            "observed_state": None,
+            "verified": False,
+            "error": exc,
+        }
+
+    observed = _extract_state_from_call_result(call_result, entity_id)
+    if observed is None and observer:
+        observed = observer.get("new_state")
+
+    if expected_state is None:
+        verified = observed is not None
+    else:
+        verified = observed == expected_state
+
+    if expected_state and observed is not None and observed != expected_state:
+        logger.info(
+            "State verify mismatch for %s: expected=%s observed=%s",
+            entity_id, expected_state, observed,
+        )
+
+    return {
+        "success": True,
+        "entity_id": entity_id,
+        "call_result": call_result,
+        "observed_state": observed,
+        "verified": verified,
+        "error": None,
+    }
+
+
+def build_verified_speech(
+    *,
+    friendly_name: str,
+    action_name: str,
+    expected_state: str | None,
+    observed_state: str | None,
+    verified: bool,
+    action_phrases: dict[str, str] | None = None,
+) -> str:
+    """Intent-first speech helper for domain executors.
+
+    FLOW-VERIFY-SHARED (0.18.5): mirrors ``_build_action_speech`` but
+    parameterized over a small per-domain phrase map so each executor
+    can localize its action-to-verb mapping (``lock`` -> "locked",
+    ``alarm_arm_home`` -> "armed in home mode", ``start_timer`` ->
+    "started", …).
+
+    Priority:
+      1. If ``verified`` and we have an ``expected_state`` or
+         ``observed_state``, speak the authoritative state.
+      2. Otherwise use the ``action_phrases`` mapping if it carries the
+         action name (intent-first wording even on stale observations).
+      3. Fall back to the humanized action name (``set_hvac_mode`` ->
+         ``set hvac mode``).
+    """
+    phrases = action_phrases or {}
+    # 1. Deterministic verified target wins: "is now <expected>".
+    if expected_state and verified:
+        return f"Done, {friendly_name} is now {expected_state}."
+    # 2. For non-state-changing actions (or stale observations), prefer
+    #    an intent-first phrase when we have one -- never let an observed
+    #    but contradictory state leak into speech.
+    if action_name in phrases:
+        return f"Done, {friendly_name} {phrases[action_name]}."
+    # 3. We do have an expected target but verification was inconclusive
+    #    (empty REST + no WS evidence). Stay on intent.
+    if expected_state:
+        return f"Done, {friendly_name} is now {expected_state}."
+    # 4. No expected target, but something observed -- speak it.
+    if observed_state:
+        return f"Done, {friendly_name} is now {observed_state}."
+    # 5. Last resort: humanize the action name.
+    return f"Done, {friendly_name} {action_name.replace('_', ' ')}."
+
+
 def _validate_domain(entity_id: str) -> bool:
     """Check that entity_id belongs to an allowed domain for this executor."""
     domain = entity_id.split(".")[0] if "." in entity_id else ""
@@ -209,10 +399,62 @@ async def _filter_visible_entries(
     return [entry for entry in entries if entry.entity_id in visible_ids]
 
 
-def _select_deterministic_candidate(entries: list[Any], entity_query: str) -> tuple[Any | None, str | None]:
-    """Prefer a single light candidate, otherwise require an unambiguous result."""
+def rerank_matches_by_area(matches: list[Any], preferred_area_id: str | None) -> list[Any]:
+    """Reorder hybrid matcher results to prefer the originating area.
+
+    FLOW-CTX-1 (0.18.6): shared helper used by every domain executor
+    that currently picks ``matches[0]`` unconditionally. When
+    ``preferred_area_id`` is set and the top result is not in that
+    area, we swap in the best same-area candidate provided it scores
+    within 5% of the top -- far enough below to guard against
+    reranking weak matches, close enough that a same-area tie wins.
+    The input list is copied; the original order is preserved
+    otherwise so existing metadata reporting stays accurate.
+    """
+    if not matches or not preferred_area_id or len(matches) < 2:
+        return matches
+    top = matches[0]
+    if (getattr(top, "area", None) or None) == preferred_area_id:
+        return matches
+    top_score = getattr(top, "score", 0.0) or 0.0
+    for idx in range(1, len(matches)):
+        candidate = matches[idx]
+        if (getattr(candidate, "area", None) or None) != preferred_area_id:
+            continue
+        cand_score = getattr(candidate, "score", 0.0) or 0.0
+        if cand_score >= top_score - 0.05:
+            reordered = list(matches)
+            reordered[0], reordered[idx] = reordered[idx], reordered[0]
+            return reordered
+        break
+    return matches
+
+
+def _select_deterministic_candidate(
+    entries: list[Any],
+    entity_query: str,
+    *,
+    preferred_area_id: str | None = None,
+) -> tuple[Any | None, str | None]:
+    """Prefer a single light candidate, otherwise require an unambiguous result.
+
+    FLOW-CTX-1 (0.18.6): when multiple candidates otherwise match,
+    ``preferred_area_id`` (typically the originating satellite's
+    area) acts as a tie-breaker. We only apply it when it actually
+    narrows the field to a single candidate, so the outcome is
+    strictly more decisive, never accidentally *less* correct.
+    """
     if not entries:
         return None, None
+
+    if preferred_area_id and len(entries) > 1:
+        area_filtered = [entry for entry in entries if (entry.area or None) == preferred_area_id]
+        if len(area_filtered) == 1:
+            return area_filtered[0], None
+        if len(area_filtered) > 1:
+            # Same-area still ambiguous: keep narrowing with the light-domain
+            # preference below instead of returning raw area_filtered.
+            entries = area_filtered
 
     light_entries = [entry for entry in entries if entry.domain == "light"]
     if len(light_entries) == 1:
@@ -245,8 +487,16 @@ async def _resolve_light_entity(
     entity_index: Any,
     entity_matcher: Any,
     agent_id: str | None,
+    *,
+    preferred_area_id: str | None = None,
 ) -> dict[str, Any]:
-    """Resolve light-agent entities via deterministic checks before hybrid matching."""
+    """Resolve light-agent entities via deterministic checks before hybrid matching.
+
+    FLOW-CTX-1 (0.18.6): ``preferred_area_id`` is the originating
+    satellite's area. It tie-breaks otherwise-ambiguous deterministic
+    matches and reranks the hybrid matcher's top candidate when
+    there is a viable same-area match near the top.
+    """
     metadata: dict[str, Any] = {
         "query": entity_query,
         "normalized_query": _normalize_lookup_text(entity_query),
@@ -287,7 +537,9 @@ async def _resolve_light_entity(
                 for entry in visible_entries
                 if _normalize_lookup_text(entry.friendly_name) == normalized_query
             ]
-            candidate, ambiguity = _select_deterministic_candidate(exact_name_matches, entity_query)
+            candidate, ambiguity = _select_deterministic_candidate(
+                exact_name_matches, entity_query, preferred_area_id=preferred_area_id,
+            )
             if candidate:
                 metadata.update(
                     {
@@ -322,7 +574,9 @@ async def _resolve_light_entity(
                     for entry in visible_entries
                     if _normalize_lookup_text(entry.friendly_name) == stripped_query
                 ]
-                candidate, ambiguity = _select_deterministic_candidate(stripped_matches, entity_query)
+                candidate, ambiguity = _select_deterministic_candidate(
+                    stripped_matches, entity_query, preferred_area_id=preferred_area_id,
+                )
                 if candidate:
                     metadata.update(
                         {
@@ -362,7 +616,9 @@ async def _resolve_light_entity(
                 if entry.domain in {"light", "switch"}
                 and _normalize_lookup_text(entry.area or "") in area_queries
             ]
-            candidate, ambiguity = _select_deterministic_candidate(area_matches, entity_query)
+            candidate, ambiguity = _select_deterministic_candidate(
+                area_matches, entity_query, preferred_area_id=preferred_area_id,
+            )
             if candidate:
                 metadata.update(
                     {
@@ -395,15 +651,21 @@ async def _resolve_light_entity(
         matches = await entity_matcher.match(entity_query, agent_id=agent_id)
         metadata.update({"match_count": len(matches), "resolution_path": "hybrid_matcher"})
         if matches:
-            metadata["top_entity_id"] = matches[0].entity_id
-            metadata["top_friendly_name"] = matches[0].friendly_name or matches[0].entity_id
-            metadata["top_score"] = matches[0].score
-            metadata["signal_scores"] = getattr(matches[0], "signal_scores", {})
+            original_top = matches[0]
+            reranked = rerank_matches_by_area(matches, preferred_area_id)
+            chosen = reranked[0]
+            if chosen is not original_top:
+                metadata["area_rerank_from"] = original_top.entity_id
+                metadata["area_rerank_reason"] = "preferred_area_match"
+            metadata["top_entity_id"] = chosen.entity_id
+            metadata["top_friendly_name"] = chosen.friendly_name or chosen.entity_id
+            metadata["top_score"] = getattr(chosen, "score", 0.0)
+            metadata["signal_scores"] = getattr(chosen, "signal_scores", {})
             return _build_resolution_result(
                 entity_query=entity_query,
                 metadata=metadata,
-                entity_id=matches[0].entity_id,
-                friendly_name=matches[0].friendly_name or matches[0].entity_id,
+                entity_id=chosen.entity_id,
+                friendly_name=chosen.friendly_name or chosen.entity_id,
             )
 
     metadata["resolution_path"] = "no_match"
@@ -483,6 +745,8 @@ async def execute_action(
     entity_matcher,
     agent_id: str | None = None,
     span_collector=None,
+    *,
+    preferred_area_id: str | None = None,
 ) -> dict:
     """Resolve an entity, call a HA service, and verify the result.
 
@@ -524,7 +788,10 @@ async def execute_action(
     try:
         if entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await _resolve_light_entity(entity_query, entity_index, entity_matcher, agent_id)
+                resolution = await _resolve_light_entity(
+                    entity_query, entity_index, entity_matcher, agent_id,
+                    preferred_area_id=preferred_area_id,
+                )
                 em_span["metadata"] = resolution["metadata"]
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
@@ -549,62 +816,24 @@ async def execute_action(
     # Build service data
     service_data = _build_service_data(action)
 
-    # FLOW-VERIFY-1: the expected target state lets us (a) register a
-    # WebSocket waiter that only fires on a *matching* state_changed event
-    # and (b) formulate intent-first speech when the observed state is
-    # stale or missing. ``toggle`` has no deterministic target.
+    # FLOW-VERIFY-1 / FLOW-VERIFY-SHARED (0.18.5): delegate the
+    # call_service + WS-waiter dance to the shared helper.
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
-
-    ws_timeout = await _settings_float(
-        "state_verify.ws_timeout_sec", default=1.5,
-    )
-    poll_interval = await _settings_float(
-        "state_verify.poll_interval_sec", default=0.25,
-    )
-    poll_max = await _settings_float(
-        "state_verify.poll_max_sec", default=1.0,
+    verify = await call_service_with_verification(
+        ha_client, domain, service, entity_id,
+        service_data=service_data,
+        expected_state=expected_state,
     )
 
-    call_result: Any = None
-    try:
-        async with ha_client.expect_state(
-            entity_id,
-            expected=expected_state,
-            timeout=ws_timeout,
-            poll_interval=poll_interval,
-            poll_max=poll_max,
-        ) as observer:
-            call_result = await ha_client.call_service(
-                domain, service, entity_id, service_data or None,
-            )
-    except Exception as exc:
-        logger.error(
-            "Service call failed: %s/%s on %s",
-            domain, service, entity_id, exc_info=True,
-        )
+    if not verify["success"]:
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {exc}",
+            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
         }
 
-    # Priority:
-    #   1. HA's synchronous call_service response (authoritative list of
-    #      changed states). Slightly more trustworthy than a follow-up
-    #      poll because it is the value HA committed before returning.
-    #   2. The state observed via the WS waiter or polling fallback set up
-    #      by ``expect_state``.
-    new_state: str | None = _extract_state_from_call_result(call_result, entity_id)
-    if new_state is None:
-        new_state = observer.get("new_state")
-
-    if expected_state and new_state is not None and new_state != expected_state:
-        logger.info(
-            "State verify mismatch for %s: expected=%s observed=%s",
-            entity_id, expected_state, new_state,
-        )
-
+    new_state = verify["observed_state"]
     return {
         "success": True,
         "entity_id": entity_id,

@@ -629,7 +629,11 @@ async def admin_chat(request: Request, payload: ChatRequest):
         description=payload.text,
         user_text=payload.text,
         conversation_id=payload.conversation_id,
-        context=TaskContext(language=language),
+        # FLOW-CTX-1 (0.18.6): dashboard chat has no satellite and
+        # no area. Mark ``source="chat"`` so agents can skip
+        # area-based tie-breaking that would otherwise silently
+        # pin to a previous request's area.
+        context=TaskContext(language=language, source="chat"),
     )
     a2a_request = JsonRpcRequest(
         method="message/send",
@@ -668,7 +672,7 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
         description=payload.text,
         user_text=payload.text,
         conversation_id=payload.conversation_id,
-        context=TaskContext(language=language),
+        context=TaskContext(language=language, source="chat"),
     )
     a2a_request = JsonRpcRequest(
         method="message/stream",

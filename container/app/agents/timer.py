@@ -2,7 +2,7 @@
 
 from app.agents.actionable import ActionableAgent
 from app.agents.timer_executor import execute_timer_action
-from app.models.agent import AgentCard, AgentTask, TaskResult
+from app.models.agent import AgentCard
 
 
 class TimerAgent(ActionableAgent):
@@ -11,23 +11,17 @@ class TimerAgent(ActionableAgent):
     _prompt_name = "timer"
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
-        device_id = None
-        area_id = None
-        if hasattr(self, "_current_task_context") and self._current_task_context:
-            device_id = self._current_task_context.device_id
-            area_id = self._current_task_context.area_id
+        # FLOW-CTX-1 (0.18.6): ``_current_task_context`` is now set
+        # by ``ActionableAgent.handle_task`` for every subclass, so
+        # we no longer need an override just to capture it here.
+        ctx = getattr(self, "_current_task_context", None)
+        device_id = ctx.device_id if ctx else None
+        area_id = ctx.area_id if ctx else None
         return await execute_timer_action(
             action, ha_client, entity_index, entity_matcher,
             agent_id=agent_id, device_id=device_id, area_id=area_id,
             span_collector=span_collector,
         )
-
-    async def handle_task(self, task: AgentTask) -> TaskResult:
-        self._current_task_context = task.context
-        try:
-            return await super().handle_task(task)
-        finally:
-            self._current_task_context = None
 
     @property
     def agent_card(self) -> AgentCard:

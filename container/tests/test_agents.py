@@ -664,9 +664,12 @@ class TestTimerExecutor:
 
     async def test_snooze_timer(self):
         """snooze_timer cancels and restarts."""
+        from tests.helpers import attach_expect_state_shim
+
         ha = AsyncMock()
         ha.call_service = AsyncMock(return_value={})
         ha.get_state = AsyncMock(return_value={"state": "active"})
+        attach_expect_state_shim(ha)
         matcher = AsyncMock()
         matcher.match = AsyncMock(return_value=[MagicMock(entity_id="timer.kitchen", friendly_name="Kitchen Timer")])
 

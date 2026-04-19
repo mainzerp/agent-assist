@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import random
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.models.agent import AgentCard, AgentConfig, AgentTask, TaskContext
@@ -291,6 +292,51 @@ def make_mock_llm_response(
 def make_mock_embedding(dim: int = 384) -> list[float]:
     """Return a random embedding vector of the given dimension."""
     return [random.uniform(-1.0, 1.0) for _ in range(dim)]
+
+
+# ---------------------------------------------------------------------------
+# HA client helpers
+# ---------------------------------------------------------------------------
+
+def attach_expect_state_shim(client: Any) -> Any:
+    """Install an ``expect_state`` async context manager on a mocked client.
+
+    FLOW-VERIFY-SHARED (0.18.5): all domain executors now go through
+    :func:`app.agents.action_executor.call_service_with_verification`,
+    which opens ``ha_client.expect_state`` as an async context manager.
+    Plain ``AsyncMock()`` instances don't satisfy the context-manager
+    protocol, so tests that mock the HA client need this shim.
+
+    The shim mimics the "no WS observer" fallback: it yields a mutable
+    dict to the ``with`` body and, on exit, fills ``new_state`` from a
+    single call to ``client.get_state`` (or leaves it ``None`` if
+    ``get_state`` raises). That keeps tests deterministic without
+    pulling the real REST client into the unit test.
+
+    Returns the same ``client`` for call-chaining.
+    """
+
+    @asynccontextmanager
+    async def _expect_state(
+        entity_id,
+        *,
+        expected=None,
+        timeout=0.05,
+        poll_interval=0.01,
+        poll_max=0.05,
+    ):
+        result = {"new_state": None}
+        yield result
+        try:
+            state_resp = await client.get_state(entity_id)
+        except Exception:
+            return
+        if isinstance(state_resp, dict):
+            result["new_state"] = state_resp.get("state")
+
+    client.expect_state = _expect_state
+    client.set_state_observer = MagicMock()
+    return client
 
 
 # ---------------------------------------------------------------------------

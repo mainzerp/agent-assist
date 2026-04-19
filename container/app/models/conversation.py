@@ -13,6 +13,13 @@ class ConversationRequest(BaseModel):
     language: str = Field("en", description="User language code", max_length=10)
     device_id: str | None = Field(None, description="Device registry ID of the originating satellite/device", max_length=64)
     area_id: str | None = Field(None, description="Area ID resolved from device registry", max_length=64)
+    # FLOW-CTX-1 (0.18.6): human-readable names for the originating
+    # satellite + its area. Optional because not every client
+    # resolves them (dashboard chat has neither, older HA releases
+    # might not populate device registry nicely). Pure metadata --
+    # agents use IDs for comparisons and names for speech/traces.
+    device_name: str | None = Field(None, description="Human-readable name of the originating device/satellite", max_length=128)
+    area_name: str | None = Field(None, description="Human-readable name of the originating area/room", max_length=128)
 
 
 class ConversationResponse(BaseModel):

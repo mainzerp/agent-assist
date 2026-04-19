@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
+from app.agents.action_executor import (
+    build_verified_speech,
+    call_service_with_verification,
+    rerank_matches_by_area,
+)
 from app.analytics.tracer import _optional_span
 
 logger = logging.getLogger(__name__)
@@ -17,6 +21,22 @@ _CLIMATE_ACTION_MAP: dict[str, tuple[str, str]] = {
     "set_humidity":     ("climate", "set_humidity"),
     "turn_on":          ("climate", "turn_on"),
     "turn_off":         ("climate", "turn_off"),
+}
+
+# FLOW-VERIFY-SHARED (0.18.5): climate entities have several meaningful
+# post-action states. ``turn_off`` deterministically ends in "off"; for
+# ``turn_on`` HA leaves it to the integration (often "heat"/"cool"/"auto")
+# so we don't pin an expected state. ``set_hvac_mode`` is handled
+# dynamically below because the target is the user-supplied mode.
+_EXPECTED_STATE_BY_ACTION: dict[str, str] = {
+    "turn_off": "off",
+}
+
+# Intent-first phrasing when verification is inconclusive or ambiguous.
+_ACTION_PHRASES: dict[str, str] = {
+    "set_temperature":  "temperature updated",
+    "set_fan_mode":     "fan mode updated",
+    "set_humidity":     "humidity target updated",
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "weather"})
@@ -56,6 +76,8 @@ async def execute_climate_action(
     entity_matcher: Any,
     agent_id: str | None = None,
     span_collector=None,
+    *,
+    preferred_area_id: str | None = None,
 ) -> dict:
     """Resolve an entity, call a climate HA service, and verify the result.
 
@@ -100,12 +122,21 @@ async def execute_climate_action(
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
                 if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
+                    # FLOW-CTX-1 (0.18.6): prefer same-area climate
+                    # entity on near-tie so a thermostat request from
+                    # the kitchen satellite pins to the kitchen
+                    # thermostat even if the living-room one scored
+                    # marginally higher.
+                    reranked = rerank_matches_by_area(matches, preferred_area_id)
+                    chosen = reranked[0]
+                    if chosen is not matches[0]:
+                        em_span["metadata"]["area_rerank_from"] = matches[0].entity_id
+                    entity_id = chosen.entity_id
+                    friendly_name = chosen.friendly_name or entity_id
                     em_span["metadata"]["top_entity_id"] = entity_id
                     em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = matches[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                    em_span["metadata"]["top_score"] = getattr(chosen, "score", 0.0)
+                    em_span["metadata"]["signal_scores"] = getattr(chosen, "signal_scores", {})
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
@@ -124,33 +155,40 @@ async def execute_climate_action(
     # Build service data
     service_data = _build_climate_service_data(action)
 
-    # Execute the service call
-    try:
-        await ha_client.call_service(domain, service, entity_id, service_data or None)
-    except Exception as exc:
-        logger.error("Service call failed: %s/%s on %s", domain, service, entity_id, exc_info=True)
+    # FLOW-VERIFY-SHARED: set_hvac_mode has a dynamic target equal to the
+    # requested mode; other actions use the static map.
+    expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
+    if action_name == "set_hvac_mode":
+        mode = service_data.get("hvac_mode")
+        if isinstance(mode, str) and mode:
+            expected_state = mode
+
+    verify = await call_service_with_verification(
+        ha_client, domain, service, entity_id,
+        service_data=service_data,
+        expected_state=expected_state,
+    )
+    if not verify["success"]:
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {exc}",
+            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
         }
 
-    # Brief wait for state propagation, then verify
-    await asyncio.sleep(0.3)
-    new_state = None
-    try:
-        state_resp = await ha_client.get_state(entity_id)
-        if state_resp:
-            new_state = state_resp.get("state")
-    except Exception:
-        logger.warning("State verification failed for %s", entity_id, exc_info=True)
-
+    new_state = verify["observed_state"]
     return {
         "success": True,
         "entity_id": entity_id,
         "new_state": new_state,
-        "speech": f"Done, {friendly_name} is now {new_state or action_name.replace('_', ' ')}.",
+        "speech": build_verified_speech(
+            friendly_name=friendly_name,
+            action_name=action_name,
+            expected_state=expected_state,
+            observed_state=new_state,
+            verified=verify["verified"],
+            action_phrases=_ACTION_PHRASES,
+        ),
     }
 
 

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
+from app.agents.action_executor import (
+    build_verified_speech,
+    call_service_with_verification,
+)
 from app.analytics.tracer import _optional_span
 
 logger = logging.getLogger(__name__)
@@ -14,6 +17,22 @@ _AUTOMATION_ACTION_MAP: dict[str, tuple[str, str]] = {
     "enable_automation":  ("automation", "turn_on"),
     "disable_automation": ("automation", "turn_off"),
     "trigger_automation": ("automation", "trigger"),
+}
+
+# FLOW-VERIFY-SHARED (0.18.5): enable/disable land in deterministic "on"/
+# "off". ``trigger_automation`` does NOT change the entity state (the
+# automation runs once) -- we keep expected_state=None and rely on intent-
+# first speech so we don't falsely claim the automation "is now off" when
+# it stays enabled.
+_EXPECTED_STATE_BY_ACTION: dict[str, str] = {
+    "enable_automation":  "on",
+    "disable_automation": "off",
+}
+
+_ACTION_PHRASES: dict[str, str] = {
+    "enable_automation":  "enabled",
+    "disable_automation": "disabled",
+    "trigger_automation": "triggered",
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"automation"})
@@ -113,33 +132,33 @@ async def execute_automation_action(
     # Build service data
     service_data = _build_automation_service_data(action)
 
-    # Execute the service call
-    try:
-        await ha_client.call_service(domain, service, entity_id, service_data or None)
-    except Exception as exc:
-        logger.error("Service call failed: %s/%s on %s", domain, service, entity_id, exc_info=True)
+    expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
+    verify = await call_service_with_verification(
+        ha_client, domain, service, entity_id,
+        service_data=service_data,
+        expected_state=expected_state,
+    )
+    if not verify["success"]:
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {exc}",
+            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
         }
 
-    # Brief wait for state propagation, then verify
-    await asyncio.sleep(0.3)
-    new_state = None
-    try:
-        state_resp = await ha_client.get_state(entity_id)
-        if state_resp:
-            new_state = state_resp.get("state")
-    except Exception:
-        logger.warning("State verification failed for %s", entity_id, exc_info=True)
-
+    new_state = verify["observed_state"]
     return {
         "success": True,
         "entity_id": entity_id,
         "new_state": new_state,
-        "speech": f"Done, {friendly_name} is now {new_state or action_name.replace('_', ' ')}.",
+        "speech": build_verified_speech(
+            friendly_name=friendly_name,
+            action_name=action_name,
+            expected_state=expected_state,
+            observed_state=new_state,
+            verified=verify["verified"],
+            action_phrases=_ACTION_PHRASES,
+        ),
     }
 
 

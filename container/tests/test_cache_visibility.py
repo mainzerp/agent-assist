@@ -203,7 +203,15 @@ class TestCachedActionEmptyResponse:
 
         result = await orch._execute_cached_action(cached)
 
-        assert result == payload
+        # ``_execute_cached_action`` wraps the REST reply into a
+        # result dict so the rest of the cache-replay pipeline can
+        # reason about ``success``/``state``/``source`` uniformly.
+        assert result is not None
+        assert result["success"] is True
+        assert result["entity_id"] == "light.kitchen"
+        assert result["action"] == "turn_on"
+        assert result["state"] == "on"
+        assert result["source"] == "call_service"
 
     async def test_cached_action_empty_ha_response_falls_through(self):
         """End-to-end: empty HA result causes _handle_response_cache_hit

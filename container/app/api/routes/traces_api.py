@@ -525,6 +525,12 @@ async def get_trace_detail(trace_id: str):
         "agent_instructions": summary.get("agent_instructions"),
         "label": summary.get("label"),
         "source": summary.get("source"),
+        # FLOW-CTX-1 (0.18.6): surface the satellite / area that
+        # originated the trace so the UI can render them.
+        "device_id": summary.get("device_id"),
+        "area_id": summary.get("area_id"),
+        "device_name": summary.get("device_name"),
+        "area_name": summary.get("area_name"),
         "spans": spans,
         "agent_executions": agent_executions,
         "agent_communication": agent_communication,

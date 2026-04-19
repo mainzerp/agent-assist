@@ -42,6 +42,19 @@ class ActionableAgent(BaseAgent):
         raise NotImplementedError
 
     async def handle_task(self, task: AgentTask) -> TaskResult:
+        # FLOW-CTX-1 (0.18.6): expose the incoming TaskContext so
+        # domain-specific ``_do_execute`` implementations can pick up
+        # satellite area, device_id and request source without
+        # plumbing an extra kwarg through every executor signature.
+        # Cleared in ``finally`` to avoid leaking between overlapping
+        # tasks (same agent instance, two concurrent requests).
+        self._current_task_context = task.context
+        try:
+            return await self._handle_task_inner(task)
+        finally:
+            self._current_task_context = None
+
+    async def _handle_task_inner(self, task: AgentTask) -> TaskResult:
         agent_id = self.agent_card.agent_id
         span_collector = task.span_collector
         system_prompt = self._load_prompt(self._prompt_name)

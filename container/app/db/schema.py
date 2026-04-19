@@ -281,6 +281,10 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             routing_reasoning TEXT,
             agent_instructions TEXT,
             conversation_turns TEXT,
+            device_id TEXT,
+            area_id TEXT,
+            device_name TEXT,
+            area_name TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
     """)
@@ -802,4 +806,20 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         )
         await db.execute(
             "INSERT OR IGNORE INTO schema_version (version) VALUES (15)"
+        )
+
+    if current_version < 16:
+        # Migration 16 (0.18.6, FLOW-CTX-1): record the originating
+        # satellite + area on every trace_summary so the dashboard
+        # can show "Kitchen Satellite / Kitchen" next to each
+        # conversation instead of an opaque device_id UUID.
+        for column in ("device_id", "area_id", "device_name", "area_name"):
+            try:
+                await db.execute(
+                    f"ALTER TABLE trace_summary ADD COLUMN {column} TEXT"
+                )
+            except Exception:
+                pass  # Column may already exist from a partial earlier run.
+        await db.execute(
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (16)"
         )

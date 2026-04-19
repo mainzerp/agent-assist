@@ -164,6 +164,12 @@ class OrchestratorAgent(BaseAgent):
         if incoming_context:
             context.device_id = incoming_context.device_id
             context.area_id = incoming_context.area_id
+            # FLOW-CTX-1 (0.18.6): propagate human-readable names and
+            # origin so downstream agents + traces don't have to
+            # reach back up the stack for them.
+            context.device_name = incoming_context.device_name
+            context.area_name = incoming_context.area_name
+            context.source = incoming_context.source
             context.language = incoming_context.language
         # FLOW-HIGH-3: Prefer the orchestrator-resolved language (from
         # _resolve_language / detect_user_language) over whatever the
@@ -367,6 +373,9 @@ class OrchestratorAgent(BaseAgent):
                 conversation_turns=turns,
                 device_id=incoming_context.device_id if incoming_context else None,
                 area_id=incoming_context.area_id if incoming_context else None,
+                device_name=incoming_context.device_name if incoming_context else None,
+                area_name=incoming_context.area_name if incoming_context else None,
+                source=incoming_context.source if incoming_context else "api",
                 language=content_language,
                 sequential_send=True,
             )
@@ -569,6 +578,8 @@ class OrchestratorAgent(BaseAgent):
         user_text: str,
         span_collector,
         cache_span=None,
+        *,
+        task: AgentTask | None = None,
     ) -> dict:
         """Handle a response cache hit: execute cached action, rewrite, store turn, trace.
 
@@ -676,6 +687,10 @@ class OrchestratorAgent(BaseAgent):
             if span_collector:
                 try:
                     from app.analytics.tracer import create_trace_summary
+                    # FLOW-CTX-1 (0.18.6): task is passed by both cache-hit
+                    # callers so we can annotate the trace with the
+                    # originating satellite even for replayed responses.
+                    task_context = getattr(task, "context", None) if task is not None else None
                     await create_trace_summary(
                         trace_id=span_collector.trace_id,
                         conversation_id=conversation_id,
@@ -688,6 +703,10 @@ class OrchestratorAgent(BaseAgent):
                         agents=["orchestrator", target_agent],
                         source=getattr(span_collector, "source", "api"),
                         conversation_turns=prior_turns,
+                        device_id=getattr(task_context, "device_id", None),
+                        area_id=getattr(task_context, "area_id", None),
+                        device_name=getattr(task_context, "device_name", None),
+                        area_name=getattr(task_context, "area_name", None),
                     )
                 except Exception:
                     logger.warning("Failed to create trace summary", exc_info=True)
@@ -771,8 +790,14 @@ class OrchestratorAgent(BaseAgent):
         condensed_task: str,
         classifications: list[tuple[str, str, float]],
         turns: list[dict],
+        *,
+        task_context: TaskContext | None = None,
     ) -> None:
-        """Create a trace summary from span data."""
+        """Create a trace summary from span data.
+
+        FLOW-CTX-1 (0.18.6): ``task_context`` carries device/area
+        identity so the trace row can record which satellite spoke.
+        """
         try:
             from app.analytics.tracer import create_trace_summary
             classify_duration = None
@@ -796,6 +821,10 @@ class OrchestratorAgent(BaseAgent):
                 source=getattr(span_collector, "source", "api"),
                 agent_instructions={aid: ctask for aid, ctask, _ in classifications} if len(classifications) > 1 else None,
                 conversation_turns=turns,
+                device_id=getattr(task_context, "device_id", None),
+                area_id=getattr(task_context, "area_id", None),
+                device_name=getattr(task_context, "device_name", None),
+                area_name=getattr(task_context, "area_name", None),
             )
         except Exception:
             logger.warning("Failed to create trace summary", exc_info=True)
@@ -827,6 +856,7 @@ class OrchestratorAgent(BaseAgent):
         if cache_result and cache_result.hit_type == "response_hit":
             result = await self._handle_response_cache_hit(
                 cache_result, conversation_id, user_text, span_collector, cache_span_ref,
+                task=task,
             )
             if result is not None:
                 return result
@@ -992,6 +1022,7 @@ class OrchestratorAgent(BaseAgent):
                 await self._create_trace(
                     span_collector, conversation_id, user_text, speech,
                     target_agent, confidence, condensed_task, classifications, turns,
+                    task_context=task.context,
                 )
 
         response = {
@@ -1039,6 +1070,7 @@ class OrchestratorAgent(BaseAgent):
         if cache_result and cache_result.hit_type == "response_hit":
             result = await self._handle_response_cache_hit(
                 cache_result, conversation_id, user_text, span_collector, cache_span_ref,
+                task=task,
             )
             if result is not None:
                 yield {
@@ -1204,6 +1236,9 @@ class OrchestratorAgent(BaseAgent):
         if task.context:
             context.device_id = task.context.device_id
             context.area_id = task.context.area_id
+            context.device_name = task.context.device_name
+            context.area_name = task.context.area_name
+            context.source = task.context.source
         if self._presence_detector:
             room = self._presence_detector.get_most_likely_room()
             if room:
@@ -1458,6 +1493,7 @@ class OrchestratorAgent(BaseAgent):
                 await self._create_trace(
                     span_collector, conversation_id, user_text, full_speech,
                     target_agent, confidence, condensed_task, classifications, turns,
+                    task_context=task.context,
                 )
 
         # Yield final done chunk with mediated_speech (always included)
@@ -1558,36 +1594,27 @@ class OrchestratorAgent(BaseAgent):
         from app.agents.action_executor import (
             _EXPECTED_STATE_BY_ACTION,
             _extract_state_from_call_result,
-            _settings_float,
+            call_service_with_verification,
         )
 
         expected_state = _EXPECTED_STATE_BY_ACTION.get(action)
-        ws_timeout = await _settings_float(
-            "state_verify.ws_timeout_sec", default=1.5,
-        )
-        poll_interval = await _settings_float(
-            "state_verify.poll_interval_sec", default=0.25,
-        )
-        poll_max = await _settings_float(
-            "state_verify.poll_max_sec", default=1.0,
-        )
 
-        try:
-            async with self._ha_client.expect_state(
-                entity_id,
-                expected=expected_state,
-                timeout=ws_timeout,
-                poll_interval=poll_interval,
-                poll_max=poll_max,
-            ) as observer:
-                call_result = await self._ha_client.call_service(
-                    domain, action, entity_id=entity_id,
-                    service_data=service_data,
-                )
-        except Exception:
-            logger.warning("Cached action execution failed", exc_info=True)
+        # FLOW-VERIFY-SHARED (0.18.5): delegate the REST+WS dance to the
+        # shared helper so the orchestrator and domain executors agree on
+        # how empty REST responses are treated.
+        verify = await call_service_with_verification(
+            self._ha_client, domain, action, entity_id,
+            service_data=service_data,
+            expected_state=expected_state,
+        )
+        if not verify["success"]:
+            logger.warning(
+                "Cached action execution failed",
+                exc_info=verify.get("error") is not None,
+            )
             return None
 
+        call_result = verify["call_result"]
         if call_result is None:
             return None
 
@@ -1608,7 +1635,7 @@ class OrchestratorAgent(BaseAgent):
 
         # Empty REST response -- consult the WS / poll observer. For
         # async-bus aktors this is the common path.
-        observed_state = observer.get("new_state") if observer else None
+        observed_state = verify["observed_state"]
         if expected_state:
             # Targeted action (turn_on/turn_off/set_*): require the
             # observed state to match the intent. A stale mismatch

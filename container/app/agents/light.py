@@ -11,7 +11,17 @@ class LightAgent(ActionableAgent):
     _prompt_name = "light"
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
-        return await execute_action(action, ha_client, entity_index, entity_matcher, agent_id=agent_id, span_collector=span_collector)
+        # FLOW-CTX-1 (0.18.6): use the originating satellite's area
+        # as a tie-breaker when the natural-language query is
+        # area-ambiguous ("mach das licht an" from the kitchen
+        # satellite should prefer ``light.kitchen_*``).
+        ctx = getattr(self, "_current_task_context", None)
+        area_id = ctx.area_id if ctx else None
+        return await execute_action(
+            action, ha_client, entity_index, entity_matcher,
+            agent_id=agent_id, span_collector=span_collector,
+            preferred_area_id=area_id,
+        )
 
     @property
     def agent_card(self) -> AgentCard:

@@ -170,6 +170,18 @@
                                 <span class="text-muted" style="font-size: 0.75rem;">Source</span><br>
                                 <span class="badge badge-blue" style="font-size: 0.7rem;" x-text="traceDetail.source || '-'"></span>
                             </div>
+                            <div x-show="traceDetail.device_name || traceDetail.device_id">
+                                <span class="text-muted" style="font-size: 0.75rem;">Satellite</span><br>
+                                <span class="text-mono" style="font-size: 0.875rem;"
+                                      :title="traceDetail.device_id || ''"
+                                      x-text="traceDetail.device_name || traceDetail.device_id || '-'"></span>
+                            </div>
+                            <div x-show="traceDetail.area_name || traceDetail.area_id">
+                                <span class="text-muted" style="font-size: 0.75rem;">Area</span><br>
+                                <span class="text-mono" style="font-size: 0.875rem;"
+                                      :title="traceDetail.area_id || ''"
+                                      x-text="traceDetail.area_name || traceDetail.area_id || '-'"></span>
+                            </div>
                             <div>
                                 <span class="text-muted" style="font-size: 0.75rem;">Label</span><br>
                                 <template x-if="!editingLabel">

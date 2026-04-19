@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+
+RequestSource = Literal["ha", "chat", "api"]
 
 
 class AgentCard(BaseModel):
@@ -58,6 +61,17 @@ class TaskContext(BaseModel):
     mcp_tools: list[str] = Field(default_factory=list)
     device_id: str | None = None
     area_id: str | None = None
+    # FLOW-CTX-1 (0.18.6): human-readable counterparts to device_id /
+    # area_id for speech + trace UI. IDs remain the authoritative key
+    # for any comparison / visibility logic.
+    device_name: str | None = None
+    area_name: str | None = None
+    # FLOW-CTX-1 (0.18.6): request origin. "ha" = voice satellite via
+    # HA integration, "chat" = dashboard chat UI, "api" = raw REST/WS
+    # without the HA wrapper. Agents use this to disambiguate
+    # phrasings like "hier" (ambiguous in chat, resolvable for
+    # a satellite in a known area).
+    source: RequestSource = "api"
     language: str = "en"
     sequential_send: bool = False
     timezone: str = "UTC"

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
+from app.agents.action_executor import (
+    call_service_with_verification,
+    rerank_matches_by_area,
+)
 from app.analytics.tracer import _optional_span
 
 logger = logging.getLogger(__name__)
@@ -41,6 +44,8 @@ async def execute_scene_action(
     entity_matcher: Any,
     agent_id: str | None = None,
     span_collector=None,
+    *,
+    preferred_area_id: str | None = None,
 ) -> dict:
     """Resolve an entity, call a scene HA service, and verify the result.
 
@@ -85,12 +90,19 @@ async def execute_scene_action(
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
                 if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
+                    # FLOW-CTX-1 (0.18.6): prefer same-area scene on
+                    # near-tie (e.g. "gemuetlich" can exist per room;
+                    # the one in the satellite area wins).
+                    reranked = rerank_matches_by_area(matches, preferred_area_id)
+                    chosen = reranked[0]
+                    if chosen is not matches[0]:
+                        em_span["metadata"]["area_rerank_from"] = matches[0].entity_id
+                    entity_id = chosen.entity_id
+                    friendly_name = chosen.friendly_name or entity_id
                     em_span["metadata"]["top_entity_id"] = entity_id
                     em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = matches[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                    em_span["metadata"]["top_score"] = getattr(chosen, "score", 0.0)
+                    em_span["metadata"]["signal_scores"] = getattr(chosen, "signal_scores", {})
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
@@ -109,32 +121,26 @@ async def execute_scene_action(
     # Build service data
     service_data = _build_scene_service_data(action)
 
-    # Execute the service call
-    try:
-        await ha_client.call_service(domain, service, entity_id, service_data or None)
-    except Exception as exc:
-        logger.error("Service call failed: %s/%s on %s", domain, service, entity_id, exc_info=True)
+    # FLOW-VERIFY-SHARED (0.18.5): scene.* state is the ISO timestamp of
+    # the last activation, not a semantic state -- observing *any* change
+    # means the scene fired. No expected_state; speech is intent-first.
+    verify = await call_service_with_verification(
+        ha_client, domain, service, entity_id,
+        service_data=service_data,
+        expected_state=None,
+    )
+    if not verify["success"]:
         return {
             "success": False,
             "entity_id": entity_id,
             "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {exc}",
+            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
         }
-
-    # Brief wait for state propagation, then verify
-    await asyncio.sleep(0.3)
-    new_state = None
-    try:
-        state_resp = await ha_client.get_state(entity_id)
-        if state_resp:
-            new_state = state_resp.get("state")
-    except Exception:
-        logger.warning("State verification failed for %s", entity_id, exc_info=True)
 
     return {
         "success": True,
         "entity_id": entity_id,
-        "new_state": new_state,
+        "new_state": verify["observed_state"],
         "speech": f"Done, {friendly_name} has been activated.",
     }
 
