@@ -8,8 +8,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app.security.auth import require_admin_session
 from app.db.repository import CustomAgentRepository
+from app.security.auth import require_admin_session
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +47,7 @@ async def list_custom_agents() -> list[dict[str, Any]]:
 
 
 @router.post("", status_code=201)
-async def create_custom_agent(
-    request: Request, body: CustomAgentCreate
-) -> dict[str, Any]:
+async def create_custom_agent(request: Request, body: CustomAgentCreate) -> dict[str, Any]:
     """Create a new custom agent."""
     existing = await CustomAgentRepository.get(body.name)
     if existing:
@@ -79,9 +77,7 @@ async def get_custom_agent(name: str) -> dict[str, Any]:
 
 
 @router.put("/{name}")
-async def update_custom_agent(
-    request: Request, name: str, body: CustomAgentUpdate
-) -> dict[str, Any]:
+async def update_custom_agent(request: Request, name: str, body: CustomAgentUpdate) -> dict[str, Any]:
     """Update a custom agent."""
     existing = await CustomAgentRepository.get(name)
     if not existing:

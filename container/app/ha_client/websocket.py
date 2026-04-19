@@ -1,16 +1,18 @@
 """HA WebSocket client for real-time state updates."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import random
 import time
-from typing import Any, Callable, Coroutine, Optional
+from collections.abc import Callable
+from typing import Any
 
 import aiohttp
 
-from app.ha_client.auth import get_ha_token
 from app.db.repository import SettingsRepository
+from app.ha_client.auth import get_ha_token
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,6 @@ IDLE_TIMEOUT = 2 * HEARTBEAT_INTERVAL
 
 
 class HAWebSocketClient:
-
     def __init__(self) -> None:
         self._session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -38,9 +39,7 @@ class HAWebSocketClient:
         # (future, expected_state_or_None) tuples. Ordered FIFO so multiple
         # concurrent actions on the same entity resolve in the order they
         # registered.
-        self._state_waiters: dict[
-            str, list[tuple[asyncio.Future[str], str | None]]
-        ] = {}
+        self._state_waiters: dict[str, list[tuple[asyncio.Future[str], str | None]]] = {}
 
     def is_connected(self) -> bool:
         """Return True if the WebSocket connection is active and running."""
@@ -66,9 +65,7 @@ class HAWebSocketClient:
         try:
             async with self._ws_lock:
                 self._session = aiohttp.ClientSession()
-                self._ws = await self._session.ws_connect(
-                    ws_url, heartbeat=HEARTBEAT_INTERVAL
-                )
+                self._ws = await self._session.ws_connect(ws_url, heartbeat=HEARTBEAT_INTERVAL)
             self._ws_last_active = time.monotonic()
 
             msg = await self._ws.receive_json()
@@ -150,7 +147,7 @@ class HAWebSocketClient:
         except (ValueError, TypeError, Exception):
             pass
         while self._running:
-            delay = min(BASE_DELAY * (2 ** attempt), max_delay) + random.uniform(0, MAX_JITTER)
+            delay = min(BASE_DELAY * (2**attempt), max_delay) + random.uniform(0, MAX_JITTER)
             self._logger.info("Reconnecting in %.1fs (attempt %d)", delay, attempt + 1)
             await asyncio.sleep(delay)
             try:
@@ -170,10 +167,8 @@ class HAWebSocketClient:
     async def _receive_loop(self) -> None:
         while self._running and self._ws and not self._ws.closed:
             try:
-                msg = await asyncio.wait_for(
-                    self._ws.receive(), timeout=IDLE_TIMEOUT
-                )
-            except asyncio.TimeoutError:
+                msg = await asyncio.wait_for(self._ws.receive(), timeout=IDLE_TIMEOUT)
+            except TimeoutError:
                 self._logger.warning(
                     "HA WebSocket idle for >%.0fs, forcing reconnect",
                     IDLE_TIMEOUT,
@@ -198,8 +193,12 @@ class HAWebSocketClient:
                                 self._logger.error("Event callback error", exc_info=True)
                 except json.JSONDecodeError:
                     self._logger.warning("Received non-JSON WebSocket message")
-            elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING,
-                              aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+            elif msg.type in (
+                aiohttp.WSMsgType.CLOSE,
+                aiohttp.WSMsgType.CLOSING,
+                aiohttp.WSMsgType.CLOSED,
+                aiohttp.WSMsgType.ERROR,
+            ):
                 break
 
     async def subscribe_events(self, event_type: str | None = None) -> int:
@@ -268,10 +267,8 @@ class HAWebSocketClient:
             if expected is not None and state_value != expected:
                 kept.append((future, expected))
                 continue
-            try:
+            with contextlib.suppress(asyncio.InvalidStateError):
                 future.set_result(state_value)
-            except asyncio.InvalidStateError:
-                pass
         if kept:
             self._state_waiters[entity_id] = kept
         else:

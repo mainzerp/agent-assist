@@ -6,27 +6,25 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.cache.routing_cache import RoutingCache
-from app.cache.response_cache import ResponseCache
 from app.cache.cache_manager import CacheManager, CacheResult
 from app.cache.embedding import ChromaEmbeddingFunction, EmbeddingEngine
+from app.cache.response_cache import ResponseCache
+from app.cache.routing_cache import RoutingCache
 from app.cache.vector_store import (
     COLLECTION_ENTITY_INDEX,
     COLLECTION_RESPONSE_CACHE,
     COLLECTION_ROUTING_CACHE,
     VectorStore,
 )
-from app.models.cache import CachedAction, ResponseCacheEntry, RoutingCacheEntry
-
-from tests.helpers import make_cached_action, make_response_cache_entry
-
+from app.models.cache import CachedAction
+from tests.helpers import make_response_cache_entry
 
 # ---------------------------------------------------------------------------
 # Routing cache
 # ---------------------------------------------------------------------------
 
-class TestRoutingCache:
 
+class TestRoutingCache:
     def _make_cache(self) -> tuple[RoutingCache, MagicMock]:
         store = MagicMock(spec=VectorStore)
         cache = RoutingCache(store)
@@ -40,11 +38,17 @@ class TestRoutingCache:
             "ids": [["entry-1"]],
             "distances": [[0.05]],  # similarity = 0.95
             "documents": [["turn on kitchen light"]],
-            "metadatas": [[{
-                "agent_id": "light-agent", "confidence": "0.95",
-                "hit_count": "2", "created_at": "2025-01-01T00:00:00",
-                "last_accessed": "2025-01-01T00:00:00",
-            }]],
+            "metadatas": [
+                [
+                    {
+                        "agent_id": "light-agent",
+                        "confidence": "0.95",
+                        "hit_count": "2",
+                        "created_at": "2025-01-01T00:00:00",
+                        "last_accessed": "2025-01-01T00:00:00",
+                    }
+                ]
+            ],
         }
         entry, similarity = cache.lookup("turn on kitchen light")
         assert entry is not None
@@ -58,8 +62,17 @@ class TestRoutingCache:
             "ids": [["entry-1"]],
             "distances": [[0.15]],  # similarity = 0.85 < 0.92
             "documents": [["something else"]],
-            "metadatas": [[{"agent_id": "general-agent", "confidence": "0.85",
-                           "hit_count": "0", "created_at": "", "last_accessed": ""}]],
+            "metadatas": [
+                [
+                    {
+                        "agent_id": "general-agent",
+                        "confidence": "0.85",
+                        "hit_count": "0",
+                        "created_at": "",
+                        "last_accessed": "",
+                    }
+                ]
+            ],
         }
         entry, similarity = cache.lookup("different query")
         assert entry is None
@@ -78,8 +91,10 @@ class TestRoutingCache:
         cache.store("turn on kitchen light", "light-agent", 0.95)
         store.upsert.assert_called_once()
         call_kwargs = store.upsert.call_args
-        assert call_kwargs[1]["metadatas"][0]["agent_id"] == "light-agent" or \
-               call_kwargs[0][3][0]["agent_id"] == "light-agent"
+        assert (
+            call_kwargs[1]["metadatas"][0]["agent_id"] == "light-agent"
+            or call_kwargs[0][3][0]["agent_id"] == "light-agent"
+        )
 
     def test_lru_eviction_triggers_at_max(self):
         cache, store = self._make_cache()
@@ -87,7 +102,7 @@ class TestRoutingCache:
         store.count.return_value = 15
         store.get.return_value = {
             "ids": [f"id-{i}" for i in range(15)],
-            "metadatas": [{"last_accessed": f"2025-01-{i+1:02d}T00:00:00"} for i in range(15)],
+            "metadatas": [{"last_accessed": f"2025-01-{i + 1:02d}T00:00:00"} for i in range(15)],
         }
         cache._enforce_lru()
         store.delete.assert_called_once()
@@ -107,7 +122,7 @@ class TestRoutingCache:
         assert stats["threshold"] == 0.92
 
     async def test_load_config_from_db(self):
-        cache, store = self._make_cache()
+        cache, _store = self._make_cache()
         with patch("app.cache.routing_cache.SettingsRepository") as mock_settings:
             mock_settings.get_value = AsyncMock(side_effect=["0.90", "1000"])
             await cache.load_config()
@@ -151,8 +166,8 @@ class TestRoutingCache:
 # Response cache
 # ---------------------------------------------------------------------------
 
-class TestResponseCache:
 
+class TestResponseCache:
     def _make_cache(self) -> tuple[ResponseCache, MagicMock]:
         store = MagicMock(spec=VectorStore)
         cache = ResponseCache(store)
@@ -167,16 +182,20 @@ class TestResponseCache:
             "ids": [["resp-1"]],
             "distances": [[0.02]],  # similarity = 0.98
             "documents": [["turn on kitchen light"]],
-            "metadatas": [[{
-                "response_text": "Done, light is on.",
-                "agent_id": "light-agent",
-                "confidence": "0.98",
-                "hit_count": "1",
-                "entity_ids": "light.kitchen_ceiling",
-                "cached_action": "",
-                "created_at": "2025-01-01T00:00:00",
-                "last_accessed": "2025-01-01T00:00:00",
-            }]],
+            "metadatas": [
+                [
+                    {
+                        "response_text": "Done, light is on.",
+                        "agent_id": "light-agent",
+                        "confidence": "0.98",
+                        "hit_count": "1",
+                        "entity_ids": "light.kitchen_ceiling",
+                        "cached_action": "",
+                        "created_at": "2025-01-01T00:00:00",
+                        "last_accessed": "2025-01-01T00:00:00",
+                    }
+                ]
+            ],
         }
         hit_type, entry, similarity = cache.lookup("turn on kitchen light")
         assert hit_type == "hit"
@@ -190,15 +209,20 @@ class TestResponseCache:
             "ids": [["resp-1"]],
             "distances": [[0.12]],  # similarity = 0.88, between 0.80 and 0.95
             "documents": [["turn on the kitchen light"]],
-            "metadatas": [[{
-                "response_text": "Done.",
-                "agent_id": "light-agent",
-                "confidence": "0.88",
-                "hit_count": "0",
-                "entity_ids": "light.kitchen",
-                "cached_action": "",
-                "created_at": "", "last_accessed": "",
-            }]],
+            "metadatas": [
+                [
+                    {
+                        "response_text": "Done.",
+                        "agent_id": "light-agent",
+                        "confidence": "0.88",
+                        "hit_count": "0",
+                        "entity_ids": "light.kitchen",
+                        "cached_action": "",
+                        "created_at": "",
+                        "last_accessed": "",
+                    }
+                ]
+            ],
         }
         hit_type, entry, similarity = cache.lookup("switch on kitchen light")
         assert hit_type == "partial"
@@ -211,15 +235,20 @@ class TestResponseCache:
             "ids": [["resp-1"]],
             "distances": [[0.30]],  # similarity = 0.70 < 0.80
             "documents": [["something unrelated"]],
-            "metadatas": [[{
-                "response_text": "nope",
-                "agent_id": "gen",
-                "confidence": "0.70",
-                "hit_count": "0",
-                "entity_ids": "",
-                "cached_action": "",
-                "created_at": "", "last_accessed": "",
-            }]],
+            "metadatas": [
+                [
+                    {
+                        "response_text": "nope",
+                        "agent_id": "gen",
+                        "confidence": "0.70",
+                        "hit_count": "0",
+                        "entity_ids": "",
+                        "cached_action": "",
+                        "created_at": "",
+                        "last_accessed": "",
+                    }
+                ]
+            ],
         }
         hit_type, entry, similarity = cache.lookup("totally different")
         assert hit_type == "miss"
@@ -229,7 +258,7 @@ class TestResponseCache:
     def test_lookup_empty_results(self):
         cache, store = self._make_cache()
         store.query.return_value = {"ids": [[]], "distances": [[]], "documents": [[]], "metadatas": [[]]}
-        hit_type, entry, similarity = cache.lookup("anything")
+        hit_type, _entry, similarity = cache.lookup("anything")
         assert hit_type == "miss"
         assert similarity is None
 
@@ -240,17 +269,22 @@ class TestResponseCache:
             "ids": [["resp-1"]],
             "distances": [[0.01]],
             "documents": [["turn on kitchen"]],
-            "metadatas": [[{
-                "response_text": "Done.",
-                "agent_id": "light-agent",
-                "confidence": "0.99",
-                "hit_count": "0",
-                "entity_ids": "light.kitchen",
-                "cached_action": action.model_dump_json(),
-                "created_at": "", "last_accessed": "",
-            }]],
+            "metadatas": [
+                [
+                    {
+                        "response_text": "Done.",
+                        "agent_id": "light-agent",
+                        "confidence": "0.99",
+                        "hit_count": "0",
+                        "entity_ids": "light.kitchen",
+                        "cached_action": action.model_dump_json(),
+                        "created_at": "",
+                        "last_accessed": "",
+                    }
+                ]
+            ],
         }
-        hit_type, entry, similarity = cache.lookup("turn on kitchen")
+        hit_type, entry, _similarity = cache.lookup("turn on kitchen")
         assert hit_type == "hit"
         assert entry.cached_action is not None
         assert entry.cached_action.service == "light/turn_on"
@@ -276,7 +310,7 @@ class TestResponseCache:
         assert stats["partial_threshold"] == 0.80
 
     async def test_load_config_from_db(self):
-        cache, store = self._make_cache()
+        cache, _store = self._make_cache()
         with patch("app.cache.response_cache.SettingsRepository") as mock_settings:
             mock_settings.get_value = AsyncMock(side_effect=["0.90", "0.75", "5000"])
             await cache.load_config()
@@ -311,17 +345,19 @@ class TestResponseCache:
 # Cache manager
 # ---------------------------------------------------------------------------
 
-class TestCacheManager:
 
+class TestCacheManager:
     def _make_manager(self) -> tuple[CacheManager, MagicMock]:
         store = MagicMock(spec=VectorStore)
         manager = CacheManager(store)
         return manager, store
 
     async def test_process_response_hit(self):
-        manager, store = self._make_manager()
-        with patch.object(manager, "_process_inner") as mock_inner, \
-             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
+        manager, _store = self._make_manager()
+        with (
+            patch.object(manager, "_process_inner") as mock_inner,
+            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
+        ):
             mock_inner.return_value = CacheResult(
                 hit_type="response_hit",
                 agent_id="light-agent",
@@ -332,17 +368,21 @@ class TestCacheManager:
         assert result.response_text == "Done."
 
     async def test_process_miss(self):
-        manager, store = self._make_manager()
-        with patch.object(manager, "_process_inner") as mock_inner, \
-             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
+        manager, _store = self._make_manager()
+        with (
+            patch.object(manager, "_process_inner") as mock_inner,
+            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
+        ):
             mock_inner.return_value = CacheResult(hit_type="miss")
             result = await manager.process("random query")
         assert result.hit_type == "miss"
 
     async def test_process_exception_returns_miss(self):
-        manager, store = self._make_manager()
-        with patch.object(manager, "_process_inner", side_effect=RuntimeError("db fail")), \
-             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
+        manager, _store = self._make_manager()
+        with (
+            patch.object(manager, "_process_inner", side_effect=RuntimeError("db fail")),
+            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
+        ):
             result = await manager.process("any query")
         assert result.hit_type == "miss"
 
@@ -354,7 +394,9 @@ class TestCacheManager:
         store.upsert.assert_called()
         # Verify condensed_task is in the metadata
         call_args = store.upsert.call_args
-        metadatas = call_args[1].get("metadatas") or call_args[0][2] if len(call_args[0]) > 2 else call_args[1]["metadatas"]
+        metadatas = (
+            call_args[1].get("metadatas") or call_args[0][2] if len(call_args[0]) > 2 else call_args[1]["metadatas"]
+        )
         assert metadatas[0]["condensed_task"] == "Turn on the light"
 
     def test_store_response_delegates(self):
@@ -398,7 +440,7 @@ class TestCacheManager:
         assert "response" in stats
 
     async def test_initialize_loads_config(self):
-        manager, store = self._make_manager()
+        manager, _store = self._make_manager()
 
         async def routing_get_value(key, default=None):
             mapping = {
@@ -420,9 +462,11 @@ class TestCacheManager:
                 return ""
             return default
 
-        with patch("app.cache.routing_cache.SettingsRepository") as mock_rs, \
-             patch("app.cache.response_cache.SettingsRepository") as mock_resps, \
-             patch("app.db.repository.SettingsRepository") as mock_cms:
+        with (
+            patch("app.cache.routing_cache.SettingsRepository") as mock_rs,
+            patch("app.cache.response_cache.SettingsRepository") as mock_resps,
+            patch("app.db.repository.SettingsRepository") as mock_cms,
+        ):
             mock_rs.get_value = AsyncMock(side_effect=routing_get_value)
             mock_resps.get_value = AsyncMock(side_effect=response_get_value)
             mock_cms.get_value = AsyncMock(side_effect=mgr_get_value)
@@ -430,7 +474,7 @@ class TestCacheManager:
         # No assertion needed -- just verifying no exception is raised
 
     async def test_reload_config(self):
-        manager, store = self._make_manager()
+        manager, _store = self._make_manager()
 
         async def routing_get_value(key, default=None):
             mapping = {
@@ -452,9 +496,11 @@ class TestCacheManager:
                 return ""
             return default
 
-        with patch("app.cache.routing_cache.SettingsRepository") as mock_rs, \
-             patch("app.cache.response_cache.SettingsRepository") as mock_resps, \
-             patch("app.db.repository.SettingsRepository") as mock_cms:
+        with (
+            patch("app.cache.routing_cache.SettingsRepository") as mock_rs,
+            patch("app.cache.response_cache.SettingsRepository") as mock_resps,
+            patch("app.db.repository.SettingsRepository") as mock_cms,
+        ):
             mock_rs.get_value = AsyncMock(side_effect=routing_get_value)
             mock_resps.get_value = AsyncMock(side_effect=response_get_value)
             mock_cms.get_value = AsyncMock(side_effect=mgr_get_value)
@@ -488,14 +534,18 @@ class TestCacheManager:
             "ids": [["entry-1"]],
             "distances": [[0.05]],
             "documents": [["turn on light"]],
-            "metadatas": [[{
-                "agent_id": "light-agent",
-                "confidence": "0.95",
-                "hit_count": "0",
-                "condensed_task": "Turn on the light",
-                "created_at": "2025-01-01T00:00:00",
-                "last_accessed": "2025-01-01T00:00:00",
-            }]],
+            "metadatas": [
+                [
+                    {
+                        "agent_id": "light-agent",
+                        "confidence": "0.95",
+                        "hit_count": "0",
+                        "condensed_task": "Turn on the light",
+                        "created_at": "2025-01-01T00:00:00",
+                        "last_accessed": "2025-01-01T00:00:00",
+                    }
+                ]
+            ],
         }
         entry, similarity = cache.lookup("turn on light")
         assert entry is not None
@@ -516,25 +566,38 @@ class TestCacheManager:
                 "ids": [["s-1"]],
                 "distances": [[0.50]],
                 "documents": [["unrelated"]],
-                "metadatas": [[{
-                    "response_text": "x", "agent_id": "gen", "confidence": "0.5",
-                    "hit_count": "0", "entity_ids": "", "cached_action": "",
-                    "created_at": "", "last_accessed": "",
-                }]],
+                "metadatas": [
+                    [
+                        {
+                            "response_text": "x",
+                            "agent_id": "gen",
+                            "confidence": "0.5",
+                            "hit_count": "0",
+                            "entity_ids": "",
+                            "cached_action": "",
+                            "created_at": "",
+                            "last_accessed": "",
+                        }
+                    ]
+                ],
             },
             # 2. Routing cache hit (distance 0.03 -> similarity 0.97 > 0.92)
             {
                 "ids": [["r-1"]],
                 "distances": [[0.03]],
                 "documents": [["turn on light"]],
-                "metadatas": [[{
-                    "agent_id": "light-agent",
-                    "confidence": "0.95",
-                    "hit_count": "0",
-                    "condensed_task": "Turn on the light",
-                    "created_at": "2025-01-01T00:00:00",
-                    "last_accessed": "2025-01-01T00:00:00",
-                }]],
+                "metadatas": [
+                    [
+                        {
+                            "agent_id": "light-agent",
+                            "confidence": "0.95",
+                            "hit_count": "0",
+                            "condensed_task": "Turn on the light",
+                            "created_at": "2025-01-01T00:00:00",
+                            "last_accessed": "2025-01-01T00:00:00",
+                        }
+                    ]
+                ],
             },
         ]
         result = manager._process_inner("turn on light")
@@ -557,16 +620,20 @@ class TestCacheManager:
                 "ids": [["s-1"]],
                 "distances": [[0.03]],
                 "documents": [["schalte keller ein"]],
-                "metadatas": [[{
-                    "response_text": "Keller ist an.",
-                    "agent_id": "light-agent",
-                    "confidence": "0.95",
-                    "hit_count": "0",
-                    "entity_ids": "light.keller",
-                    "cached_action": action_json,
-                    "created_at": "2025-01-01T00:00:00",
-                    "last_accessed": "2025-01-01T00:00:00",
-                }]],
+                "metadatas": [
+                    [
+                        {
+                            "response_text": "Keller ist an.",
+                            "agent_id": "light-agent",
+                            "confidence": "0.95",
+                            "hit_count": "0",
+                            "entity_ids": "light.keller",
+                            "cached_action": action_json,
+                            "created_at": "2025-01-01T00:00:00",
+                            "last_accessed": "2025-01-01T00:00:00",
+                        }
+                    ]
+                ],
             },
         ]
         result = manager._process_inner("schalte keller ein")
@@ -588,30 +655,38 @@ class TestCacheManager:
                 "ids": [["s-1"]],
                 "distances": [[0.02]],
                 "documents": [["wie warm ist es im schlafzimmer"]],
-                "metadatas": [[{
-                    "response_text": "Es sind 21 Grad.",
-                    "agent_id": "climate-agent",
-                    "confidence": "0.95",
-                    "hit_count": "0",
-                    "entity_ids": "climate.bedroom",
-                    "cached_action": "",
-                    "created_at": "2025-01-01T00:00:00",
-                    "last_accessed": "2025-01-01T00:00:00",
-                }]],
+                "metadatas": [
+                    [
+                        {
+                            "response_text": "Es sind 21 Grad.",
+                            "agent_id": "climate-agent",
+                            "confidence": "0.95",
+                            "hit_count": "0",
+                            "entity_ids": "climate.bedroom",
+                            "cached_action": "",
+                            "created_at": "2025-01-01T00:00:00",
+                            "last_accessed": "2025-01-01T00:00:00",
+                        }
+                    ]
+                ],
             },
             # 2. Routing cache hit -> this is what we expect to surface
             {
                 "ids": [["r-1"]],
                 "distances": [[0.03]],
                 "documents": [["wie warm ist es im schlafzimmer"]],
-                "metadatas": [[{
-                    "agent_id": "climate-agent",
-                    "confidence": "0.95",
-                    "hit_count": "0",
-                    "condensed_task": "Read bedroom temperature",
-                    "created_at": "2025-01-01T00:00:00",
-                    "last_accessed": "2025-01-01T00:00:00",
-                }]],
+                "metadatas": [
+                    [
+                        {
+                            "agent_id": "climate-agent",
+                            "confidence": "0.95",
+                            "hit_count": "0",
+                            "condensed_task": "Read bedroom temperature",
+                            "created_at": "2025-01-01T00:00:00",
+                            "last_accessed": "2025-01-01T00:00:00",
+                        }
+                    ]
+                ],
             },
         ]
         result = manager._process_inner("wie warm ist es im schlafzimmer")
@@ -630,25 +705,37 @@ class TestCacheManager:
                 "ids": [["s-1"]],
                 "distances": [[0.15]],
                 "documents": [["dim lights"]],
-                "metadatas": [[{
-                    "response_text": "Lights dimmed.",
-                    "agent_id": "light-agent",
-                    "confidence": "0.85",
-                    "hit_count": "0",
-                    "entity_ids": "",
-                    "cached_action": "",
-                    "created_at": "", "last_accessed": "",
-                }]],
+                "metadatas": [
+                    [
+                        {
+                            "response_text": "Lights dimmed.",
+                            "agent_id": "light-agent",
+                            "confidence": "0.85",
+                            "hit_count": "0",
+                            "entity_ids": "",
+                            "cached_action": "",
+                            "created_at": "",
+                            "last_accessed": "",
+                        }
+                    ]
+                ],
             },
             # 2. Routing miss (similarity 0.5)
             {
                 "ids": [["r-1"]],
                 "distances": [[0.50]],
                 "documents": [["unrelated"]],
-                "metadatas": [[{
-                    "agent_id": "general-agent", "confidence": "0.5",
-                    "hit_count": "0", "created_at": "", "last_accessed": "",
-                }]],
+                "metadatas": [
+                    [
+                        {
+                            "agent_id": "general-agent",
+                            "confidence": "0.5",
+                            "hit_count": "0",
+                            "created_at": "",
+                            "last_accessed": "",
+                        }
+                    ]
+                ],
             },
         ]
         result = manager._process_inner("dim the lights")
@@ -674,27 +761,35 @@ class TestCacheManager:
                 "ids": [["s-1"]],
                 "distances": [[0.6]],
                 "documents": [["yet another"]],
-                "metadatas": [[{
-                    "agent_id": "light-agent",
-                    "response_text": "x",
-                    "hit_count": "0",
-                    "created_at": "2025-01-01T00:00:00",
-                    "last_accessed": "2025-01-01T00:00:00",
-                }]],
+                "metadatas": [
+                    [
+                        {
+                            "agent_id": "light-agent",
+                            "response_text": "x",
+                            "hit_count": "0",
+                            "created_at": "2025-01-01T00:00:00",
+                            "last_accessed": "2025-01-01T00:00:00",
+                        }
+                    ]
+                ],
             },
             # Routing miss (similarity 0.5 < threshold 0.92)
             {
                 "ids": [["r-1"]],
                 "distances": [[0.5]],
                 "documents": [["something else"]],
-                "metadatas": [[{
-                    "agent_id": "light-agent",
-                    "confidence": "0.5",
-                    "hit_count": "0",
-                    "condensed_task": "",
-                    "created_at": "2025-01-01T00:00:00",
-                    "last_accessed": "2025-01-01T00:00:00",
-                }]],
+                "metadatas": [
+                    [
+                        {
+                            "agent_id": "light-agent",
+                            "confidence": "0.5",
+                            "hit_count": "0",
+                            "condensed_task": "",
+                            "created_at": "2025-01-01T00:00:00",
+                            "last_accessed": "2025-01-01T00:00:00",
+                        }
+                    ]
+                ],
             },
         ]
         result = manager._process_inner("totally unrelated query")
@@ -711,13 +806,15 @@ class TestCacheManager:
         store.upsert.assert_called()
 
     async def test_process_response_hit_preserves_text_on_empty_rewrite(self):
-        manager, store = self._make_manager()
+        manager, _store = self._make_manager()
         rewrite_agent = AsyncMock()
         rewrite_agent.rewrite = AsyncMock(return_value="")
         manager._rewrite_agent = rewrite_agent
-        with patch.object(manager, "_process_inner") as mock_inner, \
-             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock), \
-             patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+        with (
+            patch.object(manager, "_process_inner") as mock_inner,
+            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
+            patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock),
+        ):
             mock_inner.return_value = CacheResult(
                 hit_type="response_hit",
                 agent_id="light-agent",
@@ -728,13 +825,15 @@ class TestCacheManager:
         assert result.response_text == "Original cached text."
 
     async def test_process_response_hit_applies_rewrite(self):
-        manager, store = self._make_manager()
+        manager, _store = self._make_manager()
         rewrite_agent = AsyncMock()
         rewrite_agent.rewrite = AsyncMock(return_value="Rephrased text.")
         manager._rewrite_agent = rewrite_agent
-        with patch.object(manager, "_process_inner") as mock_inner, \
-             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock), \
-             patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+        with (
+            patch.object(manager, "_process_inner") as mock_inner,
+            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
+            patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock),
+        ):
             mock_inner.return_value = CacheResult(
                 hit_type="response_hit",
                 agent_id="light-agent",
@@ -745,13 +844,15 @@ class TestCacheManager:
         assert result.response_text == "Rephrased text."
 
     async def test_process_response_hit_sets_rewrite_metadata(self):
-        manager, store = self._make_manager()
+        manager, _store = self._make_manager()
         rewrite_agent = AsyncMock()
         rewrite_agent.rewrite = AsyncMock(return_value="Rephrased.")
         manager._rewrite_agent = rewrite_agent
-        with patch.object(manager, "_process_inner") as mock_inner, \
-             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock), \
-             patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+        with (
+            patch.object(manager, "_process_inner") as mock_inner,
+            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
+            patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock),
+        ):
             mock_inner.return_value = CacheResult(
                 hit_type="response_hit",
                 agent_id="light-agent",
@@ -766,13 +867,15 @@ class TestCacheManager:
         assert result.response_text == "Rephrased."
 
     async def test_process_response_hit_no_rewrite_metadata_on_empty(self):
-        manager, store = self._make_manager()
+        manager, _store = self._make_manager()
         rewrite_agent = AsyncMock()
         rewrite_agent.rewrite = AsyncMock(return_value="")
         manager._rewrite_agent = rewrite_agent
-        with patch.object(manager, "_process_inner") as mock_inner, \
-             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock), \
-             patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+        with (
+            patch.object(manager, "_process_inner") as mock_inner,
+            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
+            patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock),
+        ):
             mock_inner.return_value = CacheResult(
                 hit_type="response_hit",
                 agent_id="light-agent",
@@ -785,13 +888,15 @@ class TestCacheManager:
         assert result.response_text == "Original."
 
     async def test_process_response_hit_no_rewrite_metadata_on_exception(self):
-        manager, store = self._make_manager()
+        manager, _store = self._make_manager()
         rewrite_agent = AsyncMock()
         rewrite_agent.rewrite = AsyncMock(side_effect=RuntimeError("LLM error"))
         manager._rewrite_agent = rewrite_agent
-        with patch.object(manager, "_process_inner") as mock_inner, \
-             patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock), \
-             patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock):
+        with (
+            patch.object(manager, "_process_inner") as mock_inner,
+            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
+            patch("app.cache.cache_manager.track_rewrite", new_callable=AsyncMock),
+        ):
             mock_inner.return_value = CacheResult(
                 hit_type="response_hit",
                 agent_id="light-agent",
@@ -808,8 +913,8 @@ class TestCacheManager:
 # Embedding engine
 # ---------------------------------------------------------------------------
 
-class TestEmbeddingEngine:
 
+class TestEmbeddingEngine:
     def test_embed_local_via_sentence_transformer(self):
         engine = EmbeddingEngine()
         engine._provider = "local"
@@ -817,6 +922,7 @@ class TestEmbeddingEngine:
 
         mock_model = MagicMock()
         import numpy as np
+
         mock_model.encode.return_value = np.zeros((1, 384))
         engine._local_model = mock_model
 
@@ -828,6 +934,7 @@ class TestEmbeddingEngine:
         engine._provider = "local"
         mock_model = MagicMock()
         import numpy as np
+
         mock_model.encode.return_value = np.zeros((2, 384))
         engine._local_model = mock_model
 
@@ -844,6 +951,7 @@ class TestEmbeddingEngine:
         mock_response.data = [{"embedding": [0.1] * 384}, {"embedding": [0.2] * 384}]
 
         import sys
+
         mock_litellm = MagicMock()
         mock_litellm.embedding.return_value = mock_response
         with patch.dict(sys.modules, {"litellm": mock_litellm}):
@@ -854,13 +962,13 @@ class TestEmbeddingEngine:
         engine = EmbeddingEngine()
         with patch("app.cache.embedding.SettingsRepository") as mock_repo:
             mock_repo.get_value = AsyncMock(side_effect=["local", "all-MiniLM-L6-v2"])
-            await engine.initialize()
+            with patch.object(engine, "_get_local_model", return_value=MagicMock()):
+                await engine.initialize()
         assert engine._provider == "local"
         assert engine._model_name == "all-MiniLM-L6-v2"
 
 
 class TestChromaEmbeddingFunction:
-
     def test_calls_engine(self):
         mock_engine = MagicMock(spec=EmbeddingEngine)
         mock_engine.embed_batch.return_value = [[0.0] * 384]
@@ -875,8 +983,8 @@ class TestChromaEmbeddingFunction:
 # Vector store
 # ---------------------------------------------------------------------------
 
-class TestVectorStore:
 
+class TestVectorStore:
     def test_add_delegates_to_collection(self):
         store = VectorStore()
         mock_col = MagicMock()
@@ -936,9 +1044,7 @@ class TestVectorStore:
             ids=["a", "b"],
             metadatas=[{"key": "v1"}, {"key": "v2"}],
         )
-        mock_col.update.assert_called_once_with(
-            ids=["a", "b"], metadatas=[{"key": "v1"}, {"key": "v2"}]
-        )
+        mock_col.update.assert_called_once_with(ids=["a", "b"], metadatas=[{"key": "v1"}, {"key": "v2"}])
 
     def test_update_metadata_reconnects_on_closed(self):
         store = VectorStore()
@@ -948,14 +1054,18 @@ class TestVectorStore:
         mock_col2 = MagicMock()
         original_get = store.get_collection
         call_count = 0
+
         def side_effect_get(name):
             nonlocal call_count
             call_count += 1
             if call_count <= 1:
                 return original_get(name)
             return mock_col2
-        with patch.object(store, "_reinitialize_sync") as mock_reinit, \
-             patch.object(store, "get_collection", side_effect=side_effect_get):
+
+        with (
+            patch.object(store, "_reinitialize_sync") as mock_reinit,
+            patch.object(store, "get_collection", side_effect=side_effect_get),
+        ):
             store.update_metadata(
                 COLLECTION_ENTITY_INDEX,
                 ids=["a"],
@@ -981,8 +1091,8 @@ class TestVectorStore:
 # Cache trace visibility -- similarity propagation tests
 # ---------------------------------------------------------------------------
 
-class TestCacheTraceSimilarity:
 
+class TestCacheTraceSimilarity:
     def test_cache_result_includes_similarity_on_routing_hit(self):
         """CacheResult.similarity is populated on a routing cache hit.
 
@@ -997,25 +1107,38 @@ class TestCacheTraceSimilarity:
                 "ids": [["s-1"]],
                 "distances": [[0.5]],
                 "documents": [["unrelated"]],
-                "metadatas": [[{
-                    "response_text": "x", "agent_id": "gen", "confidence": "0.5",
-                    "hit_count": "0", "entity_ids": "", "cached_action": "",
-                    "created_at": "", "last_accessed": "",
-                }]],
+                "metadatas": [
+                    [
+                        {
+                            "response_text": "x",
+                            "agent_id": "gen",
+                            "confidence": "0.5",
+                            "hit_count": "0",
+                            "entity_ids": "",
+                            "cached_action": "",
+                            "created_at": "",
+                            "last_accessed": "",
+                        }
+                    ]
+                ],
             },
             # Routing hit (distance 0.05 -> similarity 0.95)
             {
                 "ids": [["r-1"]],
                 "distances": [[0.05]],
                 "documents": [["turn on light"]],
-                "metadatas": [[{
-                    "agent_id": "light-agent",
-                    "confidence": "0.95",
-                    "hit_count": "0",
-                    "condensed_task": "Turn on",
-                    "created_at": "2025-01-01T00:00:00",
-                    "last_accessed": "2025-01-01T00:00:00",
-                }]],
+                "metadatas": [
+                    [
+                        {
+                            "agent_id": "light-agent",
+                            "confidence": "0.95",
+                            "hit_count": "0",
+                            "condensed_task": "Turn on",
+                            "created_at": "2025-01-01T00:00:00",
+                            "last_accessed": "2025-01-01T00:00:00",
+                        }
+                    ]
+                ],
             },
         ]
         result = manager._process_inner("turn on light")
@@ -1037,21 +1160,37 @@ class TestCacheTraceSimilarity:
                 "ids": [["resp-1"]],
                 "distances": [[0.30]],
                 "documents": [["unrelated"]],
-                "metadatas": [[{
-                    "response_text": "x", "agent_id": "gen", "confidence": "0.7",
-                    "hit_count": "0", "entity_ids": "", "cached_action": "",
-                    "created_at": "", "last_accessed": "",
-                }]],
+                "metadatas": [
+                    [
+                        {
+                            "response_text": "x",
+                            "agent_id": "gen",
+                            "confidence": "0.7",
+                            "hit_count": "0",
+                            "entity_ids": "",
+                            "cached_action": "",
+                            "created_at": "",
+                            "last_accessed": "",
+                        }
+                    ]
+                ],
             },
             # Routing cache miss with similarity 0.80 (below threshold 0.92)
             {
                 "ids": [["r-1"]],
                 "distances": [[0.20]],
                 "documents": [["other"]],
-                "metadatas": [[{
-                    "agent_id": "general-agent", "confidence": "0.80",
-                    "hit_count": "0", "created_at": "", "last_accessed": "",
-                }]],
+                "metadatas": [
+                    [
+                        {
+                            "agent_id": "general-agent",
+                            "confidence": "0.80",
+                            "hit_count": "0",
+                            "created_at": "",
+                            "last_accessed": "",
+                        }
+                    ]
+                ],
             },
         ]
         result = manager._process_inner("some query")
@@ -1067,11 +1206,17 @@ class TestCacheTraceSimilarity:
             "ids": [["e-1"]],
             "distances": [[0.03]],
             "documents": [["test"]],
-            "metadatas": [[{
-                "agent_id": "light-agent", "confidence": "0.97",
-                "hit_count": "0", "created_at": "2025-01-01T00:00:00",
-                "last_accessed": "2025-01-01T00:00:00",
-            }]],
+            "metadatas": [
+                [
+                    {
+                        "agent_id": "light-agent",
+                        "confidence": "0.97",
+                        "hit_count": "0",
+                        "created_at": "2025-01-01T00:00:00",
+                        "last_accessed": "2025-01-01T00:00:00",
+                    }
+                ]
+            ],
         }
         entry, sim = cache.lookup("test")
         assert entry is not None
@@ -1087,12 +1232,20 @@ class TestCacheTraceSimilarity:
             "ids": [["r-1"]],
             "distances": [[0.01]],
             "documents": [["test"]],
-            "metadatas": [[{
-                "response_text": "Done.", "agent_id": "light-agent",
-                "confidence": "0.99", "hit_count": "0",
-                "entity_ids": "", "cached_action": "",
-                "created_at": "", "last_accessed": "",
-            }]],
+            "metadatas": [
+                [
+                    {
+                        "response_text": "Done.",
+                        "agent_id": "light-agent",
+                        "confidence": "0.99",
+                        "hit_count": "0",
+                        "entity_ids": "",
+                        "cached_action": "",
+                        "created_at": "",
+                        "last_accessed": "",
+                    }
+                ]
+            ],
         }
         hit_type, entry, sim = cache.lookup("test")
         assert hit_type == "hit"
@@ -1103,6 +1256,7 @@ class TestCacheTraceSimilarity:
 # ---------------------------------------------------------------------------
 # Phase 4.4: Cache eviction tests
 # ---------------------------------------------------------------------------
+
 
 class TestRoutingCacheEviction:
     """Tests for interval-based LRU eviction and hit count buffering in routing cache."""
@@ -1153,11 +1307,17 @@ class TestRoutingCacheEviction:
                 "ids": [[f"entry-{i}"]],
                 "distances": [[0.05]],
                 "documents": [[f"query-{i}"]],
-                "metadatas": [[{
-                    "agent_id": "light-agent", "confidence": "0.95",
-                    "hit_count": "1", "created_at": "2025-01-01T00:00:00",
-                    "last_accessed": "2025-01-01T00:00:00",
-                }]],
+                "metadatas": [
+                    [
+                        {
+                            "agent_id": "light-agent",
+                            "confidence": "0.95",
+                            "hit_count": "1",
+                            "created_at": "2025-01-01T00:00:00",
+                            "last_accessed": "2025-01-01T00:00:00",
+                        }
+                    ]
+                ],
             }
             cache.lookup(f"query-{i}")
 
@@ -1221,11 +1381,13 @@ class TestResponseCacheEviction:
 # Orchestrator _store_response_cache cacheable flag
 # ---------------------------------------------------------------------------
 
+
 class TestStoreResponseCacheCacheable:
     """Test that _store_response_cache respects the cacheable flag."""
 
     def _make_orchestrator(self):
         from app.agents.orchestrator import OrchestratorAgent
+
         orch = OrchestratorAgent.__new__(OrchestratorAgent)
         cache_manager = MagicMock()
 
@@ -1243,8 +1405,12 @@ class TestStoreResponseCacheCacheable:
             speech="It is 22 degrees.",
             target_agent="climate-agent",
             confidence=0.95,
-            action_executed={"action": "query_climate_state", "entity_id": "sensor.temp",
-                             "success": True, "cacheable": False},
+            action_executed={
+                "action": "query_climate_state",
+                "entity_id": "sensor.temp",
+                "success": True,
+                "cacheable": False,
+            },
             has_error=False,
         )
         assert stored is False
@@ -1257,8 +1423,7 @@ class TestStoreResponseCacheCacheable:
             speech="Done, kitchen light is on.",
             target_agent="light-agent",
             confidence=0.95,
-            action_executed={"action": "turn_on", "entity_id": "light.kitchen",
-                             "success": True, "cacheable": True},
+            action_executed={"action": "turn_on", "entity_id": "light.kitchen", "success": True, "cacheable": True},
             has_error=False,
         )
         assert stored is True
@@ -1271,8 +1436,7 @@ class TestStoreResponseCacheCacheable:
             speech="Done, bedroom light is off.",
             target_agent="light-agent",
             confidence=0.95,
-            action_executed={"action": "turn_off", "entity_id": "light.bedroom",
-                             "success": True},
+            action_executed={"action": "turn_off", "entity_id": "light.bedroom", "success": True},
             has_error=False,
         )
         assert stored is True
@@ -1282,6 +1446,7 @@ class TestStoreResponseCacheCacheable:
 # ---------------------------------------------------------------------------
 # Response cache purge readonly entries
 # ---------------------------------------------------------------------------
+
 
 class TestResponseCachePurgeReadonly:
     """Tests for ResponseCache.purge_readonly_entries()."""
@@ -1297,7 +1462,10 @@ class TestResponseCachePurgeReadonly:
             "ids": ["id-1", "id-2", "id-3"],
             "metadatas": [
                 {"cached_action": "", "response_text": "It is 22 degrees."},
-                {"cached_action": '{"service":"light/turn_on","entity_id":"light.kitchen","service_data":{}}', "response_text": "Done."},
+                {
+                    "cached_action": '{"service":"light/turn_on","entity_id":"light.kitchen","service_data":{}}',
+                    "response_text": "Done.",
+                },
                 {"cached_action": "", "response_text": "The door is locked."},
             ],
         }
@@ -1368,8 +1536,19 @@ class TestResponseCachePurgeReadonly:
     def test_is_readonly_action_helper(self):
         """Unit test for _is_readonly_action static method."""
         assert ResponseCache._is_readonly_action("") is True
-        assert ResponseCache._is_readonly_action('{"service":"sensor/query_status","entity_id":"x","service_data":{}}') is True
-        assert ResponseCache._is_readonly_action('{"service":"media/list_sources","entity_id":"x","service_data":{}}') is True
-        assert ResponseCache._is_readonly_action('{"service":"light/turn_on","entity_id":"x","service_data":{}}') is False
-        assert ResponseCache._is_readonly_action('{"service":"climate/set_temperature","entity_id":"x","service_data":{}}') is False
+        assert (
+            ResponseCache._is_readonly_action('{"service":"sensor/query_status","entity_id":"x","service_data":{}}')
+            is True
+        )
+        assert (
+            ResponseCache._is_readonly_action('{"service":"media/list_sources","entity_id":"x","service_data":{}}')
+            is True
+        )
+        assert (
+            ResponseCache._is_readonly_action('{"service":"light/turn_on","entity_id":"x","service_data":{}}') is False
+        )
+        assert (
+            ResponseCache._is_readonly_action('{"service":"climate/set_temperature","entity_id":"x","service_data":{}}')
+            is False
+        )
         assert ResponseCache._is_readonly_action("invalid json") is False

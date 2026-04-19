@@ -10,8 +10,6 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import sys
-
 import httpx
 import pytest
 import pytest_asyncio
@@ -85,12 +83,15 @@ async def complete_client(db_repository):
 @pytest.mark.integration
 class TestSetupRoutesOpenWhileIncomplete:
     async def test_step1_open_during_setup(self, incomplete_client):
-        with patch(
-            "app.setup.routes.AdminAccountRepository.create",
-            new_callable=AsyncMock,
-        ), patch(
-            "app.setup.routes.SetupStateRepository.set_step_completed",
-            new_callable=AsyncMock,
+        with (
+            patch(
+                "app.setup.routes.AdminAccountRepository.create",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.setup.routes.SetupStateRepository.set_step_completed",
+                new_callable=AsyncMock,
+            ),
         ):
             resp = await csrf_post(
                 incomplete_client,

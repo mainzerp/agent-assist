@@ -6,19 +6,18 @@ async methods for common operations.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-
-import aiosqlite
 
 from app.db.schema import get_db_read, get_db_write
 
 
 def _now() -> str:
     """Return current UTC timestamp as ISO 8601 string."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class SettingsRepository:
@@ -39,22 +38,20 @@ class SettingsRepository:
     @staticmethod
     async def get_value(key: str, default: str | None = None) -> str | None:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT value FROM settings WHERE key = ?", (key,)
-            )
+            cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (key,))
             row = await cursor.fetchone()
             return row[0] if row else default
 
     @staticmethod
-    async def set(key: str, value: str, value_type: str = "string",
-                  category: str = "general", description: str | None = None) -> None:
+    async def set(
+        key: str, value: str, value_type: str = "string", category: str = "general", description: str | None = None
+    ) -> None:
         async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO settings (key, value, value_type, category, description, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=?, updated_at=?",
-                (key, value, value_type, category, description, _now(),
-                 value, _now()),
+                (key, value, value_type, category, description, _now(), value, _now()),
             )
             await db.commit()
 
@@ -70,9 +67,7 @@ class SettingsRepository:
     @staticmethod
     async def get_all() -> list[dict[str, Any]]:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT key, value, value_type, category, description FROM settings"
-            )
+            cursor = await db.execute("SELECT key, value, value_type, category, description FROM settings")
             return [dict(row) for row in await cursor.fetchall()]
 
 
@@ -82,9 +77,7 @@ class AgentConfigRepository:
     @staticmethod
     async def get(agent_id: str) -> dict[str, Any] | None:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT * FROM agent_configs WHERE agent_id = ?", (agent_id,)
-            )
+            cursor = await db.execute("SELECT * FROM agent_configs WHERE agent_id = ?", (agent_id,))
             row = await cursor.fetchone()
             return dict(row) if row else None
 
@@ -97,26 +90,31 @@ class AgentConfigRepository:
     @staticmethod
     async def list_enabled() -> list[dict[str, Any]]:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT * FROM agent_configs WHERE enabled = 1"
-            )
+            cursor = await db.execute("SELECT * FROM agent_configs WHERE enabled = 1")
             return [dict(row) for row in await cursor.fetchall()]
 
     @staticmethod
     async def upsert(agent_id: str, **kwargs: Any) -> None:
-        allowed = {"enabled", "model", "timeout", "max_iterations",
-                    "temperature", "max_tokens", "description",
-                    "reasoning_effort"}
+        allowed = {
+            "enabled",
+            "model",
+            "timeout",
+            "max_iterations",
+            "temperature",
+            "max_tokens",
+            "description",
+            "reasoning_effort",
+        }
         fields = {k: v for k, v in kwargs.items() if k in allowed}
         if not fields:
             return
         fields["updated_at"] = _now()
 
-        columns = ", ".join(["agent_id"] + list(fields.keys()))
+        columns = ", ".join(["agent_id", *list(fields.keys())])
         placeholders = ", ".join(["?"] * (len(fields) + 1))
         updates = ", ".join(f"{k}=excluded.{k}" for k in fields)
 
-        values = [agent_id] + list(fields.values())
+        values = [agent_id, *list(fields.values())]
         async with get_db_write() as db:
             await db.execute(
                 f"INSERT INTO agent_configs ({columns}) VALUES ({placeholders}) "
@@ -132,9 +130,7 @@ class SecretsRepository:
     @staticmethod
     async def get(key: str) -> bytes | None:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT encrypted_value FROM secrets WHERE key = ?", (key,)
-            )
+            cursor = await db.execute("SELECT encrypted_value FROM secrets WHERE key = ?", (key,))
             row = await cursor.fetchone()
             return row[0] if row else None
 
@@ -181,8 +177,7 @@ class AdminAccountRepository:
         verb = "INSERT OR REPLACE" if force_overwrite else "INSERT OR IGNORE"
         async with get_db_write() as db:
             await db.execute(
-                f"{verb} INTO admin_accounts (username, password_hash, created_at) "
-                "VALUES (?, ?, ?)",
+                f"{verb} INTO admin_accounts (username, password_hash, created_at) VALUES (?, ?, ?)",
                 (username, password_hash, _now()),
             )
             await db.commit()
@@ -199,9 +194,7 @@ class AdminAccountRepository:
     @staticmethod
     async def get(username: str) -> dict[str, Any] | None:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT * FROM admin_accounts WHERE username = ?", (username,)
-            )
+            cursor = await db.execute("SELECT * FROM admin_accounts WHERE username = ?", (username,))
             row = await cursor.fetchone()
             return dict(row) if row else None
 
@@ -217,9 +210,7 @@ class AdminAccountRepository:
     @staticmethod
     async def list_all() -> list[dict[str, Any]]:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT username, created_at, last_login FROM admin_accounts"
-            )
+            cursor = await db.execute("SELECT username, created_at, last_login FROM admin_accounts")
             return [dict(row) for row in await cursor.fetchall()]
 
 
@@ -229,9 +220,7 @@ class SetupStateRepository:
     @staticmethod
     async def get_step(step: str) -> dict[str, Any] | None:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT * FROM setup_state WHERE step = ?", (step,)
-            )
+            cursor = await db.execute("SELECT * FROM setup_state WHERE step = ?", (step,))
             row = await cursor.fetchone()
             return dict(row) if row else None
 
@@ -247,9 +236,7 @@ class SetupStateRepository:
     @staticmethod
     async def is_complete() -> bool:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT COUNT(*) FROM setup_state WHERE completed = 0"
-            )
+            cursor = await db.execute("SELECT COUNT(*) FROM setup_state WHERE completed = 0")
             row = await cursor.fetchone()
             return row[0] == 0
 
@@ -266,9 +253,7 @@ class AliasRepository:
     @staticmethod
     async def get(alias: str) -> str | None:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT entity_id FROM aliases WHERE alias = ?", (alias,)
-            )
+            cursor = await db.execute("SELECT entity_id FROM aliases WHERE alias = ?", (alias,))
             row = await cursor.fetchone()
             return row[0] if row else None
 
@@ -301,9 +286,7 @@ class CustomAgentRepository:
     @staticmethod
     async def get(name: str) -> dict[str, Any] | None:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT * FROM custom_agents WHERE name = ?", (name,)
-            )
+            cursor = await db.execute("SELECT * FROM custom_agents WHERE name = ?", (name,))
             row = await cursor.fetchone()
             if row is None:
                 return None
@@ -327,9 +310,7 @@ class CustomAgentRepository:
     @staticmethod
     async def list_enabled() -> list[dict[str, Any]]:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT * FROM custom_agents WHERE enabled = 1"
-            )
+            cursor = await db.execute("SELECT * FROM custom_agents WHERE enabled = 1")
             rows = [dict(row) for row in await cursor.fetchall()]
             for row in rows:
                 for field in ("mcp_tools", "entity_visibility", "intent_patterns"):
@@ -339,16 +320,15 @@ class CustomAgentRepository:
 
     @staticmethod
     async def create(name: str, system_prompt: str, **kwargs: Any) -> None:
-        fields = {"description", "model_override", "mcp_tools",
-                   "entity_visibility", "intent_patterns", "enabled"}
+        fields = {"description", "model_override", "mcp_tools", "entity_visibility", "intent_patterns", "enabled"}
         data = {k: v for k, v in kwargs.items() if k in fields}
         for field in ("mcp_tools", "entity_visibility", "intent_patterns"):
             if field in data and isinstance(data[field], (list, dict)):
                 data[field] = json.dumps(data[field])
 
-        columns = ", ".join(["name", "system_prompt"] + list(data.keys()))
+        columns = ", ".join(["name", "system_prompt", *list(data.keys())])
         placeholders = ", ".join(["?"] * (len(data) + 2))
-        values = [name, system_prompt] + list(data.values())
+        values = [name, system_prompt, *list(data.values())]
 
         async with get_db_write() as db:
             await db.execute(
@@ -359,8 +339,15 @@ class CustomAgentRepository:
 
     @staticmethod
     async def update(name: str, **kwargs: Any) -> None:
-        fields = {"description", "system_prompt", "model_override", "mcp_tools",
-                   "entity_visibility", "intent_patterns", "enabled"}
+        fields = {
+            "description",
+            "system_prompt",
+            "model_override",
+            "mcp_tools",
+            "entity_visibility",
+            "intent_patterns",
+            "enabled",
+        }
         data = {k: v for k, v in kwargs.items() if k in fields}
         if not data:
             return
@@ -370,7 +357,7 @@ class CustomAgentRepository:
         data["updated_at"] = _now()
 
         set_clause = ", ".join(f"{k} = ?" for k in data)
-        values = list(data.values()) + [name]
+        values = [*list(data.values()), name]
 
         async with get_db_write() as db:
             await db.execute(
@@ -392,9 +379,7 @@ class McpServerRepository:
     @staticmethod
     async def get(name: str) -> dict[str, Any] | None:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT * FROM mcp_servers WHERE name = ?", (name,)
-            )
+            cursor = await db.execute("SELECT * FROM mcp_servers WHERE name = ?", (name,))
             row = await cursor.fetchone()
             if row is None:
                 return None
@@ -414,14 +399,13 @@ class McpServerRepository:
             return rows
 
     @staticmethod
-    async def create(name: str, transport: str, command_or_url: str,
-                     env_vars: dict | None = None, timeout: int = 30) -> None:
+    async def create(
+        name: str, transport: str, command_or_url: str, env_vars: dict | None = None, timeout: int = 30
+    ) -> None:
         async with get_db_write() as db:
             await db.execute(
-                "INSERT INTO mcp_servers (name, transport, command_or_url, env_vars, timeout) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (name, transport, command_or_url,
-                 json.dumps(env_vars) if env_vars else None, timeout),
+                "INSERT INTO mcp_servers (name, transport, command_or_url, env_vars, timeout) VALUES (?, ?, ?, ?, ?)",
+                (name, transport, command_or_url, json.dumps(env_vars) if env_vars else None, timeout),
             )
             await db.commit()
 
@@ -434,9 +418,7 @@ class McpServerRepository:
     @staticmethod
     async def list_enabled() -> list[dict[str, Any]]:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT * FROM mcp_servers WHERE enabled = 1"
-            )
+            cursor = await db.execute("SELECT * FROM mcp_servers WHERE enabled = 1")
             rows = [dict(row) for row in await cursor.fetchall()]
             for row in rows:
                 if row.get("env_vars"):
@@ -444,17 +426,27 @@ class McpServerRepository:
             return rows
 
     @staticmethod
-    async def upsert(name: str, transport: str, command_or_url: str,
-                     env_vars: dict | None = None, timeout: int = 30) -> None:
+    async def upsert(
+        name: str, transport: str, command_or_url: str, env_vars: dict | None = None, timeout: int = 30
+    ) -> None:
         async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO mcp_servers (name, transport, command_or_url, env_vars, timeout, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(name) DO UPDATE SET transport=?, command_or_url=?, env_vars=?, timeout=?, updated_at=?",
-                (name, transport, command_or_url,
-                 json.dumps(env_vars) if env_vars else None, timeout, _now(),
-                 transport, command_or_url,
-                 json.dumps(env_vars) if env_vars else None, timeout, _now()),
+                (
+                    name,
+                    transport,
+                    command_or_url,
+                    json.dumps(env_vars) if env_vars else None,
+                    timeout,
+                    _now(),
+                    transport,
+                    command_or_url,
+                    json.dumps(env_vars) if env_vars else None,
+                    timeout,
+                    _now(),
+                ),
             )
             await db.commit()
 
@@ -479,8 +471,9 @@ class AgentMcpToolsRepository:
                 "SELECT server_name, tool_name FROM agent_mcp_tools WHERE agent_id = ?",
                 (agent_id,),
             )
-            return [{"server_name": row["server_name"], "tool_name": row["tool_name"]}
-                    for row in await cursor.fetchall()]
+            return [
+                {"server_name": row["server_name"], "tool_name": row["tool_name"]} for row in await cursor.fetchall()
+            ]
 
     @staticmethod
     async def assign_tool(agent_id: str, server_name: str, tool_name: str) -> None:
@@ -528,8 +521,7 @@ class EntityVisibilityRepository:
             )
             for rule in rules:
                 await db.execute(
-                    "INSERT INTO entity_visibility_rules (agent_id, rule_type, rule_value) "
-                    "VALUES (?, ?, ?)",
+                    "INSERT INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
                     (agent_id, rule["rule_type"], rule["rule_value"]),
                 )
             await db.commit()
@@ -538,8 +530,7 @@ class EntityVisibilityRepository:
     async def add_rule(agent_id: str, rule_type: str, rule_value: str) -> None:
         async with get_db_write() as db:
             await db.execute(
-                "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) "
-                "VALUES (?, ?, ?)",
+                "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
                 (agent_id, rule_type, rule_value),
             )
             await db.commit()
@@ -548,8 +539,7 @@ class EntityVisibilityRepository:
     async def remove_rule(agent_id: str, rule_type: str, rule_value: str) -> None:
         async with get_db_write() as db:
             await db.execute(
-                "DELETE FROM entity_visibility_rules "
-                "WHERE agent_id = ? AND rule_type = ? AND rule_value = ?",
+                "DELETE FROM entity_visibility_rules WHERE agent_id = ? AND rule_type = ? AND rule_value = ?",
                 (agent_id, rule_type, rule_value),
             )
             await db.commit()
@@ -557,9 +547,7 @@ class EntityVisibilityRepository:
     @staticmethod
     async def list_all() -> list[dict[str, Any]]:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT agent_id, rule_type, rule_value FROM entity_visibility_rules"
-            )
+            cursor = await db.execute("SELECT agent_id, rule_type, rule_value FROM entity_visibility_rules")
             return [dict(row) for row in await cursor.fetchall()]
 
     @staticmethod
@@ -567,8 +555,7 @@ class EntityVisibilityRepository:
         """Return all domain_include rules: [{agent_id, rule_value}]."""
         async with get_db_read() as db:
             cursor = await db.execute(
-                "SELECT agent_id, rule_value FROM entity_visibility_rules "
-                "WHERE rule_type = 'domain_include'"
+                "SELECT agent_id, rule_value FROM entity_visibility_rules WHERE rule_type = 'domain_include'"
             )
             return [dict(row) for row in await cursor.fetchall()]
 
@@ -577,8 +564,7 @@ class EntityVisibilityRepository:
         """Return all device_class_include rules: [{agent_id, rule_value}]."""
         async with get_db_read() as db:
             cursor = await db.execute(
-                "SELECT agent_id, rule_value FROM entity_visibility_rules "
-                "WHERE rule_type = 'device_class_include'"
+                "SELECT agent_id, rule_value FROM entity_visibility_rules WHERE rule_type = 'device_class_include'"
             )
             return [dict(row) for row in await cursor.fetchall()]
 
@@ -587,8 +573,7 @@ class EntityVisibilityRepository:
         """Set which agents have domain_include for a given domain."""
         async with get_db_write() as db:
             await db.execute(
-                "DELETE FROM entity_visibility_rules "
-                "WHERE rule_type = 'domain_include' AND rule_value = ?",
+                "DELETE FROM entity_visibility_rules WHERE rule_type = 'domain_include' AND rule_value = ?",
                 (domain,),
             )
             for agent_id in agent_ids:
@@ -608,8 +593,7 @@ class EntityVisibilityRepository:
         """
         async with get_db_write() as db:
             await db.execute(
-                "DELETE FROM entity_visibility_rules "
-                "WHERE rule_type = 'device_class_include' AND rule_value = ?",
+                "DELETE FROM entity_visibility_rules WHERE rule_type = 'device_class_include' AND rule_value = ?",
                 (device_class,),
             )
             for agent_id in agent_ids:
@@ -633,9 +617,7 @@ class PluginRepository:
     @staticmethod
     async def get(name: str) -> dict[str, Any] | None:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT * FROM plugins WHERE name = ?", (name,)
-            )
+            cursor = await db.execute("SELECT * FROM plugins WHERE name = ?", (name,))
             row = await cursor.fetchone()
             return dict(row) if row else None
 
@@ -652,10 +634,19 @@ class PluginRepository:
                 "INSERT INTO plugins (name, file_path, enabled, version, description, loaded_at) "
                 "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(name) DO UPDATE SET file_path=?, enabled=?, version=?, description=?, loaded_at=?",
-                (name, file_path, kwargs.get("enabled", 1), kwargs.get("version"),
-                 kwargs.get("description"), _now(),
-                 file_path, kwargs.get("enabled", 1), kwargs.get("version"),
-                 kwargs.get("description"), _now()),
+                (
+                    name,
+                    file_path,
+                    kwargs.get("enabled", 1),
+                    kwargs.get("version"),
+                    kwargs.get("description"),
+                    _now(),
+                    file_path,
+                    kwargs.get("enabled", 1),
+                    kwargs.get("version"),
+                    kwargs.get("description"),
+                    _now(),
+                ),
             )
             await db.commit()
 
@@ -664,20 +655,22 @@ class ConversationRepository:
     """CRUD for conversation history."""
 
     @staticmethod
-    async def insert(conversation_id: str, user_text: str,
-                     agent_id: str | None = None,
-                     response_text: str | None = None,
-                     action_executed: str | None = None,
-                     cache_hit: str | None = None,
-                     latency_ms: float | None = None) -> int:
+    async def insert(
+        conversation_id: str,
+        user_text: str,
+        agent_id: str | None = None,
+        response_text: str | None = None,
+        action_executed: str | None = None,
+        cache_hit: str | None = None,
+        latency_ms: float | None = None,
+    ) -> int:
         async with get_db_write() as db:
             cursor = await db.execute(
                 "INSERT INTO conversations "
                 "(conversation_id, user_text, agent_id, response_text, "
                 "action_executed, cache_hit, latency_ms) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (conversation_id, user_text, agent_id, response_text,
-                 action_executed, cache_hit, latency_ms),
+                (conversation_id, user_text, agent_id, response_text, action_executed, cache_hit, latency_ms),
             )
             await db.commit()
             return cursor.lastrowid
@@ -762,7 +755,8 @@ class ConversationRepository:
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         async with get_db_read() as db:
             cursor = await db.execute(
-                f"SELECT COUNT(*) FROM conversations {where}", params,
+                f"SELECT COUNT(*) FROM conversations {where}",
+                params,
             )
             row = await cursor.fetchone()
             return row[0]
@@ -772,8 +766,7 @@ class AnalyticsRepository:
     """CRUD for analytics events."""
 
     @staticmethod
-    async def insert(event_type: str, agent_id: str | None = None,
-                     data: dict | None = None) -> None:
+    async def insert(event_type: str, agent_id: str | None = None, data: dict | None = None) -> None:
         async with get_db_write() as db:
             await db.execute(
                 "INSERT INTO analytics (event_type, agent_id, data) VALUES (?, ?, ?)",
@@ -782,10 +775,9 @@ class AnalyticsRepository:
             await db.commit()
 
     @staticmethod
-    async def query_by_range(event_type: str | None = None,
-                             start: str | None = None,
-                             end: str | None = None,
-                             limit: int = 1000) -> list[dict[str, Any]]:
+    async def query_by_range(
+        event_type: str | None = None, start: str | None = None, end: str | None = None, limit: int = 1000
+    ) -> list[dict[str, Any]]:
         conditions = []
         params: list[Any] = []
         if event_type:
@@ -819,9 +811,7 @@ class EntityMatchingConfigRepository:
     @staticmethod
     async def get(key: str) -> str | None:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT value FROM entity_matching_config WHERE key = ?", (key,)
-            )
+            cursor = await db.execute("SELECT value FROM entity_matching_config WHERE key = ?", (key,))
             row = await cursor.fetchone()
             return row[0] if row else None
 
@@ -839,9 +829,7 @@ class EntityMatchingConfigRepository:
     @staticmethod
     async def get_all() -> list[dict[str, Any]]:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT key, value, description FROM entity_matching_config"
-            )
+            cursor = await db.execute("SELECT key, value, description FROM entity_matching_config")
             return [dict(row) for row in await cursor.fetchall()]
 
 
@@ -849,21 +837,33 @@ class TraceSpanRepository:
     """CRUD for trace span data."""
 
     @staticmethod
-    async def insert(trace_id: str, span_name: str,
-                     start_time: str, duration_ms: float,
-                     agent_id: str | None = None,
-                     parent_span: str | None = None,
-                     status: str = "ok",
-                     metadata: dict | None = None,
-                     end_time: str | None = None) -> int:
+    async def insert(
+        trace_id: str,
+        span_name: str,
+        start_time: str,
+        duration_ms: float,
+        agent_id: str | None = None,
+        parent_span: str | None = None,
+        status: str = "ok",
+        metadata: dict | None = None,
+        end_time: str | None = None,
+    ) -> int:
         async with get_db_write() as db:
             cursor = await db.execute(
                 "INSERT INTO trace_spans "
                 "(trace_id, span_name, agent_id, parent_span, start_time, "
                 "end_time, duration_ms, status, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (trace_id, span_name, agent_id, parent_span, start_time,
-                 end_time, duration_ms, status,
-                 json.dumps(metadata) if metadata else None),
+                (
+                    trace_id,
+                    span_name,
+                    agent_id,
+                    parent_span,
+                    start_time,
+                    end_time,
+                    duration_ms,
+                    status,
+                    json.dumps(metadata) if metadata else None,
+                ),
             )
             await db.commit()
             return cursor.lastrowid
@@ -879,12 +879,17 @@ class TraceSpanRepository:
                     "INSERT INTO trace_spans "
                     "(trace_id, span_name, agent_id, parent_span, start_time, "
                     "end_time, duration_ms, status, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (span["trace_id"], span["span_name"],
-                     span.get("agent_id"), span.get("parent_span"),
-                     span["start_time"], span.get("end_time"),
-                     span["duration_ms"],
-                     span.get("status", "ok"),
-                     json.dumps(meta) if meta else None),
+                    (
+                        span["trace_id"],
+                        span["span_name"],
+                        span.get("agent_id"),
+                        span.get("parent_span"),
+                        span["start_time"],
+                        span.get("end_time"),
+                        span["duration_ms"],
+                        span.get("status", "ok"),
+                        json.dumps(meta) if meta else None,
+                    ),
                 )
             await db.commit()
 
@@ -919,9 +924,7 @@ class TraceSpanRepository:
     @staticmethod
     async def count_traces() -> int:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT COUNT(DISTINCT trace_id) FROM trace_spans"
-            )
+            cursor = await db.execute("SELECT COUNT(DISTINCT trace_id) FROM trace_spans")
             row = await cursor.fetchone()
             return row[0]
 
@@ -1022,15 +1025,11 @@ class TraceSummaryRepository:
             rows = [dict(row) for row in await cursor.fetchall()]
             for row in rows:
                 if row.get("agents"):
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError, TypeError):
                         row["agents"] = json.loads(row["agents"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
                 if row.get("agent_instructions"):
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError, TypeError):
                         row["agent_instructions"] = json.loads(row["agent_instructions"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
             return rows
 
     @staticmethod
@@ -1062,7 +1061,8 @@ class TraceSummaryRepository:
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         async with get_db_read() as db:
             cursor = await db.execute(
-                f"SELECT COUNT(*) FROM trace_summary {where}", params,
+                f"SELECT COUNT(*) FROM trace_summary {where}",
+                params,
             )
             row = await cursor.fetchone()
             return row[0]
@@ -1070,28 +1070,20 @@ class TraceSummaryRepository:
     @staticmethod
     async def get(trace_id: str) -> dict[str, Any] | None:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT * FROM trace_summary WHERE trace_id = ?", (trace_id,)
-            )
+            cursor = await db.execute("SELECT * FROM trace_summary WHERE trace_id = ?", (trace_id,))
             row = await cursor.fetchone()
             if row is None:
                 return None
             result = dict(row)
             if result.get("agents"):
-                try:
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
                     result["agents"] = json.loads(result["agents"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
             if result.get("agent_instructions"):
-                try:
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
                     result["agent_instructions"] = json.loads(result["agent_instructions"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
             if result.get("conversation_turns"):
-                try:
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
                     result["conversation_turns"] = json.loads(result["conversation_turns"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
             return result
 
     @staticmethod
@@ -1107,8 +1099,7 @@ class TraceSummaryRepository:
     async def list_labels() -> list[str]:
         async with get_db_read() as db:
             cursor = await db.execute(
-                "SELECT DISTINCT label FROM trace_summary "
-                "WHERE label IS NOT NULL AND label != '' ORDER BY label"
+                "SELECT DISTINCT label FROM trace_summary WHERE label IS NOT NULL AND label != '' ORDER BY label"
             )
             return [row[0] for row in await cursor.fetchall()]
 
@@ -1162,15 +1153,11 @@ class TraceSummaryRepository:
             rows = [dict(row) for row in await cursor.fetchall()]
             for row in rows:
                 if row.get("agents"):
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError, TypeError):
                         row["agents"] = json.loads(row["agents"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
                 if row.get("agent_instructions"):
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError, TypeError):
                         row["agent_instructions"] = json.loads(row["agent_instructions"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
             return rows
 
     @staticmethod
@@ -1195,7 +1182,7 @@ class TraceSummaryRepository:
 
 def _normalize_device_name(name: str) -> str:
     """Normalize a device display name for fuzzy comparison."""
-    return re.sub(r'\s+', ' ', re.sub(r'[^a-z0-9\s]', '', name.lower())).strip()
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", "", name.lower())).strip()
 
 
 class SendDeviceMappingRepository:
@@ -1240,8 +1227,7 @@ class SendDeviceMappingRepository:
             if not normalized_input:
                 return None
             cursor = await db.execute(
-                "SELECT id, display_name, device_type, ha_service_target, created_at "
-                "FROM send_device_mappings"
+                "SELECT id, display_name, device_type, ha_service_target, created_at FROM send_device_mappings"
             )
             for row in await cursor.fetchall():
                 if _normalize_device_name(row["display_name"]) == normalized_input:
@@ -1268,7 +1254,7 @@ class SendDeviceMappingRepository:
         if not fields:
             return False
         set_clause = ", ".join(f"{k} = ?" for k in fields)
-        values = list(fields.values()) + [mapping_id]
+        values = [*list(fields.values()), mapping_id]
         async with get_db_write() as db:
             cursor = await db.execute(
                 f"UPDATE send_device_mappings SET {set_clause} WHERE id = ?",

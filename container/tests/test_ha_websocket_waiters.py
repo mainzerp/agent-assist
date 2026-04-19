@@ -95,10 +95,12 @@ class TestStateWaiters:
         client.register_state_waiter("light.keller", expected="off")
 
         # Missing new_state.
-        client._dispatch_state_waiters({
-            "event_type": "state_changed",
-            "data": {"entity_id": "light.keller"},
-        })
+        client._dispatch_state_waiters(
+            {
+                "event_type": "state_changed",
+                "data": {"entity_id": "light.keller"},
+            }
+        )
         # Entirely empty.
         client._dispatch_state_waiters({})
         # The waiter is still pending, not crashed.

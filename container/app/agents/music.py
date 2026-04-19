@@ -17,7 +17,9 @@ class MusicAgent(ActionableAgent):
     _prompt_name = "music"
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
-        return await execute_music_action(action, ha_client, entity_index, entity_matcher, agent_id=agent_id, span_collector=span_collector)
+        return await execute_music_action(
+            action, ha_client, entity_index, entity_matcher, agent_id=agent_id, span_collector=span_collector
+        )
 
     @property
     def agent_card(self) -> AgentCard:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10,12 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 
-from tests.helpers import make_entity_state, make_mock_embedding
-
+from tests.helpers import make_entity_state
 
 # ---------------------------------------------------------------------------
 # 1. db_path -- temporary SQLite file per test
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def db_path(tmp_path: Path) -> Path:
@@ -31,6 +30,7 @@ def db_path(tmp_path: Path) -> Path:
 # 2. db_repository -- schema + seed data on a temp DB
 # ---------------------------------------------------------------------------
 
+
 @pytest_asyncio.fixture()
 async def db_repository(db_path: Path):
     """Yield a temporary database initialized with schema and seed data.
@@ -39,10 +39,10 @@ async def db_repository(db_path: Path):
     classes that call ``get_db()`` use the temporary file.
     """
     import aiosqlite
-    from app.db.schema import _create_tables, _create_indexes, _seed_defaults
 
-    with patch("app.db.schema.settings") as mock_settings, \
-         patch("app.config.settings") as mock_cfg:
+    from app.db.schema import _create_indexes, _create_tables, _seed_defaults
+
+    with patch("app.db.schema.settings") as mock_settings, patch("app.config.settings") as mock_cfg:
         mock_settings.sqlite_db_path = str(db_path)
         mock_cfg.sqlite_db_path = str(db_path)
 
@@ -71,16 +71,19 @@ async def db_repository(db_path: Path):
             finally:
                 await conn.close()
 
-        with patch("app.db.repository.get_db_read", _temp_get_db), \
-             patch("app.db.repository.get_db_write", _temp_get_db), \
-             patch("app.db.schema.get_db_read", _temp_get_db), \
-             patch("app.db.schema.get_db_write", _temp_get_db):
+        with (
+            patch("app.db.repository.get_db_read", _temp_get_db),
+            patch("app.db.repository.get_db_write", _temp_get_db),
+            patch("app.db.schema.get_db_read", _temp_get_db),
+            patch("app.db.schema.get_db_write", _temp_get_db),
+        ):
             yield db_path
 
 
 # ---------------------------------------------------------------------------
 # 3. mock_ha_rest_client -- AsyncMock of HARestClient
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def mock_ha_rest_client() -> AsyncMock:
@@ -94,8 +97,7 @@ def mock_ha_rest_client() -> AsyncMock:
         make_entity_state("light.kitchen_ceiling", "Kitchen Ceiling", state="on", area="kitchen"),
         make_entity_state("light.living_room_lamp", "Living Room Lamp", state="off", area="living_room"),
         make_entity_state("light.bedroom_light", "Bedroom Light", state="off", area="bedroom"),
-        make_entity_state("media_player.living_room_speaker", "Living Room Speaker",
-                          state="idle", area="living_room"),
+        make_entity_state("media_player.living_room_speaker", "Living Room Speaker", state="idle", area="living_room"),
         make_entity_state("climate.thermostat", "Thermostat", state="heat", area="hallway"),
     ]
 
@@ -112,6 +114,7 @@ def mock_ha_rest_client() -> AsyncMock:
 # ---------------------------------------------------------------------------
 # 4. mock_litellm -- patches litellm.acompletion and litellm.aembedding
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def mock_litellm():
@@ -139,8 +142,10 @@ def mock_litellm():
     embedding_response.data = [embedding_data]
     embedding_response.model = "local/all-MiniLM-L6-v2"
 
-    with patch("litellm.acompletion", new_callable=AsyncMock, return_value=completion_response) as mock_comp, \
-         patch("litellm.aembedding", new_callable=AsyncMock, return_value=embedding_response) as mock_emb:
+    with (
+        patch("litellm.acompletion", new_callable=AsyncMock, return_value=completion_response) as mock_comp,
+        patch("litellm.aembedding", new_callable=AsyncMock, return_value=embedding_response) as mock_emb,
+    ):
         ns = MagicMock()
         ns.acompletion = mock_comp
         ns.aembedding = mock_emb
@@ -152,6 +157,7 @@ def mock_litellm():
 # ---------------------------------------------------------------------------
 # 5. mock_chromadb -- MagicMock of a ChromaDB collection
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def mock_chromadb() -> MagicMock:
@@ -168,10 +174,12 @@ def mock_chromadb() -> MagicMock:
         "ids": [["light.kitchen_ceiling", "light.living_room_lamp"]],
         "distances": [[0.05, 0.15]],
         "documents": [["Kitchen Ceiling light kitchen", "Living Room Lamp light living_room"]],
-        "metadatas": [[
-            {"entity_id": "light.kitchen_ceiling", "domain": "light", "area": "kitchen"},
-            {"entity_id": "light.living_room_lamp", "domain": "light", "area": "living_room"},
-        ]],
+        "metadatas": [
+            [
+                {"entity_id": "light.kitchen_ceiling", "domain": "light", "area": "kitchen"},
+                {"entity_id": "light.living_room_lamp", "domain": "light", "area": "living_room"},
+            ]
+        ],
     }
     return collection
 
@@ -179,6 +187,7 @@ def mock_chromadb() -> MagicMock:
 # ---------------------------------------------------------------------------
 # 6. app_client -- async httpx test client against FastAPI app
 # ---------------------------------------------------------------------------
+
 
 @pytest_asyncio.fixture()
 async def app_client(mock_ha_rest_client, db_repository, mock_chromadb):
@@ -189,14 +198,17 @@ async def app_client(mock_ha_rest_client, db_repository, mock_chromadb):
 
     Marked implicitly for integration use via its dependency chain.
     """
-    import httpx
     from unittest.mock import patch as _patch
 
-    # Patch lifespan-level dependencies so the app boots without real HA/LLM
-    with _patch("app.main.HARestClient", return_value=mock_ha_rest_client) if True else None, \
-         _patch("app.main.init_db", new_callable=AsyncMock):
+    import httpx
 
+    # Patch lifespan-level dependencies so the app boots without real HA/LLM
+    with (
+        _patch("app.main.HARestClient", return_value=mock_ha_rest_client) if True else None,
+        _patch("app.main.init_db", new_callable=AsyncMock),
+    ):
         from app.main import create_app
+
         test_app = create_app()
 
         # Override lifespan to skip real initialization
@@ -231,6 +243,7 @@ async def app_client(mock_ha_rest_client, db_repository, mock_chromadb):
 # 7. mock_websocket -- AsyncMock of a WebSocket connection
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def mock_websocket() -> AsyncMock:
     """Return an AsyncMock simulating a WebSocket connection."""
@@ -246,6 +259,7 @@ def mock_websocket() -> AsyncMock:
 # 8. sample_entities -- list of HA entity state dicts
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def sample_entities() -> list[dict[str, Any]]:
     """Return a representative set of HA entity state dicts for cross-module tests."""
@@ -253,10 +267,14 @@ def sample_entities() -> list[dict[str, Any]]:
         make_entity_state("light.kitchen_ceiling", "Kitchen Ceiling", state="on", area="kitchen"),
         make_entity_state("light.living_room_lamp", "Living Room Lamp", state="off", area="living_room"),
         make_entity_state("light.bedroom_light", "Bedroom Light", state="off", area="bedroom"),
-        make_entity_state("media_player.living_room_speaker", "Living Room Speaker",
-                          state="idle", area="living_room"),
-        make_entity_state("climate.thermostat", "Thermostat", state="heat", area="hallway",
-                          attributes={"temperature": 22, "current_temperature": 21}),
+        make_entity_state("media_player.living_room_speaker", "Living Room Speaker", state="idle", area="living_room"),
+        make_entity_state(
+            "climate.thermostat",
+            "Thermostat",
+            state="heat",
+            area="hallway",
+            attributes={"temperature": 22, "current_temperature": 21},
+        ),
         make_entity_state("lock.front_door", "Front Door Lock", state="locked", area="entrance"),
         make_entity_state("scene.movie_night", "Movie Night", state="scening"),
         make_entity_state("automation.morning_routine", "Morning Routine", state="on"),
@@ -266,6 +284,7 @@ def sample_entities() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # 9. mock_settings -- default settings dict mirroring seed data
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def mock_settings() -> dict[str, str]:

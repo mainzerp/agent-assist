@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Protocol
 
 import chromadb
 
@@ -24,18 +23,15 @@ class EmbeddingEngine:
         """Read embedding.provider and embedding.*_model from settings table."""
         self._provider = await SettingsRepository.get_value("embedding.provider", "local")
         if self._provider == "local":
-            self._model_name = await SettingsRepository.get_value(
-                "embedding.local_model", "all-MiniLM-L6-v2"
-            )
+            self._model_name = await SettingsRepository.get_value("embedding.local_model", "all-MiniLM-L6-v2")
         else:
-            self._model_name = await SettingsRepository.get_value(
-                "embedding.external_model", ""
-            )
+            self._model_name = await SettingsRepository.get_value("embedding.external_model", "")
 
     def _get_local_model(self):
         """Lazy-load sentence-transformers model on first use."""
         if self._local_model is None:
             from sentence_transformers import SentenceTransformer
+
             self._local_model = SentenceTransformer(self._model_name)
             logger.info("Loaded local embedding model: %s", self._model_name)
         return self._local_model
@@ -79,6 +75,7 @@ class EmbeddingEngine:
     def _embed_external(self, texts: list[str]) -> list[list[float]]:
         """Use litellm for external provider embedding."""
         import litellm
+
         response = litellm.embedding(model=self._model_name, input=texts)
         return [item["embedding"] for item in response.data]
 

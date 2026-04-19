@@ -6,17 +6,17 @@ import random
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
-from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.models.agent import AgentCard, AgentConfig, AgentTask, TaskContext
 from app.models.cache import CachedAction, ResponseCacheEntry, RoutingCacheEntry
+from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.models.entity_index import EntityIndexEntry
-
 
 # ---------------------------------------------------------------------------
 # Conversation factories
 # ---------------------------------------------------------------------------
+
 
 def make_conversation_request(
     text: str = "turn on the kitchen light",
@@ -71,6 +71,7 @@ def make_stream_token(
 # ---------------------------------------------------------------------------
 # Agent factories
 # ---------------------------------------------------------------------------
+
 
 def make_agent_card(
     agent_id: str = "light-agent",
@@ -131,6 +132,7 @@ def make_agent_task(
 # Entity factories
 # ---------------------------------------------------------------------------
 
+
 def make_entity_state(
     entity_id: str = "light.kitchen_ceiling",
     friendly_name: str = "Kitchen Ceiling",
@@ -180,6 +182,7 @@ def make_entity_index_entry(
 # ---------------------------------------------------------------------------
 # Cache factories
 # ---------------------------------------------------------------------------
+
 
 def make_routing_cache_entry(
     query_text: str = "turn on kitchen lights",
@@ -232,6 +235,7 @@ def make_cached_action(
 # A2A protocol factories
 # ---------------------------------------------------------------------------
 
+
 def make_a2a_request(
     method: str = "message/send",
     params: dict[str, Any] | None = None,
@@ -267,6 +271,7 @@ def make_a2a_response(
 # LLM mock factories
 # ---------------------------------------------------------------------------
 
+
 def make_mock_llm_response(
     content: str = "I turned on the kitchen light for you.",
     role: str = "assistant",
@@ -297,6 +302,7 @@ def make_mock_embedding(dim: int = 384) -> list[float]:
 # ---------------------------------------------------------------------------
 # HA client helpers
 # ---------------------------------------------------------------------------
+
 
 def attach_expect_state_shim(client: Any) -> Any:
     """Install an ``expect_state`` async context manager on a mocked client.
@@ -342,6 +348,7 @@ def attach_expect_state_shim(client: Any) -> Any:
 # ---------------------------------------------------------------------------
 # CSRF helper
 # ---------------------------------------------------------------------------
+
 
 async def csrf_post(
     client,

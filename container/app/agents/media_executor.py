@@ -14,17 +14,17 @@ from app.analytics.tracer import _optional_span
 logger = logging.getLogger(__name__)
 
 _MEDIA_ACTION_MAP: dict[str, tuple[str, str]] = {
-    "turn_on":           ("media_player", "turn_on"),
-    "turn_off":          ("media_player", "turn_off"),
-    "play":              ("media_player", "media_play"),
-    "pause":             ("media_player", "media_pause"),
-    "stop":              ("media_player", "media_stop"),
-    "next_track":        ("media_player", "media_next_track"),
-    "previous_track":    ("media_player", "media_previous_track"),
-    "set_volume":        ("media_player", "volume_set"),
-    "mute":              ("media_player", "volume_mute"),
-    "select_source":     ("media_player", "select_source"),
-    "play_media":        ("media_player", "play_media"),
+    "turn_on": ("media_player", "turn_on"),
+    "turn_off": ("media_player", "turn_off"),
+    "play": ("media_player", "media_play"),
+    "pause": ("media_player", "media_pause"),
+    "stop": ("media_player", "media_stop"),
+    "next_track": ("media_player", "media_next_track"),
+    "previous_track": ("media_player", "media_previous_track"),
+    "set_volume": ("media_player", "volume_set"),
+    "mute": ("media_player", "volume_mute"),
+    "select_source": ("media_player", "select_source"),
+    "play_media": ("media_player", "play_media"),
 }
 
 # FLOW-VERIFY-SHARED (0.18.5): only ``turn_off`` reliably lands in "off"
@@ -33,18 +33,18 @@ _MEDIA_ACTION_MAP: dict[str, tuple[str, str]] = {
 # it to the WS observer. Transport actions (play/pause/stop) map cleanly.
 _EXPECTED_STATE_BY_ACTION: dict[str, str] = {
     "turn_off": "off",
-    "play":     "playing",
-    "pause":    "paused",
-    "stop":     "idle",
+    "play": "playing",
+    "pause": "paused",
+    "stop": "idle",
 }
 
 _ACTION_PHRASES: dict[str, str] = {
-    "set_volume":     "volume updated",
-    "mute":           "muted",
-    "next_track":     "skipped to the next track",
+    "set_volume": "volume updated",
+    "mute": "muted",
+    "next_track": "skipped to the next track",
     "previous_track": "skipped to the previous track",
-    "select_source":  "source selected",
-    "play_media":     "playback started",
+    "select_source": "source selected",
+    "play_media": "playback started",
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"media_player"})
@@ -106,7 +106,12 @@ async def execute_media_action(
     # Read-only actions (no service call)
     if action_name in ("query_media_state", "list_media_players"):
         return await _handle_media_read_action(
-            action_name, entity_query, ha_client, entity_index, entity_matcher, agent_id,
+            action_name,
+            entity_query,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
             span_collector=span_collector,
         )
 
@@ -154,7 +159,10 @@ async def execute_media_action(
 
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
     verify = await call_service_with_verification(
-        ha_client, domain, service, entity_id,
+        ha_client,
+        domain,
+        service,
+        entity_id,
         service_data=service_data,
         expected_state=expected_state,
     )
@@ -185,6 +193,7 @@ async def execute_media_action(
 # ---------------------------------------------------------------------------
 # Read-only media action handlers
 # ---------------------------------------------------------------------------
+
 
 def _format_media_state(entity_id: str, state_resp: dict) -> str:
     state = state_resp.get("state", "unknown")
@@ -244,25 +253,41 @@ async def _query_media_state(
         entity_id = None
 
     if not entity_id:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": f"Could not find an entity matching '{entity_query}'.",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"Could not find an entity matching '{entity_query}'.",
+            "cacheable": False,
+        }
 
     try:
         state_resp = await ha_client.get_state(entity_id)
         if not state_resp:
-            return {"success": False, "entity_id": entity_id, "new_state": None,
-                    "speech": f"Could not retrieve state for {entity_id}.",
-                    "cacheable": False}
+            return {
+                "success": False,
+                "entity_id": entity_id,
+                "new_state": None,
+                "speech": f"Could not retrieve state for {entity_id}.",
+                "cacheable": False,
+            }
         speech = _format_media_state(entity_id, state_resp)
-        return {"success": True, "entity_id": entity_id,
-                "new_state": state_resp.get("state"), "speech": speech,
-                "cacheable": False}
+        return {
+            "success": True,
+            "entity_id": entity_id,
+            "new_state": state_resp.get("state"),
+            "speech": speech,
+            "cacheable": False,
+        }
     except Exception as exc:
         logger.error("State query failed for %s", entity_id, exc_info=True)
-        return {"success": False, "entity_id": entity_id, "new_state": None,
-                "speech": f"Failed to query media player status: {exc}",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": None,
+            "speech": f"Failed to query media player status: {exc}",
+            "cacheable": False,
+        }
 
 
 async def _list_media_players(ha_client: Any) -> dict:
@@ -270,14 +295,12 @@ async def _list_media_players(ha_client: Any) -> dict:
         states = await ha_client.get_states()
     except Exception as exc:
         logger.error("Failed to fetch states for list_media_players", exc_info=True)
-        return {"success": False, "entity_id": "", "new_state": None,
-                "speech": f"Failed to list media players: {exc}"}
+        return {"success": False, "entity_id": "", "new_state": None, "speech": f"Failed to list media players: {exc}"}
 
     players = [s for s in states if s.get("entity_id", "").startswith("media_player.")]
 
     if not players:
-        return {"success": True, "entity_id": "", "new_state": None,
-                "speech": "No media players found."}
+        return {"success": True, "entity_id": "", "new_state": None, "speech": "No media players found."}
 
     lines = []
     for p in players:
@@ -295,8 +318,7 @@ async def _list_media_players(ha_client: Any) -> dict:
         lines.append(info)
 
     speech = "Media players: " + "; ".join(lines) + "."
-    return {"success": True, "entity_id": "", "new_state": None, "speech": speech,
-            "cacheable": False}
+    return {"success": True, "entity_id": "", "new_state": None, "speech": speech, "cacheable": False}
 
 
 async def _handle_media_read_action(
@@ -309,9 +331,9 @@ async def _handle_media_read_action(
     span_collector=None,
 ) -> dict:
     if action_name == "query_media_state":
-        return await _query_media_state(entity_query, ha_client, entity_index, entity_matcher, agent_id,
-                                        span_collector=span_collector)
+        return await _query_media_state(
+            entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
     if action_name == "list_media_players":
         return await _list_media_players(ha_client)
-    return {"success": False, "entity_id": "", "new_state": None,
-            "speech": f"Unknown read action: {action_name}"}
+    return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}

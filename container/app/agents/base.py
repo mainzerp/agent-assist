@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import AsyncGenerator
 
-from app.models.agent import AgentCard, AgentTask, TaskResult, AgentError, AgentErrorCode, TaskContext
+from app.models.agent import AgentCard, AgentError, AgentErrorCode, AgentTask, TaskContext, TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +62,7 @@ class BaseAgent(ABC):
         """
         result = await self.handle_task(task)
         # Support both TaskResult and raw dict
-        if hasattr(result, "model_dump"):
-            result_dict = result.model_dump()
-        else:
-            result_dict = result
+        result_dict = result.model_dump() if hasattr(result, "model_dump") else result
         chunk = {
             "token": result_dict.get("speech", ""),
             "done": True,
@@ -74,6 +71,8 @@ class BaseAgent(ABC):
         action = result_dict.get("action_executed")
         if action:
             chunk["action_executed"] = action
+        if result_dict.get("voice_followup"):
+            chunk["voice_followup"] = True
         yield chunk
 
     def _load_prompt(self, name: str) -> str:

@@ -11,14 +11,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 import pytest_asyncio
-import httpx
 from fastapi import FastAPI
 
 from app.api.routes import entity_index_api
-from app.security.auth import require_admin_session
 from app.entity.matcher import MatchResult
+from app.security.auth import require_admin_session
 
 
 def _make_entry(entity_id: str, friendly_name: str, area: str | None = None):
@@ -44,25 +44,25 @@ async def preview_client():
 
     entity_index = MagicMock()
     entity_index.list_entries = MagicMock(return_value=entries)
-    entity_index.get_by_id = MagicMock(
-        side_effect=lambda eid: next((e for e in entries if e.entity_id == eid), None)
-    )
+    entity_index.get_by_id = MagicMock(side_effect=lambda eid: next((e for e in entries if e.entity_id == eid), None))
 
     entity_matcher = MagicMock()
-    entity_matcher.match = AsyncMock(return_value=[
-        MatchResult(
-            entity_id="light.keller",
-            friendly_name="Keller",
-            score=0.92,
-            signal_scores={"alias": 1.0, "embedding": 0.81, "levenshtein": 0.9},
-        ),
-        MatchResult(
-            entity_id="light.bedroom",
-            friendly_name="Bedroom",
-            score=0.72,
-            signal_scores={"embedding": 0.72},
-        ),
-    ])
+    entity_matcher.match = AsyncMock(
+        return_value=[
+            MatchResult(
+                entity_id="light.keller",
+                friendly_name="Keller",
+                score=0.92,
+                signal_scores={"alias": 1.0, "embedding": 0.81, "levenshtein": 0.9},
+            ),
+            MatchResult(
+                entity_id="light.bedroom",
+                friendly_name="Bedroom",
+                score=0.72,
+                signal_scores={"embedding": 0.72},
+            ),
+        ]
+    )
     entity_matcher.filter_visible_results = AsyncMock(side_effect=lambda a, r: r)
 
     app.state.entity_index = entity_index
@@ -90,12 +90,15 @@ async def test_match_preview_returns_all_blocks(preview_client):
         },
     }
 
-    with patch(
-        "app.agents.action_executor._resolve_light_entity",
-        new=AsyncMock(return_value=resolver_output),
-    ), patch(
-        "app.db.repository.EntityVisibilityRepository.get_rules",
-        new=AsyncMock(return_value=[]),
+    with (
+        patch(
+            "app.agents.action_executor._resolve_light_entity",
+            new=AsyncMock(return_value=resolver_output),
+        ),
+        patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ),
     ):
         resp = await client.get(
             "/api/admin/entity-index/match-preview",
@@ -155,12 +158,15 @@ async def test_match_preview_surfaces_domain_gate_reject(preview_client):
             "top_entity_id": "climate.thermostat",
         },
     }
-    with patch(
-        "app.agents.action_executor._resolve_light_entity",
-        new=AsyncMock(return_value=resolver_output),
-    ), patch(
-        "app.db.repository.EntityVisibilityRepository.get_rules",
-        new=AsyncMock(return_value=[]),
+    with (
+        patch(
+            "app.agents.action_executor._resolve_light_entity",
+            new=AsyncMock(return_value=resolver_output),
+        ),
+        patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ),
     ):
         resp = await client.get(
             "/api/admin/entity-index/match-preview",

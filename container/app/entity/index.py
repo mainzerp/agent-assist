@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 
-from app.cache.vector_store import VectorStore, COLLECTION_ENTITY_INDEX
+from app.cache.vector_store import COLLECTION_ENTITY_INDEX, VectorStore
 from app.models.entity_index import EntityIndexEntry
 
 logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ class EntityIndex:
                 )
                 self._status["processed"] = min(start + len(batch), total)
                 self._status["progress"] = int(self._status["processed"] / total * 100)
-            self._last_refresh = datetime.now(timezone.utc).isoformat()
+            self._last_refresh = datetime.now(UTC).isoformat()
             self._status["state"] = "ready"
             self._status["progress"] = 100
             logger.info("Entity index populated with %d entities", total)
@@ -151,10 +151,7 @@ class EntityIndex:
         where: dict | None = None
         if domains:
             dlist = list(domains)
-            if len(dlist) == 1:
-                where = {"domain": dlist[0]}
-            else:
-                where = {"domain": {"$in": dlist}}
+            where = {"domain": dlist[0]} if len(dlist) == 1 else {"domain": {"$in": dlist}}
         data = self._store.get(
             COLLECTION_ENTITY_INDEX,
             include=["metadatas"],
@@ -190,6 +187,7 @@ class EntityIndex:
         Returns dict with counts: added, updated, removed, unchanged.
         """
         import time as _time
+
         start = _time.monotonic()
 
         if not entities:
@@ -259,7 +257,7 @@ class EntityIndex:
 
             elapsed_ms = int((_time.monotonic() - start) * 1000)
 
-            self._last_refresh = datetime.now(timezone.utc).isoformat()
+            self._last_refresh = datetime.now(UTC).isoformat()
             self._status["state"] = "ready"
 
             self._sync_stats = {
@@ -273,7 +271,11 @@ class EntityIndex:
 
             logger.info(
                 "Entity sync complete: +%d ~%d -%d =%d (%dms)",
-                added, updated, removed, unchanged, elapsed_ms,
+                added,
+                updated,
+                removed,
+                unchanged,
+                elapsed_ms,
             )
             return {"added": added, "updated": updated, "removed": removed, "unchanged": unchanged}
 

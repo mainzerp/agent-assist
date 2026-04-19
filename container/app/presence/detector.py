@@ -6,8 +6,8 @@ import logging
 import time
 
 from app.db.repository import SettingsRepository
-from app.presence.sensors import PresenceSensor, discover_sensors
 from app.presence.scoring import SensorEvent, compute_room_confidence
+from app.presence.sensors import PresenceSensor, discover_sensors
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +43,13 @@ class PresenceDetector:
         sensor = next((s for s in self._sensors if s.entity_id == entity_id), None)
         if not sensor:
             return
-        self._events.append(SensorEvent(
-            sensor_type=sensor.sensor_type,
-            area=area or sensor.area or "",
-            triggered_at=time.time(),
-        ))
+        self._events.append(
+            SensorEvent(
+                sensor_type=sensor.sensor_type,
+                area=area or sensor.area or "",
+                triggered_at=time.time(),
+            )
+        )
         # Prune old events
         cutoff = time.time() - self._decay_timeout
         self._events = [e for e in self._events if e.triggered_at > cutoff]

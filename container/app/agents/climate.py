@@ -16,8 +16,12 @@ class ClimateAgent(ActionableAgent):
         ctx = getattr(self, "_current_task_context", None)
         area_id = ctx.area_id if ctx else None
         return await execute_climate_action(
-            action, ha_client, entity_index, entity_matcher,
-            agent_id=agent_id, span_collector=span_collector,
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id=agent_id,
+            span_collector=span_collector,
             preferred_area_id=area_id,
         )
 
@@ -27,6 +31,18 @@ class ClimateAgent(ActionableAgent):
             agent_id="climate-agent",
             name="Climate Agent",
             description="Controls and queries climate/HVAC devices, environmental sensors, and local weather conditions/forecasts. Set temperature, HVAC mode, fan speed, humidity, turn on/off. Reads sensors: temperature, humidity, pressure, dew point, wind, precipitation. Queries weather entities for current conditions and forecasts.",
-            skills=["temperature", "hvac_mode", "fan_speed", "humidity", "climate_on_off", "sensor_reading", "climate_status", "sensor_query", "weather_sensor", "current_weather", "weather_forecast"],
+            skills=[
+                "temperature",
+                "hvac_mode",
+                "fan_speed",
+                "humidity",
+                "climate_on_off",
+                "sensor_reading",
+                "climate_status",
+                "sensor_query",
+                "weather_sensor",
+                "current_weather",
+                "weather_forecast",
+            ],
             endpoint="local://climate-agent",
         )

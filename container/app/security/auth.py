@@ -1,22 +1,18 @@
 import hmac
 import logging
 import secrets
-import time
-from typing import Optional
 
-from fastapi import Depends, HTTPException, Request, WebSocket, status
-from fastapi.responses import RedirectResponse, Response
-from starlette.requests import HTTPConnection
-from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from fastapi import HTTPException, Request, WebSocket
+from fastapi.responses import Response
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
+from app.config import settings as _app_settings
+from app.db.repository import AdminAccountRepository
 from app.security.encryption import (
-    retrieve_secret,
-    get_fernet_key,
     get_session_signing_key,
+    retrieve_secret,
 )
 from app.security.hashing import verify_password
-from app.db.repository import AdminAccountRepository
-from app.config import settings as _app_settings
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +75,7 @@ async def require_admin_session(request: Request) -> dict:
     try:
         data = _get_session_serializer().loads(cookie, max_age=SESSION_MAX_AGE)
     except (BadSignature, SignatureExpired):
-        raise HTTPException(status_code=401, detail="Session expired")
+        raise HTTPException(status_code=401, detail="Session expired") from None
     return data
 
 
@@ -117,7 +113,7 @@ async def require_admin_session_redirect(request: Request) -> dict:
             status_code=303,
             headers={"Location": "/dashboard/login"},
             detail="Session expired",
-        )
+        ) from None
     return data
 
 
@@ -147,6 +143,7 @@ def create_session_cookie(session_data: dict) -> str:
 # ---------------------------------------------------------------------------
 # CSRF protection (SEC-1)
 # ---------------------------------------------------------------------------
+
 
 def ensure_csrf_token(request: Request) -> str:
     """Return the existing CSRF token from the request cookie or mint a new one.
@@ -195,9 +192,7 @@ async def verify_csrf(request: Request) -> None:
     try:
         form = await request.form()
     except Exception:
-        raise HTTPException(status_code=401, detail="CSRF token missing")
+        raise HTTPException(status_code=401, detail="CSRF token missing") from None
     form_token = form.get(CSRF_FIELD_NAME)
-    if not form_token or not hmac.compare_digest(
-        str(cookie_token), str(form_token)
-    ):
+    if not form_token or not hmac.compare_digest(str(cookie_token), str(form_token)):
         raise HTTPException(status_code=401, detail="CSRF token invalid")

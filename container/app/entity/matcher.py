@@ -7,10 +7,10 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
-from app.db.repository import SettingsRepository, EntityVisibilityRepository
-from app.entity.index import EntityIndex
+from app.db.repository import EntityVisibilityRepository, SettingsRepository
 from app.entity.aliases import AliasResolver
-from app.entity.signals import LevenshteinSignal, JaroWinklerSignal, PhoneticSignal, EmbeddingSignal, AliasSignal
+from app.entity.index import EntityIndex
+from app.entity.signals import AliasSignal, EmbeddingSignal, JaroWinklerSignal, LevenshteinSignal, PhoneticSignal
 from app.models.entity_index import EntityIndexEntry
 
 logger = logging.getLogger(__name__)
@@ -34,8 +34,7 @@ def _digraphs_to_umlauts(text: str) -> str | None:
     """
     if not _DIGRAPH_RE.search(text):
         return None
-    mapping = {"ae": "\u00e4", "oe": "\u00f6", "ue": "\u00fc",
-               "Ae": "\u00c4", "Oe": "\u00d6", "Ue": "\u00dc"}
+    mapping = {"ae": "\u00e4", "oe": "\u00f6", "ue": "\u00fc", "Ae": "\u00c4", "Oe": "\u00d6", "Ue": "\u00dc"}
     result = text
     for digraph, umlaut in mapping.items():
         result = result.replace(digraph, umlaut)
@@ -49,6 +48,7 @@ DEVICE_CLASS_DOMAINS = {"sensor", "binary_sensor", "cover", "number"}
 @dataclass
 class MatchResult:
     """Result of entity matching with per-signal scores."""
+
     entity_id: str
     friendly_name: str
     score: float
@@ -76,6 +76,7 @@ class EntityMatcher:
     async def load_config(self) -> None:
         """Load matching weights and thresholds from DB."""
         from app.db.schema import get_db_read
+
         async with get_db_read() as db:
             cursor = await db.execute("SELECT key, value FROM entity_matching_config")
             rows = await cursor.fetchall()
@@ -83,8 +84,11 @@ class EntityMatcher:
 
         # All 5 active signals
         active_keys = [
-            "weight.levenshtein", "weight.jaro_winkler", "weight.phonetic",
-            "weight.embedding", "weight.alias",
+            "weight.levenshtein",
+            "weight.jaro_winkler",
+            "weight.phonetic",
+            "weight.embedding",
+            "weight.alias",
         ]
         active_raw = {k: raw_weights.get(k, 0.0) for k in active_keys}
         total = sum(active_raw.values())
@@ -92,16 +96,17 @@ class EntityMatcher:
             self._weights = {k.split(".")[-1]: v / total for k, v in active_raw.items()}
         else:
             self._weights = {
-                "levenshtein": 0.2, "jaro_winkler": 0.2, "phonetic": 0.2,
-                "embedding": 0.2, "alias": 0.2,
+                "levenshtein": 0.2,
+                "jaro_winkler": 0.2,
+                "phonetic": 0.2,
+                "embedding": 0.2,
+                "alias": 0.2,
             }
 
         self._confidence_threshold = float(
             await SettingsRepository.get_value("entity_matching.confidence_threshold", "0.75")
         )
-        self._top_n = int(
-            await SettingsRepository.get_value("entity_matching.top_n_candidates", "3")
-        )
+        self._top_n = int(await SettingsRepository.get_value("entity_matching.top_n_candidates", "3"))
         logger.info("Entity matcher config: weights=%s threshold=%s", self._weights, self._confidence_threshold)
 
     async def match(
@@ -155,9 +160,7 @@ class EntityMatcher:
         umlaut_query = _digraphs_to_umlauts(query)
         if umlaut_query:
             try:
-                umlaut_results = await EmbeddingSignal.score(
-                    umlaut_query, self._entity_index, n=self._top_n * 2
-                )
+                umlaut_results = await EmbeddingSignal.score(umlaut_query, self._entity_index, n=self._top_n * 2)
             except Exception:
                 umlaut_results = []
             for entity_id, friendly_name, emb_score in umlaut_results:
@@ -175,25 +178,25 @@ class EntityMatcher:
                     )
 
         # 3. Levenshtein signal -- compare query against each candidate friendly_name
-        for entity_id, result in results.items():
+        for _entity_id, result in results.items():
             if result.friendly_name:
                 lev_score = LevenshteinSignal.score(query, result.friendly_name)
                 result.signal_scores["levenshtein"] = lev_score
 
         # 3b. Jaro-Winkler signal
-        for entity_id, result in results.items():
+        for _entity_id, result in results.items():
             if result.friendly_name:
                 jw_score = JaroWinklerSignal.score(query, result.friendly_name)
                 result.signal_scores["jaro_winkler"] = jw_score
 
         # 3c. Phonetic signal
-        for entity_id, result in results.items():
+        for _entity_id, result in results.items():
             if result.friendly_name:
                 ph_score = PhoneticSignal.score(query, result.friendly_name)
                 result.signal_scores["phonetic"] = ph_score
 
         # Compute weighted score for each candidate
-        query_norm = query.lower().strip()
+        query.lower().strip()
         query_containment = _normalize_for_containment(query)
         for result in results.values():
             weighted_sum = 0.0
@@ -215,7 +218,7 @@ class EntityMatcher:
         if agent_id:
             filtered = await self._apply_visibility_rules(agent_id, filtered)
 
-        top_results = filtered[:self._top_n]
+        top_results = filtered[: self._top_n]
 
         return top_results
 

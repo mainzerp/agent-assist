@@ -1,4 +1,4 @@
-﻿"""Test that pure ASGI middleware does not buffer streaming responses.
+"""Test that pure ASGI middleware does not buffer streaming responses.
 
 Regression test for CRIT-6 (deep code review): the SetupRedirectMiddleware
 and TracingMiddleware previously subclassed BaseHTTPMiddleware which buffers
@@ -24,7 +24,6 @@ from starlette.routing import Route
 
 from app.middleware.auth import SetupRedirectMiddleware
 from app.middleware.tracing import TracingMiddleware
-
 
 SLEEP_S = 0.4
 TIMING_BUDGET_S = 0.2

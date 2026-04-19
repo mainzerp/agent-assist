@@ -15,40 +15,40 @@ logger = logging.getLogger(__name__)
 
 _SECURITY_ACTION_MAP: dict[str, tuple[str, str]] = {
     # Locks
-    "lock":             ("lock", "lock"),
-    "unlock":           ("lock", "unlock"),
+    "lock": ("lock", "lock"),
+    "unlock": ("lock", "unlock"),
     # Alarm control panels
-    "alarm_arm_home":   ("alarm_control_panel", "alarm_arm_home"),
-    "alarm_arm_away":   ("alarm_control_panel", "alarm_arm_away"),
-    "alarm_arm_night":  ("alarm_control_panel", "alarm_arm_night"),
-    "alarm_disarm":     ("alarm_control_panel", "alarm_disarm"),
+    "alarm_arm_home": ("alarm_control_panel", "alarm_arm_home"),
+    "alarm_arm_away": ("alarm_control_panel", "alarm_arm_away"),
+    "alarm_arm_night": ("alarm_control_panel", "alarm_arm_night"),
+    "alarm_disarm": ("alarm_control_panel", "alarm_disarm"),
     # Cameras
-    "camera_turn_on":   ("camera", "turn_on"),
-    "camera_turn_off":  ("camera", "turn_off"),
+    "camera_turn_on": ("camera", "turn_on"),
+    "camera_turn_off": ("camera", "turn_off"),
 }
 
 # FLOW-VERIFY-SHARED (0.18.5): security actions have strong deterministic
 # targets -- correct speech matters here more than anywhere else.
 _EXPECTED_STATE_BY_ACTION: dict[str, str] = {
-    "lock":             "locked",
-    "unlock":           "unlocked",
-    "alarm_arm_home":   "armed_home",
-    "alarm_arm_away":   "armed_away",
-    "alarm_arm_night":  "armed_night",
-    "alarm_disarm":     "disarmed",
-    "camera_turn_off":  "off",
+    "lock": "locked",
+    "unlock": "unlocked",
+    "alarm_arm_home": "armed_home",
+    "alarm_arm_away": "armed_away",
+    "alarm_arm_night": "armed_night",
+    "alarm_disarm": "disarmed",
+    "camera_turn_off": "off",
     # camera_turn_on can end in "idle"/"streaming"/"recording" -- leave open
 }
 
 _ACTION_PHRASES: dict[str, str] = {
-    "lock":             "locked",
-    "unlock":           "unlocked",
-    "alarm_arm_home":   "armed in home mode",
-    "alarm_arm_away":   "armed in away mode",
-    "alarm_arm_night":  "armed in night mode",
-    "alarm_disarm":     "disarmed",
-    "camera_turn_on":   "turned on",
-    "camera_turn_off":  "turned off",
+    "lock": "locked",
+    "unlock": "unlocked",
+    "alarm_arm_home": "armed in home mode",
+    "alarm_arm_away": "armed in away mode",
+    "alarm_arm_night": "armed in night mode",
+    "alarm_disarm": "disarmed",
+    "camera_turn_on": "turned on",
+    "camera_turn_off": "turned off",
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"alarm_control_panel", "lock", "camera", "binary_sensor", "sensor"})
@@ -97,7 +97,12 @@ async def execute_security_action(
     # Read-only actions (no service call)
     if action_name in ("query_security_state", "list_security"):
         return await _handle_security_read_action(
-            action_name, entity_query, ha_client, entity_index, entity_matcher, agent_id,
+            action_name,
+            entity_query,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
             span_collector=span_collector,
         )
 
@@ -148,7 +153,10 @@ async def execute_security_action(
 
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
     verify = await call_service_with_verification(
-        ha_client, domain, service, entity_id,
+        ha_client,
+        domain,
+        service,
+        entity_id,
         service_data=service_data,
         expected_state=expected_state,
     )
@@ -180,10 +188,19 @@ async def execute_security_action(
 # Read-only security action handlers
 # ---------------------------------------------------------------------------
 
-_SECURITY_DEVICE_CLASSES = frozenset({
-    "motion", "door", "window", "opening", "smoke", "gas",
-    "carbon_monoxide", "tamper", "vibration",
-})
+_SECURITY_DEVICE_CLASSES = frozenset(
+    {
+        "motion",
+        "door",
+        "window",
+        "opening",
+        "smoke",
+        "gas",
+        "carbon_monoxide",
+        "tamper",
+        "vibration",
+    }
+)
 
 
 def _format_security_state(entity_id: str, state_resp: dict) -> str:
@@ -245,25 +262,41 @@ async def _query_security_state(
         entity_id = None
 
     if not entity_id:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": f"Could not find an entity matching '{entity_query}'.",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"Could not find an entity matching '{entity_query}'.",
+            "cacheable": False,
+        }
 
     try:
         state_resp = await ha_client.get_state(entity_id)
         if not state_resp:
-            return {"success": False, "entity_id": entity_id, "new_state": None,
-                    "speech": f"Could not retrieve state for {entity_id}.",
-                    "cacheable": False}
+            return {
+                "success": False,
+                "entity_id": entity_id,
+                "new_state": None,
+                "speech": f"Could not retrieve state for {entity_id}.",
+                "cacheable": False,
+            }
         speech = _format_security_state(entity_id, state_resp)
-        return {"success": True, "entity_id": entity_id,
-                "new_state": state_resp.get("state"), "speech": speech,
-                "cacheable": False}
+        return {
+            "success": True,
+            "entity_id": entity_id,
+            "new_state": state_resp.get("state"),
+            "speech": speech,
+            "cacheable": False,
+        }
     except Exception as exc:
         logger.error("State query failed for %s", entity_id, exc_info=True)
-        return {"success": False, "entity_id": entity_id, "new_state": None,
-                "speech": f"Failed to query security status: {exc}",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": None,
+            "speech": f"Failed to query security status: {exc}",
+            "cacheable": False,
+        }
 
 
 async def _list_security(ha_client: Any) -> dict:
@@ -271,8 +304,12 @@ async def _list_security(ha_client: Any) -> dict:
         states = await ha_client.get_states()
     except Exception as exc:
         logger.error("Failed to fetch states for list_security", exc_info=True)
-        return {"success": False, "entity_id": "", "new_state": None,
-                "speech": f"Failed to list security devices: {exc}"}
+        return {
+            "success": False,
+            "entity_id": "",
+            "new_state": None,
+            "speech": f"Failed to list security devices: {exc}",
+        }
 
     locks = []
     alarms = []
@@ -292,8 +329,7 @@ async def _list_security(ha_client: Any) -> dict:
                 binary_sensors.append(s)
 
     if not locks and not alarms and not cameras and not binary_sensors:
-        return {"success": True, "entity_id": "", "new_state": None,
-                "speech": "No security devices found."}
+        return {"success": True, "entity_id": "", "new_state": None, "speech": "No security devices found."}
 
     parts = []
     for label, entities in [("Locks", locks), ("Alarms", alarms), ("Cameras", cameras), ("Sensors", binary_sensors)]:
@@ -306,8 +342,7 @@ async def _list_security(ha_client: Any) -> dict:
             parts.append(f"{label}: {'; '.join(items)}")
 
     speech = ". ".join(parts) + "."
-    return {"success": True, "entity_id": "", "new_state": None, "speech": speech,
-            "cacheable": False}
+    return {"success": True, "entity_id": "", "new_state": None, "speech": speech, "cacheable": False}
 
 
 async def _handle_security_read_action(
@@ -320,9 +355,9 @@ async def _handle_security_read_action(
     span_collector=None,
 ) -> dict:
     if action_name == "query_security_state":
-        return await _query_security_state(entity_query, ha_client, entity_index, entity_matcher, agent_id,
-                                           span_collector=span_collector)
+        return await _query_security_state(
+            entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
     if action_name == "list_security":
         return await _list_security(ha_client)
-    return {"success": False, "entity_id": "", "new_state": None,
-            "speech": f"Unknown read action: {action_name}"}
+    return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}

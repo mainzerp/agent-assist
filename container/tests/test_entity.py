@@ -7,6 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.cache.vector_store import COLLECTION_ENTITY_INDEX
+from app.entity.aliases import AliasResolver
+from app.entity.index import EntityIndex
+from app.entity.ingest import parse_ha_states, state_to_entity_index_entry
+from app.entity.matcher import EntityMatcher, MatchResult, _digraphs_to_umlauts, _normalize_for_containment
 from app.entity.signals import (
     AliasSignal,
     EmbeddingSignal,
@@ -14,22 +19,14 @@ from app.entity.signals import (
     LevenshteinSignal,
     PhoneticSignal,
 )
-from app.entity.ingest import parse_ha_states, state_to_entity_index_entry
-from app.entity.matcher import EntityMatcher, MatchResult, _normalize_for_containment, _digraphs_to_umlauts
-from app.entity.aliases import AliasResolver
-from app.entity.index import EntityIndex
-from app.models.entity_index import EntityIndexEntry
-from app.cache.vector_store import COLLECTION_ENTITY_INDEX
-
 from tests.helpers import make_entity_index_entry
-
 
 # ---------------------------------------------------------------------------
 # Levenshtein signal
 # ---------------------------------------------------------------------------
 
-class TestLevenshteinSignal:
 
+class TestLevenshteinSignal:
     def test_exact_match_returns_1(self):
         score = LevenshteinSignal.score("kitchen light", "kitchen light")
         assert score == pytest.approx(1.0)
@@ -56,8 +53,8 @@ class TestLevenshteinSignal:
 # Jaro-Winkler signal
 # ---------------------------------------------------------------------------
 
-class TestJaroWinklerSignal:
 
+class TestJaroWinklerSignal:
     def test_exact_match_returns_1(self):
         score = JaroWinklerSignal.score("bedroom light", "bedroom light")
         assert score == pytest.approx(1.0)
@@ -79,8 +76,8 @@ class TestJaroWinklerSignal:
 # Phonetic signal
 # ---------------------------------------------------------------------------
 
-class TestPhoneticSignal:
 
+class TestPhoneticSignal:
     def test_soundex_match_returns_1(self):
         # "lite" and "light" should have same Soundex if pyphonetics available
         score = PhoneticSignal.score("light", "lite")
@@ -98,8 +95,7 @@ class TestPhoneticSignal:
             assert score == 1.0
 
     def test_graceful_without_pyphonetics(self):
-        with patch("app.entity.signals.Soundex", None), \
-             patch("app.entity.signals.Metaphone", None):
+        with patch("app.entity.signals.Soundex", None), patch("app.entity.signals.Metaphone", None):
             score = PhoneticSignal.score("light", "lite")
             assert score == 0.0
 
@@ -108,8 +104,8 @@ class TestPhoneticSignal:
 # Embedding signal
 # ---------------------------------------------------------------------------
 
-class TestEmbeddingSignal:
 
+class TestEmbeddingSignal:
     async def test_returns_scored_results(self):
         mock_index = MagicMock(spec=EntityIndex)
         entry = make_entity_index_entry()
@@ -117,7 +113,7 @@ class TestEmbeddingSignal:
 
         results = await EmbeddingSignal.score("kitchen light", mock_index, n=5)
         assert len(results) == 1
-        eid, name, sim = results[0]
+        eid, _name, sim = results[0]
         assert eid == entry.entity_id
         assert sim == pytest.approx(0.9)  # 1 - 0.1
 
@@ -147,8 +143,8 @@ class TestEmbeddingSignal:
 # Alias signal
 # ---------------------------------------------------------------------------
 
-class TestAliasSignal:
 
+class TestAliasSignal:
     async def test_exact_match_returns_entity_and_score_1(self):
         resolver = AsyncMock(spec=AliasResolver)
         resolver.resolve = AsyncMock(return_value="light.bedroom_nightstand")
@@ -166,7 +162,7 @@ class TestAliasSignal:
     async def test_strips_whitespace(self):
         resolver = AsyncMock(spec=AliasResolver)
         resolver.resolve = AsyncMock(return_value="light.x")
-        result = await AliasSignal.score("  lamp  ", resolver)
+        await AliasSignal.score("  lamp  ", resolver)
         resolver.resolve.assert_called_with("lamp")
 
 
@@ -174,8 +170,8 @@ class TestAliasSignal:
 # Entity matcher
 # ---------------------------------------------------------------------------
 
-class TestEntityMatcher:
 
+class TestEntityMatcher:
     def _make_matcher(self) -> tuple[EntityMatcher, MagicMock, AsyncMock]:
         mock_index = MagicMock(spec=EntityIndex)
         mock_alias_resolver = AsyncMock(spec=AliasResolver)
@@ -222,7 +218,7 @@ class TestEntityMatcher:
         with patch("app.entity.matcher.EntityVisibilityRepository"):
             results = await matcher.match("nightstand lamp")
         # Should have at least the alias result
-        entity_ids = [r.entity_id for r in results]
+        [r.entity_id for r in results]
         # Alias signal provides a score, but the alias result might not pass threshold
         # because only the alias weight (0.15) contributes
         # The alias score is 1.0 * 0.15 = 0.15, which is below threshold 0.75
@@ -245,8 +241,11 @@ class TestEntityMatcher:
         matcher, mock_index, mock_alias = self._make_matcher()
         # Set embedding weight very high so embedding dominates
         matcher._weights = {
-            "levenshtein": 0.0, "jaro_winkler": 0.0, "phonetic": 0.0,
-            "embedding": 1.0, "alias": 0.0,
+            "levenshtein": 0.0,
+            "jaro_winkler": 0.0,
+            "phonetic": 0.0,
+            "embedding": 1.0,
+            "alias": 0.0,
         }
         matcher._confidence_threshold = 0.5
         mock_alias.resolve = AsyncMock(return_value=None)
@@ -260,25 +259,30 @@ class TestEntityMatcher:
         assert results[0].score >= 0.5
 
     async def test_load_config_reads_from_db(self):
-        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher, _mock_index, _mock_alias = self._make_matcher()
         mock_db = AsyncMock()
         mock_cursor = AsyncMock()
-        mock_cursor.fetchall = AsyncMock(return_value=[
-            ("weight.levenshtein", "0.25"),
-            ("weight.jaro_winkler", "0.25"),
-            ("weight.phonetic", "0.10"),
-            ("weight.embedding", "0.30"),
-            ("weight.alias", "0.10"),
-        ])
+        mock_cursor.fetchall = AsyncMock(
+            return_value=[
+                ("weight.levenshtein", "0.25"),
+                ("weight.jaro_winkler", "0.25"),
+                ("weight.phonetic", "0.10"),
+                ("weight.embedding", "0.30"),
+                ("weight.alias", "0.10"),
+            ]
+        )
         mock_db.execute = AsyncMock(return_value=mock_cursor)
 
-        with patch("app.db.schema.get_db_read") as mock_get_db, \
-             patch("app.entity.matcher.SettingsRepository") as mock_settings:
+        with (
+            patch("app.db.schema.get_db_read") as mock_get_db,
+            patch("app.entity.matcher.SettingsRepository") as mock_settings,
+        ):
             from contextlib import asynccontextmanager
 
             @asynccontextmanager
             async def fake_db():
                 yield mock_db
+
             mock_get_db.side_effect = fake_db
             mock_settings.get_value = AsyncMock(side_effect=["0.75", "3"])
             await matcher.load_config()
@@ -305,11 +309,10 @@ class TestEntityMatcher:
         mock_alias.resolve = AsyncMock(return_value=None)
 
         entry_wrong = make_entity_index_entry("light.garage", "Garage Light")
-        entry_correct = make_entity_index_entry(
-            "sensor.gastezimmer_temp", "G\u00e4stezimmer Temperatur"
-        )
+        entry_correct = make_entity_index_entry("sensor.gastezimmer_temp", "G\u00e4stezimmer Temperatur")
 
         call_count = 0
+
         async def mock_search(query, n_results=6):
             nonlocal call_count
             call_count += 1
@@ -337,7 +340,7 @@ class TestEntityMatcher:
         mock_index.search_async = AsyncMock(return_value=[(entry, 0.05)])
 
         with patch("app.entity.matcher.EntityVisibilityRepository"):
-            results = await matcher.match("kitchen light")
+            await matcher.match("kitchen light")
 
         mock_index.search_async.assert_called_once()
 
@@ -347,11 +350,10 @@ class TestEntityMatcher:
         matcher._confidence_threshold = 0.0
         mock_alias.resolve = AsyncMock(return_value=None)
 
-        entry = make_entity_index_entry(
-            "sensor.gastezimmer_temp", "G\u00e4stezimmer Temperatur"
-        )
+        entry = make_entity_index_entry("sensor.gastezimmer_temp", "G\u00e4stezimmer Temperatur")
 
         call_count = 0
+
         async def mock_search(query, n_results=6):
             nonlocal call_count
             call_count += 1
@@ -372,6 +374,7 @@ class TestEntityMatcher:
 # ---------------------------------------------------------------------------
 # Normalize for containment
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeForContainment:
     """Tests for the _normalize_for_containment helper used by containment bonus."""
@@ -394,6 +397,7 @@ class TestNormalizeForContainment:
 # ---------------------------------------------------------------------------
 # Digraphs to umlauts
 # ---------------------------------------------------------------------------
+
 
 class TestDigraphsToUmlauts:
     """Tests for the _digraphs_to_umlauts helper."""
@@ -426,13 +430,15 @@ class TestDigraphsToUmlauts:
 # Alias resolver
 # ---------------------------------------------------------------------------
 
-class TestAliasResolver:
 
+class TestAliasResolver:
     async def test_resolve_loads_and_caches(self):
         resolver = AliasResolver()
         with patch.object(AliasResolver, "load", new_callable=AsyncMock) as mock_load:
+
             async def set_cache():
                 resolver._cache = {"nightstand lamp": "light.nightstand"}
+
             mock_load.side_effect = set_cache
             result = await resolver.resolve("nightstand lamp")
         assert result == "light.nightstand"
@@ -471,9 +477,11 @@ class TestAliasResolver:
         resolver = AliasResolver()
         resolver._cache = {"old": "light.old"}
         with patch("app.entity.aliases.AliasRepository") as mock_repo:
-            mock_repo.list_all = AsyncMock(return_value=[
-                {"alias": "new", "entity_id": "light.new"},
-            ])
+            mock_repo.list_all = AsyncMock(
+                return_value=[
+                    {"alias": "new", "entity_id": "light.new"},
+                ]
+            )
             await resolver.reload()
         assert resolver._cache == {"new": "light.new"}
 
@@ -482,8 +490,8 @@ class TestAliasResolver:
 # Entity index
 # ---------------------------------------------------------------------------
 
-class TestEntityIndex:
 
+class TestEntityIndex:
     def _make_index(self) -> tuple[EntityIndex, MagicMock]:
         mock_store = MagicMock()
         index = EntityIndex(mock_store)
@@ -498,8 +506,10 @@ class TestEntityIndex:
         index.populate(entities)
         store.upsert.assert_called_once()
         call_args = store.upsert.call_args
-        assert call_args[1]["ids"] == ["light.kitchen", "light.bedroom"] or \
-               call_args[0][1] == ["light.kitchen", "light.bedroom"]
+        assert call_args[1]["ids"] == ["light.kitchen", "light.bedroom"] or call_args[0][1] == [
+            "light.kitchen",
+            "light.bedroom",
+        ]
 
     def test_populate_empty_list_noop(self):
         index, store = self._make_index()
@@ -510,7 +520,17 @@ class TestEntityIndex:
         index, store = self._make_index()
         store.query.return_value = {
             "ids": [["light.kitchen"]],
-            "metadatas": [[{"friendly_name": "Kitchen Light", "domain": "light", "area": "kitchen", "device_class": "", "aliases": ""}]],
+            "metadatas": [
+                [
+                    {
+                        "friendly_name": "Kitchen Light",
+                        "domain": "light",
+                        "area": "kitchen",
+                        "device_class": "",
+                        "aliases": "",
+                    }
+                ]
+            ],
             "distances": [[0.1]],
             "documents": [["Kitchen Light light kitchen"]],
         }
@@ -556,7 +576,9 @@ class TestEntityIndex:
         index, store = self._make_index()
         store.get.return_value = {
             "ids": ["light.kitchen"],
-            "metadatas": [{"friendly_name": "Kitchen", "domain": "light", "area": "kitchen", "device_class": "", "aliases": ""}],
+            "metadatas": [
+                {"friendly_name": "Kitchen", "domain": "light", "area": "kitchen", "device_class": "", "aliases": ""}
+            ],
         }
         entry = index.get_by_id("light.kitchen")
         assert entry is not None
@@ -573,6 +595,7 @@ class TestEntityIndex:
 # Visibility rules filtering
 # ---------------------------------------------------------------------------
 
+
 class TestVisibilityRules:
     """Tests for _apply_visibility_rules in EntityMatcher."""
 
@@ -583,13 +606,10 @@ class TestVisibilityRules:
         return matcher, mock_index, mock_alias
 
     def _make_results(self, *entity_ids: str) -> list[MatchResult]:
-        return [
-            MatchResult(entity_id=eid, friendly_name=eid, score=1.0)
-            for eid in entity_ids
-        ]
+        return [MatchResult(entity_id=eid, friendly_name=eid, score=1.0) for eid in entity_ids]
 
     async def test_no_rules_returns_all(self):
-        matcher, mock_index, _ = self._make_matcher()
+        matcher, _mock_index, _ = self._make_matcher()
         results = self._make_results("light.kitchen", "switch.hallway", "media_player.sonos")
 
         with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
@@ -604,9 +624,11 @@ class TestVisibilityRules:
         results = self._make_results("light.kitchen", "switch.hallway", "media_player.sonos")
 
         with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
-            mock_repo.get_rules = AsyncMock(return_value=[
-                {"rule_type": "domain_include", "rule_value": "light"},
-            ])
+            mock_repo.get_rules = AsyncMock(
+                return_value=[
+                    {"rule_type": "domain_include", "rule_value": "light"},
+                ]
+            )
             filtered = await matcher._apply_visibility_rules("light-agent", results)
 
         assert len(filtered) == 1
@@ -618,9 +640,11 @@ class TestVisibilityRules:
         results = self._make_results("light.kitchen", "switch.hallway", "media_player.sonos")
 
         with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
-            mock_repo.get_rules = AsyncMock(return_value=[
-                {"rule_type": "domain_exclude", "rule_value": "switch"},
-            ])
+            mock_repo.get_rules = AsyncMock(
+                return_value=[
+                    {"rule_type": "domain_exclude", "rule_value": "switch"},
+                ]
+            )
             filtered = await matcher._apply_visibility_rules("light-agent", results)
 
         assert len(filtered) == 2
@@ -633,10 +657,12 @@ class TestVisibilityRules:
         results = self._make_results("light.kitchen", "switch.hallway", "media_player.sonos")
 
         with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
-            mock_repo.get_rules = AsyncMock(return_value=[
-                {"rule_type": "domain_include", "rule_value": "light"},
-                {"rule_type": "entity_include", "rule_value": "media_player.sonos"},
-            ])
+            mock_repo.get_rules = AsyncMock(
+                return_value=[
+                    {"rule_type": "domain_include", "rule_value": "light"},
+                    {"rule_type": "entity_include", "rule_value": "media_player.sonos"},
+                ]
+            )
             filtered = await matcher._apply_visibility_rules("light-agent", results)
 
         entity_ids = {r.entity_id for r in filtered}
@@ -648,15 +674,15 @@ class TestVisibilityRules:
     async def test_entity_include_union_with_domain(self):
         matcher, mock_index, _ = self._make_matcher()
         mock_index.get_by_id.return_value = None
-        results = self._make_results(
-            "light.kitchen", "light.bedroom", "media_player.sonos", "switch.hallway"
-        )
+        results = self._make_results("light.kitchen", "light.bedroom", "media_player.sonos", "switch.hallway")
 
         with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
-            mock_repo.get_rules = AsyncMock(return_value=[
-                {"rule_type": "domain_include", "rule_value": "light"},
-                {"rule_type": "entity_include", "rule_value": "media_player.sonos"},
-            ])
+            mock_repo.get_rules = AsyncMock(
+                return_value=[
+                    {"rule_type": "domain_include", "rule_value": "light"},
+                    {"rule_type": "entity_include", "rule_value": "media_player.sonos"},
+                ]
+            )
             filtered = await matcher._apply_visibility_rules("light-agent", results)
 
         entity_ids = {r.entity_id for r in filtered}
@@ -673,15 +699,18 @@ class TestVisibilityRules:
 
         def get_by_id(eid):
             return {"sensor.temp": temp_entry, "sensor.humidity": humidity_entry, "sensor.power": power_entry}.get(eid)
+
         mock_index.get_by_id.side_effect = get_by_id
         results = self._make_results("sensor.temp", "sensor.humidity", "sensor.power")
 
         with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
-            mock_repo.get_rules = AsyncMock(return_value=[
-                {"rule_type": "domain_include", "rule_value": "sensor"},
-                {"rule_type": "device_class_include", "rule_value": "temperature"},
-                {"rule_type": "device_class_include", "rule_value": "humidity"},
-            ])
+            mock_repo.get_rules = AsyncMock(
+                return_value=[
+                    {"rule_type": "domain_include", "rule_value": "sensor"},
+                    {"rule_type": "device_class_include", "rule_value": "temperature"},
+                    {"rule_type": "device_class_include", "rule_value": "humidity"},
+                ]
+            )
             filtered = await matcher._apply_visibility_rules("climate-agent", results)
 
         entity_ids = {r.entity_id for r in filtered}
@@ -696,15 +725,18 @@ class TestVisibilityRules:
 
         def get_by_id(eid):
             return {"climate.thermostat": climate_entry, "sensor.temp": temp_entry}.get(eid)
+
         mock_index.get_by_id.side_effect = get_by_id
         results = self._make_results("climate.thermostat", "sensor.temp")
 
         with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
-            mock_repo.get_rules = AsyncMock(return_value=[
-                {"rule_type": "domain_include", "rule_value": "climate"},
-                {"rule_type": "domain_include", "rule_value": "sensor"},
-                {"rule_type": "device_class_include", "rule_value": "temperature"},
-            ])
+            mock_repo.get_rules = AsyncMock(
+                return_value=[
+                    {"rule_type": "domain_include", "rule_value": "climate"},
+                    {"rule_type": "domain_include", "rule_value": "sensor"},
+                    {"rule_type": "device_class_include", "rule_value": "temperature"},
+                ]
+            )
             filtered = await matcher._apply_visibility_rules("climate-agent", results)
 
         entity_ids = {r.entity_id for r in filtered}
@@ -718,14 +750,17 @@ class TestVisibilityRules:
 
         def get_by_id(eid):
             return {"sensor.temp": temp_entry, "sensor.power": power_entry}.get(eid)
+
         mock_index.get_by_id.side_effect = get_by_id
         results = self._make_results("sensor.temp", "sensor.power")
 
         with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
-            mock_repo.get_rules = AsyncMock(return_value=[
-                {"rule_type": "domain_include", "rule_value": "sensor"},
-                {"rule_type": "device_class_exclude", "rule_value": "power"},
-            ])
+            mock_repo.get_rules = AsyncMock(
+                return_value=[
+                    {"rule_type": "domain_include", "rule_value": "sensor"},
+                    {"rule_type": "device_class_exclude", "rule_value": "power"},
+                ]
+            )
             filtered = await matcher._apply_visibility_rules("climate-agent", results)
 
         entity_ids = {r.entity_id for r in filtered}
@@ -739,15 +774,18 @@ class TestVisibilityRules:
 
         def get_by_id(eid):
             return {"sensor.power": power_entry, "sensor.temp": temp_entry}.get(eid)
+
         mock_index.get_by_id.side_effect = get_by_id
         results = self._make_results("sensor.temp", "sensor.power")
 
         with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
-            mock_repo.get_rules = AsyncMock(return_value=[
-                {"rule_type": "domain_include", "rule_value": "sensor"},
-                {"rule_type": "device_class_include", "rule_value": "temperature"},
-                {"rule_type": "entity_include", "rule_value": "sensor.power"},
-            ])
+            mock_repo.get_rules = AsyncMock(
+                return_value=[
+                    {"rule_type": "domain_include", "rule_value": "sensor"},
+                    {"rule_type": "device_class_include", "rule_value": "temperature"},
+                    {"rule_type": "entity_include", "rule_value": "sensor.power"},
+                ]
+            )
             filtered = await matcher._apply_visibility_rules("climate-agent", results)
 
         entity_ids = {r.entity_id for r in filtered}
@@ -762,15 +800,18 @@ class TestVisibilityRules:
 
         def get_by_id(eid):
             return {"light.kitchen": light_entry, "sensor.illum": illum_entry, "sensor.temp": temp_entry}.get(eid)
+
         mock_index.get_by_id.side_effect = get_by_id
         results = self._make_results("light.kitchen", "sensor.illum", "sensor.temp")
 
         with patch("app.entity.matcher.EntityVisibilityRepository") as mock_repo:
-            mock_repo.get_rules = AsyncMock(return_value=[
-                {"rule_type": "domain_include", "rule_value": "light"},
-                {"rule_type": "domain_include", "rule_value": "sensor"},
-                {"rule_type": "device_class_include", "rule_value": "illuminance"},
-            ])
+            mock_repo.get_rules = AsyncMock(
+                return_value=[
+                    {"rule_type": "domain_include", "rule_value": "light"},
+                    {"rule_type": "domain_include", "rule_value": "sensor"},
+                    {"rule_type": "device_class_include", "rule_value": "illuminance"},
+                ]
+            )
             filtered = await matcher._apply_visibility_rules("light-agent", results)
 
         entity_ids = {r.entity_id for r in filtered}
@@ -783,8 +824,8 @@ class TestVisibilityRules:
 # Entity ingest helpers
 # ---------------------------------------------------------------------------
 
-class TestEntityIngest:
 
+class TestEntityIngest:
     def test_state_to_entity_index_entry_preserves_state_fields(self):
         entry = state_to_entity_index_entry(
             {
@@ -831,8 +872,8 @@ class TestEntityIngest:
 # Entity index helpers
 # ---------------------------------------------------------------------------
 
-class TestEntityIndexHelpers:
 
+class TestEntityIndexHelpers:
     def _make_index(self):
         store = MagicMock()
         index = EntityIndex(store)
@@ -844,7 +885,13 @@ class TestEntityIndexHelpers:
             "ids": ["light.keller", "switch.keller_fan"],
             "metadatas": [
                 {"friendly_name": "Keller", "domain": "light", "area": "Keller", "device_class": "", "aliases": ""},
-                {"friendly_name": "Keller Fan", "domain": "switch", "area": "Keller", "device_class": "", "aliases": ""},
+                {
+                    "friendly_name": "Keller Fan",
+                    "domain": "switch",
+                    "area": "Keller",
+                    "device_class": "",
+                    "aliases": "",
+                },
             ],
         }
 
@@ -858,7 +905,13 @@ class TestEntityIndexHelpers:
             "ids": ["light.keller", "switch.keller_fan"],
             "metadatas": [
                 {"friendly_name": "Keller", "domain": "light", "area": "Keller", "device_class": "", "aliases": ""},
-                {"friendly_name": "Keller Fan", "domain": "switch", "area": "Keller", "device_class": "", "aliases": ""},
+                {
+                    "friendly_name": "Keller Fan",
+                    "domain": "switch",
+                    "area": "Keller",
+                    "device_class": "",
+                    "aliases": "",
+                },
             ],
         }
 
@@ -871,8 +924,8 @@ class TestEntityIndexHelpers:
 # Entity index status tracking
 # ---------------------------------------------------------------------------
 
-class TestEntityIndexStatus:
 
+class TestEntityIndexStatus:
     def test_initial_status_is_ready(self):
         store = MagicMock()
         idx = EntityIndex(store)
@@ -930,6 +983,7 @@ class TestEntityIndexStatus:
 # Entity index sync
 # ---------------------------------------------------------------------------
 
+
 class TestEntityIndexSync:
     """Tests for EntityIndex.sync() smart diff."""
 
@@ -980,7 +1034,13 @@ class TestEntityIndexSync:
             "ids": ["light.kitchen"],
             "documents": ["Old Kitchen Light light"],
             "metadatas": [
-                {"friendly_name": "Old Kitchen Light", "domain": "light", "area": "", "device_class": "", "aliases": ""},
+                {
+                    "friendly_name": "Old Kitchen Light",
+                    "domain": "light",
+                    "area": "",
+                    "device_class": "",
+                    "aliases": "",
+                },
             ],
         }
 
@@ -1022,8 +1082,10 @@ class TestEntityIndexSync:
         store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
 
         states_seen = []
+
         def capture_state(*args, **kwargs):
             states_seen.append(index._status["state"])
+
         store.upsert.side_effect = capture_state
 
         entities = [make_entity_index_entry("light.kitchen", "Kitchen Light")]
@@ -1061,7 +1123,7 @@ class TestEntityIndexSync:
         index, store = self._make_index()
 
         existing_unchanged = make_entity_index_entry("light.kitchen", "Kitchen Light")
-        existing_changed = make_entity_index_entry("light.bedroom", "Old Bedroom")
+        make_entity_index_entry("light.bedroom", "Old Bedroom")
 
         store.get.return_value = {
             "ids": ["light.kitchen", "light.bedroom", "light.deleted"],
@@ -1103,26 +1165,37 @@ class TestEntityIndexSync:
 # Periodic entity sync task
 # ---------------------------------------------------------------------------
 
+
 class TestPeriodicEntitySync:
     """Tests for _periodic_entity_sync background task."""
 
     async def test_periodic_sync_calls_sync(self):
         """Task fetches states, parses, and calls entity_index.sync()."""
         from unittest.mock import AsyncMock, patch
+
         from app.main import _periodic_entity_sync
 
         mock_app = MagicMock()
         mock_app.state.ha_client = AsyncMock()
-        mock_app.state.ha_client.get_states = AsyncMock(return_value=[
-            {"entity_id": "light.kitchen", "attributes": {"friendly_name": "Kitchen"}},
-        ])
+        mock_app.state.ha_client.get_states = AsyncMock(
+            return_value=[
+                {"entity_id": "light.kitchen", "attributes": {"friendly_name": "Kitchen"}},
+            ]
+        )
         mock_app.state.entity_index = MagicMock()
-        mock_app.state.entity_index.sync_async = AsyncMock(return_value={
-            "added": 1, "updated": 0, "removed": 0, "unchanged": 0,
-        })
+        mock_app.state.entity_index.sync_async = AsyncMock(
+            return_value={
+                "added": 1,
+                "updated": 0,
+                "removed": 0,
+                "unchanged": 0,
+            }
+        )
 
-        with patch("app.main.SettingsRepository") as mock_settings, \
-             patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]):
+        with (
+            patch("app.main.SettingsRepository") as mock_settings,
+            patch("asyncio.sleep", side_effect=[None, asyncio.CancelledError]),
+        ):
             mock_settings.get_value = AsyncMock(return_value="1")
             with pytest.raises(asyncio.CancelledError):
                 await _periodic_entity_sync(mock_app)
@@ -1132,6 +1205,7 @@ class TestPeriodicEntitySync:
     async def test_periodic_sync_disabled_when_zero(self):
         """Interval=0 skips sync and re-checks after 5 min."""
         from unittest.mock import AsyncMock, patch
+
         from app.main import _periodic_entity_sync
 
         mock_app = MagicMock()
@@ -1139,13 +1213,13 @@ class TestPeriodicEntitySync:
         mock_app.state.entity_index = MagicMock()
 
         sleep_calls = []
+
         async def fake_sleep(duration):
             sleep_calls.append(duration)
             if len(sleep_calls) >= 2:
                 raise asyncio.CancelledError
 
-        with patch("app.main.SettingsRepository") as mock_settings, \
-             patch("asyncio.sleep", side_effect=fake_sleep):
+        with patch("app.main.SettingsRepository") as mock_settings, patch("asyncio.sleep", side_effect=fake_sleep):
             mock_settings.get_value = AsyncMock(return_value="0")
             with pytest.raises(asyncio.CancelledError):
                 await _periodic_entity_sync(mock_app)
@@ -1155,6 +1229,7 @@ class TestPeriodicEntitySync:
     async def test_periodic_sync_handles_errors_gracefully(self):
         """Errors are logged but do not crash the task."""
         from unittest.mock import AsyncMock, patch
+
         from app.main import _periodic_entity_sync
 
         mock_app = MagicMock()
@@ -1163,14 +1238,14 @@ class TestPeriodicEntitySync:
         mock_app.state.entity_index = MagicMock()
 
         call_count = 0
+
         async def fake_sleep(duration):
             nonlocal call_count
             call_count += 1
             if call_count >= 2:
                 raise asyncio.CancelledError
 
-        with patch("app.main.SettingsRepository") as mock_settings, \
-             patch("asyncio.sleep", side_effect=fake_sleep):
+        with patch("app.main.SettingsRepository") as mock_settings, patch("asyncio.sleep", side_effect=fake_sleep):
             mock_settings.get_value = AsyncMock(return_value="1")
             with pytest.raises(asyncio.CancelledError):
                 await _periodic_entity_sync(mock_app)
@@ -1183,8 +1258,8 @@ class TestPeriodicEntitySync:
 # EntityIndex async wrappers and batch_add
 # ---------------------------------------------------------------------------
 
-class TestEntityIndexAsync:
 
+class TestEntityIndexAsync:
     def _make_index(self) -> tuple[EntityIndex, MagicMock]:
         mock_store = MagicMock()
         index = EntityIndex(mock_store)
@@ -1222,7 +1297,17 @@ class TestEntityIndexAsync:
         index, store = self._make_index()
         store.query.return_value = {
             "ids": [["light.kitchen"]],
-            "metadatas": [[{"friendly_name": "Kitchen Light", "domain": "light", "area": "kitchen", "device_class": "", "aliases": ""}]],
+            "metadatas": [
+                [
+                    {
+                        "friendly_name": "Kitchen Light",
+                        "domain": "light",
+                        "area": "kitchen",
+                        "device_class": "",
+                        "aliases": "",
+                    }
+                ]
+            ],
             "distances": [[0.1]],
             "documents": [["Kitchen Light light kitchen"]],
         }
@@ -1292,7 +1377,15 @@ class TestEntityIndexAsync:
         store.get.return_value = {
             "ids": ["light.kitchen"],
             "documents": ["Old Kitchen Light light kitchen"],
-            "metadatas": [{"friendly_name": "Old Kitchen Light", "domain": "light", "area": "kitchen", "device_class": "", "aliases": ""}],
+            "metadatas": [
+                {
+                    "friendly_name": "Old Kitchen Light",
+                    "domain": "light",
+                    "area": "kitchen",
+                    "device_class": "",
+                    "aliases": "",
+                }
+            ],
         }
         index.batch_add([entry])
         store.upsert.assert_called_once()

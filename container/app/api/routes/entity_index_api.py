@@ -7,12 +7,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.security.auth import require_admin_session
-from app.cache.vector_store import COLLECTION_ENTITY_INDEX
 from app.cache.embedding import get_embedding_info
+from app.cache.vector_store import COLLECTION_ENTITY_INDEX
 from app.db.repository import EntityVisibilityRepository, SettingsRepository
 from app.entity.ingest import parse_ha_states
-from app.models.entity_index import EntityIndexEntry
+from app.security.auth import require_admin_session
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +48,7 @@ async def get_entity_index_stats(request: Request):
         embedding_info = await get_embedding_info()
 
         sync_stats = stats.get("sync", {})
-        sync_interval = await SettingsRepository.get_value(
-            "entity_sync.interval_minutes", "30"
-        )
+        sync_interval = await SettingsRepository.get_value("entity_sync.interval_minutes", "30")
 
         return {
             "count": count,
@@ -103,7 +100,8 @@ async def match_preview(
     entity_matcher = getattr(request.app.state, "entity_matcher", None)
     if entity_index is None:
         raise HTTPException(
-            status_code=503, detail="Entity index not initialized",
+            status_code=503,
+            detail="Entity index not initialized",
         )
 
     query = q.strip()
@@ -137,18 +135,21 @@ async def match_preview(
             deterministic["error"] = "entity_matcher not initialized"
         else:
             resolution = await _resolve_light_entity(
-                query, entity_index, entity_matcher, agent,
+                query,
+                entity_index,
+                entity_matcher,
+                agent,
             )
-            deterministic.update({
-                "entity_id": resolution.get("entity_id"),
-                "friendly_name": resolution.get("friendly_name") or query,
-                "speech": resolution.get("speech"),
-                "metadata": resolution.get("metadata") or deterministic["metadata"],
-            })
+            deterministic.update(
+                {
+                    "entity_id": resolution.get("entity_id"),
+                    "friendly_name": resolution.get("friendly_name") or query,
+                    "speech": resolution.get("speech"),
+                    "metadata": resolution.get("metadata") or deterministic["metadata"],
+                }
+            )
             resolved_id = deterministic["entity_id"]
-            deterministic["domain_allowed"] = bool(
-                resolved_id and _validate_domain(resolved_id)
-            )
+            deterministic["domain_allowed"] = bool(resolved_id and _validate_domain(resolved_id))
     except Exception as exc:
         logger.warning("match-preview: deterministic resolution failed", exc_info=True)
         deterministic["error"] = str(exc)
@@ -172,17 +173,18 @@ async def match_preview(
                         entry = entity_index.get_by_id(entity_id)
                 except Exception:
                     entry = None
-                hybrid.append({
-                    "entity_id": entity_id,
-                    "friendly_name": getattr(match, "friendly_name", "") or entity_id,
-                    "domain": domain,
-                    "area": getattr(entry, "area", None) if entry else None,
-                    "score": round(float(getattr(match, "score", 0.0) or 0.0), 4),
-                    "signal_scores": {
-                        k: round(float(v), 4)
-                        for k, v in (getattr(match, "signal_scores", {}) or {}).items()
-                    },
-                })
+                hybrid.append(
+                    {
+                        "entity_id": entity_id,
+                        "friendly_name": getattr(match, "friendly_name", "") or entity_id,
+                        "domain": domain,
+                        "area": getattr(entry, "area", None) if entry else None,
+                        "score": round(float(getattr(match, "score", 0.0) or 0.0), 4),
+                        "signal_scores": {
+                            k: round(float(v), 4) for k, v in (getattr(match, "signal_scores", {}) or {}).items()
+                        },
+                    }
+                )
     except Exception as exc:
         logger.warning("match-preview: hybrid matcher failed", exc_info=True)
         hybrid_error = str(exc)
@@ -200,8 +202,13 @@ async def match_preview(
         if entity_index is not None and hasattr(entity_index, "list_entries"):
             total_entries = entity_index.list_entries()
             visibility["total_entity_count"] = len(total_entries)
-            if agent and entity_matcher is not None and hasattr(
-                entity_matcher, "filter_visible_results",
+            if (
+                agent
+                and entity_matcher is not None
+                and hasattr(
+                    entity_matcher,
+                    "filter_visible_results",
+                )
             ):
                 from app.entity.matcher import MatchResult
 
@@ -221,7 +228,8 @@ async def match_preview(
     except Exception:
         logger.debug(
             "match-preview: visibility summary failed for agent_id=%s",
-            agent, exc_info=True,
+            agent,
+            exc_info=True,
         )
 
     return {

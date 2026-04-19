@@ -11,7 +11,9 @@ class MediaAgent(ActionableAgent):
     _prompt_name = "media"
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
-        return await execute_media_action(action, ha_client, entity_index, entity_matcher, agent_id=agent_id, span_collector=span_collector)
+        return await execute_media_action(
+            action, ha_client, entity_index, entity_matcher, agent_id=agent_id, span_collector=span_collector
+        )
 
     @property
     def agent_card(self) -> AgentCard:
@@ -19,6 +21,16 @@ class MediaAgent(ActionableAgent):
             agent_id="media-agent",
             name="Media Agent",
             description="Controls generic media players (TV, Chromecast, streaming devices): on/off, play/pause/stop, volume, mute, input/source selection. Reports playback status. Not for music library/Music Assistant -- use music-agent.",
-            skills=["tv_control", "speaker_control", "casting", "playback", "volume_control", "mute", "source_selection", "media_status", "playback_query"],
+            skills=[
+                "tv_control",
+                "speaker_control",
+                "casting",
+                "playback",
+                "volume_control",
+                "mute",
+                "source_selection",
+                "media_status",
+                "playback_query",
+            ],
             endpoint="local://media-agent",
         )

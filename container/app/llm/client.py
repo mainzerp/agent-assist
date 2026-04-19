@@ -1,15 +1,15 @@
 import asyncio
 import json
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 import litellm
 
+from app.analytics.collector import track_token_usage
+from app.analytics.tracer import _optional_span
 from app.db.repository import AgentConfigRepository
 from app.llm.providers import resolve_provider_params
 from app.models.agent import AgentConfig
-from app.analytics.collector import track_token_usage
-from app.analytics.tracer import _optional_span
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +37,7 @@ async def complete(
 
     provider_params = await resolve_provider_params(model)
 
-    logger.debug("LLM call: agent=%s model=%s tokens=%s temp=%s",
-                 agent_id, model, max_tokens, temperature)
+    logger.debug("LLM call: agent=%s model=%s tokens=%s temp=%s", agent_id, model, max_tokens, temperature)
 
     try:
         call_kwargs = dict(
@@ -54,11 +53,13 @@ async def complete(
         async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
             response = await litellm.acompletion(**call_kwargs)
             pspan["metadata"]["model"] = model
-            pspan["metadata"]["provider"] = model.split('/')[0] if '/' in model else 'unknown'
+            pspan["metadata"]["provider"] = model.split("/")[0] if "/" in model else "unknown"
         if response.choices and response.choices[0].finish_reason == "length":
             logger.warning(
                 "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
-                agent_id, model, max_tokens,
+                agent_id,
+                model,
+                max_tokens,
             )
         content = response.choices[0].message.content
 
@@ -66,7 +67,9 @@ async def complete(
         if not content:
             logger.warning(
                 "Empty LLM response for agent=%s model=%s finish_reason=%s, retrying once after 1s",
-                agent_id, model, response.choices[0].finish_reason,
+                agent_id,
+                model,
+                response.choices[0].finish_reason,
             )
             await asyncio.sleep(1)
             async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
@@ -76,7 +79,9 @@ async def complete(
             if response.choices and response.choices[0].finish_reason == "length":
                 logger.warning(
                     "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
-                    agent_id, model, max_tokens,
+                    agent_id,
+                    model,
+                    max_tokens,
                 )
             content = response.choices[0].message.content
 
@@ -85,17 +90,16 @@ async def complete(
                 f"Empty LLM response for agent={agent_id} after retry "
                 f"(finish_reason={response.choices[0].finish_reason})"
             )
-        if hasattr(response, 'usage') and response.usage:
+        if hasattr(response, "usage") and response.usage:
             await track_token_usage(
                 agent_id=agent_id,
-                provider=model.split('/')[0] if '/' in model else 'unknown',
+                provider=model.split("/")[0] if "/" in model else "unknown",
                 tokens_in=response.usage.prompt_tokens or 0,
                 tokens_out=response.usage.completion_tokens or 0,
             )
         return content
     except litellm.exceptions.AuthenticationError:
-        logger.error("Authentication failed for agent=%s model=%s -- check API key",
-                      agent_id, model)
+        logger.error("Authentication failed for agent=%s model=%s -- check API key", agent_id, model)
         raise
     except Exception:
         logger.exception("LLM call failed for agent=%s model=%s", agent_id, model)
@@ -144,7 +148,9 @@ async def complete_with_tools(
     for _round in range(max_tool_rounds):
         logger.debug(
             "LLM tool-call round %d: agent=%s model=%s",
-            _round + 1, agent_id, model,
+            _round + 1,
+            agent_id,
+            model,
         )
         tool_call_kwargs = dict(
             model=model,
@@ -162,10 +168,10 @@ async def complete_with_tools(
             response = await litellm.acompletion(**tool_call_kwargs)
             pspan["metadata"]["model"] = model
             pspan["metadata"]["round"] = _round + 1
-        if hasattr(response, 'usage') and response.usage:
+        if hasattr(response, "usage") and response.usage:
             await track_token_usage(
                 agent_id=agent_id,
-                provider=model.split('/')[0] if '/' in model else 'unknown',
+                provider=model.split("/")[0] if "/" in model else "unknown",
                 tokens_in=response.usage.prompt_tokens or 0,
                 tokens_out=response.usage.completion_tokens or 0,
             )
@@ -177,13 +183,16 @@ async def complete_with_tools(
             if response.choices and response.choices[0].finish_reason == "length":
                 logger.warning(
                     "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
-                    agent_id, model, max_tokens,
+                    agent_id,
+                    model,
+                    max_tokens,
                 )
             content = msg.content
             if not content:
                 logger.warning(
                     "Empty LLM response in tool-call loop for agent=%s round=%d",
-                    agent_id, _round + 1,
+                    agent_id,
+                    _round + 1,
                 )
                 return ""
             return content
@@ -208,16 +217,19 @@ async def complete_with_tools(
                 logger.warning("Tool executor '%s' raised: %s", fn_name, e)
                 result_str = f"Tool error: {e}"
 
-            msgs.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": result_str,
-            })
+            msgs.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result_str,
+                }
+            )
 
     # Max rounds exhausted -- force a final text response without tools
     logger.warning(
         "Max tool rounds (%d) exhausted for agent=%s, forcing final response",
-        max_tool_rounds, agent_id,
+        max_tool_rounds,
+        agent_id,
     )
     final_kwargs = dict(
         model=model,
@@ -234,17 +246,19 @@ async def complete_with_tools(
         pspan["metadata"]["model"] = model
         pspan["metadata"]["round"] = max_tool_rounds + 1
         pspan["metadata"]["forced_final"] = True
-    if hasattr(response, 'usage') and response.usage:
+    if hasattr(response, "usage") and response.usage:
         await track_token_usage(
             agent_id=agent_id,
-            provider=model.split('/')[0] if '/' in model else 'unknown',
+            provider=model.split("/")[0] if "/" in model else "unknown",
             tokens_in=response.usage.prompt_tokens or 0,
             tokens_out=response.usage.completion_tokens or 0,
         )
     if response.choices and response.choices[0].finish_reason == "length":
         logger.warning(
             "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
-            agent_id, model, max_tokens,
+            agent_id,
+            model,
+            max_tokens,
         )
     content = response.choices[0].message.content
     return content or ""

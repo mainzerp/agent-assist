@@ -17,14 +17,17 @@ The legacy direct-context implementation is preserved as
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import shlex
 from typing import Any
 
 try:  # pragma: no cover - executed only when the optional SDK is missing
-    from mcp import ClientSession as _SDKClientSession
-    from mcp.client.stdio import stdio_client as _sdk_stdio_client, StdioServerParameters as _SDKStdioServerParameters
     from mcp.client.sse import sse_client as _sdk_sse_client
+    from mcp.client.stdio import StdioServerParameters as _SDKStdioServerParameters
+    from mcp.client.stdio import stdio_client as _sdk_stdio_client
+
+    from mcp import ClientSession as _SDKClientSession
 except Exception:  # pragma: no cover
     _SDKClientSession = None  # type: ignore[assignment]
     _sdk_stdio_client = None  # type: ignore[assignment]
@@ -88,32 +91,27 @@ class MCPClient:
         """Connect to the MCP server. Returns True on success."""
         try:
             if self._transport == "stdio":
-                return await asyncio.wait_for(
-                    self._connect_stdio(), timeout=float(self._timeout)
-                )
+                return await asyncio.wait_for(self._connect_stdio(), timeout=float(self._timeout))
             elif self._transport == "sse":
-                return await asyncio.wait_for(
-                    self._connect_sse(), timeout=float(self._timeout)
-                )
+                return await asyncio.wait_for(self._connect_sse(), timeout=float(self._timeout))
             else:
                 logger.error(
-                    "Unsupported transport type '%s' for MCP server '%s'. "
-                    "Supported transports: stdio, sse.",
-                    self._transport, self._name,
+                    "Unsupported transport type '%s' for MCP server '%s'. Supported transports: stdio, sse.",
+                    self._transport,
+                    self._name,
                 )
                 return False
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(
                 "Connection to MCP server '%s' timed out after %ds",
-                self._name, self._timeout,
+                self._name,
+                self._timeout,
             )
             await self._abort_owner()
             self._connected = False
             return False
         except Exception:
-            logger.error(
-                "Failed to connect to MCP server '%s'", self._name, exc_info=True
-            )
+            logger.error("Failed to connect to MCP server '%s'", self._name, exc_info=True)
             await self._abort_owner()
             self._connected = False
             return False
@@ -138,49 +136,45 @@ class MCPClient:
         # Resolve module-level binding fresh on every call so tests can
         # monkey-patch ``app.mcp.client.ClientSession``.
         import app.mcp.client as _mod
-        _ClientSession = _mod.ClientSession
+
+        client_session_cls = _mod.ClientSession
 
         try:
-            async with transport_factory() as (read, write):
-                async with _ClientSession(read, write) as session:
-                    await session.initialize()
-                    self._session = session
-                    self._connected = True
-                    assert self._ready is not None
-                    self._ready.set()
+            async with transport_factory() as (read, write), client_session_cls(read, write) as session:
+                await session.initialize()
+                self._session = session
+                self._connected = True
+                assert self._ready is not None
+                self._ready.set()
 
-                    while True:
-                        assert self._req_q is not None
-                        fut, op, args = await self._req_q.get()
-                        if op == _STOP:
-                            if not fut.done():
-                                fut.set_result(None)
-                            return
-                        try:
-                            if op == _LIST_TOOLS:
-                                result = await session.list_tools()
-                            elif op == _CALL_TOOL:
-                                tool_name, arguments = args
-                                result = await session.call_tool(
-                                    tool_name, arguments=arguments or {}
-                                )
-                            else:
-                                raise ValueError(f"unknown op: {op}")
-                            if not fut.done():
-                                fut.set_result(result)
-                        except asyncio.CancelledError:
-                            if not fut.done():
-                                fut.cancel()
-                            raise
-                        except Exception as exc:
-                            if not fut.done():
-                                fut.set_exception(exc)
+                while True:
+                    assert self._req_q is not None
+                    fut, op, args = await self._req_q.get()
+                    if op == _STOP:
+                        if not fut.done():
+                            fut.set_result(None)
+                        return
+                    try:
+                        if op == _LIST_TOOLS:
+                            result = await session.list_tools()
+                        elif op == _CALL_TOOL:
+                            tool_name, arguments = args
+                            result = await session.call_tool(tool_name, arguments=arguments or {})
+                        else:
+                            raise ValueError(f"unknown op: {op}")
+                        if not fut.done():
+                            fut.set_result(result)
+                    except asyncio.CancelledError:
+                        if not fut.done():
+                            fut.cancel()
+                        raise
+                    except Exception as exc:
+                        if not fut.done():
+                            fut.set_exception(exc)
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.error(
-                "MCP owner loop for '%s' crashed", self._name, exc_info=True
-            )
+            logger.error("MCP owner loop for '%s' crashed", self._name, exc_info=True)
         finally:
             self._connected = False
             self._session = None
@@ -189,18 +183,19 @@ class MCPClient:
 
     async def _connect_stdio(self) -> bool:
         import app.mcp.client as _mod
-        _stdio_client = _mod.stdio_client
-        _StdioServerParameters = _mod.StdioServerParameters
+
+        stdio_client = _mod.stdio_client
+        stdio_server_parameters_cls = _mod.StdioServerParameters
 
         parts = shlex.split(self._command_or_url)
         command = parts[0]
         args = parts[1:] if len(parts) > 1 else []
         env = dict(self._env_vars) if self._env_vars else None
 
-        server_params = _StdioServerParameters(command=command, args=args, env=env)
+        server_params = stdio_server_parameters_cls(command=command, args=args, env=env)
 
         def _factory():
-            return _stdio_client(server_params)
+            return stdio_client(server_params)
 
         ok = await self._start_owner(_factory)
         if ok:
@@ -209,10 +204,11 @@ class MCPClient:
 
     async def _connect_sse(self) -> bool:
         import app.mcp.client as _mod
-        _sse_client = _mod.sse_client
+
+        sse_client = _mod.sse_client
 
         def _factory():
-            return _sse_client(self._command_or_url)
+            return sse_client(self._command_or_url)
 
         ok = await self._start_owner(_factory)
         if ok:
@@ -224,11 +220,7 @@ class MCPClient:
     # ------------------------------------------------------------------
 
     def _has_owner(self) -> bool:
-        return (
-            self._owner_task is not None
-            and not self._owner_task.done()
-            and self._req_q is not None
-        )
+        return self._owner_task is not None and not self._owner_task.done() and self._req_q is not None
 
     async def _submit(self, op: str, args: tuple) -> Any:
         loop = asyncio.get_running_loop()
@@ -240,10 +232,8 @@ class MCPClient:
     async def _abort_owner(self) -> None:
         if self._owner_task is not None and not self._owner_task.done():
             self._owner_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._owner_task
-            except (asyncio.CancelledError, Exception):
-                pass
         self._owner_task = None
         self._req_q = None
 
@@ -261,21 +251,17 @@ class MCPClient:
                 await self._req_q.put((fut, _STOP, ()))
                 try:
                     await asyncio.wait_for(self._owner_task, timeout=5.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning(
                         "MCP owner for '%s' did not stop within 5s; cancelling",
                         self._name,
                     )
                     assert self._owner_task is not None
                     self._owner_task.cancel()
-                    try:
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
                         await self._owner_task
-                    except (asyncio.CancelledError, Exception):
-                        pass
         except Exception:
-            logger.warning(
-                "Error disconnecting from MCP server '%s'", self._name, exc_info=True
-            )
+            logger.warning("Error disconnecting from MCP server '%s'", self._name, exc_info=True)
         finally:
             self._owner_task = None
             self._req_q = None
@@ -305,9 +291,7 @@ class MCPClient:
                 for tool in result.tools
             ]
         except Exception:
-            logger.error(
-                "Failed to list tools from MCP server '%s'", self._name, exc_info=True
-            )
+            logger.error("Failed to list tools from MCP server '%s'", self._name, exc_info=True)
             return []
 
     async def call_tool(self, tool_name: str, arguments: dict | None = None) -> Any:
@@ -317,12 +301,12 @@ class MCPClient:
         try:
             if self._has_owner():
                 return await self._submit(_CALL_TOOL, (tool_name, arguments))
-            return await self._session.call_tool(
-                tool_name, arguments=arguments or {}
-            )
+            return await self._session.call_tool(tool_name, arguments=arguments or {})
         except Exception:
             logger.error(
                 "Failed to call tool '%s' on MCP server '%s'",
-                tool_name, self._name, exc_info=True,
+                tool_name,
+                self._name,
+                exc_info=True,
             )
             raise

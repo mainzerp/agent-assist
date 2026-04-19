@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from app.cache.vector_store import VectorStore, COLLECTION_ROUTING_CACHE
+from app.cache.vector_store import COLLECTION_ROUTING_CACHE, VectorStore
 from app.db.repository import SettingsRepository
 from app.models.cache import RoutingCacheEntry
 
@@ -34,19 +34,18 @@ class RoutingCache:
 
     async def load_config(self) -> None:
         """Load thresholds from settings table."""
-        self._threshold = float(
-            await SettingsRepository.get_value("cache.routing.threshold", "0.92")
-        )
-        self._max_entries = int(
-            await SettingsRepository.get_value("cache.routing.max_entries", "50000")
-        )
+        self._threshold = float(await SettingsRepository.get_value("cache.routing.threshold", "0.92"))
+        self._max_entries = int(await SettingsRepository.get_value("cache.routing.max_entries", "50000"))
 
     async def reload_config(self) -> None:
         """Reload thresholds from DB without restart."""
         await self.load_config()
 
     def lookup(
-        self, query_text: str, *, language: str = "en",
+        self,
+        query_text: str,
+        *,
+        language: str = "en",
     ) -> tuple[RoutingCacheEntry | None, float | None]:
         """Query routing cache. Returns (entry, similarity).
 
@@ -75,7 +74,7 @@ class RoutingCache:
 
         meta = result["metadatas"][0][0]
         entry_id = result["ids"][0][0]
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         hit_count = int(meta.get("hit_count", 0)) + 1
         with self._mutation_lock:
             self._pending_updates[entry_id] = (
@@ -87,47 +86,55 @@ class RoutingCache:
         if should_flush:
             self._flush_pending_updates()
 
-        return (RoutingCacheEntry(
-            query_text=result["documents"][0][0],
-            agent_id=meta["agent_id"],
-            confidence=similarity,
-            hit_count=hit_count,
-            condensed_task=meta.get("condensed_task"),
-            created_at=meta.get("created_at"),
-            last_accessed=now,
-            language=meta.get("language", "en"),
-        ), similarity)
+        return (
+            RoutingCacheEntry(
+                query_text=result["documents"][0][0],
+                agent_id=meta["agent_id"],
+                confidence=similarity,
+                hit_count=hit_count,
+                condensed_task=meta.get("condensed_task"),
+                created_at=meta.get("created_at"),
+                last_accessed=now,
+                language=meta.get("language", "en"),
+            ),
+            similarity,
+        )
 
     def store(
-        self, query_text: str, agent_id: str, confidence: float,
-        condensed_task: str = "", *, language: str = "en",
+        self,
+        query_text: str,
+        agent_id: str,
+        confidence: float,
+        condensed_task: str = "",
+        *,
+        language: str = "en",
     ) -> None:
         """Store a new routing decision in the cache."""
         self._store_count += 1
         if self._store_count >= self._eviction_interval:
             self._store_count = 0
             self._enforce_lru()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         lang = (language or "en").lower()
         # FLOW-HIGH-4: prefix the key with language so identical text
         # in different languages produces distinct entries.
-        entry_id = hashlib.sha256(
-            f"{lang}\n{query_text}".encode()
-        ).hexdigest()[:16]
+        entry_id = hashlib.sha256(f"{lang}\n{query_text}".encode()).hexdigest()[:16]
         self._flush_pending_updates()
         self._store.upsert(
             COLLECTION_ROUTING_CACHE,
             ids=[entry_id],
             documents=[query_text],
-            metadatas=[{
-                "agent_id": agent_id,
-                "confidence": str(confidence),
-                "hit_count": "0",
-                "condensed_task": condensed_task,
-                "created_at": now,
-                "last_accessed": now,
-                "language": lang,
-            }],
+            metadatas=[
+                {
+                    "agent_id": agent_id,
+                    "confidence": str(confidence),
+                    "hit_count": "0",
+                    "condensed_task": condensed_task,
+                    "created_at": now,
+                    "last_accessed": now,
+                    "language": lang,
+                }
+            ],
         )
 
     def _enforce_lru(self) -> None:
@@ -143,12 +150,12 @@ class RoutingCache:
         )
         if not all_data["ids"]:
             return
-        paired = list(zip(all_data["ids"], all_data["metadatas"]))
+        paired = list(zip(all_data["ids"], all_data["metadatas"], strict=False))
         paired.sort(key=lambda p: p[1].get("last_accessed", ""))
         to_delete = [p[0] for p in paired[:overage]]
         if to_delete:
             for i in range(0, len(to_delete), 500):
-                self._store.delete(COLLECTION_ROUTING_CACHE, ids=to_delete[i:i+500])
+                self._store.delete(COLLECTION_ROUTING_CACHE, ids=to_delete[i : i + 500])
             logger.info("Routing cache LRU evicted %d entries", len(to_delete))
 
     def _flush_pending_updates(self) -> None:
@@ -187,12 +194,12 @@ class RoutingCache:
             return 0
         to_delete = [
             eid
-            for eid, meta in zip(all_data["ids"], all_data["metadatas"])
+            for eid, meta in zip(all_data["ids"], all_data["metadatas"], strict=False)
             if not (meta or {}).get("language")
         ]
         if to_delete:
             for i in range(0, len(to_delete), 500):
-                self._store.delete(COLLECTION_ROUTING_CACHE, ids=to_delete[i:i+500])
+                self._store.delete(COLLECTION_ROUTING_CACHE, ids=to_delete[i : i + 500])
             logger.info(
                 "Routing cache: purged %d pre-0.18.0 entries without language metadata",
                 len(to_delete),

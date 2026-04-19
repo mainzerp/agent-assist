@@ -40,9 +40,7 @@ class MCPToolManager:
                 result[name] = []
         return result
 
-    async def call_tool(
-        self, server_name: str, tool_name: str, arguments: dict | None = None
-    ) -> Any:
+    async def call_tool(self, server_name: str, tool_name: str, arguments: dict | None = None) -> Any:
         """Invoke a tool on a specific MCP server."""
         client = self._registry.get_client(server_name)
         if client is None:
@@ -55,10 +53,12 @@ class MCPToolManager:
                 client.call_tool(tool_name, arguments),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(
                 "MCP tool '%s.%s' timed out after %ds",
-                server_name, tool_name, int(timeout),
+                server_name,
+                tool_name,
+                int(timeout),
             )
             raise
 
@@ -75,7 +75,7 @@ class MCPToolManager:
 
         # Fallback: for custom agents, also check custom_agents.mcp_tools field
         if not assignments and agent_id.startswith("custom-"):
-            name = agent_id[len("custom-"):]
+            name = agent_id[len("custom-") :]
             row = await CustomAgentRepository.get(name)
             if row:
                 assignments = row.get("mcp_tools") or []
@@ -102,6 +102,8 @@ class MCPToolManager:
             except Exception:
                 logger.warning(
                     "Could not fetch tool '%s' from server '%s'",
-                    tool_name, server_name, exc_info=True,
+                    tool_name,
+                    server_name,
+                    exc_info=True,
                 )
         return assigned

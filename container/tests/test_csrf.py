@@ -83,7 +83,6 @@ async def dashboard_client(db_repository):
 
 @pytest.mark.integration
 class TestCsrfSetupForm:
-
     async def test_get_sets_cookie_and_embeds_token(self, setup_client):
         resp = await setup_client.get("/setup/step/1")
         assert resp.status_code == 200
@@ -117,12 +116,15 @@ class TestCsrfSetupForm:
         await setup_client.get("/setup/step/1")
         cookie_token = setup_client.cookies.get("agent_assist_csrf")
         assert cookie_token
-        with patch(
-            "app.setup.routes.AdminAccountRepository.create",
-            new_callable=AsyncMock,
-        ), patch(
-            "app.setup.routes.SetupStateRepository.set_step_completed",
-            new_callable=AsyncMock,
+        with (
+            patch(
+                "app.setup.routes.AdminAccountRepository.create",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.setup.routes.SetupStateRepository.set_step_completed",
+                new_callable=AsyncMock,
+            ),
         ):
             resp = await setup_client.post(
                 "/setup/step/1",
@@ -137,7 +139,6 @@ class TestCsrfSetupForm:
 
 @pytest.mark.integration
 class TestCsrfDashboardLogin:
-
     async def test_login_get_sets_cookie(self, dashboard_client):
         resp = await dashboard_client.get("/dashboard/login")
         assert resp.status_code == 200

@@ -1,5 +1,5 @@
-from app.security.encryption import retrieve_secret
 from app.db.repository import SettingsRepository
+from app.security.encryption import retrieve_secret
 
 # Maps the provider prefix (extracted from model string) to the secret key
 # stored in the `secrets` table.
@@ -35,9 +35,7 @@ async def get_api_key(provider: str) -> str | None:
 
 async def get_base_url(provider: str) -> str | None:
     if provider == "ollama":
-        return await SettingsRepository.get_value(
-            OLLAMA_BASE_URL_KEY, OLLAMA_BASE_URL_DEFAULT
-        )
+        return await SettingsRepository.get_value(OLLAMA_BASE_URL_KEY, OLLAMA_BASE_URL_DEFAULT)
     return None
 
 

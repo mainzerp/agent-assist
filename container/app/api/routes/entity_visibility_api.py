@@ -8,8 +8,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app.security.auth import require_admin_session
 from app.db.repository import EntityVisibilityRepository
+from app.security.auth import require_admin_session
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +30,13 @@ class SetRulesRequest(BaseModel):
 
 
 VALID_RULE_TYPES = {
-    "domain_include", "domain_exclude", "area_include", "area_exclude", "entity_include",
-    "device_class_include", "device_class_exclude",
+    "domain_include",
+    "domain_exclude",
+    "area_include",
+    "area_exclude",
+    "entity_include",
+    "device_class_include",
+    "device_class_exclude",
 }
 
 
@@ -42,9 +47,7 @@ async def get_visibility_rules(agent_id: str) -> list[dict[str, Any]]:
 
 
 @router.put("/{agent_id}")
-async def set_visibility_rules(
-    agent_id: str, body: SetRulesRequest
-) -> dict[str, Any]:
+async def set_visibility_rules(agent_id: str, body: SetRulesRequest) -> dict[str, Any]:
     """Set visibility rules for an agent."""
     rules = [r.model_dump() for r in body.rules]
     invalid = [r["rule_type"] for r in rules if r["rule_type"] not in VALID_RULE_TYPES]
@@ -52,7 +55,7 @@ async def set_visibility_rules(
         raise HTTPException(
             status_code=422,
             detail=f"Invalid rule_type(s): {', '.join(set(invalid))}. "
-                   f"Valid types: {', '.join(sorted(VALID_RULE_TYPES))}",
+            f"Valid types: {', '.join(sorted(VALID_RULE_TYPES))}",
         )
     await EntityVisibilityRepository.set_rules(agent_id, rules)
     return {"agent_id": agent_id, "rules_count": len(rules)}
@@ -92,20 +95,24 @@ async def list_all_entities(request: Request) -> dict[str, Any]:
             domain_area_map[domain] = {}
         if area not in domain_area_map[domain]:
             domain_area_map[domain][area] = []
-        domain_area_map[domain][area].append({
-            "entity_id": entity_id,
-            "friendly_name": friendly_name,
-        })
+        domain_area_map[domain][area].append(
+            {
+                "entity_id": entity_id,
+                "friendly_name": friendly_name,
+            }
+        )
 
     domains = []
     for domain_name in sorted(domain_area_map.keys()):
         areas = []
         for area_name in sorted(domain_area_map[domain_name].keys()):
             entities = domain_area_map[domain_name][area_name]
-            areas.append({
-                "name": area_name,
-                "entities": sorted(entities, key=lambda e: e["entity_id"]),
-            })
+            areas.append(
+                {
+                    "name": area_name,
+                    "entities": sorted(entities, key=lambda e: e["entity_id"]),
+                }
+            )
         domains.append({"name": domain_name, "areas": areas})
 
     return {"domains": domains}

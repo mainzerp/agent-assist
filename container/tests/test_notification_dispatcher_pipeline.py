@@ -51,7 +51,10 @@ async def test_pipeline_run_uses_resolved_device_id() -> None:
     with patch.object(nd, "asyncio") as fake_asyncio:
         fake_asyncio.sleep = AsyncMock()
         await nd._trigger_conversation_continuation(
-            client, "media_player.kitchen", area=None, profile=profile,
+            client,
+            "media_player.kitchen",
+            area=None,
+            profile=profile,
             entity_index=None,
         )
 
@@ -71,7 +74,10 @@ async def test_pipeline_run_omits_device_id_when_resolution_fails() -> None:
     with patch.object(nd, "asyncio") as fake_asyncio:
         fake_asyncio.sleep = AsyncMock()
         await nd._trigger_conversation_continuation(
-            client, "media_player.kitchen", area=None, profile=profile,
+            client,
+            "media_player.kitchen",
+            area=None,
+            profile=profile,
             entity_index=None,
         )
 
@@ -88,7 +94,10 @@ async def test_pipeline_run_omits_device_id_when_template_returns_none_string() 
     with patch.object(nd, "asyncio") as fake_asyncio:
         fake_asyncio.sleep = AsyncMock()
         await nd._trigger_conversation_continuation(
-            client, "media_player.kitchen", area=None, profile=profile,
+            client,
+            "media_player.kitchen",
+            area=None,
+            profile=profile,
             entity_index=None,
         )
 
@@ -99,10 +108,14 @@ async def test_pipeline_run_omits_device_id_when_template_returns_none_string() 
 @pytest.mark.asyncio
 async def test_resolve_satellite_uses_entity_index_area() -> None:
     entry_kitchen = SimpleNamespace(
-        entity_id="assist_satellite.kitchen_pi", area="kitchen", domain="assist_satellite",
+        entity_id="assist_satellite.kitchen_pi",
+        area="kitchen",
+        domain="assist_satellite",
     )
     entry_bedroom = SimpleNamespace(
-        entity_id="assist_satellite.bedroom_pi", area="bedroom", domain="assist_satellite",
+        entity_id="assist_satellite.bedroom_pi",
+        area="bedroom",
+        domain="assist_satellite",
     )
 
     index = MagicMock()
@@ -119,7 +132,9 @@ async def test_resolve_satellite_uses_entity_index_area() -> None:
 @pytest.mark.asyncio
 async def test_resolve_satellite_returns_none_when_no_match() -> None:
     entry_bedroom = SimpleNamespace(
-        entity_id="assist_satellite.bedroom_pi", area="bedroom", domain="assist_satellite",
+        entity_id="assist_satellite.bedroom_pi",
+        area="bedroom",
+        domain="assist_satellite",
     )
     index = MagicMock()
     index.list_entries_async = AsyncMock(return_value=[entry_bedroom])
@@ -139,7 +154,9 @@ async def test_resolve_satellite_none_when_area_missing() -> None:
 @pytest.mark.asyncio
 async def test_pipeline_prefers_satellite_from_entity_index() -> None:
     entry_kitchen = SimpleNamespace(
-        entity_id="assist_satellite.kitchen_pi", area="kitchen", domain="assist_satellite",
+        entity_id="assist_satellite.kitchen_pi",
+        area="kitchen",
+        domain="assist_satellite",
     )
     index = MagicMock()
     index.list_entries_async = AsyncMock(return_value=[entry_kitchen])
@@ -150,7 +167,10 @@ async def test_pipeline_prefers_satellite_from_entity_index() -> None:
     with patch.object(nd, "asyncio") as fake_asyncio:
         fake_asyncio.sleep = AsyncMock()
         await nd._trigger_conversation_continuation(
-            client, "media_player.kitchen", area="kitchen", profile=profile,
+            client,
+            "media_player.kitchen",
+            area="kitchen",
+            profile=profile,
             entity_index=index,
         )
 

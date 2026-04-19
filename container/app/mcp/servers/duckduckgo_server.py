@@ -3,10 +3,10 @@
 import json
 import logging
 
+from duckduckgo_search import DDGS
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
-from duckduckgo_search import DDGS
+from mcp.types import TextContent, Tool
 
 logger = logging.getLogger(__name__)
 server = Server("duckduckgo-search")
@@ -55,8 +55,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if name == "web_search":
             results = ddgs.text(query, max_results=max_results)
             formatted = [
-                {"title": r.get("title", ""), "url": r.get("href", ""), "snippet": r.get("body", "")}
-                for r in results
+                {"title": r.get("title", ""), "url": r.get("href", ""), "snippet": r.get("body", "")} for r in results
             ]
         elif name == "web_search_news":
             results = ddgs.news(query, max_results=max_results)

@@ -80,14 +80,16 @@ class FillerAgent(BaseAgent):
             user_content = f'"{task.user_text[:200]}"\n(agent: {target_agent})'
 
             result = await asyncio.wait_for(
-                self._call_llm([
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ]),
+                self._call_llm(
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ]
+                ),
                 timeout=3.0,
             )
             return TaskResult(speech=result.strip() if result else "")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("Filler generation timed out (>3s)")
             return TaskResult(speech="")
         except Exception:

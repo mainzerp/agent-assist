@@ -11,7 +11,9 @@ logger = logging.getLogger(__name__)
 
 async def _safe_http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     logger.warning("HTTP %d: %s %s", exc.status_code, request.method, request.url.path)
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=getattr(exc, "headers", None))
+    return JSONResponse(
+        status_code=exc.status_code, content={"detail": exc.detail}, headers=getattr(exc, "headers", None)
+    )
 
 
 async def _safe_generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:

@@ -11,8 +11,8 @@ from fastapi.responses import StreamingResponse
 
 from app.a2a.protocol import JsonRpcRequest
 from app.analytics.tracer import SpanCollector
-from app.models.conversation import ConversationRequest, ConversationResponse, StreamToken
 from app.models.agent import AgentTask, TaskContext
+from app.models.conversation import ConversationRequest, ConversationResponse, StreamToken
 from app.security.auth import require_api_key, require_api_key_ws
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,9 @@ def set_dispatcher(dispatcher) -> None:
     _dispatcher = dispatcher
 
 
-def _build_a2a_request(conv_request: ConversationRequest, method: str, span_collector=None) -> tuple[JsonRpcRequest, AgentTask]:
+def _build_a2a_request(
+    conv_request: ConversationRequest, method: str, span_collector=None
+) -> tuple[JsonRpcRequest, AgentTask]:
     """Convert a ConversationRequest into an A2A JsonRpcRequest + AgentTask."""
     # FLOW-CTX-1 (0.18.6): source comes from the SpanCollector that
     # the TracingMiddleware already derived from the route path.
@@ -90,6 +92,7 @@ async def conversation_rest(
     return ConversationResponse(
         speech=result.get("speech", ""),
         conversation_id=result.get("conversation_id") or conv_request.conversation_id,
+        voice_followup=bool(result.get("voice_followup")),
     )
 
 
@@ -119,6 +122,7 @@ async def conversation_sse(
                     mediated_speech=chunk.result.get("mediated_speech") if chunk.done else None,
                     is_filler=chunk.result.get("is_filler", False),
                     error=chunk.result.get("error") if chunk.done else None,
+                    voice_followup=bool(chunk.result.get("voice_followup")) if chunk.done else False,
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
@@ -158,6 +162,7 @@ async def ws_conversation(
                         mediated_speech=chunk.result.get("mediated_speech") if chunk.done else None,
                         is_filler=chunk.result.get("is_filler", False),
                         error=chunk.result.get("error") if chunk.done else None,
+                        voice_followup=bool(chunk.result.get("voice_followup")) if chunk.done else False,
                     )
                     await websocket.send_json(token.model_dump())
             finally:

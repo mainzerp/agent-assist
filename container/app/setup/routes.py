@@ -7,25 +7,25 @@ import logging
 import secrets
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request, Form
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from app import __version__ as _app_version
 from app.db.repository import (
     AdminAccountRepository,
-    SetupStateRepository,
     SettingsRepository,
+    SetupStateRepository,
 )
-from app.security.encryption import store_secret, retrieve_secret
-from app.security.hashing import hash_password
+from app.ha_client.rest import test_ha_connection
 from app.security.auth import (
     ensure_csrf_token,
     require_admin_or_setup_open,
     set_csrf_cookie,
     verify_csrf,
 )
-from app import __version__ as _app_version
-from app.ha_client.rest import test_ha_connection
+from app.security.encryption import store_secret
+from app.security.hashing import hash_password
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +59,7 @@ async def render_step(request: Request, step_num: int):
     """Render the appropriate step template."""
     steps = await SetupStateRepository.get_all_steps()
     step_map = {s["step"]: s["completed"] for s in steps}
-    display_steps = (
-        {k: v for k, v in step_map.items() if k != "review_complete"}
-        if step_num == 5
-        else step_map
-    )
+    display_steps = {k: v for k, v in step_map.items() if k != "review_complete"} if step_num == 5 else step_map
     token = ensure_csrf_token(request)
     context = {
         "step_num": step_num,
@@ -71,9 +67,7 @@ async def render_step(request: Request, step_num: int):
         "steps": display_steps,
         "csrf_token": token,
     }
-    response = templates.TemplateResponse(
-        request, f"step{step_num}.html", context=context
-    )
+    response = templates.TemplateResponse(request, f"step{step_num}.html", context=context)
     set_csrf_cookie(response, token)
     return response
 
@@ -108,6 +102,7 @@ async def save_ha_connection(
     """Step 2: Save HA URL and token (Fernet-encrypted)."""
     await SettingsRepository.set("ha_url", ha_url, "string", "ha", "Home Assistant URL")
     from app.ha_client.auth import set_ha_token
+
     await set_ha_token(ha_token)
     await SetupStateRepository.set_step_completed("ha_connection")
     return RedirectResponse(url="/setup/step/3", status_code=303)
@@ -125,13 +120,17 @@ async def generate_api_key(request: Request):
     await SetupStateRepository.set_step_completed("container_api_key")
     steps = await SetupStateRepository.get_all_steps()
     step_map = {s["step"]: s["completed"] for s in steps}
-    return templates.TemplateResponse(request, "step3.html", context={
-        "step_num": 3,
-        "total_steps": len(STEP_ORDER),
-        "steps": step_map,
-        "api_key": api_key,
-        "generated": True,
-    })
+    return templates.TemplateResponse(
+        request,
+        "step3.html",
+        context={
+            "step_num": 3,
+            "total_steps": len(STEP_ORDER),
+            "steps": step_map,
+            "api_key": api_key,
+            "generated": True,
+        },
+    )
 
 
 @router.post(
@@ -151,9 +150,7 @@ async def save_llm_keys(
     if groq_key:
         await store_secret("groq_api_key", groq_key)
     if ollama_url:
-        await SettingsRepository.set(
-            "ollama_base_url", ollama_url, "string", "llm", "Ollama API URL"
-        )
+        await SettingsRepository.set("ollama_base_url", ollama_url, "string", "llm", "Ollama API URL")
     await SetupStateRepository.set_step_completed("llm_providers")
     return RedirectResponse(url="/setup/step/5", status_code=303)
 
@@ -190,6 +187,7 @@ async def test_llm_endpoint(provider: str = Form(...), api_key: str = Form(...))
     """Test LLM provider with a small completion request."""
     try:
         import litellm
+
         if provider == "groq":
             model = "groq/llama-3.1-8b-instant"
         elif provider == "openrouter":
@@ -197,21 +195,15 @@ async def test_llm_endpoint(provider: str = Form(...), api_key: str = Form(...))
         elif provider == "ollama":
             model = "ollama/llama3"
         else:
-            return HTMLResponse(
-                f'<div class="test-result test-error">Unknown provider: {html.escape(provider)}</div>'
-            )
+            return HTMLResponse(f'<div class="test-result test-error">Unknown provider: {html.escape(provider)}</div>')
 
-        response = await litellm.acompletion(
+        await litellm.acompletion(
             model=model,
             messages=[{"role": "user", "content": "Say hello"}],
             api_key=api_key,
             max_tokens=10,
         )
-        return HTMLResponse(
-            f'<div class="test-result test-success">Connected to {html.escape(provider)}!</div>'
-        )
+        return HTMLResponse(f'<div class="test-result test-success">Connected to {html.escape(provider)}!</div>')
     except Exception as e:
         safe_msg = html.escape(str(e))
-        return HTMLResponse(
-            f'<div class="test-result test-error">Error: {safe_msg}</div>'
-        )
+        return HTMLResponse(f'<div class="test-result test-error">Error: {safe_msg}</div>')

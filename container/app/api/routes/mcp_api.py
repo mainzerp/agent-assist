@@ -8,8 +8,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app.security.auth import require_admin_session
 from app.db.repository import McpServerRepository
+from app.security.auth import require_admin_session
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,7 @@ async def remove_mcp_server(request: Request, name: str) -> dict[str, str]:
 async def get_all_agent_mcp_tools_summary() -> dict[str, list[dict]]:
     """Get MCP tool assignments grouped by agent_id for badge display."""
     from app.db.repository import AgentMcpToolsRepository
+
     all_assignments = await AgentMcpToolsRepository.get_all_assignments()
     summary: dict[str, list[dict]] = {}
     for row in all_assignments:
@@ -109,6 +110,7 @@ async def list_server_tools(request: Request, name: str) -> list[dict[str, Any]]
 async def get_agent_mcp_tools(agent_id: str) -> list[dict]:
     """Get MCP tools assigned to an agent."""
     from app.db.repository import AgentMcpToolsRepository
+
     return await AgentMcpToolsRepository.get_tools(agent_id)
 
 
@@ -116,6 +118,7 @@ async def get_agent_mcp_tools(agent_id: str) -> list[dict]:
 async def assign_mcp_tool(agent_id: str, body: dict) -> dict:
     """Assign an MCP tool to an agent."""
     from app.db.repository import AgentMcpToolsRepository
+
     server_name = body.get("server_name", "")
     tool_name = body.get("tool_name", "")
     if not server_name or not tool_name:
@@ -128,5 +131,6 @@ async def assign_mcp_tool(agent_id: str, body: dict) -> dict:
 async def unassign_mcp_tool(agent_id: str, server_name: str, tool_name: str) -> dict:
     """Remove an MCP tool assignment from an agent."""
     from app.db.repository import AgentMcpToolsRepository
+
     await AgentMcpToolsRepository.unassign_tool(agent_id, server_name, tool_name)
     return {"status": "ok"}

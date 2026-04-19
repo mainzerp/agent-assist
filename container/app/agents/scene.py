@@ -16,8 +16,12 @@ class SceneAgent(ActionableAgent):
         ctx = getattr(self, "_current_task_context", None)
         area_id = ctx.area_id if ctx else None
         return await execute_scene_action(
-            action, ha_client, entity_index, entity_matcher,
-            agent_id=agent_id, span_collector=span_collector,
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id=agent_id,
+            span_collector=span_collector,
             preferred_area_id=area_id,
         )
 

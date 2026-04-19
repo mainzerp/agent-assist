@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.agents.base import BaseAgent
-from app.models.agent import AgentCard, AgentTask, TaskResult
 from app.a2a.registry import AgentRegistry
+from app.agents.base import BaseAgent
 from app.db.repository import CustomAgentRepository
+from app.models.agent import AgentCard, AgentTask, TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +53,12 @@ class DynamicAgent(BaseAgent):
 
         if task.context and task.context.conversation_turns:
             for turn in task.context.conversation_turns:
-                messages.append({
-                    "role": turn.get("role", "user"),
-                    "content": turn.get("content", ""),
-                })
+                messages.append(
+                    {
+                        "role": turn.get("role", "user"),
+                        "content": turn.get("content", ""),
+                    }
+                )
 
         messages.append({"role": "user", "content": task.description})
         response = await self._call_llm(messages)

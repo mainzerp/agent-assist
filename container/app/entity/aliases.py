@@ -44,7 +44,7 @@ class AliasResolver:
         for alias in sorted_aliases:
             idx = text_lower.find(alias)
             if idx != -1:
-                result = result[:idx] + self._cache[alias] + result[idx + len(alias):]
+                result = result[:idx] + self._cache[alias] + result[idx + len(alias) :]
                 text_lower = result.lower()
         return result
 

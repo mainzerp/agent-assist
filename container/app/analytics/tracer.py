@@ -11,9 +11,10 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncGenerator, Literal
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 
 from app.db.repository import TraceSpanRepository, TraceSummaryRepository
 
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Patterns to redact from trace metadata values
 _SENSITIVE_PATTERNS = [
-    (re.compile(r'\b\d{4,8}\b'), '[REDACTED_CODE]'),
+    (re.compile(r"\b\d{4,8}\b"), "[REDACTED_CODE]"),
     (re.compile(r'"code"\s*:\s*"[^"]*"'), '"code": "[REDACTED]"'),
 ]
 
@@ -29,7 +30,8 @@ _SENSITIVE_PATTERNS = [
 # correct mechanism for nested spans under ``asyncio.gather`` so parallel
 # branches don't see each other's parents via a shared list.
 _current_parent: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "_current_parent", default=None,
+    "_current_parent",
+    default=None,
 )
 
 
@@ -101,7 +103,7 @@ class SpanCollector:
             "span_name": name,
             "agent_id": agent_id,
             "parent_span": parent_span,
-            "start_time": datetime.now(timezone.utc).isoformat(),
+            "start_time": datetime.now(UTC).isoformat(),
             "status": "ok",
             "metadata": {},
         }
@@ -122,10 +124,10 @@ class SpanCollector:
                     st = datetime.fromisoformat(span["start_time"])
                     span["end_time"] = (st + timedelta(milliseconds=span["duration_ms"])).isoformat()
                 except Exception:
-                    span["end_time"] = datetime.now(timezone.utc).isoformat()
+                    span["end_time"] = datetime.now(UTC).isoformat()
             else:
                 span["duration_ms"] = round((time.perf_counter() - t0) * 1000, 2)
-                span["end_time"] = datetime.now(timezone.utc).isoformat()
+                span["end_time"] = datetime.now(UTC).isoformat()
             self._spans.append(span)
 
     async def flush(self) -> None:
@@ -143,14 +145,14 @@ class SpanCollector:
                 if starts:
                     min_start = min(starts)
                     max_end = max(
-                        datetime.fromisoformat(s["end_time"]) if s.get("end_time")
+                        datetime.fromisoformat(s["end_time"])
+                        if s.get("end_time")
                         else datetime.fromisoformat(s["start_time"]) + timedelta(milliseconds=s.get("duration_ms", 0))
-                        for s in self._spans if s.get("start_time")
+                        for s in self._spans
+                        if s.get("start_time")
                     )
                     total_ms = round((max_end - min_start).total_seconds() * 1000, 2)
-                    await TraceSummaryRepository.update_duration(
-                        self.trace_id, total_ms
-                    )
+                    await TraceSummaryRepository.update_duration(self.trace_id, total_ms)
             except Exception:
                 logger.debug("Could not compute total duration for trace %s", self.trace_id, exc_info=True)
         except Exception:
@@ -212,25 +214,27 @@ async def create_trace_summary(
     existing call sites (tests, unauthenticated REST) stay valid.
     """
     try:
-        await TraceSummaryRepository.create({
-            "trace_id": trace_id,
-            "conversation_id": conversation_id,
-            "user_input": user_input,
-            "final_response": final_response,
-            "agents": agents,
-            "total_duration_ms": None,
-            "source": source,
-            "routing_agent": routing_agent,
-            "routing_confidence": routing_confidence,
-            "routing_duration_ms": routing_duration_ms,
-            "routing_reasoning": None,
-            "agent_instructions": agent_instructions or {routing_agent: condensed_task},
-            "conversation_turns": conversation_turns,
-            "device_id": device_id,
-            "area_id": area_id,
-            "device_name": device_name,
-            "area_name": area_name,
-        })
+        await TraceSummaryRepository.create(
+            {
+                "trace_id": trace_id,
+                "conversation_id": conversation_id,
+                "user_input": user_input,
+                "final_response": final_response,
+                "agents": agents,
+                "total_duration_ms": None,
+                "source": source,
+                "routing_agent": routing_agent,
+                "routing_confidence": routing_confidence,
+                "routing_duration_ms": routing_duration_ms,
+                "routing_reasoning": None,
+                "agent_instructions": agent_instructions or {routing_agent: condensed_task},
+                "conversation_turns": conversation_turns,
+                "device_id": device_id,
+                "area_id": area_id,
+                "device_name": device_name,
+                "area_name": area_name,
+            }
+        )
     except Exception:
         logger.warning("Failed to create trace summary for %s", trace_id, exc_info=True)
 

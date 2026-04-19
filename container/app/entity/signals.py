@@ -5,11 +5,11 @@ from __future__ import annotations
 from rapidfuzz import fuzz
 from rapidfuzz.distance import JaroWinkler
 
-from app.entity.index import EntityIndex
 from app.entity.aliases import AliasResolver
+from app.entity.index import EntityIndex
 
 try:
-    from pyphonetics import Soundex, Metaphone
+    from pyphonetics import Metaphone, Soundex
 except ImportError:
     Soundex = None
     Metaphone = None

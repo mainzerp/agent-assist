@@ -23,17 +23,14 @@ from app.llm.providers import (  # noqa: E402
     get_api_key,
     get_base_url,
     resolve_provider_params,
-    PROVIDER_SECRET_MAP,
-    LOCAL_PROVIDERS,
 )
-
 
 # ---------------------------------------------------------------------------
 # LLM providers
 # ---------------------------------------------------------------------------
 
-class TestExtractProvider:
 
+class TestExtractProvider:
     def test_extract_provider_from_slashed_model(self):
         assert extract_provider("openrouter/openai/gpt-4o-mini") == "openrouter"
 
@@ -48,7 +45,6 @@ class TestExtractProvider:
 
 
 class TestGetApiKey:
-
     @patch("app.llm.providers.retrieve_secret", new_callable=AsyncMock, return_value="sk-test-key")
     async def test_get_api_key_returns_key(self, mock_retrieve):
         key = await get_api_key("openrouter")
@@ -70,7 +66,6 @@ class TestGetApiKey:
 
 
 class TestGetBaseUrl:
-
     @patch("app.llm.providers.SettingsRepository")
     async def test_get_base_url_ollama(self, mock_settings):
         mock_settings.get_value = AsyncMock(return_value="http://ollama:11434")
@@ -83,7 +78,6 @@ class TestGetBaseUrl:
 
 
 class TestResolveProviderParams:
-
     @patch("app.llm.providers.retrieve_secret", new_callable=AsyncMock, return_value="sk-key")
     async def test_resolve_openrouter_includes_api_key(self, mock_retrieve):
         params = await resolve_provider_params("openrouter/openai/gpt-4o")
@@ -101,27 +95,30 @@ class TestResolveProviderParams:
 # LLM complete function
 # ---------------------------------------------------------------------------
 
-class TestLLMComplete:
 
+class TestLLMComplete:
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
     async def test_complete_calls_litellm(self, mock_repo, mock_params, mock_acompletion):
-        mock_repo.get = AsyncMock(return_value={
-            "agent_id": "light-agent",
-            "enabled": True,
-            "model": "openrouter/openai/gpt-4o-mini",
-            "timeout": 5,
-            "max_iterations": 3,
-            "temperature": 0.7,
-            "max_tokens": 256,
-            "description": "Light agent",
-        })
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "light-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o-mini",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.7,
+                "max_tokens": 256,
+                "description": "Light agent",
+            }
+        )
         choice = MagicMock()
         choice.message.content = "Done!"
         mock_acompletion.return_value = MagicMock(choices=[choice])
 
         from app.llm.client import complete
+
         result = await complete("light-agent", [{"role": "user", "content": "turn on light"}])
         assert result == "Done!"
         mock_acompletion.assert_awaited_once()
@@ -131,23 +128,27 @@ class TestLLMComplete:
     async def test_complete_raises_on_missing_config(self, mock_repo, mock_params):
         mock_repo.get = AsyncMock(return_value=None)
         from app.llm.client import complete
+
         with pytest.raises(ValueError, match="No config found"):
             await complete("nonexistent-agent", [{"role": "user", "content": "hi"}])
 
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
     async def test_complete_raises_on_no_model(self, mock_repo, mock_params):
-        mock_repo.get = AsyncMock(return_value={
-            "agent_id": "test-agent",
-            "enabled": True,
-            "model": None,
-            "timeout": 5,
-            "max_iterations": 3,
-            "temperature": 0.7,
-            "max_tokens": 256,
-            "description": "No model",
-        })
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "test-agent",
+                "enabled": True,
+                "model": None,
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.7,
+                "max_tokens": 256,
+                "description": "No model",
+            }
+        )
         from app.llm.client import complete
+
         with pytest.raises(ValueError, match="No model configured"):
             await complete("test-agent", [{"role": "user", "content": "hi"}])
 
@@ -155,21 +156,24 @@ class TestLLMComplete:
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
     async def test_complete_passes_overrides(self, mock_repo, mock_params, mock_acompletion):
-        mock_repo.get = AsyncMock(return_value={
-            "agent_id": "test-agent",
-            "enabled": True,
-            "model": "openrouter/openai/gpt-4o",
-            "timeout": 5,
-            "max_iterations": 3,
-            "temperature": 0.5,
-            "max_tokens": 100,
-            "description": "test",
-        })
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "test-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.5,
+                "max_tokens": 100,
+                "description": "test",
+            }
+        )
         choice = MagicMock()
         choice.message.content = "result"
         mock_acompletion.return_value = MagicMock(choices=[choice])
 
         from app.llm.client import complete
+
         await complete("test-agent", [{"role": "user", "content": "test"}], temperature=0.1)
         call_kwargs = mock_acompletion.call_args
         assert call_kwargs.kwargs.get("temperature") == 0.1 or call_kwargs[1].get("temperature") == 0.1
@@ -178,17 +182,20 @@ class TestLLMComplete:
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
     async def test_complete_propagates_llm_error(self, mock_repo, mock_params, mock_acompletion):
-        mock_repo.get = AsyncMock(return_value={
-            "agent_id": "test-agent",
-            "enabled": True,
-            "model": "openrouter/openai/gpt-4o",
-            "timeout": 5,
-            "max_iterations": 3,
-            "temperature": 0.7,
-            "max_tokens": 256,
-            "description": "test",
-        })
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "test-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.7,
+                "max_tokens": 256,
+                "description": "test",
+            }
+        )
         from app.llm.client import complete
+
         with pytest.raises(Exception, match="API Error"):
             await complete("test-agent", [{"role": "user", "content": "test"}])
 
@@ -196,16 +203,18 @@ class TestLLMComplete:
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
     async def test_complete_retries_once_on_empty_response(self, mock_repo, mock_params, mock_acompletion):
-        mock_repo.get = AsyncMock(return_value={
-            "agent_id": "light-agent",
-            "enabled": True,
-            "model": "openrouter/openai/gpt-4o-mini",
-            "timeout": 5,
-            "max_iterations": 3,
-            "temperature": 0.2,
-            "max_tokens": 256,
-            "description": "Light agent",
-        })
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "light-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o-mini",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.2,
+                "max_tokens": 256,
+                "description": "Light agent",
+            }
+        )
         empty_choice = MagicMock()
         empty_choice.message.content = ""
         empty_choice.finish_reason = "length"
@@ -218,6 +227,7 @@ class TestLLMComplete:
         mock_acompletion.side_effect = [empty_response, valid_response]
 
         from app.llm.client import complete
+
         result = await complete("light-agent", [{"role": "user", "content": "turn on light"}])
         assert result == "Light is on!"
         assert mock_acompletion.await_count == 2
@@ -226,16 +236,18 @@ class TestLLMComplete:
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
     async def test_complete_returns_empty_after_retry_exhausted(self, mock_repo, mock_params, mock_acompletion):
-        mock_repo.get = AsyncMock(return_value={
-            "agent_id": "light-agent",
-            "enabled": True,
-            "model": "openrouter/openai/gpt-4o-mini",
-            "timeout": 5,
-            "max_iterations": 3,
-            "temperature": 0.2,
-            "max_tokens": 256,
-            "description": "Light agent",
-        })
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "light-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o-mini",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.2,
+                "max_tokens": 256,
+                "description": "Light agent",
+            }
+        )
         empty_choice = MagicMock()
         empty_choice.message.content = ""
         empty_choice.finish_reason = "length"
@@ -244,6 +256,7 @@ class TestLLMComplete:
         mock_acompletion.side_effect = [empty_response, empty_response]
 
         from app.llm.client import complete
+
         with pytest.raises(ValueError, match="Empty LLM response"):
             await complete("light-agent", [{"role": "user", "content": "turn on light"}])
         assert mock_acompletion.await_count == 2
@@ -255,28 +268,30 @@ class TestLLMComplete:
 
 
 class TestLLMReasoningEffort:
-
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
     async def test_complete_passes_reasoning_effort(self, mock_repo, mock_params, mock_acompletion):
-        mock_repo.get = AsyncMock(return_value={
-            "agent_id": "test-agent",
-            "enabled": True,
-            "model": "anthropic/claude-3-7-sonnet",
-            "timeout": 5,
-            "max_iterations": 3,
-            "temperature": 0.2,
-            "max_tokens": 1024,
-            "description": "Test",
-            "reasoning_effort": "low",
-        })
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "test-agent",
+                "enabled": True,
+                "model": "anthropic/claude-3-7-sonnet",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.2,
+                "max_tokens": 1024,
+                "description": "Test",
+                "reasoning_effort": "low",
+            }
+        )
         choice = MagicMock()
         choice.message.content = "Done!"
         choice.finish_reason = "stop"
         mock_acompletion.return_value = MagicMock(choices=[choice], usage=None)
 
         from app.llm.client import complete
+
         await complete("test-agent", [{"role": "user", "content": "test"}])
 
         call_kwargs = mock_acompletion.call_args
@@ -288,23 +303,26 @@ class TestLLMReasoningEffort:
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
     async def test_complete_omits_reasoning_effort_when_none(self, mock_repo, mock_params, mock_acompletion):
-        mock_repo.get = AsyncMock(return_value={
-            "agent_id": "test-agent",
-            "enabled": True,
-            "model": "openrouter/openai/gpt-4o-mini",
-            "timeout": 5,
-            "max_iterations": 3,
-            "temperature": 0.2,
-            "max_tokens": 1024,
-            "description": "Test",
-            "reasoning_effort": None,
-        })
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "test-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o-mini",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.2,
+                "max_tokens": 1024,
+                "description": "Test",
+                "reasoning_effort": None,
+            }
+        )
         choice = MagicMock()
         choice.message.content = "Done!"
         choice.finish_reason = "stop"
         mock_acompletion.return_value = MagicMock(choices=[choice], usage=None)
 
         from app.llm.client import complete
+
         await complete("test-agent", [{"role": "user", "content": "test"}])
 
         call_kwargs = mock_acompletion.call_args
@@ -314,16 +332,19 @@ class TestLLMReasoningEffort:
 
 
 class TestCompleteWithTools:
-
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
     async def test_returns_direct_answer_when_no_tool_calls(self, mock_repo, mock_params, mock_acompletion):
         """LLM responds without tool calls -- returns content directly."""
-        mock_repo.get = AsyncMock(return_value={
-            "agent_id": "general-agent", "model": "groq/test",
-            "max_tokens": 256, "temperature": 0.2,
-        })
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "general-agent",
+                "model": "groq/test",
+                "max_tokens": 256,
+                "temperature": 0.2,
+            }
+        )
         response = MagicMock()
         response.choices = [MagicMock()]
         response.choices[0].message.content = "The answer is 42"
@@ -331,8 +352,10 @@ class TestCompleteWithTools:
         mock_acompletion.return_value = response
 
         from app.llm.client import complete_with_tools
+
         result = await complete_with_tools(
-            "general-agent", [{"role": "user", "content": "test"}],
+            "general-agent",
+            [{"role": "user", "content": "test"}],
             tools=[{"type": "function", "function": {"name": "search", "parameters": {}}}],
             tool_executor=AsyncMock(),
         )
@@ -343,10 +366,14 @@ class TestCompleteWithTools:
     @patch("app.llm.client.AgentConfigRepository")
     async def test_executes_tool_and_returns_final_answer(self, mock_repo, mock_params, mock_acompletion):
         """LLM calls a tool, gets result, then gives final answer."""
-        mock_repo.get = AsyncMock(return_value={
-            "agent_id": "general-agent", "model": "groq/test",
-            "max_tokens": 256, "temperature": 0.2,
-        })
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "general-agent",
+                "model": "groq/test",
+                "max_tokens": 256,
+                "temperature": 0.2,
+            }
+        )
         # First call: LLM requests a tool call
         tool_call = MagicMock()
         tool_call.id = "call_123"
@@ -369,8 +396,10 @@ class TestCompleteWithTools:
         tool_executor = AsyncMock(return_value='[{"title": "News", "url": "http://example.com"}]')
 
         from app.llm.client import complete_with_tools
+
         result = await complete_with_tools(
-            "general-agent", [{"role": "user", "content": "what's the news?"}],
+            "general-agent",
+            [{"role": "user", "content": "what's the news?"}],
             tools=[{"type": "function", "function": {"name": "web_search", "parameters": {}}}],
             tool_executor=tool_executor,
         )
@@ -382,10 +411,14 @@ class TestCompleteWithTools:
     @patch("app.llm.client.AgentConfigRepository")
     async def test_max_tool_rounds_prevents_infinite_loop(self, mock_repo, mock_params, mock_acompletion):
         """Exceeding max_tool_rounds forces a final answer."""
-        mock_repo.get = AsyncMock(return_value={
-            "agent_id": "general-agent", "model": "groq/test",
-            "max_tokens": 256, "temperature": 0.2,
-        })
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "general-agent",
+                "model": "groq/test",
+                "max_tokens": 256,
+                "temperature": 0.2,
+            }
+        )
         # Every call returns a tool call (infinite loop scenario)
         tool_call = MagicMock()
         tool_call.id = "call_loop"
@@ -406,8 +439,10 @@ class TestCompleteWithTools:
         mock_acompletion.side_effect = [loop_response, loop_response, final_response]
 
         from app.llm.client import complete_with_tools
+
         result = await complete_with_tools(
-            "general-agent", [{"role": "user", "content": "test"}],
+            "general-agent",
+            [{"role": "user", "content": "test"}],
             tools=[{"type": "function", "function": {"name": "web_search", "parameters": {}}}],
             tool_executor=AsyncMock(return_value="result"),
             max_tool_rounds=2,
@@ -419,26 +454,33 @@ class TestCompleteWithTools:
 # LLM provider span instrumentation
 # ---------------------------------------------------------------------------
 
-class TestLLMProviderSpans:
 
+class TestLLMProviderSpans:
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
     async def test_complete_creates_provider_span(self, mock_repo, mock_params, mock_acompletion):
         from app.analytics.tracer import SpanCollector
-        mock_repo.get = AsyncMock(return_value={
-            "agent_id": "light-agent", "enabled": True,
-            "model": "openrouter/openai/gpt-4o-mini",
-            "timeout": 5, "max_iterations": 3,
-            "temperature": 0.7, "max_tokens": 256,
-            "description": "Light agent",
-        })
+
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "light-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o-mini",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.7,
+                "max_tokens": 256,
+                "description": "Light agent",
+            }
+        )
         choice = MagicMock()
         choice.message.content = "Done!"
         mock_acompletion.return_value = MagicMock(choices=[choice], usage=None)
 
         collector = SpanCollector("trace-provider")
         from app.llm.client import complete
+
         result = await complete("light-agent", [{"role": "user", "content": "test"}], span_collector=collector)
         assert result == "Done!"
         prov_spans = [s for s in collector._spans if s["span_name"] == "llm_provider_call"]
@@ -450,18 +492,24 @@ class TestLLMProviderSpans:
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
     async def test_complete_works_without_span_collector(self, mock_repo, mock_params, mock_acompletion):
-        mock_repo.get = AsyncMock(return_value={
-            "agent_id": "light-agent", "enabled": True,
-            "model": "openrouter/openai/gpt-4o-mini",
-            "timeout": 5, "max_iterations": 3,
-            "temperature": 0.7, "max_tokens": 256,
-            "description": "Light agent",
-        })
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "light-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o-mini",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.7,
+                "max_tokens": 256,
+                "description": "Light agent",
+            }
+        )
         choice = MagicMock()
         choice.message.content = "Done!"
         mock_acompletion.return_value = MagicMock(choices=[choice], usage=None)
 
         from app.llm.client import complete
+
         result = await complete("light-agent", [{"role": "user", "content": "test"}])
         assert result == "Done!"
 
@@ -470,13 +518,19 @@ class TestLLMProviderSpans:
     @patch("app.llm.client.AgentConfigRepository")
     async def test_complete_creates_two_provider_spans_on_retry(self, mock_repo, mock_params, mock_acompletion):
         from app.analytics.tracer import SpanCollector
-        mock_repo.get = AsyncMock(return_value={
-            "agent_id": "light-agent", "enabled": True,
-            "model": "openrouter/openai/gpt-4o-mini",
-            "timeout": 5, "max_iterations": 3,
-            "temperature": 0.2, "max_tokens": 256,
-            "description": "Light agent",
-        })
+
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "light-agent",
+                "enabled": True,
+                "model": "openrouter/openai/gpt-4o-mini",
+                "timeout": 5,
+                "max_iterations": 3,
+                "temperature": 0.2,
+                "max_tokens": 256,
+                "description": "Light agent",
+            }
+        )
         empty_choice = MagicMock()
         empty_choice.message.content = ""
         empty_choice.finish_reason = "length"
@@ -490,6 +544,7 @@ class TestLLMProviderSpans:
 
         collector = SpanCollector("trace-provider-retry")
         from app.llm.client import complete
+
         result = await complete("light-agent", [{"role": "user", "content": "test"}], span_collector=collector)
         assert result == "Light is on!"
         prov_spans = [s for s in collector._spans if s["span_name"] == "llm_provider_call"]

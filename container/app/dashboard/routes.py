@@ -7,17 +7,17 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from app import __version__ as _app_version
+from app.config import settings as app_settings
 from app.security.auth import (
+    SESSION_COOKIE_NAME,
     authenticate_admin,
     create_session_cookie,
     ensure_csrf_token,
     require_admin_session_redirect,
     set_csrf_cookie,
     verify_csrf,
-    SESSION_COOKIE_NAME,
 )
-from app import __version__ as _app_version
-from app.config import settings as app_settings
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,7 @@ async def chat_page(
     """Chat test interface."""
     return templates.TemplateResponse(request, "chat.html")
 
+
 @router.get("/personality", response_class=HTMLResponse)
 async def personality_page(
     request: Request,
@@ -130,6 +131,7 @@ async def personality_page(
 ):
     """Personality configuration page."""
     return templates.TemplateResponse(request, "personality.html")
+
 
 @router.get("/cache", response_class=HTMLResponse)
 async def cache_page(
@@ -192,6 +194,7 @@ async def entity_visibility_page(
 ):
     """Redirect to entity index (entity visibility merged into entity index)."""
     from starlette.responses import RedirectResponse
+
     agent = request.query_params.get("agent", "")
     url = "/dashboard/entity-index"
     if agent:

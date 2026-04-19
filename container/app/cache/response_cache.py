@@ -5,11 +5,11 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from app.cache.vector_store import VectorStore, COLLECTION_RESPONSE_CACHE
+from app.cache.vector_store import COLLECTION_RESPONSE_CACHE, VectorStore
 from app.db.repository import SettingsRepository
-from app.models.cache import ResponseCacheEntry, CachedAction
+from app.models.cache import CachedAction, ResponseCacheEntry
 
 logger = logging.getLogger(__name__)
 
@@ -39,22 +39,19 @@ class ResponseCache:
 
     async def load_config(self) -> None:
         """Load thresholds from settings table."""
-        self._hit_threshold = float(
-            await SettingsRepository.get_value("cache.response.threshold", "0.95")
-        )
-        self._partial_threshold = float(
-            await SettingsRepository.get_value("cache.response.partial_threshold", "0.80")
-        )
-        self._max_entries = int(
-            await SettingsRepository.get_value("cache.response.max_entries", "20000")
-        )
+        self._hit_threshold = float(await SettingsRepository.get_value("cache.response.threshold", "0.95"))
+        self._partial_threshold = float(await SettingsRepository.get_value("cache.response.partial_threshold", "0.80"))
+        self._max_entries = int(await SettingsRepository.get_value("cache.response.max_entries", "20000"))
 
     async def reload_config(self) -> None:
         """Reload thresholds from DB without restart."""
         await self.load_config()
 
     def lookup(
-        self, query_text: str, *, language: str = "en",
+        self,
+        query_text: str,
+        *,
+        language: str = "en",
     ) -> tuple[str, ResponseCacheEntry | None, float | None]:
         """Query response cache.
 
@@ -85,7 +82,7 @@ class ResponseCache:
         meta = result["metadatas"][0][0]
         entry_id = result["ids"][0][0]
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         hit_count = int(meta.get("hit_count", 0)) + 1
         with self._mutation_lock:
             self._pending_updates[entry_id] = (
@@ -129,13 +126,11 @@ class ResponseCache:
         if self._store_count >= self._eviction_interval:
             self._store_count = 0
             self._enforce_lru()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         lang = (entry.language or "en").lower()
         # FLOW-HIGH-4: prefix the key with language so identical text
         # in different languages produces distinct entries.
-        entry_id = hashlib.sha256(
-            f"{lang}\n{entry.query_text}".encode()
-        ).hexdigest()[:16]
+        entry_id = hashlib.sha256(f"{lang}\n{entry.query_text}".encode()).hexdigest()[:16]
         self._flush_pending_updates()
         meta = {
             "response_text": entry.response_text,
@@ -177,12 +172,12 @@ class ResponseCache:
         )
         if not all_data["ids"]:
             return
-        paired = list(zip(all_data["ids"], all_data["metadatas"]))
+        paired = list(zip(all_data["ids"], all_data["metadatas"], strict=False))
         paired.sort(key=lambda p: p[1].get("last_accessed", ""))
         to_delete = [p[0] for p in paired[:overage]]
         if to_delete:
             for i in range(0, len(to_delete), 500):
-                self._store.delete(COLLECTION_RESPONSE_CACHE, ids=to_delete[i:i+500])
+                self._store.delete(COLLECTION_RESPONSE_CACHE, ids=to_delete[i : i + 500])
             logger.info("Response cache LRU evicted %d entries", len(to_delete))
 
     def _flush_pending_updates(self) -> None:
@@ -221,12 +216,12 @@ class ResponseCache:
             return 0
         to_delete = [
             eid
-            for eid, meta in zip(all_data["ids"], all_data["metadatas"])
+            for eid, meta in zip(all_data["ids"], all_data["metadatas"], strict=False)
             if not (meta or {}).get("language")
         ]
         if to_delete:
             for i in range(0, len(to_delete), 500):
-                self._store.delete(COLLECTION_RESPONSE_CACHE, ids=to_delete[i:i+500])
+                self._store.delete(COLLECTION_RESPONSE_CACHE, ids=to_delete[i : i + 500])
             logger.info(
                 "Response cache: purged %d pre-0.18.0 entries without language metadata",
                 len(to_delete),
@@ -249,6 +244,7 @@ class ResponseCache:
             return True  # No action = read-only (sensor query, status check, etc.)
         try:
             import json
+
             data = json.loads(cached_action_str)
             service = data.get("service", "")
             # "sensor/query_status" -> action part is "query_status"
@@ -272,10 +268,10 @@ class ResponseCache:
         if not all_data["ids"]:
             return 0
         to_delete = []
-        for entry_id, meta in zip(all_data["ids"], all_data["metadatas"]):
+        for entry_id, meta in zip(all_data["ids"], all_data["metadatas"], strict=False):
             if self._is_readonly_action(meta.get("cached_action", "")):
                 to_delete.append(entry_id)
         if to_delete:
             for i in range(0, len(to_delete), 500):
-                self._store.delete(COLLECTION_RESPONSE_CACHE, ids=to_delete[i:i + 500])
+                self._store.delete(COLLECTION_RESPONSE_CACHE, ids=to_delete[i : i + 500])
         return len(to_delete)

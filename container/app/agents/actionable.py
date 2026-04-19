@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 import re
 
-from app.agents.base import BaseAgent
 from app.agents.action_executor import parse_action
-from app.models.agent import AgentTask, TaskResult, ActionExecuted, AgentErrorCode
+from app.agents.base import BaseAgent
+from app.models.agent import ActionExecuted, AgentErrorCode, AgentTask, TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -75,14 +75,16 @@ class ActionableAgent(BaseAgent):
 
         if task.context and task.context.conversation_turns:
             for turn in task.context.conversation_turns:
-                messages.append({
-                    "role": turn.get("role", "user"),
-                    "content": turn.get("content", ""),
-                })
+                messages.append(
+                    {
+                        "role": turn.get("role", "user"),
+                        "content": turn.get("content", ""),
+                    }
+                )
 
         user_content = task.description
         if task.user_text and task.user_text != task.description:
-            user_content = f"{task.description}\n\n(Original user message: \"{task.user_text}\")"
+            user_content = f'{task.description}\n\n(Original user message: "{task.user_text}")'
         messages.append({"role": "user", "content": user_content})
 
         if span_collector:
@@ -108,22 +110,27 @@ class ActionableAgent(BaseAgent):
                 if span_collector:
                     async with span_collector.start_span("ha_action", agent_id=agent_id) as span:
                         result = await self._do_execute(
-                            action, self._ha_client, self._entity_index,
-                            self._entity_matcher, agent_id=agent_id,
+                            action,
+                            self._ha_client,
+                            self._entity_index,
+                            self._entity_matcher,
+                            agent_id=agent_id,
                             span_collector=span_collector,
                         )
                         span["metadata"]["action"] = action.get("action")
                         span["metadata"]["entity"] = action.get("entity")
                         span["metadata"]["success"] = result.get("success")
                         span["metadata"]["action_params"] = {
-                            k: v for k, v in action.items()
-                            if k not in ("action", "entity")
+                            k: v for k, v in action.items() if k not in ("action", "entity")
                         }
                         span["metadata"]["result_speech"] = (result.get("speech") or "")[:500]
                 else:
                     result = await self._do_execute(
-                        action, self._ha_client, self._entity_index,
-                        self._entity_matcher, agent_id=agent_id,
+                        action,
+                        self._ha_client,
+                        self._entity_index,
+                        self._entity_matcher,
+                        agent_id=agent_id,
                         span_collector=span_collector,
                     )
                 return TaskResult(

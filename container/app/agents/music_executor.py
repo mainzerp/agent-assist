@@ -14,31 +14,31 @@ from app.analytics.tracer import _optional_span
 logger = logging.getLogger(__name__)
 
 _MUSIC_ACTION_MAP: dict[str, tuple[str, str]] = {
-    "play_media":           ("mass", "play_media"),
-    "search":               ("mass", "search"),
-    "volume_set":           ("media_player", "volume_set"),
-    "media_play":           ("media_player", "media_play"),
-    "media_pause":          ("media_player", "media_pause"),
-    "media_next_track":     ("media_player", "media_next_track"),
+    "play_media": ("mass", "play_media"),
+    "search": ("mass", "search"),
+    "volume_set": ("media_player", "volume_set"),
+    "media_play": ("media_player", "media_play"),
+    "media_pause": ("media_player", "media_pause"),
+    "media_next_track": ("media_player", "media_next_track"),
     "media_previous_track": ("media_player", "media_previous_track"),
-    "shuffle_set":          ("media_player", "shuffle_set"),
-    "repeat_set":           ("media_player", "repeat_set"),
+    "shuffle_set": ("media_player", "shuffle_set"),
+    "repeat_set": ("media_player", "repeat_set"),
 }
 
 # FLOW-VERIFY-SHARED (0.18.5): transport actions land in deterministic
 # media_player states. Search is a read-only service and handled below.
 _EXPECTED_STATE_BY_ACTION: dict[str, str] = {
-    "media_play":   "playing",
-    "media_pause":  "paused",
-    "play_media":   "playing",
+    "media_play": "playing",
+    "media_pause": "paused",
+    "play_media": "playing",
 }
 
 _ACTION_PHRASES: dict[str, str] = {
-    "volume_set":           "volume updated",
-    "media_next_track":     "skipped to the next track",
+    "volume_set": "volume updated",
+    "media_next_track": "skipped to the next track",
     "media_previous_track": "skipped to the previous track",
-    "shuffle_set":          "shuffle updated",
-    "repeat_set":           "repeat mode updated",
+    "shuffle_set": "shuffle updated",
+    "repeat_set": "repeat mode updated",
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"media_player"})
@@ -140,7 +140,12 @@ async def execute_music_action(
     # Read-only actions (no service call)
     if action_name in ("query_music_state", "list_music_players"):
         return await _handle_music_read_action(
-            action_name, entity_query, ha_client, entity_index, entity_matcher, agent_id,
+            action_name,
+            entity_query,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
             span_collector=span_collector,
         )
 
@@ -211,7 +216,10 @@ async def execute_music_action(
 
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
     verify = await call_service_with_verification(
-        ha_client, domain, service, entity_id,
+        ha_client,
+        domain,
+        service,
+        entity_id,
         service_data=service_data,
         expected_state=expected_state,
     )
@@ -242,6 +250,7 @@ async def execute_music_action(
 # ---------------------------------------------------------------------------
 # Read-only music action handlers
 # ---------------------------------------------------------------------------
+
 
 def _format_music_player_state(entity_id: str, state_resp: dict) -> str:
     state = state_resp.get("state", "unknown")
@@ -301,25 +310,41 @@ async def _query_music_state(
         entity_id = None
 
     if not entity_id:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": f"Could not find an entity matching '{entity_query}'.",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"Could not find an entity matching '{entity_query}'.",
+            "cacheable": False,
+        }
 
     try:
         state_resp = await ha_client.get_state(entity_id)
         if not state_resp:
-            return {"success": False, "entity_id": entity_id, "new_state": None,
-                    "speech": f"Could not retrieve state for {entity_id}.",
-                    "cacheable": False}
+            return {
+                "success": False,
+                "entity_id": entity_id,
+                "new_state": None,
+                "speech": f"Could not retrieve state for {entity_id}.",
+                "cacheable": False,
+            }
         speech = _format_music_player_state(entity_id, state_resp)
-        return {"success": True, "entity_id": entity_id,
-                "new_state": state_resp.get("state"), "speech": speech,
-                "cacheable": False}
+        return {
+            "success": True,
+            "entity_id": entity_id,
+            "new_state": state_resp.get("state"),
+            "speech": speech,
+            "cacheable": False,
+        }
     except Exception as exc:
         logger.error("State query failed for %s", entity_id, exc_info=True)
-        return {"success": False, "entity_id": entity_id, "new_state": None,
-                "speech": f"Failed to query music player status: {exc}",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": None,
+            "speech": f"Failed to query music player status: {exc}",
+            "cacheable": False,
+        }
 
 
 async def _list_music_players(ha_client: Any) -> dict:
@@ -327,14 +352,12 @@ async def _list_music_players(ha_client: Any) -> dict:
         states = await ha_client.get_states()
     except Exception as exc:
         logger.error("Failed to fetch states for list_music_players", exc_info=True)
-        return {"success": False, "entity_id": "", "new_state": None,
-                "speech": f"Failed to list music players: {exc}"}
+        return {"success": False, "entity_id": "", "new_state": None, "speech": f"Failed to list music players: {exc}"}
 
     players = [s for s in states if s.get("entity_id", "").startswith("media_player.")]
 
     if not players:
-        return {"success": True, "entity_id": "", "new_state": None,
-                "speech": "No music players found."}
+        return {"success": True, "entity_id": "", "new_state": None, "speech": "No music players found."}
 
     lines = []
     for p in players:
@@ -352,8 +375,7 @@ async def _list_music_players(ha_client: Any) -> dict:
         lines.append(info)
 
     speech = "Music players: " + "; ".join(lines) + "."
-    return {"success": True, "entity_id": "", "new_state": None, "speech": speech,
-            "cacheable": False}
+    return {"success": True, "entity_id": "", "new_state": None, "speech": speech, "cacheable": False}
 
 
 async def _handle_music_read_action(
@@ -366,9 +388,9 @@ async def _handle_music_read_action(
     span_collector=None,
 ) -> dict:
     if action_name == "query_music_state":
-        return await _query_music_state(entity_query, ha_client, entity_index, entity_matcher, agent_id,
-                                        span_collector=span_collector)
+        return await _query_music_state(
+            entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
     if action_name == "list_music_players":
         return await _list_music_players(ha_client)
-    return {"success": False, "entity_id": "", "new_state": None,
-            "speech": f"Unknown read action: {action_name}"}
+    return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}

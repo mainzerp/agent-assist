@@ -16,7 +16,6 @@ import pytest
 
 from app.agents.sanitize import strip_markdown
 
-
 CORPUS_PATH = Path(__file__).parent / "data" / "sanitize_corpus.txt"
 
 

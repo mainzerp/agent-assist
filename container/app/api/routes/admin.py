@@ -9,11 +9,6 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
-from app.ha_client.auth import get_ha_token, set_ha_token
-from app.ha_client.rest import test_ha_connection
-
-from app.security.auth import API_KEY_SECRET_NAME, require_admin_session
-from app.security.encryption import store_secret, retrieve_secret, delete_secret
 from app.db.repository import (
     AgentConfigRepository,
     EntityMatchingConfigRepository,
@@ -21,6 +16,10 @@ from app.db.repository import (
     SecretsRepository,
     SettingsRepository,
 )
+from app.ha_client.auth import get_ha_token, set_ha_token
+from app.ha_client.rest import test_ha_connection
+from app.security.auth import API_KEY_SECRET_NAME, require_admin_session
+from app.security.encryption import delete_secret, retrieve_secret, store_secret
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +47,7 @@ class ProviderTestRequest(BaseModel):
 
 class SettingsUpdatePayload(BaseModel):
     """Validated settings update payload."""
+
     items: dict[str, Any]
 
     @field_validator("items")
@@ -115,6 +115,7 @@ async def _reload_ha_clients_after_settings_change(request: Request) -> None:
         except Exception:
             logger.warning("HA WebSocket drop_connection() failed", exc_info=True)
 
+
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin_session)])
 
 # The registry is set by main.py during startup
@@ -142,10 +143,18 @@ async def list_agents():
         seen_ids.add(a.agent_id)
 
     # Known built-in agent IDs (from seed data)
-    _BUILTIN_AGENTS = {
-        "orchestrator", "general-agent", "light-agent", "music-agent",
-        "timer-agent", "climate-agent", "media-agent", "scene-agent",
-        "automation-agent", "security-agent", "rewrite-agent",
+    builtin_agents = {
+        "orchestrator",
+        "general-agent",
+        "light-agent",
+        "music-agent",
+        "timer-agent",
+        "climate-agent",
+        "media-agent",
+        "scene-agent",
+        "automation-agent",
+        "security-agent",
+        "rewrite-agent",
         "send-agent",
     }
 
@@ -153,7 +162,7 @@ async def list_agents():
     all_configs = await AgentConfigRepository.list_all()
     for config in all_configs:
         aid = config["agent_id"]
-        if aid not in seen_ids and aid in _BUILTIN_AGENTS:
+        if aid not in seen_ids and aid in builtin_agents:
             entry = {
                 "agent_id": aid,
                 "name": aid.replace("-", " ").title(),
@@ -194,14 +203,13 @@ def _validate_setting_value(key: str, value: str, value_type: str) -> None:
             int(value)
         elif value_type == "float":
             float(value)
-        elif value_type == "bool":
-            if str(value).lower() not in ("true", "false", "1", "0"):
-                raise ValueError("Expected boolean")
+        elif value_type == "bool" and str(value).lower() not in ("true", "false", "1", "0"):
+            raise ValueError("Expected boolean")
     except (ValueError, TypeError):
         raise HTTPException(
             status_code=400,
             detail=f"Invalid value for '{key}': expected {value_type}",
-        )
+        ) from None
 
 
 @router.put("/settings")
@@ -214,9 +222,13 @@ async def update_settings(payload: SettingsUpdatePayload):
         # Validate value type against stored type
         value_type = existing.get("value_type", "str")
         _validate_setting_value(key, str(value), value_type)
-        await SettingsRepository.set(key, str(value), value_type=existing["value_type"],
-                                     category=existing.get("category", "general"),
-                                     description=existing.get("description"))
+        await SettingsRepository.set(
+            key,
+            str(value),
+            value_type=existing["value_type"],
+            category=existing.get("category", "general"),
+            description=existing.get("description"),
+        )
     return {"status": "ok"}
 
 
@@ -234,9 +246,13 @@ async def update_single_setting(key: str, payload: dict):
     value_type = existing.get("value_type", "str")
     _validate_setting_value(key, str(value), value_type)
 
-    await SettingsRepository.set(key, str(value), value_type=existing["value_type"],
-                                 category=existing.get("category", "general"),
-                                 description=existing.get("description"))
+    await SettingsRepository.set(
+        key,
+        str(value),
+        value_type=existing["value_type"],
+        category=existing.get("category", "general"),
+        description=existing.get("description"),
+    )
     return {"status": "ok", "key": key}
 
 
@@ -345,8 +361,11 @@ async def get_entity_matching_weights():
 async def update_entity_matching_weights(payload: dict):
     """Update entity matching signal weights. Payload: {key: value, ...}."""
     allowed_keys = {
-        "weight.levenshtein", "weight.jaro_winkler", "weight.phonetic",
-        "weight.embedding", "weight.alias",
+        "weight.levenshtein",
+        "weight.jaro_winkler",
+        "weight.phonetic",
+        "weight.embedding",
+        "weight.alias",
     }
     items = payload.get("items", payload)
     if isinstance(items, dict):
@@ -523,8 +542,8 @@ async def get_all_agents_visibility_summary():
 @router.get("/timers")
 async def get_timers_info(request: Request):
     """Return timer, alarm, pool, and delayed task state for the dashboard."""
-    from app.agents.timer_executor import _timer_pool
     from app.agents.delayed_tasks import delayed_task_manager
+    from app.agents.timer_executor import _timer_pool
 
     ha_client = getattr(request.app.state, "ha_client", None)
 
@@ -547,34 +566,35 @@ async def get_timers_info(request: Request):
                 pool_name = _timer_pool.get_name(entity_id)
                 duration = attrs.get("duration", "")
                 remaining = attrs.get("remaining", "")
-                timers.append({
-                    "entity_id": entity_id,
-                    "name": pool_name or friendly_name,
-                    "friendly_name": friendly_name,
-                    "pool_name": pool_name,
-                    "state": state,
-                    "duration": duration,
-                    "remaining": remaining,
-                })
+                timers.append(
+                    {
+                        "entity_id": entity_id,
+                        "name": pool_name or friendly_name,
+                        "friendly_name": friendly_name,
+                        "pool_name": pool_name,
+                        "state": state,
+                        "duration": duration,
+                        "remaining": remaining,
+                    }
+                )
 
             elif entity_id.startswith("input_datetime."):
                 has_date = attrs.get("has_date", False)
                 has_time = attrs.get("has_time", False)
                 dtype = "datetime" if (has_date and has_time) else ("date" if has_date else "time")
-                alarms.append({
-                    "entity_id": entity_id,
-                    "name": friendly_name,
-                    "state": state,
-                    "type": dtype,
-                })
+                alarms.append(
+                    {
+                        "entity_id": entity_id,
+                        "name": friendly_name,
+                        "state": state,
+                        "type": dtype,
+                    }
+                )
 
     # Timer pool
     pool_mappings = _timer_pool.all_mappings()
     pool = {
-        "mappings": [
-            {"name": name, "entity_id": eid}
-            for name, eid in pool_mappings.items()
-        ],
+        "mappings": [{"name": name, "entity_id": eid} for name, eid in pool_mappings.items()],
         "allocated": len(pool_mappings),
     }
 
@@ -593,7 +613,11 @@ async def get_timers_info(request: Request):
 async def get_fernet_key_backup():
     """Export the Fernet key for backup. Handle with extreme care."""
     from app.security.encryption import export_fernet_key
-    return {"key": export_fernet_key(), "warning": "Store this key securely. Loss of this key makes all encrypted secrets unrecoverable."}
+
+    return {
+        "key": export_fernet_key(),
+        "warning": "Store this key securely. Loss of this key makes all encrypted secrets unrecoverable.",
+    }
 
 
 # =========================================================================
@@ -605,6 +629,7 @@ async def get_fernet_key_backup():
 async def get_notification_profile():
     """Get current notification profile."""
     import json as _json
+
     raw = await SettingsRepository.get_value("notification.profile")
     if raw:
         return {"profile": _json.loads(raw)}
@@ -615,6 +640,7 @@ async def get_notification_profile():
 async def update_notification_profile(payload: dict):
     """Update notification profile."""
     import json as _json
+
     profile = payload.get("profile", payload)
     await SettingsRepository.set(
         "notification.profile",
@@ -653,6 +679,7 @@ async def get_alarm_monitor_status(request: Request):
 async def get_recently_expired_timers():
     """Get recently expired timers."""
     from app.agents.timer_executor import get_recently_expired
+
     expired = get_recently_expired()
     return {
         "recently_expired": [

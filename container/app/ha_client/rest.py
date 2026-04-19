@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -27,7 +27,7 @@ class HARestClient:
         self._client: httpx.AsyncClient | None = None
         # FLOW-VERIFY-1: optional WebSocket observer for post-action state
         # verification. Wired from main.py once both clients exist.
-        self._state_observer: "HAWebSocketClient | None" = None
+        self._state_observer: HAWebSocketClient | None = None
 
     async def initialize(self) -> None:
         """Load HA URL from settings and create httpx client."""
@@ -77,7 +77,8 @@ class HARestClient:
         if new_url and new_url != self._base_url:
             logger.info(
                 "HARestClient base_url changed (%s -> %s); rebuilding client",
-                self._base_url, new_url,
+                self._base_url,
+                new_url,
             )
             old = self._client
             self._base_url = new_url
@@ -134,7 +135,7 @@ class HARestClient:
         resp.raise_for_status()
         data = resp.json()
         result: dict[str, Any] = {}
-        for entry in (data or []):
+        for entry in data or []:
             result[entry.get("domain", "")] = entry.get("services", {})
         return result
 
@@ -190,7 +191,8 @@ class HARestClient:
             return None
         try:
             resp = await self._client.post(
-                "/api/template", json={"template": template},
+                "/api/template",
+                json={"template": template},
             )
             resp.raise_for_status()
             rendered = (resp.text or "").strip()
@@ -205,16 +207,14 @@ class HARestClient:
         event_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """POST /api/events/<event_type>."""
-        resp = await self._client.post(
-            f"/api/events/{event_type}", json=event_data or {}
-        )
+        resp = await self._client.post(f"/api/events/{event_type}", json=event_data or {})
         resp.raise_for_status()
         return resp.json()
 
     # ------------------------------------------------------------------
     # FLOW-VERIFY-1: post-action state verification helpers.
     # ------------------------------------------------------------------
-    def set_state_observer(self, ws_client: "HAWebSocketClient | None") -> None:
+    def set_state_observer(self, ws_client: HAWebSocketClient | None) -> None:
         """Attach the running WebSocket client so ``expect_state`` can use it."""
         self._state_observer = ws_client
 
@@ -251,7 +251,8 @@ class HARestClient:
                 future = observer.register_state_waiter(entity_id, expected=expected)
             except Exception:
                 logger.debug(
-                    "Failed to register WS state waiter for %s", entity_id,
+                    "Failed to register WS state waiter for %s",
+                    entity_id,
                     exc_info=True,
                 )
                 future = None
@@ -267,7 +268,7 @@ class HARestClient:
                 state = await asyncio.wait_for(future, timeout=timeout)
                 result["new_state"] = state
                 return
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 observer.cancel_state_waiter(entity_id, future)
             except asyncio.CancelledError:
                 observer.cancel_state_waiter(entity_id, future)
@@ -275,13 +276,16 @@ class HARestClient:
             except Exception:
                 logger.debug(
                     "WS state waiter for %s raised, falling back to polling",
-                    entity_id, exc_info=True,
+                    entity_id,
+                    exc_info=True,
                 )
                 observer.cancel_state_waiter(entity_id, future)
 
         result["new_state"] = await self._poll_state_until(
-            entity_id, expected,
-            interval=poll_interval, max_seconds=poll_max,
+            entity_id,
+            expected,
+            interval=poll_interval,
+            max_seconds=poll_max,
         )
 
     async def _poll_state_until(
@@ -304,7 +308,9 @@ class HARestClient:
                 state_resp = await self.get_state(entity_id)
             except Exception:
                 logger.debug(
-                    "get_state polling failed for %s", entity_id, exc_info=True,
+                    "get_state polling failed for %s",
+                    entity_id,
+                    exc_info=True,
                 )
                 state_resp = None
             if state_resp:

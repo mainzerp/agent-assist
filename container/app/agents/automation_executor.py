@@ -14,7 +14,7 @@ from app.analytics.tracer import _optional_span
 logger = logging.getLogger(__name__)
 
 _AUTOMATION_ACTION_MAP: dict[str, tuple[str, str]] = {
-    "enable_automation":  ("automation", "turn_on"),
+    "enable_automation": ("automation", "turn_on"),
     "disable_automation": ("automation", "turn_off"),
     "trigger_automation": ("automation", "trigger"),
 }
@@ -25,12 +25,12 @@ _AUTOMATION_ACTION_MAP: dict[str, tuple[str, str]] = {
 # first speech so we don't falsely claim the automation "is now off" when
 # it stays enabled.
 _EXPECTED_STATE_BY_ACTION: dict[str, str] = {
-    "enable_automation":  "on",
+    "enable_automation": "on",
     "disable_automation": "off",
 }
 
 _ACTION_PHRASES: dict[str, str] = {
-    "enable_automation":  "enabled",
+    "enable_automation": "enabled",
     "disable_automation": "disabled",
     "trigger_automation": "triggered",
 }
@@ -83,7 +83,12 @@ async def execute_automation_action(
     # Read-only actions (no service call)
     if action_name in ("query_automation_state", "list_automations"):
         return await _handle_automation_read_action(
-            action_name, entity_query, ha_client, entity_index, entity_matcher, agent_id,
+            action_name,
+            entity_query,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
             span_collector=span_collector,
         )
 
@@ -134,7 +139,10 @@ async def execute_automation_action(
 
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
     verify = await call_service_with_verification(
-        ha_client, domain, service, entity_id,
+        ha_client,
+        domain,
+        service,
+        entity_id,
         service_data=service_data,
         expected_state=expected_state,
     )
@@ -165,6 +173,7 @@ async def execute_automation_action(
 # ---------------------------------------------------------------------------
 # Read-only automation action handlers
 # ---------------------------------------------------------------------------
+
 
 def _format_automation_state(entity_id: str, state_resp: dict) -> str:
     state = state_resp.get("state", "unknown")
@@ -208,25 +217,41 @@ async def _query_automation_state(
         entity_id = None
 
     if not entity_id:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": f"Could not find an entity matching '{entity_query}'.",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"Could not find an entity matching '{entity_query}'.",
+            "cacheable": False,
+        }
 
     try:
         state_resp = await ha_client.get_state(entity_id)
         if not state_resp:
-            return {"success": False, "entity_id": entity_id, "new_state": None,
-                    "speech": f"Could not retrieve state for {entity_id}.",
-                    "cacheable": False}
+            return {
+                "success": False,
+                "entity_id": entity_id,
+                "new_state": None,
+                "speech": f"Could not retrieve state for {entity_id}.",
+                "cacheable": False,
+            }
         speech = _format_automation_state(entity_id, state_resp)
-        return {"success": True, "entity_id": entity_id,
-                "new_state": state_resp.get("state"), "speech": speech,
-                "cacheable": False}
+        return {
+            "success": True,
+            "entity_id": entity_id,
+            "new_state": state_resp.get("state"),
+            "speech": speech,
+            "cacheable": False,
+        }
     except Exception as exc:
         logger.error("State query failed for %s", entity_id, exc_info=True)
-        return {"success": False, "entity_id": entity_id, "new_state": None,
-                "speech": f"Failed to query automation status: {exc}",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": None,
+            "speech": f"Failed to query automation status: {exc}",
+            "cacheable": False,
+        }
 
 
 async def _list_automations(ha_client: Any) -> dict:
@@ -234,14 +259,12 @@ async def _list_automations(ha_client: Any) -> dict:
         states = await ha_client.get_states()
     except Exception as exc:
         logger.error("Failed to fetch states for list_automations", exc_info=True)
-        return {"success": False, "entity_id": "", "new_state": None,
-                "speech": f"Failed to list automations: {exc}"}
+        return {"success": False, "entity_id": "", "new_state": None, "speech": f"Failed to list automations: {exc}"}
 
     automations = [s for s in states if s.get("entity_id", "").startswith("automation.")]
 
     if not automations:
-        return {"success": True, "entity_id": "", "new_state": None,
-                "speech": "No automation entities found."}
+        return {"success": True, "entity_id": "", "new_state": None, "speech": "No automation entities found."}
 
     enabled = []
     disabled = []
@@ -264,8 +287,7 @@ async def _list_automations(ha_client: Any) -> dict:
     if disabled:
         parts.append(f"Disabled ({len(disabled)}): {', '.join(disabled)}")
     speech = ". ".join(parts) + "."
-    return {"success": True, "entity_id": "", "new_state": None, "speech": speech,
-            "cacheable": False}
+    return {"success": True, "entity_id": "", "new_state": None, "speech": speech, "cacheable": False}
 
 
 async def _handle_automation_read_action(
@@ -278,9 +300,9 @@ async def _handle_automation_read_action(
     span_collector=None,
 ) -> dict:
     if action_name == "query_automation_state":
-        return await _query_automation_state(entity_query, ha_client, entity_index, entity_matcher, agent_id,
-                                             span_collector=span_collector)
+        return await _query_automation_state(
+            entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
     if action_name == "list_automations":
         return await _list_automations(ha_client)
-    return {"success": False, "entity_id": "", "new_state": None,
-            "speech": f"Unknown read action: {action_name}"}
+    return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}

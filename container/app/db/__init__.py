@@ -3,7 +3,6 @@
 Provides async SQLite operations for all structured data.
 """
 
-from app.db.schema import get_db, get_db_read, get_db_write, init_db
 from app.db.repository import (
     AdminAccountRepository,
     AgentConfigRepository,
@@ -16,13 +15,12 @@ from app.db.repository import (
     McpServerRepository,
     PluginRepository,
     SecretsRepository,
-    SetupStateRepository,
     SettingsRepository,
+    SetupStateRepository,
 )
+from app.db.schema import get_db, get_db_read, get_db_write, init_db
 
 __all__ = [
-    "get_db",
-    "init_db",
     "AdminAccountRepository",
     "AgentConfigRepository",
     "AliasRepository",
@@ -34,6 +32,10 @@ __all__ = [
     "McpServerRepository",
     "PluginRepository",
     "SecretsRepository",
-    "SetupStateRepository",
     "SettingsRepository",
+    "SetupStateRepository",
+    "get_db",
+    "get_db_read",
+    "get_db_write",
+    "init_db",
 ]

@@ -11,14 +11,18 @@ class ConversationRequest(BaseModel):
     text: str = Field(..., description="User input text", max_length=5000)
     conversation_id: str | None = Field(None, description="Conversation ID for multi-turn", max_length=64)
     language: str = Field("en", description="User language code", max_length=10)
-    device_id: str | None = Field(None, description="Device registry ID of the originating satellite/device", max_length=64)
+    device_id: str | None = Field(
+        None, description="Device registry ID of the originating satellite/device", max_length=64
+    )
     area_id: str | None = Field(None, description="Area ID resolved from device registry", max_length=64)
     # FLOW-CTX-1 (0.18.6): human-readable names for the originating
     # satellite + its area. Optional because not every client
     # resolves them (dashboard chat has neither, older HA releases
     # might not populate device registry nicely). Pure metadata --
     # agents use IDs for comparisons and names for speech/traces.
-    device_name: str | None = Field(None, description="Human-readable name of the originating device/satellite", max_length=128)
+    device_name: str | None = Field(
+        None, description="Human-readable name of the originating device/satellite", max_length=128
+    )
     area_name: str | None = Field(None, description="Human-readable name of the originating area/room", max_length=128)
 
 
@@ -28,6 +32,10 @@ class ConversationResponse(BaseModel):
     speech: str = Field(..., description="Response text for TTS or display")
     conversation_id: str | None = None
     action_executed: ActionResult | None = None
+    voice_followup: bool = Field(
+        False,
+        description="True when the container will re-open Assist listening on the satellite (HA voice)",
+    )
 
 
 class ActionResult(BaseModel):
@@ -48,3 +56,4 @@ class StreamToken(BaseModel):
     mediated_speech: str | None = None
     is_filler: bool = False
     error: str | None = None
+    voice_followup: bool = False

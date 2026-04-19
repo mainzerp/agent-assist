@@ -5,18 +5,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from app.a2a.protocol import (
-    JsonRpcRequest,
-    JsonRpcResponse,
-    JsonRpcStreamChunk,
-    MessageSendParams,
-    MessageStreamParams,
-    error_response,
-    success_response,
     INTERNAL_ERROR,
     TIMEOUT_ERROR,
+    JsonRpcResponse,
+    JsonRpcStreamChunk,
+    error_response,
+    success_response,
 )
 from app.a2a.registry import AgentRegistry
 from app.models.agent import AgentTask
@@ -28,12 +25,12 @@ class Transport(ABC):
     """Abstract transport interface for agent communication."""
 
     @abstractmethod
-    async def send(self, agent_id: str, task: AgentTask, request_id: str) -> JsonRpcResponse:
-        ...
+    async def send(self, agent_id: str, task: AgentTask, request_id: str) -> JsonRpcResponse: ...
 
     @abstractmethod
-    async def stream(self, agent_id: str, task: AgentTask, request_id: str) -> AsyncGenerator[JsonRpcStreamChunk, None]:
-        ...
+    async def stream(
+        self, agent_id: str, task: AgentTask, request_id: str
+    ) -> AsyncGenerator[JsonRpcStreamChunk, None]: ...
 
 
 class InProcessTransport(Transport):
@@ -57,7 +54,7 @@ class InProcessTransport(Transport):
             if hasattr(result, "model_dump"):
                 result = result.model_dump(exclude_none=True)
             return success_response(request_id, result)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("Agent %s timed out after %ds", agent_id, self._DEFAULT_TIMEOUT)
             return error_response(request_id, TIMEOUT_ERROR, f"Agent timed out: {agent_id}")
         except Exception:

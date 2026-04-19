@@ -7,8 +7,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.security.auth import require_admin_session
 from app.db.repository import PluginRepository
+from app.security.auth import require_admin_session
 
 logger = logging.getLogger(__name__)
 

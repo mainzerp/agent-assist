@@ -9,7 +9,10 @@ from app.agents.base import BaseAgent
 from app.analytics.tracer import _optional_span
 from app.db.repository import SendDeviceMappingRepository
 from app.models.agent import (
-    AgentCard, AgentError, AgentErrorCode, AgentTask, TaskResult,
+    AgentCard,
+    AgentErrorCode,
+    AgentTask,
+    TaskResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,7 +82,9 @@ class SendAgent(BaseAgent):
 
         # Format content for channel (optional LLM call)
         formatted_content = await self._format_content(
-            content.strip(), mapping["device_type"], mapping["display_name"],
+            content.strip(),
+            mapping["device_type"],
+            mapping["display_name"],
             span_collector=span_collector,
         )
 
@@ -116,7 +121,10 @@ class SendAgent(BaseAgent):
         return text.strip() if text.strip() else None
 
     async def _format_content(
-        self, content: str, delivery_type: str, target_name: str,
+        self,
+        content: str,
+        delivery_type: str,
+        target_name: str,
         span_collector=None,
     ) -> str:
         """Optionally format content via LLM for the delivery channel."""
@@ -132,7 +140,9 @@ class SendAgent(BaseAgent):
                 {"role": "user", "content": content},
             ]
             async with _optional_span(span_collector, "llm_call", agent_id="send-agent") as span:
-                result = await self._call_llm(messages, span_collector=span_collector, max_tokens=1024 if delivery_type == "notify" else 512)
+                result = await self._call_llm(
+                    messages, span_collector=span_collector, max_tokens=1024 if delivery_type == "notify" else 512
+                )
                 span["metadata"]["model"] = "send-agent"
                 span["metadata"]["delivery_type"] = delivery_type
                 span["metadata"]["llm_response"] = (result or "")[:500]
@@ -145,7 +155,9 @@ class SendAgent(BaseAgent):
     async def _deliver_notify(self, service_target: str, content: str) -> None:
         """Send via HA notify.* service (smartphone push)."""
         await self._ha_client.call_service(
-            "notify", service_target, None,
+            "notify",
+            service_target,
+            None,
             {"message": content, "title": "HA-AgentHub"},
         )
         logger.info("Notify sent to %s", service_target)
@@ -154,7 +166,9 @@ class SendAgent(BaseAgent):
         """Send via TTS to a satellite media_player entity."""
         tts_engine = "tts.google_translate_say"
         await self._ha_client.call_service(
-            "tts", "speak", tts_engine,
+            "tts",
+            "speak",
+            tts_engine,
             {"media_player_entity_id": media_player_entity, "message": content},
         )
         logger.info("TTS sent to %s", media_player_entity)

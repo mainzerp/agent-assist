@@ -10,24 +10,23 @@ import httpx
 import pytest
 import respx
 
-from app.ha_client.rest import HARestClient
-from app.ha_client.rest import test_ha_connection as _test_ha_connection
 from app.ha_client.auth import (
+    HA_TOKEN_SECRET_KEY,
     build_auth_headers,
     get_auth_headers,
     get_ha_token,
     set_ha_token,
-    HA_TOKEN_SECRET_KEY,
 )
+from app.ha_client.rest import HARestClient
+from app.ha_client.rest import test_ha_connection as _test_ha_connection
 from app.ha_client.websocket import HAWebSocketClient
-
 
 # ---------------------------------------------------------------------------
 # REST Client
 # ---------------------------------------------------------------------------
 
-class TestHARestClient:
 
+class TestHARestClient:
     @respx.mock
     async def test_get_states_makes_get_request(self):
         states = [{"entity_id": "light.test", "state": "on", "attributes": {}}]
@@ -93,7 +92,9 @@ class TestHARestClient:
 
     @respx.mock
     async def test_fire_event_posts_correct_endpoint(self):
-        respx.post("http://ha.local/api/events/test_event").mock(return_value=httpx.Response(200, json={"message": "ok"}))
+        respx.post("http://ha.local/api/events/test_event").mock(
+            return_value=httpx.Response(200, json={"message": "ok"})
+        )
 
         client = HARestClient()
         client._base_url = "http://ha.local"
@@ -199,8 +200,8 @@ class TestHARestClient:
 # Standalone test_ha_connection
 # ---------------------------------------------------------------------------
 
-class TestHaConnectionUtility:
 
+class TestHaConnectionUtility:
     @respx.mock
     async def test_test_ha_connection_success(self):
         respx.get("http://ha.local:8123/api/").mock(return_value=httpx.Response(200))
@@ -218,8 +219,8 @@ class TestHaConnectionUtility:
 # Auth module
 # ---------------------------------------------------------------------------
 
-class TestHAAuth:
 
+class TestHAAuth:
     def test_build_auth_headers_format(self):
         headers = build_auth_headers("my-token-123")
         assert headers["Authorization"] == "Bearer my-token-123"
@@ -257,8 +258,8 @@ class TestHAAuth:
 # WebSocket client
 # ---------------------------------------------------------------------------
 
-class TestHAWebSocketClient:
 
+class TestHAWebSocketClient:
     def test_initial_state_not_connected(self):
         ws = HAWebSocketClient()
         assert ws.is_connected() is False
@@ -356,12 +357,12 @@ class TestHAWebSocketClient:
 # Conversation Entity Concurrency
 # ---------------------------------------------------------------------------
 
+
 class TestConversationEntityConcurrency:
     """Tests for overlapping-turn serialization on the HA conversation entity."""
 
     async def test_overlapping_ws_turns_serialized(self):
         """Two concurrent tasks sharing a lock execute sequentially."""
-        import asyncio
 
         lock = asyncio.Lock()
         call_order: list[str] = []
@@ -392,14 +393,13 @@ class TestConversationEntityConcurrency:
         a_end = call_order.index("A_end")
         b_start = call_order.index("B_start")
         b_end = call_order.index("B_end")
-        assert (a_end < b_start) or (b_end < a_start), (
-            f"Turns interleaved: {call_order}"
-        )
+        assert (a_end < b_start) or (b_end < a_start), f"Turns interleaved: {call_order}"
 
 
 # ---------------------------------------------------------------------------
 # HA Conversation Entity -- WS close/error handling
 # ---------------------------------------------------------------------------
+
 
 class TestHAConversationWSCloseError:
     """Tests for _process_via_ws raising on CLOSED/ERROR instead of returning partial speech."""
@@ -408,13 +408,17 @@ class TestHAConversationWSCloseError:
     def _mock_homeassistant(self):
         """Mock homeassistant dependencies so custom_components can be imported."""
         import sys
+
         mocks = {}
         ha_modules = [
-            "homeassistant", "homeassistant.components",
+            "homeassistant",
+            "homeassistant.components",
             "homeassistant.components.assist_pipeline",
             "homeassistant.components.conversation",
-            "homeassistant.config_entries", "homeassistant.const",
-            "homeassistant.core", "homeassistant.helpers",
+            "homeassistant.config_entries",
+            "homeassistant.const",
+            "homeassistant.core",
+            "homeassistant.helpers",
             "homeassistant.helpers.device_registry",
             "homeassistant.helpers.entity_registry",
             "homeassistant.helpers.intent",
@@ -431,13 +435,19 @@ class TestHAConversationWSCloseError:
         sys.modules["homeassistant.const"].MATCH_ALL = "*"
         conv_mod = sys.modules["homeassistant.components.conversation"]
         conv_mod.ConversationEntityFeature = MagicMock()
-        conv_mod.ConversationEntity = type("ConversationEntity", (), {
-            "__init__": lambda self, *a, **kw: None,
-        })
+        conv_mod.ConversationEntity = type(
+            "ConversationEntity",
+            (),
+            {
+                "__init__": lambda self, *a, **kw: None,
+            },
+        )
         # Wire parent attribute so `from homeassistant.components import conversation`
         # resolves to the same object as sys.modules[...conversation].
         sys.modules["homeassistant.components"].conversation = conv_mod
-        sys.modules["homeassistant.components"].assist_pipeline = sys.modules["homeassistant.components.assist_pipeline"]
+        sys.modules["homeassistant.components"].assist_pipeline = sys.modules[
+            "homeassistant.components.assist_pipeline"
+        ]
 
         yield
 
@@ -450,9 +460,11 @@ class TestHAConversationWSCloseError:
 
     async def test_process_via_ws_closed_mid_stream(self):
         """WS CLOSED after partial tokens should raise aiohttp.ClientError."""
-        import aiohttp
         import json as _json
         import sys
+
+        import aiohttp
+
         sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
         from custom_components.ha_agenthub.conversation import HaAgentHubConversationEntity
 
@@ -480,9 +492,11 @@ class TestHAConversationWSCloseError:
 
     async def test_process_via_ws_error_mid_stream(self):
         """WS ERROR after partial tokens should raise aiohttp.ClientError."""
-        import aiohttp
         import json as _json
         import sys
+
+        import aiohttp
+
         sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
         from custom_components.ha_agenthub.conversation import HaAgentHubConversationEntity
 
@@ -511,8 +525,10 @@ class TestHAConversationWSCloseError:
 
     async def test_process_via_ws_close_before_any_tokens(self):
         """WS CLOSED immediately (no tokens) should raise aiohttp.ClientError."""
-        import aiohttp
         import sys
+
+        import aiohttp
+
         sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
         from custom_components.ha_agenthub.conversation import HaAgentHubConversationEntity
 
@@ -536,9 +552,11 @@ class TestHAConversationWSCloseError:
 
     async def test_process_via_ws_error_token_triggers_raise(self):
         """Error field in done token should raise aiohttp.ClientError."""
-        import aiohttp
         import json as _json
         import sys
+
+        import aiohttp
+
         sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
         from custom_components.ha_agenthub.conversation import HaAgentHubConversationEntity
 

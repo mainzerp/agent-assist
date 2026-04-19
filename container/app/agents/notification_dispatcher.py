@@ -12,6 +12,110 @@ from app.util.tasks import spawn
 
 logger = logging.getLogger(__name__)
 
+
+def spawn_voice_followup_after_conversation(
+    ha_client: Any,
+    *,
+    area_id: str | None = None,
+    origin_device_id: str | None = None,
+    entity_index: Any = None,
+) -> None:
+    """Schedule Assist STT to resume after the spoken response.
+
+    - With ``area_id``: prefer ``assist_satellite`` in that area (fixed
+      speakers).
+    - With ``origin_device_id`` only (typical **Companion app**): run the
+      pipeline on that **device registry** id — phones often have no
+      ``area_id`` on the Assist request.
+
+    No-op without ``ha_client`` or without at least one of
+    ``area_id`` / ``origin_device_id``.
+    """
+    if not ha_client or (not area_id and not origin_device_id):
+        return
+
+    spawn(
+        _run_voice_followup_after_conversation(
+            ha_client,
+            area_id=area_id,
+            origin_device_id=origin_device_id,
+            entity_index=entity_index,
+        ),
+        name="conversation-voice-followup",
+    )
+
+
+async def _trigger_conversation_continuation_on_registry_device(
+    ha_client: Any,
+    device_registry_id: str,
+    profile: dict,
+) -> None:
+    """Start ``assist_pipeline.run`` using a known HA device registry UUID."""
+    if not profile.get("voice_followup_enabled", True):
+        return
+    delay = profile.get("tts_to_listen_delay", _TTS_TO_LISTEN_DELAY)
+    await asyncio.sleep(delay)
+    try:
+        await ha_client.call_service(
+            "assist_pipeline",
+            "run",
+            None,
+            {
+                "start_stage": "stt",
+                "end_stage": "tts",
+                "device_id": device_registry_id,
+            },
+        )
+        logger.info(
+            "Conversation continuation triggered (registry device_id=%s, e.g. Companion)",
+            device_registry_id,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to trigger conversation continuation for device %s",
+            device_registry_id,
+            exc_info=True,
+        )
+
+
+async def _run_voice_followup_after_conversation(
+    ha_client: Any,
+    *,
+    area_id: str | None = None,
+    origin_device_id: str | None = None,
+    entity_index: Any = None,
+) -> None:
+    profile = await _load_notification_profile()
+    if not profile.get("voice_followup_enabled", True):
+        return
+    profile = dict(profile)
+    raw_delay = await SettingsRepository.get_value("orchestrator.voice_followup_delay", None)
+    try:
+        if raw_delay not in (None, ""):
+            profile["tts_to_listen_delay"] = float(raw_delay)
+    except (TypeError, ValueError):
+        pass
+
+    if area_id:
+        satellite = await _resolve_satellite_device(ha_client, area_id, entity_index=entity_index)
+        if satellite:
+            await _trigger_conversation_continuation(
+                ha_client,
+                satellite,
+                area_id,
+                profile,
+                entity_index=entity_index,
+            )
+            return
+        logger.debug("No assist_satellite in area %s, falling back to origin device if set", area_id)
+
+    if origin_device_id:
+        await _trigger_conversation_continuation_on_registry_device(ha_client, origin_device_id, profile)
+        return
+
+    logger.debug("Voice follow-up skipped: no satellite and no origin_device_id")
+
+
 # Fallback message templates (used when LLM call fails)
 _FALLBACK_MESSAGES = {
     "de": "Timer {name} ist abgelaufen",
@@ -77,7 +181,10 @@ async def dispatch_timer_notification(
         # Trigger conversation continuation to listen for follow-up
         spawn(
             _trigger_conversation_continuation(
-                ha_client, media_player, area, profile,
+                ha_client,
+                media_player,
+                area,
+                profile,
                 entity_index=entity_index,
             ),
             name="tts-followup",
@@ -125,9 +232,7 @@ def _has_meaningful_timer_name(timer_name: str, entity_id: str) -> bool:
     if name_lower in ("timer", "timer 1", "timer 2", "timer 3"):
         return False
     # entity_id-style names like "timer.timer_1" are not meaningful
-    if name_lower == entity_id.split(".", 1)[-1].replace("_", " "):
-        return False
-    return True
+    return name_lower != entity_id.split(".", 1)[-1].replace("_", " ")
 
 
 async def _generate_tts_message(
@@ -162,9 +267,7 @@ async def _generate_tts_message(
         context_parts.append(f"Area/Room: {area}")
 
     user_prompt = (
-        f"A timer has just finished. Context:\n"
-        + "\n".join(context_parts)
-        + "\n\nGenerate a one-sentence announcement."
+        "A timer has just finished. Context:\n" + "\n".join(context_parts) + "\n\nGenerate a one-sentence announcement."
     )
 
     messages = [
@@ -200,7 +303,9 @@ async def _play_chime(
     chime_url = profile.get("chime_url", _DEFAULT_CHIME_URL)
     try:
         await ha_client.call_service(
-            "media_player", "play_media", media_player_entity,
+            "media_player",
+            "play_media",
+            media_player_entity,
             {
                 "media_content_id": chime_url,
                 "media_content_type": "music",
@@ -222,7 +327,9 @@ async def _notify_tts(
     tts_engine = profile.get("tts_engine", "tts.google_translate_say")
     try:
         await ha_client.call_service(
-            "tts", "speak", tts_engine,
+            "tts",
+            "speak",
+            tts_engine,
             {
                 "media_player_entity_id": media_player_entity,
                 "message": message,
@@ -235,7 +342,9 @@ async def _notify_tts(
             tts_domain = tts_engine.split(".")[0] if "." in tts_engine else "tts"
             tts_service = tts_engine.split(".")[1] if "." in tts_engine else "google_translate_say"
             await ha_client.call_service(
-                tts_domain, tts_service, media_player_entity,
+                tts_domain,
+                tts_service,
+                media_player_entity,
                 {"message": message},
             )
         except Exception:
@@ -250,7 +359,9 @@ async def _notify_persistent(
     """Create a persistent notification in HA UI."""
     try:
         await ha_client.call_service(
-            "persistent_notification", "create", None,
+            "persistent_notification",
+            "create",
+            None,
             {"message": message, "title": f"Timer: {timer_name}"},
         )
     except Exception:
@@ -267,7 +378,9 @@ async def _notify_push(
     for target in push_targets:
         try:
             await ha_client.call_service(
-                "notify", target, None,
+                "notify",
+                target,
+                None,
                 {
                     "message": message,
                     "title": f"Timer: {timer_name}",
@@ -334,7 +447,8 @@ async def _resolve_satellite_device(
                     return e.entity_id
         except Exception:
             logger.warning(
-                "EntityIndex satellite lookup failed for area %s", area,
+                "EntityIndex satellite lookup failed for area %s",
+                area,
                 exc_info=True,
             )
 
@@ -342,9 +456,8 @@ async def _resolve_satellite_device(
         states = await ha_client.get_states()
         for s in states:
             eid = s.get("entity_id", "")
-            if eid.startswith("assist_satellite."):
-                if s.get("attributes", {}).get("area_id") == area:
-                    return eid
+            if eid.startswith("assist_satellite.") and s.get("attributes", {}).get("area_id") == area:
+                return eid
     except Exception:
         logger.warning("Failed to resolve satellite for area %s", area, exc_info=True)
     return None
@@ -406,9 +519,7 @@ async def _trigger_conversation_continuation(
     # area; the voice pipeline is tied to satellite devices, not the
     # media_player chosen for TTS playback. Fall back to the
     # media_player entity so single-device setups still resolve.
-    target_entity = (
-        await _resolve_satellite_device(ha_client, area, entity_index=entity_index)
-    ) or media_player_entity
+    target_entity = (await _resolve_satellite_device(ha_client, area, entity_index=entity_index)) or media_player_entity
 
     try:
         pipeline_data: dict[str, Any] = {
@@ -420,16 +531,20 @@ async def _trigger_conversation_continuation(
             pipeline_data["device_id"] = device_id
 
         await ha_client.call_service(
-            "assist_pipeline", "run", None,
+            "assist_pipeline",
+            "run",
+            None,
             pipeline_data,
         )
         logger.info(
             "Conversation continuation triggered on %s (area=%s, device_id=%s)",
-            target_entity, area, device_id or "<unresolved>",
+            target_entity,
+            area,
+            device_id or "<unresolved>",
         )
     except Exception:
         logger.warning(
-            "Failed to trigger conversation continuation on %s -- "
-            "user must use wake word for follow-up",
-            target_entity, exc_info=True,
+            "Failed to trigger conversation continuation on %s -- user must use wake word for follow-up",
+            target_entity,
+            exc_info=True,
         )

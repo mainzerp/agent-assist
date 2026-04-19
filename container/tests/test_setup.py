@@ -6,10 +6,9 @@ and completion behavior.
 
 from __future__ import annotations
 
+import sys
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
-
-import sys
 
 import httpx
 import pytest
@@ -18,15 +17,13 @@ import pytest_asyncio
 from app.security.auth import (
     require_admin_session,
     require_admin_session_redirect,
-    require_api_key,
 )
-
 from tests.helpers import csrf_post
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 def _build_setup_app(*, setup_complete: bool = False):
     """Build a FastAPI app for setup wizard tests.
@@ -75,7 +72,9 @@ async def setup_client(db_repository):
     ):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
-            transport=transport, base_url="http://testserver", follow_redirects=False,
+            transport=transport,
+            base_url="http://testserver",
+            follow_redirects=False,
         ) as client:
             yield client
 
@@ -94,7 +93,9 @@ async def setup_complete_client(db_repository):
     ):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
-            transport=transport, base_url="http://testserver", follow_redirects=False,
+            transport=transport,
+            base_url="http://testserver",
+            follow_redirects=False,
         ) as client:
             yield client
 
@@ -106,18 +107,13 @@ async def setup_complete_client(db_repository):
 
 @pytest.mark.integration
 class TestSetupIncompleteRedirect:
-
     async def test_non_setup_routes_redirect_to_setup(self, setup_client: httpx.AsyncClient):
         resp = await setup_client.get("/dashboard/")
         assert resp.status_code == 302
         assert "/setup/" in resp.headers.get("location", "")
 
-    async def test_api_routes_redirect_when_setup_incomplete(
-        self, setup_client: httpx.AsyncClient
-    ):
-        resp = await setup_client.post(
-            "/api/conversation", json={"text": "hello"}
-        )
+    async def test_api_routes_redirect_when_setup_incomplete(self, setup_client: httpx.AsyncClient):
+        resp = await setup_client.post("/api/conversation", json={"text": "hello"})
         assert resp.status_code == 302
 
     async def test_health_accessible_during_setup(self, setup_client: httpx.AsyncClient):
@@ -139,10 +135,7 @@ class TestSetupIncompleteRedirect:
 
 @pytest.mark.integration
 class TestSetupAlreadyComplete:
-
-    async def test_setup_index_redirects_to_dashboard_when_complete(
-        self, setup_complete_client: httpx.AsyncClient
-    ):
+    async def test_setup_index_redirects_to_dashboard_when_complete(self, setup_complete_client: httpx.AsyncClient):
         with patch(
             "app.setup.routes.SetupStateRepository.get_all_steps",
             new_callable=AsyncMock,
@@ -166,14 +159,16 @@ class TestSetupAlreadyComplete:
 
 @pytest.mark.integration
 class TestSetupStepSubmissions:
-
     async def test_step1_admin_password(self, setup_client: httpx.AsyncClient):
-        with patch(
-            "app.setup.routes.AdminAccountRepository.create",
-            new_callable=AsyncMock,
-        ) as mock_create, patch(
-            "app.setup.routes.SetupStateRepository.set_step_completed",
-            new_callable=AsyncMock,
+        with (
+            patch(
+                "app.setup.routes.AdminAccountRepository.create",
+                new_callable=AsyncMock,
+            ) as mock_create,
+            patch(
+                "app.setup.routes.SetupStateRepository.set_step_completed",
+                new_callable=AsyncMock,
+            ),
         ):
             resp = await csrf_post(
                 setup_client,
@@ -186,15 +181,19 @@ class TestSetupStepSubmissions:
             mock_create.assert_awaited_once()
 
     async def test_step2_ha_connection(self, setup_client: httpx.AsyncClient):
-        with patch(
-            "app.setup.routes.SettingsRepository.set",
-            new_callable=AsyncMock,
-        ), patch(
-            "app.ha_client.auth.set_ha_token",
-            new_callable=AsyncMock,
-        ), patch(
-            "app.setup.routes.SetupStateRepository.set_step_completed",
-            new_callable=AsyncMock,
+        with (
+            patch(
+                "app.setup.routes.SettingsRepository.set",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.ha_client.auth.set_ha_token",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.setup.routes.SetupStateRepository.set_step_completed",
+                new_callable=AsyncMock,
+            ),
         ):
             resp = await csrf_post(
                 setup_client,
@@ -206,34 +205,41 @@ class TestSetupStepSubmissions:
             assert "/setup/step/3" in resp.headers.get("location", "")
 
     async def test_step3_api_key_generation(self, setup_client: httpx.AsyncClient):
-        with patch(
-            "app.setup.routes.store_secret",
-            new_callable=AsyncMock,
-        ), patch(
-            "app.setup.routes.SetupStateRepository.set_step_completed",
-            new_callable=AsyncMock,
-        ), patch(
-            "app.setup.routes.SetupStateRepository.get_all_steps",
-            new_callable=AsyncMock,
-            return_value=[
-                {"step": "admin_password", "completed": True},
-                {"step": "ha_connection", "completed": True},
-                {"step": "container_api_key", "completed": True},
-                {"step": "llm_providers", "completed": False},
-                {"step": "review_complete", "completed": False},
-            ],
+        with (
+            patch(
+                "app.setup.routes.store_secret",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.setup.routes.SetupStateRepository.set_step_completed",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.setup.routes.SetupStateRepository.get_all_steps",
+                new_callable=AsyncMock,
+                return_value=[
+                    {"step": "admin_password", "completed": True},
+                    {"step": "ha_connection", "completed": True},
+                    {"step": "container_api_key", "completed": True},
+                    {"step": "llm_providers", "completed": False},
+                    {"step": "review_complete", "completed": False},
+                ],
+            ),
         ):
             resp = await csrf_post(setup_client, "/setup/step/3", get_url="/setup/step/3")
             assert resp.status_code == 200
             assert "text/html" in resp.headers.get("content-type", "")
 
     async def test_step4_llm_keys(self, setup_client: httpx.AsyncClient):
-        with patch(
-            "app.setup.routes.store_secret",
-            new_callable=AsyncMock,
-        ), patch(
-            "app.setup.routes.SetupStateRepository.set_step_completed",
-            new_callable=AsyncMock,
+        with (
+            patch(
+                "app.setup.routes.store_secret",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.setup.routes.SetupStateRepository.set_step_completed",
+                new_callable=AsyncMock,
+            ),
         ):
             resp = await csrf_post(
                 setup_client,
@@ -283,7 +289,6 @@ class TestSetupStepSubmissions:
 
 @pytest.mark.integration
 class TestHAConnectionTest:
-
     async def test_ha_connection_test_success(self, setup_client: httpx.AsyncClient):
         with patch(
             "app.setup.routes.test_ha_connection",
@@ -324,7 +329,6 @@ class TestHAConnectionTest:
 
 @pytest.mark.integration
 class TestLLMTest:
-
     async def test_llm_test_success(self, setup_client: httpx.AsyncClient):
         mock_choice = MagicMock()
         mock_choice.message.content = "Hello!"
@@ -383,12 +387,15 @@ class TestSetupDuplicateAdmin:
 
     async def test_duplicate_admin_submission_succeeds(self, setup_client: httpx.AsyncClient):
         """Submitting admin credentials a second time should use INSERT OR REPLACE."""
-        with patch(
-            "app.setup.routes.AdminAccountRepository.create",
-            new_callable=AsyncMock,
-        ) as mock_create, patch(
-            "app.setup.routes.SetupStateRepository.set_step_completed",
-            new_callable=AsyncMock,
+        with (
+            patch(
+                "app.setup.routes.AdminAccountRepository.create",
+                new_callable=AsyncMock,
+            ) as mock_create,
+            patch(
+                "app.setup.routes.SetupStateRepository.set_step_completed",
+                new_callable=AsyncMock,
+            ),
         ):
             # First submission
             resp1 = await csrf_post(

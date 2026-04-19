@@ -7,7 +7,6 @@ import importlib.util
 import inspect
 import logging
 from pathlib import Path
-from typing import Any
 
 from app.db.repository import PluginRepository
 from app.plugins.base import BasePlugin, PluginContext
@@ -51,7 +50,9 @@ class PluginLoader:
             if names:
                 logger.warning(
                     "Loading %d plugin file(s) from %s: %s",
-                    len(names), self._plugin_dir, ", ".join(names),
+                    len(names),
+                    self._plugin_dir,
+                    ", ".join(names),
                 )
         for py_file in plugin_files:
             if py_file.name.startswith("_"):
@@ -137,10 +138,11 @@ class PluginLoader:
                 asyncio.to_thread(spec.loader.exec_module, module),
                 timeout=PLUGIN_IMPORT_TIMEOUT,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(
                 "Plugin import for %s exceeded %.1fs timeout; skipping",
-                py_file, PLUGIN_IMPORT_TIMEOUT,
+                py_file,
+                PLUGIN_IMPORT_TIMEOUT,
             )
             return None
 

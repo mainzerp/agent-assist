@@ -15,12 +15,12 @@ from app.analytics.tracer import _optional_span
 logger = logging.getLogger(__name__)
 
 _CLIMATE_ACTION_MAP: dict[str, tuple[str, str]] = {
-    "set_temperature":  ("climate", "set_temperature"),
-    "set_hvac_mode":    ("climate", "set_hvac_mode"),
-    "set_fan_mode":     ("climate", "set_fan_mode"),
-    "set_humidity":     ("climate", "set_humidity"),
-    "turn_on":          ("climate", "turn_on"),
-    "turn_off":         ("climate", "turn_off"),
+    "set_temperature": ("climate", "set_temperature"),
+    "set_hvac_mode": ("climate", "set_hvac_mode"),
+    "set_fan_mode": ("climate", "set_fan_mode"),
+    "set_humidity": ("climate", "set_humidity"),
+    "turn_on": ("climate", "turn_on"),
+    "turn_off": ("climate", "turn_off"),
 }
 
 # FLOW-VERIFY-SHARED (0.18.5): climate entities have several meaningful
@@ -34,9 +34,9 @@ _EXPECTED_STATE_BY_ACTION: dict[str, str] = {
 
 # Intent-first phrasing when verification is inconclusive or ambiguous.
 _ACTION_PHRASES: dict[str, str] = {
-    "set_temperature":  "temperature updated",
-    "set_fan_mode":     "fan mode updated",
-    "set_humidity":     "humidity target updated",
+    "set_temperature": "temperature updated",
+    "set_fan_mode": "fan mode updated",
+    "set_humidity": "humidity target updated",
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "weather"})
@@ -97,7 +97,12 @@ async def execute_climate_action(
     # Read-only actions (no service call)
     if action_name in ("query_climate_state", "list_climate", "query_weather", "query_weather_forecast"):
         return await _handle_climate_read_action(
-            action_name, entity_query, ha_client, entity_index, entity_matcher, agent_id,
+            action_name,
+            entity_query,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
             span_collector=span_collector,
         )
 
@@ -164,7 +169,10 @@ async def execute_climate_action(
             expected_state = mode
 
     verify = await call_service_with_verification(
-        ha_client, domain, service, entity_id,
+        ha_client,
+        domain,
+        service,
+        entity_id,
         service_data=service_data,
         expected_state=expected_state,
     )
@@ -195,6 +203,7 @@ async def execute_climate_action(
 # ---------------------------------------------------------------------------
 # Read-only climate action handlers
 # ---------------------------------------------------------------------------
+
 
 def _format_climate_state(entity_id: str, state_resp: dict) -> str:
     state = state_resp.get("state", "unknown")
@@ -256,25 +265,41 @@ async def _query_climate_state(
         entity_id = None
 
     if not entity_id:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": f"Could not find an entity matching '{entity_query}'.",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"Could not find an entity matching '{entity_query}'.",
+            "cacheable": False,
+        }
 
     try:
         state_resp = await ha_client.get_state(entity_id)
         if not state_resp:
-            return {"success": False, "entity_id": entity_id, "new_state": None,
-                    "speech": f"Could not retrieve state for {entity_id}.",
-                    "cacheable": False}
+            return {
+                "success": False,
+                "entity_id": entity_id,
+                "new_state": None,
+                "speech": f"Could not retrieve state for {entity_id}.",
+                "cacheable": False,
+            }
         speech = _format_climate_state(entity_id, state_resp)
-        return {"success": True, "entity_id": entity_id,
-                "new_state": state_resp.get("state"), "speech": speech,
-                "cacheable": False}
+        return {
+            "success": True,
+            "entity_id": entity_id,
+            "new_state": state_resp.get("state"),
+            "speech": speech,
+            "cacheable": False,
+        }
     except Exception as exc:
         logger.error("State query failed for %s", entity_id, exc_info=True)
-        return {"success": False, "entity_id": entity_id, "new_state": None,
-                "speech": f"Failed to query climate status: {exc}",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": None,
+            "speech": f"Failed to query climate status: {exc}",
+            "cacheable": False,
+        }
 
 
 async def _list_climate(ha_client: Any) -> dict:
@@ -282,8 +307,12 @@ async def _list_climate(ha_client: Any) -> dict:
         states = await ha_client.get_states()
     except Exception as exc:
         logger.error("Failed to fetch states for list_climate", exc_info=True)
-        return {"success": False, "entity_id": "", "new_state": None,
-                "speech": f"Failed to list climate devices: {exc}"}
+        return {
+            "success": False,
+            "entity_id": "",
+            "new_state": None,
+            "speech": f"Failed to list climate devices: {exc}",
+        }
 
     climate_entities = []
     sensors = []
@@ -296,8 +325,7 @@ async def _list_climate(ha_client: Any) -> dict:
             sensors.append(s)
 
     if not climate_entities and not sensors:
-        return {"success": True, "entity_id": "", "new_state": None,
-                "speech": "No climate devices or sensors found."}
+        return {"success": True, "entity_id": "", "new_state": None, "speech": "No climate devices or sensors found."}
 
     parts = []
     if climate_entities:
@@ -326,13 +354,13 @@ async def _list_climate(ha_client: Any) -> dict:
         parts.append("Sensors: " + "; ".join(lines))
 
     speech = ". ".join(parts) + "."
-    return {"success": True, "entity_id": "", "new_state": None, "speech": speech,
-            "cacheable": False}
+    return {"success": True, "entity_id": "", "new_state": None, "speech": speech, "cacheable": False}
 
 
 # ---------------------------------------------------------------------------
 # Weather helpers and query functions
 # ---------------------------------------------------------------------------
+
 
 def _format_weather_state(entity_id: str, state_resp: dict) -> str:
     """Format a weather entity state into a human-readable summary."""
@@ -442,28 +470,48 @@ async def _query_weather(
     agent_id: str | None,
     span_collector=None,
 ) -> dict:
-    entity_id, friendly_name = await _resolve_weather_entity(
-        entity_query, ha_client, entity_matcher, agent_id, span_collector=span_collector,
+    entity_id, _friendly_name = await _resolve_weather_entity(
+        entity_query,
+        ha_client,
+        entity_matcher,
+        agent_id,
+        span_collector=span_collector,
     )
     if not entity_id:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": "No weather entities found in Home Assistant. Please add a weather integration.",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "No weather entities found in Home Assistant. Please add a weather integration.",
+            "cacheable": False,
+        }
     try:
         state_resp = await ha_client.get_state(entity_id)
         if not state_resp:
-            return {"success": False, "entity_id": entity_id, "new_state": None,
-                    "speech": f"Could not retrieve state for {entity_id}.",
-                    "cacheable": False}
+            return {
+                "success": False,
+                "entity_id": entity_id,
+                "new_state": None,
+                "speech": f"Could not retrieve state for {entity_id}.",
+                "cacheable": False,
+            }
         speech = _format_weather_state(entity_id, state_resp)
-        return {"success": True, "entity_id": entity_id,
-                "new_state": state_resp.get("state"), "speech": speech,
-                "cacheable": False}
+        return {
+            "success": True,
+            "entity_id": entity_id,
+            "new_state": state_resp.get("state"),
+            "speech": speech,
+            "cacheable": False,
+        }
     except Exception as exc:
         logger.error("Weather query failed for %s", entity_id, exc_info=True)
-        return {"success": False, "entity_id": entity_id, "new_state": None,
-                "speech": f"Failed to query weather: {exc}",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": None,
+            "speech": f"Failed to query weather: {exc}",
+            "cacheable": False,
+        }
 
 
 async def _query_weather_forecast(
@@ -475,14 +523,24 @@ async def _query_weather_forecast(
     span_collector=None,
 ) -> dict:
     entity_id, friendly_name = await _resolve_weather_entity(
-        entity_query, ha_client, entity_matcher, agent_id, span_collector=span_collector,
+        entity_query,
+        ha_client,
+        entity_matcher,
+        agent_id,
+        span_collector=span_collector,
     )
     if not entity_id:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": "No weather entities found in Home Assistant. Please add a weather integration.",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "No weather entities found in Home Assistant. Please add a weather integration.",
+            "cacheable": False,
+        }
     try:
-        resp = await ha_client.call_service("weather", "get_forecasts", entity_id, {"type": "daily"}, return_response=True)
+        resp = await ha_client.call_service(
+            "weather", "get_forecasts", entity_id, {"type": "daily"}, return_response=True
+        )
         forecasts = []
         if isinstance(resp, dict):
             # HA returns {entity_id: {"forecast": [...]}}
@@ -493,11 +551,11 @@ async def _query_weather_forecast(
                 forecasts = entity_data
         if forecasts:
             speech = f"{friendly_name} forecast: {_format_weather_forecast(forecasts)}"
-            return {"success": True, "entity_id": entity_id,
-                    "new_state": None, "speech": speech,
-                    "cacheable": False}
+            return {"success": True, "entity_id": entity_id, "new_state": None, "speech": speech, "cacheable": False}
     except Exception:
-        logger.warning("weather.get_forecasts service call failed for %s, falling back to state", entity_id, exc_info=True)
+        logger.warning(
+            "weather.get_forecasts service call failed for %s, falling back to state", entity_id, exc_info=True
+        )
 
     # Fallback: try forecast attribute from entity state
     try:
@@ -506,15 +564,23 @@ async def _query_weather_forecast(
             forecast_attr = state_resp.get("attributes", {}).get("forecast", [])
             if forecast_attr:
                 speech = f"{friendly_name} forecast: {_format_weather_forecast(forecast_attr)}"
-                return {"success": True, "entity_id": entity_id,
-                        "new_state": None, "speech": speech,
-                        "cacheable": False}
+                return {
+                    "success": True,
+                    "entity_id": entity_id,
+                    "new_state": None,
+                    "speech": speech,
+                    "cacheable": False,
+                }
     except Exception:
         logger.warning("Fallback forecast query failed for %s", entity_id, exc_info=True)
 
-    return {"success": False, "entity_id": entity_id, "new_state": None,
-            "speech": "Forecast data not available.",
-            "cacheable": False}
+    return {
+        "success": False,
+        "entity_id": entity_id,
+        "new_state": None,
+        "speech": "Forecast data not available.",
+        "cacheable": False,
+    }
 
 
 async def _handle_climate_read_action(
@@ -527,15 +593,17 @@ async def _handle_climate_read_action(
     span_collector=None,
 ) -> dict:
     if action_name == "query_climate_state":
-        return await _query_climate_state(entity_query, ha_client, entity_index, entity_matcher, agent_id,
-                                          span_collector=span_collector)
+        return await _query_climate_state(
+            entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
     if action_name == "list_climate":
         return await _list_climate(ha_client)
     if action_name == "query_weather":
-        return await _query_weather(entity_query, ha_client, entity_index, entity_matcher, agent_id,
-                                    span_collector=span_collector)
+        return await _query_weather(
+            entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
     if action_name == "query_weather_forecast":
-        return await _query_weather_forecast(entity_query, ha_client, entity_index, entity_matcher, agent_id,
-                                             span_collector=span_collector)
-    return {"success": False, "entity_id": "", "new_state": None,
-            "speech": f"Unknown read action: {action_name}"}
+        return await _query_weather_forecast(
+            entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
+    return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}

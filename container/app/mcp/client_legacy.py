@@ -48,37 +48,33 @@ class MCPClient:
         """Connect to the MCP server. Returns True on success."""
         try:
             if self._transport == "stdio":
-                return await asyncio.wait_for(
-                    self._connect_stdio(), timeout=float(self._timeout)
-                )
+                return await asyncio.wait_for(self._connect_stdio(), timeout=float(self._timeout))
             elif self._transport == "sse":
-                return await asyncio.wait_for(
-                    self._connect_sse(), timeout=float(self._timeout)
-                )
+                return await asyncio.wait_for(self._connect_sse(), timeout=float(self._timeout))
             else:
                 logger.error(
-                    "Unsupported transport type '%s' for MCP server '%s'. "
-                    "Supported transports: stdio, sse.",
-                    self._transport, self._name,
+                    "Unsupported transport type '%s' for MCP server '%s'. Supported transports: stdio, sse.",
+                    self._transport,
+                    self._name,
                 )
                 return False
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(
                 "Connection to MCP server '%s' timed out after %ds",
-                self._name, self._timeout,
+                self._name,
+                self._timeout,
             )
             self._connected = False
             return False
         except Exception:
-            logger.error(
-                "Failed to connect to MCP server '%s'", self._name, exc_info=True
-            )
+            logger.error("Failed to connect to MCP server '%s'", self._name, exc_info=True)
             self._connected = False
             return False
 
     async def _connect_stdio(self) -> bool:
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
         from mcp import ClientSession
-        from mcp.client.stdio import stdio_client, StdioServerParameters
 
         parts = shlex.split(self._command_or_url)
         command = parts[0]
@@ -98,8 +94,9 @@ class MCPClient:
         return True
 
     async def _connect_sse(self) -> bool:
-        from mcp import ClientSession
         from mcp.client.sse import sse_client
+
+        from mcp import ClientSession
 
         self._transport_cm = sse_client(self._command_or_url)
         read, write = await self._transport_cm.__aenter__()
@@ -120,9 +117,7 @@ class MCPClient:
             if self._transport_cm is not None:
                 await self._transport_cm.__aexit__(None, None, None)
         except Exception:
-            logger.warning(
-                "Error disconnecting from MCP server '%s'", self._name, exc_info=True
-            )
+            logger.warning("Error disconnecting from MCP server '%s'", self._name, exc_info=True)
         finally:
             self._session = None
             self._session_cm = None
@@ -145,9 +140,7 @@ class MCPClient:
                 for tool in result.tools
             ]
         except Exception:
-            logger.error(
-                "Failed to list tools from MCP server '%s'", self._name, exc_info=True
-            )
+            logger.error("Failed to list tools from MCP server '%s'", self._name, exc_info=True)
             return []
 
     async def call_tool(self, tool_name: str, arguments: dict | None = None) -> Any:
@@ -160,6 +153,8 @@ class MCPClient:
         except Exception:
             logger.error(
                 "Failed to call tool '%s' on MCP server '%s'",
-                tool_name, self._name, exc_info=True,
+                tool_name,
+                self._name,
+                exc_info=True,
             )
             raise

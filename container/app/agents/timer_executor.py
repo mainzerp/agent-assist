@@ -18,29 +18,29 @@ from app.analytics.tracer import _optional_span
 logger = logging.getLogger(__name__)
 
 _TIMER_ACTION_MAP: dict[str, tuple[str, str]] = {
-    "start_timer":   ("timer", "start"),
-    "cancel_timer":  ("timer", "cancel"),
-    "pause_timer":   ("timer", "pause"),
-    "resume_timer":  ("timer", "start"),
-    "finish_timer":  ("timer", "finish"),
-    "set_datetime":  ("input_datetime", "set_datetime"),
+    "start_timer": ("timer", "start"),
+    "cancel_timer": ("timer", "cancel"),
+    "pause_timer": ("timer", "pause"),
+    "resume_timer": ("timer", "start"),
+    "finish_timer": ("timer", "finish"),
+    "set_datetime": ("input_datetime", "set_datetime"),
 }
 
 # FLOW-VERIFY-SHARED (0.18.5): HA timer entities expose
 # "active"/"paused"/"idle". input_datetime has no fixed target state
 # (the "state" is the datetime itself), so we leave it open.
 _EXPECTED_STATE_BY_ACTION: dict[str, str] = {
-    "start_timer":   "active",
-    "cancel_timer":  "idle",
-    "pause_timer":   "paused",
-    "resume_timer":  "active",
-    "finish_timer":  "idle",
+    "start_timer": "active",
+    "cancel_timer": "idle",
+    "pause_timer": "paused",
+    "resume_timer": "active",
+    "finish_timer": "idle",
 }
 
 _ACTION_PHRASES: dict[str, str] = {
-    "start_timer":  "started",
+    "start_timer": "started",
     "cancel_timer": "cancelled",
-    "pause_timer":  "paused",
+    "pause_timer": "paused",
     "resume_timer": "resumed",
     "finish_timer": "finished",
     "set_datetime": "updated",
@@ -59,6 +59,7 @@ def _validate_domain(entity_id: str) -> bool:
 # Timer Metadata
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class TimerMetadata:
     name: str
@@ -75,6 +76,7 @@ class TimerMetadata:
 # Recently Expired Tracking
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ExpiredTimer:
     name: str
@@ -82,16 +84,21 @@ class ExpiredTimer:
     expired_at: datetime
     metadata: TimerMetadata | None = None
 
+
 _recently_expired: deque[ExpiredTimer] = deque(maxlen=20)
 _EXPIRED_TTL = timedelta(minutes=10)
 
 
 def record_expired(name: str, entity_id: str, metadata: TimerMetadata | None = None) -> None:
     """Record a timer as recently expired."""
-    _recently_expired.appendleft(ExpiredTimer(
-        name=name, entity_id=entity_id,
-        expired_at=datetime.now(), metadata=metadata,
-    ))
+    _recently_expired.appendleft(
+        ExpiredTimer(
+            name=name,
+            entity_id=entity_id,
+            expired_at=datetime.now(),
+            metadata=metadata,
+        )
+    )
 
 
 def get_last_expired() -> ExpiredTimer | None:
@@ -112,6 +119,7 @@ def get_recently_expired() -> list[ExpiredTimer]:
 # ---------------------------------------------------------------------------
 # Timer Pool
 # ---------------------------------------------------------------------------
+
 
 class _TimerPool:
     """In-memory mapping of user-given names to timer entity IDs.
@@ -192,9 +200,8 @@ async def _resolve_media_player(ha_client: Any, device_id: str | None, area_id: 
         states = await ha_client.get_states()
         for s in states:
             eid = s.get("entity_id", "")
-            if eid.startswith("media_player."):
-                if s.get("attributes", {}).get("area_id") == area_id:
-                    return eid
+            if eid.startswith("media_player.") and s.get("attributes", {}).get("area_id") == area_id:
+                return eid
     except Exception:
         logger.warning("Failed to resolve media_player for area %s", area_id, exc_info=True)
     return None
@@ -220,6 +227,7 @@ async def on_timer_finished(
 
     try:
         from app.agents.notification_dispatcher import dispatch_timer_notification
+
         await dispatch_timer_notification(
             ha_client=ha_client,
             timer_name=timer_name,
@@ -237,6 +245,7 @@ async def on_timer_finished(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _build_timer_service_data(action: dict) -> dict[str, Any]:
     """Build HA service_data from a timer action's parameters."""
@@ -337,6 +346,7 @@ def _format_timer_state(entity_id: str, state_resp: dict) -> str:
 # Read-only action handlers
 # ---------------------------------------------------------------------------
 
+
 async def _handle_read_action(
     action_name: str,
     entity_query: str,
@@ -349,15 +359,15 @@ async def _handle_read_action(
     """Handle read-only actions that query state without calling a service."""
 
     if action_name == "query_timer":
-        return await _query_timer(entity_query, ha_client, entity_index, entity_matcher, agent_id,
-                                  span_collector=span_collector)
+        return await _query_timer(
+            entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
     if action_name == "list_timers":
         return await _list_timers(ha_client)
     if action_name == "list_alarms":
         return await _list_alarms(ha_client)
 
-    return {"success": False, "entity_id": "", "new_state": None,
-            "speech": f"Unknown read action: {action_name}"}
+    return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}
 
 
 async def _query_timer(
@@ -395,25 +405,41 @@ async def _query_timer(
         entity_id = None
 
     if not entity_id:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": f"Could not find an entity matching '{entity_query}'.",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"Could not find an entity matching '{entity_query}'.",
+            "cacheable": False,
+        }
 
     try:
         state_resp = await ha_client.get_state(entity_id)
         if not state_resp:
-            return {"success": False, "entity_id": entity_id, "new_state": None,
-                    "speech": f"Could not retrieve state for {entity_id}.",
-                    "cacheable": False}
+            return {
+                "success": False,
+                "entity_id": entity_id,
+                "new_state": None,
+                "speech": f"Could not retrieve state for {entity_id}.",
+                "cacheable": False,
+            }
         speech = _format_timer_state(entity_id, state_resp)
-        return {"success": True, "entity_id": entity_id,
-                "new_state": state_resp.get("state"), "speech": speech,
-                "cacheable": False}
+        return {
+            "success": True,
+            "entity_id": entity_id,
+            "new_state": state_resp.get("state"),
+            "speech": speech,
+            "cacheable": False,
+        }
     except Exception as exc:
         logger.error("State query failed for %s", entity_id, exc_info=True)
-        return {"success": False, "entity_id": entity_id, "new_state": None,
-                "speech": f"Failed to query timer status: {exc}",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": None,
+            "speech": f"Failed to query timer status: {exc}",
+            "cacheable": False,
+        }
 
 
 async def _list_timers(ha_client: Any) -> dict:
@@ -422,14 +448,12 @@ async def _list_timers(ha_client: Any) -> dict:
         states = await ha_client.get_states()
     except Exception as exc:
         logger.error("Failed to fetch states for list_timers", exc_info=True)
-        return {"success": False, "entity_id": "", "new_state": None,
-                "speech": f"Failed to list timers: {exc}"}
+        return {"success": False, "entity_id": "", "new_state": None, "speech": f"Failed to list timers: {exc}"}
 
     timers = [s for s in states if s.get("entity_id", "").startswith("timer.")]
 
     if not timers:
-        return {"success": True, "entity_id": "", "new_state": None,
-                "speech": "No timer entities found."}
+        return {"success": True, "entity_id": "", "new_state": None, "speech": "No timer entities found."}
 
     active = []
     paused = []
@@ -477,8 +501,7 @@ async def _list_timers(ha_client: Any) -> dict:
     else:
         speech = ". ".join(parts) + "."
 
-    return {"success": True, "entity_id": "", "new_state": None, "speech": speech,
-            "cacheable": False}
+    return {"success": True, "entity_id": "", "new_state": None, "speech": speech, "cacheable": False}
 
 
 async def _list_alarms(ha_client: Any) -> dict:
@@ -487,14 +510,17 @@ async def _list_alarms(ha_client: Any) -> dict:
         states = await ha_client.get_states()
     except Exception as exc:
         logger.error("Failed to fetch states for list_alarms", exc_info=True)
-        return {"success": False, "entity_id": "", "new_state": None,
-                "speech": f"Failed to list alarms: {exc}"}
+        return {"success": False, "entity_id": "", "new_state": None, "speech": f"Failed to list alarms: {exc}"}
 
     alarms = [s for s in states if s.get("entity_id", "").startswith("input_datetime.")]
 
     if not alarms:
-        return {"success": True, "entity_id": "", "new_state": None,
-                "speech": "No alarm or input_datetime entities found."}
+        return {
+            "success": True,
+            "entity_id": "",
+            "new_state": None,
+            "speech": "No alarm or input_datetime entities found.",
+        }
 
     lines = []
     for a in alarms:
@@ -504,8 +530,7 @@ async def _list_alarms(ha_client: Any) -> dict:
         lines.append(f"{friendly_name}: {state}")
 
     speech = "Alarms: " + "; ".join(lines) + "."
-    return {"success": True, "entity_id": "", "new_state": None, "speech": speech,
-            "cacheable": False}
+    return {"success": True, "entity_id": "", "new_state": None, "speech": speech, "cacheable": False}
 
 
 # ---------------------------------------------------------------------------
@@ -558,8 +583,12 @@ async def _snooze_timer(
             friendly_name = last.name
 
     if not entity_id:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": f"Could not find an entity matching '{entity_query}'."}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"Could not find an entity matching '{entity_query}'.",
+        }
 
     try:
         # Check current state -- if idle (recently expired), skip cancel
@@ -568,13 +597,19 @@ async def _snooze_timer(
         if current_state and current_state != "idle":
             # FLOW-VERIFY-SHARED: verified cancel -> idle
             await call_service_with_verification(
-                ha_client, "timer", "cancel", entity_id,
+                ha_client,
+                "timer",
+                "cancel",
+                entity_id,
                 expected_state="idle",
             )
 
         # Restart with snooze duration (verified -> active)
         verify = await call_service_with_verification(
-            ha_client, "timer", "start", entity_id,
+            ha_client,
+            "timer",
+            "start",
+            entity_id,
             service_data={"duration": snooze_duration},
             expected_state="active",
         )
@@ -587,17 +622,26 @@ async def _snooze_timer(
 
         secs = _parse_duration_seconds(snooze_duration)
         human_dur = _format_duration_human(secs) if secs else snooze_duration
-        return {"success": True, "entity_id": entity_id, "new_state": new_state,
-                "speech": f"Snoozed {friendly_name} for {human_dur}."}
+        return {
+            "success": True,
+            "entity_id": entity_id,
+            "new_state": new_state,
+            "speech": f"Snoozed {friendly_name} for {human_dur}.",
+        }
     except Exception as exc:
         logger.error("Snooze failed for %s", entity_id, exc_info=True)
-        return {"success": False, "entity_id": entity_id, "new_state": None,
-                "speech": f"Failed to snooze {friendly_name}: {exc}"}
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": None,
+            "speech": f"Failed to snooze {friendly_name}: {exc}",
+        }
 
 
 # ---------------------------------------------------------------------------
 # Delayed / notification action handlers
 # ---------------------------------------------------------------------------
+
 
 async def _start_timer_with_notification(
     action: dict,
@@ -614,15 +658,18 @@ async def _start_timer_with_notification(
     notification_message = str(params.get("notification_message", "Timer finished!"))
 
     if not duration:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": "Duration is required for start_timer_with_notification."}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "Duration is required for start_timer_with_notification.",
+        }
 
     # Resolve entity (reuse pool logic through regular start)
-    start_action = {"action": "start_timer", "entity": entity_query,
-                    "parameters": {"duration": duration}}
-    result = await execute_timer_action(start_action, ha_client, entity_index,
-                                         entity_matcher, agent_id=agent_id,
-                                         span_collector=span_collector)
+    start_action = {"action": "start_timer", "entity": entity_query, "parameters": {"duration": duration}}
+    result = await execute_timer_action(
+        start_action, ha_client, entity_index, entity_matcher, agent_id=agent_id, span_collector=span_collector
+    )
 
     if not result.get("success"):
         return result
@@ -635,6 +682,7 @@ async def _start_timer_with_notification(
     async def _send_notification():
         try:
             from app.agents.notification_dispatcher import dispatch_timer_notification
+
             timer_name = _timer_pool.get_name(entity_id) or entity_query
             metadata = _timer_pool.get_metadata(entity_id)
             await dispatch_timer_notification(
@@ -656,7 +704,7 @@ async def _start_timer_with_notification(
         "success": True,
         "entity_id": entity_id,
         "new_state": result.get("new_state"),
-        "speech": f"Started timer for {human_dur} with notification: \"{notification_message}\".",
+        "speech": f'Started timer for {human_dur} with notification: "{notification_message}".',
     }
 
 
@@ -681,23 +729,33 @@ async def _delayed_action(
     target_action = str(params.get("target_action", ""))
 
     if not delay_duration:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": "delay_duration is required for delayed_action."}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "delay_duration is required for delayed_action.",
+        }
     if not target_entity:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": "target_entity is required for delayed_action."}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "target_entity is required for delayed_action.",
+        }
     if not target_action or "/" not in target_action:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": "target_action is required in 'domain/service' format (e.g. 'light/turn_off')."}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "target_action is required in 'domain/service' format (e.g. 'light/turn_off').",
+        }
 
     target_domain, target_service = target_action.split("/", 1)
 
     # Start a timer for the delay
     timer_entity_query = action.get("entity", "delay timer")
-    start_action = {"action": "start_timer", "entity": timer_entity_query,
-                    "parameters": {"duration": delay_duration}}
-    result = await execute_timer_action(start_action, ha_client, entity_index,
-                                         entity_matcher, agent_id=agent_id)
+    start_action = {"action": "start_timer", "entity": timer_entity_query, "parameters": {"duration": delay_duration}}
+    result = await execute_timer_action(start_action, ha_client, entity_index, entity_matcher, agent_id=agent_id)
 
     if not result.get("success"):
         return result
@@ -711,8 +769,9 @@ async def _delayed_action(
         try:
             await ha_client.call_service(target_domain, target_service, target_entity)
         except Exception:
-            logger.error("Delayed action failed: %s/%s on %s",
-                         target_domain, target_service, target_entity, exc_info=True)
+            logger.error(
+                "Delayed action failed: %s/%s on %s", target_domain, target_service, target_entity, exc_info=True
+            )
 
     delayed_task_manager.set_ha_client(ha_client)
     delayed_task_manager.schedule(
@@ -750,19 +809,26 @@ async def _sleep_timer(
     media_player_entity = str(params.get("media_player", ""))
 
     if not duration:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": "Duration is required for sleep_timer."}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "Duration is required for sleep_timer.",
+        }
     if not media_player_entity:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": "media_player entity_id is required for sleep_timer."}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "media_player entity_id is required for sleep_timer.",
+        }
 
     # Start a timer for the duration
     timer_entity_query = action.get("entity", "sleep timer")
-    start_action = {"action": "start_timer", "entity": timer_entity_query,
-                    "parameters": {"duration": duration}}
-    result = await execute_timer_action(start_action, ha_client, entity_index,
-                                         entity_matcher, agent_id=agent_id,
-                                         span_collector=span_collector)
+    start_action = {"action": "start_timer", "entity": timer_entity_query, "parameters": {"duration": duration}}
+    result = await execute_timer_action(
+        start_action, ha_client, entity_index, entity_matcher, agent_id=agent_id, span_collector=span_collector
+    )
 
     if not result.get("success"):
         return result
@@ -776,8 +842,7 @@ async def _sleep_timer(
         try:
             await ha_client.call_service("media_player", "media_stop", media_player_entity)
         except Exception:
-            logger.error("Sleep timer: failed to stop media on %s",
-                         media_player_entity, exc_info=True)
+            logger.error("Sleep timer: failed to stop media on %s", media_player_entity, exc_info=True)
 
     delayed_task_manager.set_ha_client(ha_client)
     delayed_task_manager.schedule(
@@ -800,6 +865,7 @@ async def _sleep_timer(
 # Calendar action handlers
 # ---------------------------------------------------------------------------
 
+
 async def _create_reminder(
     action: dict,
     ha_client: Any,
@@ -817,11 +883,19 @@ async def _create_reminder(
     description = str(params.get("description", ""))
 
     if not summary:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": "Summary is required for create_reminder."}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "Summary is required for create_reminder.",
+        }
     if not start_time:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": "start_date_time is required for create_reminder."}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "start_date_time is required for create_reminder.",
+        }
 
     # Resolve calendar entity
     entity_id = None
@@ -847,8 +921,12 @@ async def _create_reminder(
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
     if not entity_id:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": f"Could not find a calendar entity matching '{entity_query}'."}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"Could not find a calendar entity matching '{entity_query}'.",
+        }
 
     service_data: dict[str, str] = {"summary": summary, "start_date_time": start_time}
     if end_time:
@@ -862,14 +940,18 @@ async def _create_reminder(
         await ha_client.call_service("calendar", "create_event", entity_id, service_data)
     except Exception as exc:
         logger.error("Failed to create calendar event on %s", entity_id, exc_info=True)
-        return {"success": False, "entity_id": entity_id, "new_state": None,
-                "speech": f"Failed to create reminder: {exc}"}
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": None,
+            "speech": f"Failed to create reminder: {exc}",
+        }
 
     return {
         "success": True,
         "entity_id": entity_id,
         "new_state": None,
-        "speech": f"Created reminder \"{summary}\" at {start_time} on {friendly_name}.",
+        "speech": f'Created reminder "{summary}" at {start_time} on {friendly_name}.',
     }
 
 
@@ -890,14 +972,26 @@ async def _create_recurring_reminder(
     rrule = str(params.get("rrule", ""))
 
     if not summary:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": "Summary is required for create_recurring_reminder."}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "Summary is required for create_recurring_reminder.",
+        }
     if not start_time:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": "start_date_time is required for create_recurring_reminder."}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "start_date_time is required for create_recurring_reminder.",
+        }
     if not rrule:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": "rrule is required for create_recurring_reminder (e.g. 'FREQ=DAILY', 'FREQ=WEEKLY;BYDAY=MO,WE,FR')."}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "rrule is required for create_recurring_reminder (e.g. 'FREQ=DAILY', 'FREQ=WEEKLY;BYDAY=MO,WE,FR').",
+        }
 
     # Resolve calendar entity
     entity_id = None
@@ -923,8 +1017,12 @@ async def _create_recurring_reminder(
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
     if not entity_id:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": f"Could not find a calendar entity matching '{entity_query}'."}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"Could not find a calendar entity matching '{entity_query}'.",
+        }
 
     service_data: dict[str, str] = {
         "summary": summary,
@@ -940,8 +1038,12 @@ async def _create_recurring_reminder(
         await ha_client.call_service("calendar", "create_event", entity_id, service_data)
     except Exception as exc:
         logger.error("Failed to create recurring event on %s", entity_id, exc_info=True)
-        return {"success": False, "entity_id": entity_id, "new_state": None,
-                "speech": f"Failed to create recurring reminder: {exc}"}
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": None,
+            "speech": f"Failed to create recurring reminder: {exc}",
+        }
 
     # Human-friendly rrule description
     freq_map = {"DAILY": "daily", "WEEKLY": "weekly", "MONTHLY": "monthly", "YEARLY": "yearly"}
@@ -955,13 +1057,14 @@ async def _create_recurring_reminder(
         "success": True,
         "entity_id": entity_id,
         "new_state": None,
-        "speech": f"Created {freq} reminder \"{summary}\" at {start_time} on {friendly_name}.",
+        "speech": f'Created {freq} reminder "{summary}" at {start_time} on {friendly_name}.',
     }
 
 
 # ---------------------------------------------------------------------------
 # Main executor
 # ---------------------------------------------------------------------------
+
 
 async def execute_timer_action(
     action: dict,
@@ -990,24 +1093,33 @@ async def execute_timer_action(
 
     # Read-only actions (no service call)
     if action_name in ("query_timer", "list_timers", "list_alarms"):
-        return await _handle_read_action(action_name, entity_query, ha_client,
-                                          entity_index, entity_matcher, agent_id,
-                                          span_collector=span_collector)
+        return await _handle_read_action(
+            action_name, entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
 
     # Multi-step actions (custom logic, not simple service calls)
     if action_name == "snooze_timer":
-        return await _snooze_timer(action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector)
+        return await _snooze_timer(
+            action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
     if action_name == "start_timer_with_notification":
-        return await _start_timer_with_notification(action, ha_client, entity_index,
-                                                      entity_matcher, agent_id, span_collector=span_collector)
+        return await _start_timer_with_notification(
+            action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
     if action_name == "delayed_action":
         return await _delayed_action(action, ha_client, entity_index, entity_matcher, agent_id)
     if action_name == "sleep_timer":
-        return await _sleep_timer(action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector)
+        return await _sleep_timer(
+            action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
     if action_name == "create_reminder":
-        return await _create_reminder(action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector)
+        return await _create_reminder(
+            action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
     if action_name == "create_recurring_reminder":
-        return await _create_recurring_reminder(action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector)
+        return await _create_recurring_reminder(
+            action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
 
     # Validate action name for simple service-call actions
     mapping = _TIMER_ACTION_MAP.get(action_name)
@@ -1024,14 +1136,12 @@ async def execute_timer_action(
     # Resolve entity via pool name first, then matcher, then entity_index
     entity_id = None
     friendly_name = entity_query
-    pool_name = None
 
     # Check timer pool for named timer mapping
     pool_entity = _timer_pool.get_entity(entity_query)
     if pool_entity:
         entity_id = pool_entity
         friendly_name = entity_query
-        pool_name = entity_query
 
     if not entity_id:
         try:
@@ -1069,7 +1179,6 @@ async def execute_timer_action(
                 media_player_entity=media_player,
             )
             _timer_pool.assign(entity_query, idle_entity, meta)
-            pool_name = entity_query
             friendly_name = entity_query
             logger.info("Pool assigned '%s' -> %s", entity_query, idle_entity)
 
@@ -1093,7 +1202,10 @@ async def execute_timer_action(
 
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
     verify = await call_service_with_verification(
-        ha_client, domain, service, entity_id,
+        ha_client,
+        domain,
+        service,
+        entity_id,
         service_data=service_data,
         expected_state=expected_state,
     )

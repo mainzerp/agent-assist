@@ -69,7 +69,8 @@ class HomeContextProvider:
                     self._last_fetched = time.monotonic()
                     logger.info(
                         "HomeContext refreshed: tz=%s location=%s",
-                        ctx.timezone, ctx.location_name,
+                        ctx.timezone,
+                        ctx.location_name,
                     )
                     return ctx
             except Exception:

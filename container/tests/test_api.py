@@ -20,10 +20,10 @@ from app.security.auth import (
     require_api_key,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 def _build_test_app(
     *,
@@ -32,9 +32,9 @@ def _build_test_app(
     mock_ha_rest_client=None,
 ):
     """Build a FastAPI test app with test lifespan and optional auth overrides."""
-    from app.main import create_app
-    from app.api.routes import conversation as conversation_routes
     from app.api.routes import admin as admin_routes
+    from app.api.routes import conversation as conversation_routes
+    from app.main import create_app
 
     app = create_app()
 
@@ -112,9 +112,7 @@ async def authed_client(db_repository):
         return_value=True,
     ):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://testserver"
-        ) as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             yield client
 
 
@@ -128,9 +126,7 @@ async def unauthed_client(db_repository):
         return_value=True,
     ):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://testserver"
-        ) as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             yield client
 
 
@@ -141,7 +137,6 @@ async def unauthed_client(db_repository):
 
 @pytest.mark.integration
 class TestHealthEndpoint:
-
     async def test_health_returns_200(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/health")
         assert resp.status_code == 200
@@ -164,7 +159,6 @@ class TestHealthEndpoint:
 
 @pytest.mark.integration
 class TestConversationEndpoints:
-
     async def test_conversation_rest_returns_response(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.post(
             "/api/conversation",
@@ -174,24 +168,18 @@ class TestConversationEndpoints:
         data = resp.json()
         assert "speech" in data
 
-    async def test_conversation_rest_without_auth_returns_401(
-        self, unauthed_client: httpx.AsyncClient
-    ):
+    async def test_conversation_rest_without_auth_returns_401(self, unauthed_client: httpx.AsyncClient):
         resp = await unauthed_client.post(
             "/api/conversation",
             json={"text": "turn on the kitchen light"},
         )
         assert resp.status_code == 401
 
-    async def test_conversation_rest_invalid_payload_returns_422(
-        self, authed_client: httpx.AsyncClient
-    ):
+    async def test_conversation_rest_invalid_payload_returns_422(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.post("/api/conversation", json={})
         assert resp.status_code == 422
 
-    async def test_conversation_sse_returns_event_stream(
-        self, authed_client: httpx.AsyncClient
-    ):
+    async def test_conversation_sse_returns_event_stream(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.post(
             "/api/conversation/stream",
             json={"text": "turn on the kitchen light"},
@@ -199,9 +187,7 @@ class TestConversationEndpoints:
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers.get("content-type", "")
 
-    async def test_conversation_sse_without_auth_returns_401(
-        self, unauthed_client: httpx.AsyncClient
-    ):
+    async def test_conversation_sse_without_auth_returns_401(self, unauthed_client: httpx.AsyncClient):
         resp = await unauthed_client.post(
             "/api/conversation/stream",
             json={"text": "hello"},
@@ -211,6 +197,7 @@ class TestConversationEndpoints:
     async def test_sse_passes_through_is_filler(self, authed_client: httpx.AsyncClient):
         """SSE endpoint should include is_filler field in streamed tokens."""
         import json as _json
+
         from app.api.routes import conversation as conv_routes
 
         # Mock dispatcher that yields a filler token
@@ -239,7 +226,7 @@ class TestConversationEndpoints:
                 json={"text": "search something"},
             )
             assert resp.status_code == 200
-            lines = [l for l in resp.text.splitlines() if l.startswith("data:")]
+            lines = [line for line in resp.text.splitlines() if line.startswith("data:")]
             assert len(lines) >= 2
             first_data = _json.loads(lines[0].removeprefix("data:").strip())
             assert first_data.get("is_filler") is True
@@ -249,6 +236,7 @@ class TestConversationEndpoints:
     async def test_conversation_sse_surfaces_error(self, authed_client: httpx.AsyncClient):
         """SSE endpoint should include error field when agent streams an error chunk."""
         import json as _json
+
         from app.api.routes import conversation as conv_routes
 
         async def _error_stream(req):
@@ -272,7 +260,7 @@ class TestConversationEndpoints:
                 json={"text": "do something"},
             )
             assert resp.status_code == 200
-            lines = [l for l in resp.text.splitlines() if l.startswith("data:")]
+            lines = [line for line in resp.text.splitlines() if line.startswith("data:")]
             # Last data line should have the error
             last_data = _json.loads(lines[-1].removeprefix("data:").strip())
             assert last_data.get("done") is True
@@ -300,16 +288,13 @@ class TestConversationEndpoints:
 
 @pytest.mark.integration
 class TestAdminSettingsEndpoints:
-
     async def test_get_settings_returns_200(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/settings")
         assert resp.status_code == 200
         data = resp.json()
         assert "settings" in data
 
-    async def test_get_settings_without_auth_returns_401(
-        self, unauthed_client: httpx.AsyncClient
-    ):
+    async def test_get_settings_without_auth_returns_401(self, unauthed_client: httpx.AsyncClient):
         resp = await unauthed_client.get("/api/admin/settings")
         assert resp.status_code == 401
 
@@ -417,9 +402,7 @@ class TestAdminSettingsEndpoints:
         assert resp.status_code == 400
         assert "expected bool" in resp.json().get("detail", "")
 
-    async def test_single_setting_rejects_empty_string_for_bool(
-        self, authed_client: httpx.AsyncClient
-    ):
+    async def test_single_setting_rejects_empty_string_for_bool(self, authed_client: httpx.AsyncClient):
         """COR-6: an empty-string value for a bool setting must be rejected."""
         resp = await authed_client.put(
             "/api/admin/settings/cache.response.enabled",
@@ -428,9 +411,7 @@ class TestAdminSettingsEndpoints:
         assert resp.status_code == 400
         assert "empty string" in resp.json().get("detail", "").lower()
 
-    async def test_bulk_update_rejects_empty_string_for_float(
-        self, authed_client: httpx.AsyncClient
-    ):
+    async def test_bulk_update_rejects_empty_string_for_float(self, authed_client: httpx.AsyncClient):
         """COR-6: bulk update must reject empty-string for typed numeric settings."""
         resp = await authed_client.put(
             "/api/admin/settings",
@@ -460,7 +441,6 @@ class TestAdminSettingsEndpoints:
 
 @pytest.mark.integration
 class TestAdminAgentsEndpoint:
-
     async def test_list_agents_returns_200(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/agents")
         assert resp.status_code == 200
@@ -476,7 +456,6 @@ class TestAdminAgentsEndpoint:
 
 @pytest.mark.integration
 class TestEntityIndexAPI:
-
     async def test_get_stats_returns_200(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/entity-index/stats")
         assert resp.status_code == 200
@@ -498,7 +477,6 @@ class TestEntityIndexAPI:
 
 @pytest.mark.integration
 class TestCacheAPI:
-
     async def test_get_cache_stats_returns_200(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/cache/stats")
         assert resp.status_code == 200
@@ -526,16 +504,13 @@ class TestCacheAPI:
 
 @pytest.mark.integration
 class TestMcpAPI:
-
     async def test_list_mcp_servers_returns_200(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/mcp-servers")
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
 
-    async def test_add_mcp_server_duplicate_returns_409(
-        self, authed_client: httpx.AsyncClient
-    ):
+    async def test_add_mcp_server_duplicate_returns_409(self, authed_client: httpx.AsyncClient):
         body = {
             "name": "test-srv",
             "transport": "stdio",
@@ -560,7 +535,6 @@ class TestMcpAPI:
 
 @pytest.mark.integration
 class TestPluginsAPI:
-
     async def test_list_plugins_returns_200(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/plugins")
         assert resp.status_code == 200
@@ -575,7 +549,6 @@ class TestPluginsAPI:
 
 @pytest.mark.integration
 class TestPresenceAPI:
-
     async def test_get_presence_status_returns_200(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/presence/status")
         assert resp.status_code == 200
@@ -601,7 +574,6 @@ class TestPresenceAPI:
 
 @pytest.mark.integration
 class TestAnalyticsAPI:
-
     async def test_analytics_overview_returns_200(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/analytics/overview")
         assert resp.status_code == 200
@@ -622,7 +594,6 @@ class TestAnalyticsAPI:
 
 @pytest.mark.integration
 class TestTracesAPI:
-
     async def test_list_traces_returns_200(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/traces")
         assert resp.status_code == 200
@@ -699,8 +670,10 @@ class TestTracesAPI:
                 "metadata": {"agent_response": "Light turned on."},
             },
         ]
-        with patch("app.api.routes.traces_api.TraceSummaryRepository") as mock_summary, \
-             patch("app.api.routes.traces_api.TraceSpanRepository") as mock_spans:
+        with (
+            patch("app.api.routes.traces_api.TraceSummaryRepository") as mock_summary,
+            patch("app.api.routes.traces_api.TraceSpanRepository") as mock_spans,
+        ):
             mock_summary.get = AsyncMock(return_value=summary)
             mock_spans.get_trace_spans = AsyncMock(return_value=spans)
             resp = await authed_client.get("/api/admin/traces/t-comm-3")
@@ -769,8 +742,10 @@ class TestTracesAPI:
                 "metadata": {"from_agent": "light-agent", "final_response": "Done.", "mediated": False},
             },
         ]
-        with patch("app.api.routes.traces_api.TraceSummaryRepository") as mock_summary, \
-             patch("app.api.routes.traces_api.TraceSpanRepository") as mock_spans:
+        with (
+            patch("app.api.routes.traces_api.TraceSummaryRepository") as mock_summary,
+            patch("app.api.routes.traces_api.TraceSpanRepository") as mock_spans,
+        ):
             mock_summary.get = AsyncMock(return_value=summary)
             mock_spans.get_trace_spans = AsyncMock(return_value=spans)
             resp = await authed_client.get("/api/admin/traces/t-pass")
@@ -788,7 +763,6 @@ class TestTracesAPI:
 
 @pytest.mark.integration
 class TestConversationsAPI:
-
     async def test_list_conversations_returns_200(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/conversations")
         assert resp.status_code == 200
@@ -804,7 +778,6 @@ class TestConversationsAPI:
 
 @pytest.mark.integration
 class TestLLMProviderAPI:
-
     async def test_get_llm_providers_returns_200(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/llm-providers")
         assert resp.status_code == 200
@@ -832,9 +805,7 @@ class TestLLMProviderAPI:
         assert data["status"] == "ok"
         assert data["provider"] == "groq"
 
-    async def test_put_llm_provider_key_then_get_shows_configured(
-        self, authed_client: httpx.AsyncClient
-    ):
+    async def test_put_llm_provider_key_then_get_shows_configured(self, authed_client: httpx.AsyncClient):
         await authed_client.put(
             "/api/admin/llm-providers",
             json={"provider": "groq", "api_key": "gsk_test_key_12345678"},
@@ -844,9 +815,7 @@ class TestLLMProviderAPI:
         assert data["providers"]["groq"]["configured"] is True
         assert data["providers"]["groq"]["masked_key"] == "5678"
 
-    async def test_put_llm_provider_unknown_returns_400(
-        self, authed_client: httpx.AsyncClient
-    ):
+    async def test_put_llm_provider_unknown_returns_400(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(
             "/api/admin/llm-providers",
             json={"provider": "unknown_provider", "api_key": "key"},
@@ -862,9 +831,7 @@ class TestLLMProviderAPI:
         data = resp.json()
         assert data["status"] == "ok"
 
-    async def test_put_ollama_url_then_get_shows_configured(
-        self, authed_client: httpx.AsyncClient
-    ):
+    async def test_put_ollama_url_then_get_shows_configured(self, authed_client: httpx.AsyncClient):
         await authed_client.put(
             "/api/admin/llm-providers/ollama",
             json={"url": "http://myhost:11434"},
@@ -890,15 +857,11 @@ class TestLLMProviderAPI:
         data = resp.json()
         assert data["providers"]["openrouter"]["configured"] is False
 
-    async def test_delete_llm_provider_unknown_returns_400(
-        self, authed_client: httpx.AsyncClient
-    ):
+    async def test_delete_llm_provider_unknown_returns_400(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.delete("/api/admin/llm-providers/unknown_prov")
         assert resp.status_code == 400
 
-    async def test_test_llm_provider_no_key_returns_error(
-        self, authed_client: httpx.AsyncClient
-    ):
+    async def test_test_llm_provider_no_key_returns_error(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.post(
             "/api/admin/llm-providers/test",
             json={"provider": "groq"},
@@ -908,9 +871,7 @@ class TestLLMProviderAPI:
         assert data["status"] == "error"
         assert "No API key" in data["detail"]
 
-    async def test_test_llm_provider_unknown_returns_error(
-        self, authed_client: httpx.AsyncClient
-    ):
+    async def test_test_llm_provider_unknown_returns_error(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.post(
             "/api/admin/llm-providers/test",
             json={"provider": "unknown_prov"},
@@ -928,9 +889,7 @@ class TestLLMProviderAPI:
         # Ollama is always included
         assert "ollama" in data["providers"]
 
-    async def test_get_configured_providers_after_storing_key(
-        self, authed_client: httpx.AsyncClient
-    ):
+    async def test_get_configured_providers_after_storing_key(self, authed_client: httpx.AsyncClient):
         await authed_client.put(
             "/api/admin/llm-providers",
             json={"provider": "groq", "api_key": "gsk_test_key_12345678"},
@@ -948,7 +907,6 @@ class TestLLMProviderAPI:
 
 @pytest.mark.integration
 class TestEntityVisibilitySummaryAPI:
-
     async def test_visibility_summary_empty(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.get("/api/admin/agents/visibility-summary")
         assert resp.status_code == 200
@@ -959,11 +917,14 @@ class TestEntityVisibilitySummaryAPI:
     async def test_visibility_summary_with_rules(self, authed_client: httpx.AsyncClient):
         from app.db.repository import EntityVisibilityRepository
 
-        await EntityVisibilityRepository.set_rules("light-agent", [
-            {"rule_type": "domain_include", "rule_value": "light"},
-            {"rule_type": "domain_include", "rule_value": "switch"},
-            {"rule_type": "domain_exclude", "rule_value": "sensor"},
-        ])
+        await EntityVisibilityRepository.set_rules(
+            "light-agent",
+            [
+                {"rule_type": "domain_include", "rule_value": "light"},
+                {"rule_type": "domain_include", "rule_value": "switch"},
+                {"rule_type": "domain_exclude", "rule_value": "sensor"},
+            ],
+        )
         resp = await authed_client.get("/api/admin/agents/visibility-summary")
         data = resp.json()
         summary = data["summary"]
@@ -976,12 +937,15 @@ class TestEntityVisibilitySummaryAPI:
     async def test_visibility_summary_includes_device_class_fields(self, authed_client: httpx.AsyncClient):
         from app.db.repository import EntityVisibilityRepository
 
-        await EntityVisibilityRepository.set_rules("climate-agent", [
-            {"rule_type": "domain_include", "rule_value": "climate"},
-            {"rule_type": "domain_include", "rule_value": "sensor"},
-            {"rule_type": "device_class_include", "rule_value": "temperature"},
-            {"rule_type": "device_class_include", "rule_value": "humidity"},
-        ])
+        await EntityVisibilityRepository.set_rules(
+            "climate-agent",
+            [
+                {"rule_type": "domain_include", "rule_value": "climate"},
+                {"rule_type": "domain_include", "rule_value": "sensor"},
+                {"rule_type": "device_class_include", "rule_value": "temperature"},
+                {"rule_type": "device_class_include", "rule_value": "humidity"},
+            ],
+        )
         resp = await authed_client.get("/api/admin/agents/visibility-summary")
         data = resp.json()
         summary = data["summary"]
@@ -993,7 +957,6 @@ class TestEntityVisibilitySummaryAPI:
 
 @pytest.mark.integration
 class TestEntityVisibilityRuleTypeValidation:
-
     async def test_put_invalid_rule_type_returns_422(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(
             "/api/admin/entity-visibility/light-agent",
@@ -1006,10 +969,12 @@ class TestEntityVisibilityRuleTypeValidation:
     async def test_put_valid_rule_type_succeeds(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(
             "/api/admin/entity-visibility/light-agent",
-            json={"rules": [
-                {"rule_type": "domain_include", "rule_value": "light"},
-                {"rule_type": "entity_include", "rule_value": "switch.kitchen"},
-            ]},
+            json={
+                "rules": [
+                    {"rule_type": "domain_include", "rule_value": "light"},
+                    {"rule_type": "entity_include", "rule_value": "switch.kitchen"},
+                ]
+            },
         )
         assert resp.status_code == 200
         data = resp.json()

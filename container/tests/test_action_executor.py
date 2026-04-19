@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -46,6 +45,7 @@ def _attach_expect_state_shim(client):
     client.set_state_observer = MagicMock()
     return client
 
+
 # Mock litellm before importing app modules
 _litellm_mock = MagicMock()
 
@@ -57,15 +57,15 @@ class _AuthenticationError(Exception):
 _litellm_mock.exceptions.AuthenticationError = _AuthenticationError
 sys.modules.setdefault("litellm", _litellm_mock)
 
-from app.agents.action_executor import parse_action, execute_action  # noqa: E402
+from app.agents.action_executor import execute_action, parse_action  # noqa: E402
 from app.entity.index import EntityIndex  # noqa: E402
 from app.entity.matcher import EntityMatcher  # noqa: E402
 from tests.helpers import make_entity_index_entry  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # parse_action tests
 # ---------------------------------------------------------------------------
+
 
 class TestParseAction:
     """Tests for parse_action()."""
@@ -83,10 +83,7 @@ class TestParseAction:
         assert result["parameters"] == {}
 
     def test_raw_json(self):
-        response = (
-            'Here you go: {"action": "turn_off", "entity": "bedroom lamp", "parameters": {}} '
-            "Done."
-        )
+        response = 'Here you go: {"action": "turn_off", "entity": "bedroom lamp", "parameters": {}} Done.'
         result = parse_action(response)
         assert result is not None
         assert result["action"] == "turn_off"
@@ -108,7 +105,9 @@ class TestParseAction:
         assert result is None
 
     def test_brightness_action(self):
-        response = '```json\n{"action": "set_brightness", "entity": "living room", "parameters": {"brightness": 128}}\n```'
+        response = (
+            '```json\n{"action": "set_brightness", "entity": "living room", "parameters": {"brightness": 128}}\n```'
+        )
         result = parse_action(response)
         assert result is not None
         assert result["action"] == "set_brightness"
@@ -129,10 +128,7 @@ class TestParseAction:
 
     def test_parse_action_accepts_plain_fence(self):
         """FLOW-LOW-1: unlabelled ``` fences are parsed too."""
-        response = (
-            "Sure:\n"
-            '```\n{"action": "turn_on", "entity": "kitchen light", "parameters": {}}\n```\n'
-        )
+        response = 'Sure:\n```\n{"action": "turn_on", "entity": "kitchen light", "parameters": {}}\n```\n'
         result = parse_action(response)
         assert result is not None
         assert result["action"] == "turn_on"
@@ -171,6 +167,7 @@ class TestParseAction:
 # ---------------------------------------------------------------------------
 # execute_action tests
 # ---------------------------------------------------------------------------
+
 
 class TestExecuteAction:
     """Tests for execute_action() with mocked dependencies."""
@@ -478,13 +475,9 @@ class TestExecuteAction:
     # FLOW-VERIFY-1: post-action state verification and speech tests
     # ------------------------------------------------------------------
     @pytest.mark.asyncio
-    async def test_uses_call_service_response_state(
-        self, ha_client, entity_matcher, entity_index
-    ):
+    async def test_uses_call_service_response_state(self, ha_client, entity_matcher, entity_index):
         """call_service returning a state list is authoritative over get_state."""
-        ha_client.call_service = AsyncMock(return_value=[
-            {"entity_id": "light.kitchen_ceiling", "state": "off"}
-        ])
+        ha_client.call_service = AsyncMock(return_value=[{"entity_id": "light.kitchen_ceiling", "state": "off"}])
         ha_client.get_state = AsyncMock(
             return_value={"state": "on", "attributes": {}},
         )
@@ -497,9 +490,7 @@ class TestExecuteAction:
         assert "Kitchen Ceiling is now off" in result["speech"]
 
     @pytest.mark.asyncio
-    async def test_uses_ws_waiter_when_available(
-        self, ha_client, entity_matcher, entity_index
-    ):
+    async def test_uses_ws_waiter_when_available(self, ha_client, entity_matcher, entity_index):
         """If a WS observer resolves the waiter, get_state must not be consulted."""
         ha_client.call_service = AsyncMock(return_value=None)
         ha_client.get_state = AsyncMock(
@@ -522,9 +513,7 @@ class TestExecuteAction:
         ha_client.get_state.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_intent_speech_when_verified_state_is_stale(
-        self, ha_client, entity_matcher, entity_index
-    ):
+    async def test_intent_speech_when_verified_state_is_stale(self, ha_client, entity_matcher, entity_index):
         """turn_off + observed 'on' must not speak 'is now on'."""
         ha_client.call_service = AsyncMock(return_value=None)
         ha_client.get_state = AsyncMock(
@@ -539,9 +528,7 @@ class TestExecuteAction:
         assert "turned off Kitchen Ceiling" in result["speech"]
 
     @pytest.mark.asyncio
-    async def test_toggle_uses_observed_state(
-        self, ha_client, entity_matcher, entity_index
-    ):
+    async def test_toggle_uses_observed_state(self, ha_client, entity_matcher, entity_index):
         """toggle has no expected state; observed state drives the speech."""
         ha_client.call_service = AsyncMock(return_value=None)
         ha_client.get_state = AsyncMock(
@@ -570,10 +557,12 @@ class TestClimateExecutorDomainValidation:
     def ha_client(self):
         client = AsyncMock()
         client.call_service = AsyncMock(return_value={})
-        client.get_state = AsyncMock(return_value={
-            "state": "heat",
-            "attributes": {"friendly_name": "Living Room Climate", "current_temperature": 21.5}
-        })
+        client.get_state = AsyncMock(
+            return_value={
+                "state": "heat",
+                "attributes": {"friendly_name": "Living Room Climate", "current_temperature": 21.5},
+            }
+        )
         return client
 
     @pytest.mark.asyncio
@@ -617,10 +606,12 @@ class TestClimateExecutorDomainValidation:
         matcher.match = AsyncMock(return_value=[match_result])
         index = MagicMock()
 
-        ha_client.get_state = AsyncMock(return_value={
-            "state": "21.5",
-            "attributes": {"friendly_name": "Living Room Temperature", "unit_of_measurement": "C"}
-        })
+        ha_client.get_state = AsyncMock(
+            return_value={
+                "state": "21.5",
+                "attributes": {"friendly_name": "Living Room Temperature", "unit_of_measurement": "C"},
+            }
+        )
         action = {"action": "query_climate_state", "entity": "living room temp", "parameters": {}}
         result = await execute_climate_action(action, ha_client, index, matcher, agent_id="climate-agent")
 
@@ -712,13 +703,19 @@ class TestMusicExecutor:
 
     @pytest.mark.asyncio
     async def test_execute_play_media(self, ha_client, entity_matcher, entity_index):
-        action = {"action": "play_media", "entity": "kitchen speaker", "parameters": {"media_id": "jazz", "media_type": "track", "enqueue": "play"}}
+        action = {
+            "action": "play_media",
+            "entity": "kitchen speaker",
+            "parameters": {"media_id": "jazz", "media_type": "track", "enqueue": "play"},
+        }
         result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
 
         assert result["success"] is True
         assert result["entity_id"] == "media_player.ma_kitchen"
         ha_client.call_service.assert_awaited_once_with(
-            "mass", "play_media", "media_player.ma_kitchen",
+            "mass",
+            "play_media",
+            "media_player.ma_kitchen",
             {"media_id": "jazz", "media_type": "track", "enqueue": "play"},
         )
 
@@ -729,7 +726,9 @@ class TestMusicExecutor:
 
         assert result["success"] is True
         ha_client.call_service.assert_awaited_once_with(
-            "media_player", "volume_set", "media_player.ma_kitchen",
+            "media_player",
+            "volume_set",
+            "media_player.ma_kitchen",
             {"volume_level": 0.5},
         )
 
@@ -741,7 +740,10 @@ class TestMusicExecutor:
 
         assert result["success"] is True
         ha_client.call_service.assert_awaited_once_with(
-            "media_player", action_name, "media_player.ma_kitchen", None,
+            "media_player",
+            action_name,
+            "media_player.ma_kitchen",
+            None,
         )
 
     @pytest.mark.asyncio
@@ -751,7 +753,9 @@ class TestMusicExecutor:
 
         assert result["success"] is True
         ha_client.call_service.assert_awaited_once_with(
-            "media_player", "shuffle_set", "media_player.ma_kitchen",
+            "media_player",
+            "shuffle_set",
+            "media_player.ma_kitchen",
             {"shuffle": True},
         )
 
@@ -762,17 +766,25 @@ class TestMusicExecutor:
 
         assert result["success"] is True
         ha_client.call_service.assert_awaited_once_with(
-            "media_player", "repeat_set", "media_player.ma_kitchen",
+            "media_player",
+            "repeat_set",
+            "media_player.ma_kitchen",
             {"repeat": "all"},
         )
 
     @pytest.mark.asyncio
     async def test_execute_search_returns_speech(self, ha_client, entity_matcher, entity_index):
-        ha_client.call_service = AsyncMock(return_value=[
-            {"name": "Jazz Suite", "artist": "Dave Brubeck"},
-            {"name": "Blue Train", "artist": "John Coltrane"},
-        ])
-        action = {"action": "search", "entity": "kitchen speaker", "parameters": {"name": "jazz", "media_type": "track"}}
+        ha_client.call_service = AsyncMock(
+            return_value=[
+                {"name": "Jazz Suite", "artist": "Dave Brubeck"},
+                {"name": "Blue Train", "artist": "John Coltrane"},
+            ]
+        )
+        action = {
+            "action": "search",
+            "entity": "kitchen speaker",
+            "parameters": {"name": "jazz", "media_type": "track"},
+        }
         result = await execute_music_action(action, ha_client, entity_index, entity_matcher)
 
         assert result["success"] is True
@@ -883,8 +895,12 @@ class TestEntityMatchSpan:
         action = {"action": "turn_on", "entity": "kitchen light", "parameters": {}}
 
         result = await execute_action(
-            action, ha_client, entity_index, entity_matcher,
-            agent_id="light-agent", span_collector=span_collector,
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id="light-agent",
+            span_collector=span_collector,
         )
 
         assert result["success"] is True
@@ -912,8 +928,12 @@ class TestEntityMatchSpan:
         action = {"action": "turn_on", "entity": "nonexistent", "parameters": {}}
 
         result = await execute_action(
-            action, ha_client, entity_index, matcher,
-            agent_id="light-agent", span_collector=span_collector,
+            action,
+            ha_client,
+            entity_index,
+            matcher,
+            agent_id="light-agent",
+            span_collector=span_collector,
         )
 
         assert result["success"] is False
@@ -962,19 +982,24 @@ class TestEntityMatchSpan:
 # Read-only actions return cacheable=False
 # ---------------------------------------------------------------------------
 
+
 class TestReadActionCacheable:
     """Tests that read-only executor actions return cacheable=False."""
 
     @pytest.fixture()
     def ha_client(self):
         client = AsyncMock()
-        client.get_state = AsyncMock(return_value={
-            "state": "on", "attributes": {"friendly_name": "Kitchen Light", "brightness": 200},
-        })
-        client.get_states = AsyncMock(return_value=[
-            {"entity_id": "light.kitchen", "state": "on",
-             "attributes": {"friendly_name": "Kitchen Light"}},
-        ])
+        client.get_state = AsyncMock(
+            return_value={
+                "state": "on",
+                "attributes": {"friendly_name": "Kitchen Light", "brightness": 200},
+            }
+        )
+        client.get_states = AsyncMock(
+            return_value=[
+                {"entity_id": "light.kitchen", "state": "on", "attributes": {"friendly_name": "Kitchen Light"}},
+            ]
+        )
         return client
 
     @pytest.fixture()
@@ -1017,28 +1042,32 @@ class TestClimateExecutorWeatherActions:
     def ha_client(self):
         client = AsyncMock()
         client.call_service = AsyncMock(return_value={})
-        client.get_state = AsyncMock(return_value={
-            "state": "sunny",
-            "attributes": {
-                "friendly_name": "Home",
-                "temperature": 22.5,
-                "temperature_unit": "C",
-                "humidity": 55,
-                "wind_speed": 12.3,
-                "wind_speed_unit": "km/h",
-                "pressure": 1013,
-                "pressure_unit": "hPa",
-            },
-        })
-        client.get_states = AsyncMock(return_value=[
-            {"entity_id": "weather.home", "state": "sunny",
-             "attributes": {"friendly_name": "Home"}},
-        ])
+        client.get_state = AsyncMock(
+            return_value={
+                "state": "sunny",
+                "attributes": {
+                    "friendly_name": "Home",
+                    "temperature": 22.5,
+                    "temperature_unit": "C",
+                    "humidity": 55,
+                    "wind_speed": 12.3,
+                    "wind_speed_unit": "km/h",
+                    "pressure": 1013,
+                    "pressure_unit": "hPa",
+                },
+            }
+        )
+        client.get_states = AsyncMock(
+            return_value=[
+                {"entity_id": "weather.home", "state": "sunny", "attributes": {"friendly_name": "Home"}},
+            ]
+        )
         return client
 
     @pytest.mark.asyncio
     async def test_weather_domain_validation_accepts(self):
         from app.agents.climate_executor import _validate_domain
+
         assert _validate_domain("weather.home") is True
 
     @pytest.mark.asyncio
@@ -1053,7 +1082,10 @@ class TestClimateExecutorWeatherActions:
 
         result = await execute_climate_action(
             {"action": "query_weather", "entity": "home weather"},
-            ha_client, None, matcher, agent_id="climate-agent",
+            ha_client,
+            None,
+            matcher,
+            agent_id="climate-agent",
         )
         assert result["success"] is True
         assert "sunny" in result["speech"]
@@ -1067,7 +1099,10 @@ class TestClimateExecutorWeatherActions:
 
         result = await execute_climate_action(
             {"action": "query_weather", "entity": ""},
-            ha_client, None, matcher, agent_id="climate-agent",
+            ha_client,
+            None,
+            matcher,
+            agent_id="climate-agent",
         )
         assert result["success"] is True
         assert "sunny" in result["speech"]
@@ -1080,23 +1115,40 @@ class TestClimateExecutorWeatherActions:
 
         result = await execute_climate_action(
             {"action": "query_weather", "entity": ""},
-            ha_client, None, matcher, agent_id="climate-agent",
+            ha_client,
+            None,
+            matcher,
+            agent_id="climate-agent",
         )
         assert result["success"] is False
         assert "No weather entities" in result["speech"]
 
     @pytest.mark.asyncio
     async def test_query_weather_forecast_service_call(self, ha_client):
-        ha_client.call_service = AsyncMock(return_value={
-            "weather.home": {
-                "forecast": [
-                    {"datetime": "2025-01-16T00:00:00", "condition": "cloudy",
-                     "temperature": 18, "templow": 8, "precipitation": 2.5, "wind_speed": 15},
-                    {"datetime": "2025-01-17T00:00:00", "condition": "rainy",
-                     "temperature": 15, "templow": 6, "precipitation": 10, "wind_speed": 20},
-                ],
-            },
-        })
+        ha_client.call_service = AsyncMock(
+            return_value={
+                "weather.home": {
+                    "forecast": [
+                        {
+                            "datetime": "2025-01-16T00:00:00",
+                            "condition": "cloudy",
+                            "temperature": 18,
+                            "templow": 8,
+                            "precipitation": 2.5,
+                            "wind_speed": 15,
+                        },
+                        {
+                            "datetime": "2025-01-17T00:00:00",
+                            "condition": "rainy",
+                            "temperature": 15,
+                            "templow": 6,
+                            "precipitation": 10,
+                            "wind_speed": 20,
+                        },
+                    ],
+                },
+            }
+        )
         matcher = AsyncMock()
         match_result = MagicMock()
         match_result.entity_id = "weather.home"
@@ -1107,7 +1159,10 @@ class TestClimateExecutorWeatherActions:
 
         result = await execute_climate_action(
             {"action": "query_weather_forecast", "entity": "home"},
-            ha_client, None, matcher, agent_id="climate-agent",
+            ha_client,
+            None,
+            matcher,
+            agent_id="climate-agent",
         )
         assert result["success"] is True
         assert "cloudy" in result["speech"]
@@ -1116,16 +1171,22 @@ class TestClimateExecutorWeatherActions:
     @pytest.mark.asyncio
     async def test_query_weather_forecast_fallback_to_state(self, ha_client):
         ha_client.call_service = AsyncMock(side_effect=Exception("Service not found"))
-        ha_client.get_state = AsyncMock(return_value={
-            "state": "sunny",
-            "attributes": {
-                "friendly_name": "Home",
-                "forecast": [
-                    {"datetime": "2025-01-16T00:00:00", "condition": "partly_cloudy",
-                     "temperature": 20, "templow": 10},
-                ],
-            },
-        })
+        ha_client.get_state = AsyncMock(
+            return_value={
+                "state": "sunny",
+                "attributes": {
+                    "friendly_name": "Home",
+                    "forecast": [
+                        {
+                            "datetime": "2025-01-16T00:00:00",
+                            "condition": "partly_cloudy",
+                            "temperature": 20,
+                            "templow": 10,
+                        },
+                    ],
+                },
+            }
+        )
         matcher = AsyncMock()
         match_result = MagicMock()
         match_result.entity_id = "weather.home"
@@ -1136,7 +1197,10 @@ class TestClimateExecutorWeatherActions:
 
         result = await execute_climate_action(
             {"action": "query_weather_forecast", "entity": "home"},
-            ha_client, None, matcher, agent_id="climate-agent",
+            ha_client,
+            None,
+            matcher,
+            agent_id="climate-agent",
         )
         assert result["success"] is True
         assert "partly_cloudy" in result["speech"]
@@ -1144,10 +1208,12 @@ class TestClimateExecutorWeatherActions:
     @pytest.mark.asyncio
     async def test_query_weather_forecast_no_data(self, ha_client):
         ha_client.call_service = AsyncMock(side_effect=Exception("Service not found"))
-        ha_client.get_state = AsyncMock(return_value={
-            "state": "sunny",
-            "attributes": {"friendly_name": "Home"},
-        })
+        ha_client.get_state = AsyncMock(
+            return_value={
+                "state": "sunny",
+                "attributes": {"friendly_name": "Home"},
+            }
+        )
         matcher = AsyncMock()
         match_result = MagicMock()
         match_result.entity_id = "weather.home"
@@ -1158,7 +1224,10 @@ class TestClimateExecutorWeatherActions:
 
         result = await execute_climate_action(
             {"action": "query_weather_forecast", "entity": "home"},
-            ha_client, None, matcher, agent_id="climate-agent",
+            ha_client,
+            None,
+            matcher,
+            agent_id="climate-agent",
         )
         assert result["success"] is False
         assert "not available" in result["speech"]

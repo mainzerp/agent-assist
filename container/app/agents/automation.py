@@ -11,7 +11,9 @@ class AutomationAgent(ActionableAgent):
     _prompt_name = "automation"
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
-        return await execute_automation_action(action, ha_client, entity_index, entity_matcher, agent_id=agent_id, span_collector=span_collector)
+        return await execute_automation_action(
+            action, ha_client, entity_index, entity_matcher, agent_id=agent_id, span_collector=span_collector
+        )
 
     @property
     def agent_card(self) -> AgentCard:
@@ -19,6 +21,12 @@ class AutomationAgent(ActionableAgent):
             agent_id="automation-agent",
             name="Automation Agent",
             description="Enables, disables, triggers, and queries Home Assistant automations. Reports status (enabled/disabled, last triggered time). Lists all automations.",
-            skills=["automation_enable", "automation_disable", "automation_trigger", "automation_status", "automation_query"],
+            skills=[
+                "automation_enable",
+                "automation_disable",
+                "automation_trigger",
+                "automation_status",
+                "automation_query",
+            ],
             endpoint="local://automation-agent",
         )

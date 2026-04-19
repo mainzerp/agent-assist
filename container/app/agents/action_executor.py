@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -174,15 +173,18 @@ async def call_service_with_verification(
     """
     if ws_timeout is None:
         ws_timeout = await _settings_float(
-            "state_verify.ws_timeout_sec", default=1.5,
+            "state_verify.ws_timeout_sec",
+            default=1.5,
         )
     if poll_interval is None:
         poll_interval = await _settings_float(
-            "state_verify.poll_interval_sec", default=0.25,
+            "state_verify.poll_interval_sec",
+            default=0.25,
         )
     if poll_max is None:
         poll_max = await _settings_float(
-            "state_verify.poll_max_sec", default=1.0,
+            "state_verify.poll_max_sec",
+            default=1.0,
         )
 
     call_result: Any = None
@@ -191,7 +193,10 @@ async def call_service_with_verification(
     try:
         if expect_state_fn is None:
             call_result = await ha_client.call_service(
-                domain, service, entity_id, service_data or None,
+                domain,
+                service,
+                entity_id,
+                service_data or None,
             )
         else:
             try:
@@ -211,18 +216,27 @@ async def call_service_with_verification(
                 async with cm as obs:
                     observer = obs if isinstance(obs, dict) else {}
                     call_result = await ha_client.call_service(
-                        domain, service, entity_id, service_data or None,
+                        domain,
+                        service,
+                        entity_id,
+                        service_data or None,
                     )
             else:
                 # ``expect_state`` is mocked with a non-CM return (legacy
                 # tests) -- fall back to the simple call path; the caller
                 # still gets the REST response, just without WS verification.
                 call_result = await ha_client.call_service(
-                    domain, service, entity_id, service_data or None,
+                    domain,
+                    service,
+                    entity_id,
+                    service_data or None,
                 )
     except Exception as exc:
         logger.error(
-            "Service call failed: %s/%s on %s", domain, service, entity_id,
+            "Service call failed: %s/%s on %s",
+            domain,
+            service,
+            entity_id,
             exc_info=True,
         )
         return {
@@ -238,15 +252,14 @@ async def call_service_with_verification(
     if observed is None and observer:
         observed = observer.get("new_state")
 
-    if expected_state is None:
-        verified = observed is not None
-    else:
-        verified = observed == expected_state
+    verified = observed is not None if expected_state is None else observed == expected_state
 
     if expected_state and observed is not None and observed != expected_state:
         logger.info(
             "State verify mismatch for %s: expected=%s observed=%s",
-            entity_id, expected_state, observed,
+            entity_id,
+            expected_state,
+            observed,
         )
 
     return {
@@ -390,10 +403,7 @@ async def _filter_visible_entries(
 
     visible = await entity_matcher.filter_visible_results(
         agent_id,
-        [
-            MatchResult(entity_id=entry.entity_id, friendly_name=entry.friendly_name, score=1.0)
-            for entry in entries
-        ],
+        [MatchResult(entity_id=entry.entity_id, friendly_name=entry.friendly_name, score=1.0) for entry in entries],
     )
     visible_ids = {result.entity_id for result in visible}
     return [entry for entry in entries if entry.entity_id in visible_ids]
@@ -533,12 +543,12 @@ async def _resolve_light_entity(
 
         if visible_entries:
             exact_name_matches = [
-                entry
-                for entry in visible_entries
-                if _normalize_lookup_text(entry.friendly_name) == normalized_query
+                entry for entry in visible_entries if _normalize_lookup_text(entry.friendly_name) == normalized_query
             ]
             candidate, ambiguity = _select_deterministic_candidate(
-                exact_name_matches, entity_query, preferred_area_id=preferred_area_id,
+                exact_name_matches,
+                entity_query,
+                preferred_area_id=preferred_area_id,
             )
             if candidate:
                 metadata.update(
@@ -570,12 +580,12 @@ async def _resolve_light_entity(
 
             if stripped_query and stripped_query != normalized_query:
                 stripped_matches = [
-                    entry
-                    for entry in visible_entries
-                    if _normalize_lookup_text(entry.friendly_name) == stripped_query
+                    entry for entry in visible_entries if _normalize_lookup_text(entry.friendly_name) == stripped_query
                 ]
                 candidate, ambiguity = _select_deterministic_candidate(
-                    stripped_matches, entity_query, preferred_area_id=preferred_area_id,
+                    stripped_matches,
+                    entity_query,
+                    preferred_area_id=preferred_area_id,
                 )
                 if candidate:
                     metadata.update(
@@ -613,11 +623,12 @@ async def _resolve_light_entity(
             area_matches = [
                 entry
                 for entry in visible_entries
-                if entry.domain in {"light", "switch"}
-                and _normalize_lookup_text(entry.area or "") in area_queries
+                if entry.domain in {"light", "switch"} and _normalize_lookup_text(entry.area or "") in area_queries
             ]
             candidate, ambiguity = _select_deterministic_candidate(
-                area_matches, entity_query, preferred_area_id=preferred_area_id,
+                area_matches,
+                entity_query,
+                preferred_area_id=preferred_area_id,
             )
             if candidate:
                 metadata.update(
@@ -689,7 +700,8 @@ async def _settings_float(key: str, *, default: float) -> float:
 
 
 def _extract_state_from_call_result(
-    call_result: Any, entity_id: str,
+    call_result: Any,
+    entity_id: str,
 ) -> str | None:
     """Pick the target entity's state out of HA's ``call_service`` response.
 
@@ -765,7 +777,12 @@ async def execute_action(
     # Read-only actions (no service call)
     if action_name in ("query_light_state", "list_lights"):
         return await _handle_light_read_action(
-            action_name, entity_query, ha_client, entity_index, entity_matcher, agent_id,
+            action_name,
+            entity_query,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
             span_collector=span_collector,
         )
 
@@ -789,7 +806,10 @@ async def execute_action(
         if entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 resolution = await _resolve_light_entity(
-                    entity_query, entity_index, entity_matcher, agent_id,
+                    entity_query,
+                    entity_index,
+                    entity_matcher,
+                    agent_id,
                     preferred_area_id=preferred_area_id,
                 )
                 em_span["metadata"] = resolution["metadata"]
@@ -820,7 +840,10 @@ async def execute_action(
     # call_service + WS-waiter dance to the shared helper.
     expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
     verify = await call_service_with_verification(
-        ha_client, domain, service, entity_id,
+        ha_client,
+        domain,
+        service,
+        entity_id,
         service_data=service_data,
         expected_state=expected_state,
     )
@@ -850,6 +873,7 @@ async def execute_action(
 # ---------------------------------------------------------------------------
 # Read-only light/switch action handlers
 # ---------------------------------------------------------------------------
+
 
 def _format_light_state(entity_id: str, state_resp: dict) -> str:
     state = state_resp.get("state", "unknown")
@@ -905,32 +929,48 @@ async def _query_light_state(
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
     entity_id = resolution["entity_id"]
-    friendly_name = resolution["friendly_name"]
+    resolution["friendly_name"]
 
     if entity_id and not _validate_domain(entity_id):
         logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
         entity_id = None
 
     if not entity_id:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
+            "cacheable": False,
+        }
 
     try:
         state_resp = await ha_client.get_state(entity_id)
         if not state_resp:
-            return {"success": False, "entity_id": entity_id, "new_state": None,
-                    "speech": f"Could not retrieve state for {entity_id}.",
-                    "cacheable": False}
+            return {
+                "success": False,
+                "entity_id": entity_id,
+                "new_state": None,
+                "speech": f"Could not retrieve state for {entity_id}.",
+                "cacheable": False,
+            }
         speech = _format_light_state(entity_id, state_resp)
-        return {"success": True, "entity_id": entity_id,
-                "new_state": state_resp.get("state"), "speech": speech,
-                "cacheable": False}
+        return {
+            "success": True,
+            "entity_id": entity_id,
+            "new_state": state_resp.get("state"),
+            "speech": speech,
+            "cacheable": False,
+        }
     except Exception as exc:
         logger.error("State query failed for %s", entity_id, exc_info=True)
-        return {"success": False, "entity_id": entity_id, "new_state": None,
-                "speech": f"Failed to query light status: {exc}",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": None,
+            "speech": f"Failed to query light status: {exc}",
+            "cacheable": False,
+        }
 
 
 async def _list_lights(ha_client: Any) -> dict:
@@ -938,9 +978,13 @@ async def _list_lights(ha_client: Any) -> dict:
         states = await ha_client.get_states()
     except Exception as exc:
         logger.error("Failed to fetch states for list_lights", exc_info=True)
-        return {"success": False, "entity_id": "", "new_state": None,
-                "speech": f"Failed to list lights: {exc}",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": "",
+            "new_state": None,
+            "speech": f"Failed to list lights: {exc}",
+            "cacheable": False,
+        }
 
     lights_on = []
     lights_off = []
@@ -962,9 +1006,13 @@ async def _list_lights(ha_client: Any) -> dict:
                 switches_off.append(name)
 
     if not lights_on and not lights_off and not switches_on and not switches_off:
-        return {"success": True, "entity_id": "", "new_state": None,
-                "speech": "No light or switch entities found.",
-                "cacheable": False}
+        return {
+            "success": True,
+            "entity_id": "",
+            "new_state": None,
+            "speech": "No light or switch entities found.",
+            "cacheable": False,
+        }
 
     parts = []
     if lights_on:
@@ -976,8 +1024,7 @@ async def _list_lights(ha_client: Any) -> dict:
     if switches_off:
         parts.append(f"Switches off: {', '.join(switches_off)}")
     speech = ". ".join(parts) + "."
-    return {"success": True, "entity_id": "", "new_state": None, "speech": speech,
-            "cacheable": False}
+    return {"success": True, "entity_id": "", "new_state": None, "speech": speech, "cacheable": False}
 
 
 async def _handle_light_read_action(
@@ -990,10 +1037,15 @@ async def _handle_light_read_action(
     span_collector=None,
 ) -> dict:
     if action_name == "query_light_state":
-        return await _query_light_state(entity_query, ha_client, entity_index, entity_matcher, agent_id,
-                                        span_collector=span_collector)
+        return await _query_light_state(
+            entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
     if action_name == "list_lights":
         return await _list_lights(ha_client)
-    return {"success": False, "entity_id": "", "new_state": None,
-            "speech": f"Unknown read action: {action_name}",
-            "cacheable": False}
+    return {
+        "success": False,
+        "entity_id": "",
+        "new_state": None,
+        "speech": f"Unknown read action: {action_name}",
+        "cacheable": False,
+    }

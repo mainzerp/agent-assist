@@ -1,0 +1,36 @@
+services:
+  agent-assist:
+    # Local image name (not the old compose default "container-agent-assist").
+    # Override tag: IMAGE_TAG=0.18.0 docker compose build
+    image: ha-agenthub:${IMAGE_TAG:-latest}
+    build: .
+    container_name: agent-assist
+    restart: unless-stopped
+    ports:
+      - "${CONTAINER_PORT:-8080}:8080"
+    volumes:
+      - agent-assist-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '4.0'
+        reservations:
+          memory: 1G
+    environment:
+      - CONTAINER_HOST=${CONTAINER_HOST:-0.0.0.0}
+      - CONTAINER_PORT=${CONTAINER_PORT:-8080}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CHROMADB_PERSIST_DIR=${CHROMADB_PERSIST_DIR:-/data/chromadb}
+      - SQLITE_DB_PATH=${SQLITE_DB_PATH:-/data/agent_assist.db}
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+
+volumes:
+  agent-assist-data:
+    driver: local

@@ -1,4 +1,4 @@
-﻿"""Lifecycle tests for the MCP client owner-task pattern.
+"""Lifecycle tests for the MCP client owner-task pattern.
 
 Regression test for CRIT-4 (deep code review): ``__aenter__`` and
 ``__aexit__`` of the MCP transport / session contexts must run in the
@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -51,9 +50,7 @@ async def _fake_stdio_factory():
     try:
         yield (_FakeAsyncIO(), _FakeAsyncIO())
     finally:
-        assert asyncio.current_task() is enter_task, (
-            "stdio_client.__aexit__ ran in a different task than __aenter__"
-        )
+        assert asyncio.current_task() is enter_task, "stdio_client.__aexit__ ran in a different task than __aenter__"
 
 
 @pytest.mark.asyncio
@@ -88,9 +85,7 @@ async def test_list_tools_round_trip_via_owner():
         tool.name = "ping"
         tool.description = "p"
         tool.inputSchema = {"type": "object"}
-        client._session.list_tools = AsyncMock(
-            return_value=MagicMock(tools=[tool])
-        )
+        client._session.list_tools = AsyncMock(return_value=MagicMock(tools=[tool]))
 
         tools = await client.list_tools()
         assert tools == [{"name": "ping", "description": "p", "input_schema": {"type": "object"}}]
@@ -108,9 +103,7 @@ async def test_call_tool_round_trip_via_owner():
         client._session.call_tool = AsyncMock(return_value={"value": 42})
         result = await client.call_tool("do_thing", {"arg": 1})
         assert result == {"value": 42}
-        client._session.call_tool.assert_awaited_once_with(
-            "do_thing", arguments={"arg": 1}
-        )
+        client._session.call_tool.assert_awaited_once_with("do_thing", arguments={"arg": 1})
 
         await client.disconnect()
 

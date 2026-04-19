@@ -6,16 +6,13 @@ to bring the database up to the latest version.
 
 import aiosqlite
 
-
 CURRENT_VERSION = 1
 
 
 async def get_schema_version(db: aiosqlite.Connection) -> int:
     """Get the current schema version from the database."""
     try:
-        cursor = await db.execute(
-            "SELECT MAX(version) FROM schema_version"
-        )
+        cursor = await db.execute("SELECT MAX(version) FROM schema_version")
         row = await cursor.fetchone()
         return row[0] if row and row[0] is not None else 0
     except aiosqlite.OperationalError:
@@ -24,9 +21,7 @@ async def get_schema_version(db: aiosqlite.Connection) -> int:
 
 async def set_schema_version(db: aiosqlite.Connection, version: int) -> None:
     """Record a new schema version."""
-    await db.execute(
-        "INSERT INTO schema_version (version) VALUES (?)", (version,)
-    )
+    await db.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
 
 
 async def run_migrations(db: aiosqlite.Connection) -> None:

@@ -78,10 +78,7 @@ class MCPServerRegistry:
 
     def list_servers(self) -> list[dict[str, Any]]:
         """Return all server info with connection status."""
-        return [
-            {"name": name, "connected": client.connected}
-            for name, client in self._clients.items()
-        ]
+        return [{"name": name, "connected": client.connected} for name, client in self._clients.items()]
 
     def get_client(self, name: str) -> MCPClient | None:
         """Return an MCP client by server name."""

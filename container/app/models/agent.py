@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-
 
 RequestSource = Literal["ha", "chat", "api"]
 
@@ -89,7 +88,7 @@ class ActionExecuted(BaseModel):
     cacheable: bool = Field(True, description="Whether response may be stored in the response cache")
 
 
-class AgentErrorCode(str, Enum):
+class AgentErrorCode(StrEnum):
     """Structured error codes for agent failures."""
 
     ENTITY_NOT_FOUND = "entity_not_found"
@@ -122,3 +121,9 @@ class TaskResult(BaseModel):
     action_executed: ActionExecuted | None = Field(None, description="HA action result if an action was performed")
     metadata: dict = Field(default_factory=dict, description="Agent-specific metadata")
     error: AgentError | None = Field(None, description="Structured error if the agent encountered a problem")
+    # When True and the request came from HA voice (``source == \"ha\"``), the
+    # orchestrator re-opens Assist STT on the origin satellite after TTS.
+    voice_followup: bool = Field(
+        False,
+        description="Ask orchestrator to trigger satellite listen-after-response (HA voice only)",
+    )

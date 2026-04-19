@@ -11,13 +11,12 @@ from app.mcp.client import MCPClient
 from app.mcp.registry import MCPServerRegistry
 from app.mcp.tools import MCPToolManager
 
-
 # ---------------------------------------------------------------------------
 # MCPClient
 # ---------------------------------------------------------------------------
 
-class TestMCPClient:
 
+class TestMCPClient:
     def test_initial_state_not_connected(self):
         client = MCPClient(name="test", transport="stdio", command_or_url="echo hello")
         assert client.connected is False
@@ -101,6 +100,7 @@ class TestMCPClient:
     @patch("app.mcp.client.MCPClient._connect_stdio", new_callable=AsyncMock)
     async def test_connect_timeout_returns_false(self, mock_stdio):
         """If connection takes longer than timeout, connect() returns False."""
+
         async def slow_connect():
             await asyncio.sleep(10)
             return True
@@ -116,8 +116,8 @@ class TestMCPClient:
 # MCPServerRegistry
 # ---------------------------------------------------------------------------
 
-class TestMCPServerRegistry:
 
+class TestMCPServerRegistry:
     def test_list_servers_empty_on_init(self):
         registry = MCPServerRegistry()
         assert registry.list_servers() == []
@@ -128,12 +128,12 @@ class TestMCPServerRegistry:
 
     @patch("app.mcp.registry.McpServerRepository")
     @patch("app.mcp.registry.MCPClient")
-    async def test_add_server_registers_and_connects(self, MockClient, mock_repo):
+    async def test_add_server_registers_and_connects(self, mock_mcp_client, mock_repo):
         mock_repo.upsert = AsyncMock()
         client_instance = AsyncMock()
         client_instance.connect = AsyncMock(return_value=True)
         client_instance.connected = True
-        MockClient.return_value = client_instance
+        mock_mcp_client.return_value = client_instance
 
         registry = MCPServerRegistry()
         result = await registry.add_server("test-server", "stdio", "echo hello")
@@ -167,8 +167,8 @@ class TestMCPServerRegistry:
 # MCPToolManager
 # ---------------------------------------------------------------------------
 
-class TestMCPToolManager:
 
+class TestMCPToolManager:
     async def test_discover_tools_returns_tools_for_connected_servers(self):
         registry = MagicMock(spec=MCPServerRegistry)
         registry.list_servers.return_value = [
@@ -237,13 +237,14 @@ class TestMCPToolManager:
 # DuckDuckGo MCP Server
 # ---------------------------------------------------------------------------
 
-class TestDuckDuckGoServerTools:
 
+class TestDuckDuckGoServerTools:
     def test_server_module_importable(self):
         """The DuckDuckGo MCP server module can be imported."""
         pytest.importorskip("mcp")
         pytest.importorskip("duckduckgo_search")
         from app.mcp.servers import duckduckgo_server
+
         assert hasattr(duckduckgo_server, "server")
 
     async def test_list_tools_returns_expected_tools(self):
@@ -251,6 +252,7 @@ class TestDuckDuckGoServerTools:
         pytest.importorskip("mcp")
         pytest.importorskip("duckduckgo_search")
         from app.mcp.servers.duckduckgo_server import list_tools
+
         tools = await list_tools()
         names = {t.name for t in tools}
         assert "web_search" in names
@@ -261,6 +263,7 @@ class TestDuckDuckGoServerTools:
         pytest.importorskip("mcp")
         pytest.importorskip("duckduckgo_search")
         from app.mcp.servers.duckduckgo_server import list_tools
+
         tools = await list_tools()
         search_tool = next(t for t in tools if t.name == "web_search")
         assert "query" in search_tool.inputSchema["properties"]
@@ -271,8 +274,8 @@ class TestDuckDuckGoServerTools:
 # MCP Tool Assignment for Built-in Agents
 # ---------------------------------------------------------------------------
 
-class TestAgentMcpToolAssignment:
 
+class TestAgentMcpToolAssignment:
     async def test_get_tools_for_builtin_agent_returns_empty_by_default(self):
         """Built-in agent with no assignments returns empty list."""
         with patch("app.db.repository.AgentMcpToolsRepository.get_tools", new_callable=AsyncMock, return_value=[]):
@@ -283,15 +286,17 @@ class TestAgentMcpToolAssignment:
 
     async def test_get_tools_for_builtin_agent_returns_assigned_tools(self):
         """Built-in agent with assignments gets tool descriptors."""
-        with patch("app.db.repository.AgentMcpToolsRepository.get_tools", new_callable=AsyncMock, return_value=[
-            {"server": "duckduckgo-search", "tool": "web_search"}
-        ]):
+        with patch(
+            "app.db.repository.AgentMcpToolsRepository.get_tools",
+            new_callable=AsyncMock,
+            return_value=[{"server": "duckduckgo-search", "tool": "web_search"}],
+        ):
             registry = MCPServerRegistry()
             mock_client = MagicMock()
             mock_client.connected = True
-            mock_client.list_tools = AsyncMock(return_value=[
-                {"name": "web_search", "description": "Search", "input_schema": {}}
-            ])
+            mock_client.list_tools = AsyncMock(
+                return_value=[{"name": "web_search", "description": "Search", "input_schema": {}}]
+            )
             registry._clients["duckduckgo-search"] = mock_client
             manager = MCPToolManager(registry)
             tools = await manager.get_tools_for_agent("general-agent")
@@ -304,6 +309,7 @@ class TestAgentMcpToolAssignment:
 # MCP server admin API auth (SEC-5)
 # ---------------------------------------------------------------------------
 
+
 class TestMcpServerAdminApiAuth:
     """SEC-5: every endpoint that calls ``MCPServerRegistry.add_server`` must
     require an authenticated admin session. Unauthenticated access to
@@ -311,7 +317,9 @@ class TestMcpServerAdminApiAuth:
 
     async def test_add_mcp_server_requires_session(self, db_repository):
         from contextlib import asynccontextmanager
+
         import httpx
+
         from app.main import create_app
 
         app = create_app()
@@ -344,9 +352,7 @@ class TestMcpServerAdminApiAuth:
             return_value=True,
         ):
             transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(
-                transport=transport, base_url="http://testserver"
-            ) as client:
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
                 resp = await client.post(
                     "/api/admin/mcp-servers",
                     json={

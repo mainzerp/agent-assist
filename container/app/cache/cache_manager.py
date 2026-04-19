@@ -7,11 +7,11 @@ import logging
 import time
 from dataclasses import dataclass
 
-from app.cache.routing_cache import RoutingCache
-from app.cache.response_cache import ResponseCache
-from app.cache.vector_store import VectorStore, get_vector_store, COLLECTION_ROUTING_CACHE, COLLECTION_RESPONSE_CACHE
-from app.models.cache import RoutingCacheEntry, ResponseCacheEntry, CachedAction
 from app.analytics.collector import track_cache_event, track_rewrite
+from app.cache.response_cache import ResponseCache
+from app.cache.routing_cache import RoutingCache
+from app.cache.vector_store import COLLECTION_RESPONSE_CACHE, COLLECTION_ROUTING_CACHE, VectorStore
+from app.models.cache import CachedAction, ResponseCacheEntry, RoutingCacheEntry
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CacheResult:
     """Result from cache manager process() call."""
+
     hit_type: str  # "response_hit", "response_partial", "routing_hit", "miss"
     agent_id: str | None = None
     response_text: str | None = None
@@ -51,6 +52,7 @@ class CacheManager:
         await self._routing_cache.load_config()
         await self._response_cache.load_config()
         from app.db.repository import SettingsRepository
+
         personality = await SettingsRepository.get_value("personality.prompt", "")
         self._rewrite_enabled = bool(personality.strip())
         raw = await SettingsRepository.get_value("cache.response.enabled", "true")
@@ -78,6 +80,7 @@ class CacheManager:
         await self._routing_cache.reload_config()
         await self._response_cache.reload_config()
         from app.db.repository import SettingsRepository
+
         if self._rewrite_agent:
             personality = await SettingsRepository.get_value("personality.prompt", "")
             self._rewrite_enabled = bool(personality.strip())
@@ -85,7 +88,10 @@ class CacheManager:
         self._response_cache_enabled = raw.lower() == "true"
 
     async def process(
-        self, query_text: str, *, language: str = "en",
+        self,
+        query_text: str,
+        *,
+        language: str = "en",
     ) -> CacheResult:
         """Check both cache tiers in order: routing first, then response.
 
@@ -94,7 +100,9 @@ class CacheManager:
         """
         try:
             result = await asyncio.to_thread(
-                self._process_inner, query_text, language,
+                self._process_inner,
+                query_text,
+                language,
             )
             # Track cache event
             await track_cache_event(
@@ -109,11 +117,7 @@ class CacheManager:
 
     async def apply_rewrite(self, result: CacheResult) -> None:
         """Apply rewrite to a response_hit CacheResult in-place."""
-        if (
-            result.hit_type != "response_hit"
-            or not self._rewrite_agent
-            or not result.response_text
-        ):
+        if result.hit_type != "response_hit" or not self._rewrite_agent or not result.response_text:
             return
         original_text = result.response_text
         t0 = time.perf_counter()
@@ -157,13 +161,10 @@ class CacheManager:
         # 1. Check response cache first, but only honor hits that can be
         #    replayed deterministically (cached_action present).
         hit_type, resp_entry, resp_similarity = self._response_cache.lookup(
-            query_text, language=language,
+            query_text,
+            language=language,
         )
-        if (
-            hit_type == "hit"
-            and resp_entry is not None
-            and resp_entry.cached_action is not None
-        ):
+        if hit_type == "hit" and resp_entry is not None and resp_entry.cached_action is not None:
             return CacheResult(
                 hit_type="response_hit",
                 agent_id=resp_entry.agent_id,
@@ -180,7 +181,8 @@ class CacheManager:
         #    Routing still skips classify; the agent runs against live
         #    state for speech and any downstream reads.
         routing_entry, routing_similarity = self._routing_cache.lookup(
-            query_text, language=language,
+            query_text,
+            language=language,
         )
         if routing_entry:
             return CacheResult(
@@ -210,23 +212,40 @@ class CacheManager:
         return CacheResult(hit_type="miss", similarity=None)
 
     def store_routing(
-        self, query_text: str, agent_id: str, confidence: float,
-        condensed_task: str = "", *, language: str = "en",
+        self,
+        query_text: str,
+        agent_id: str,
+        confidence: float,
+        condensed_task: str = "",
+        *,
+        language: str = "en",
     ) -> None:
         """Store a routing decision after an agent handles a request."""
         self._routing_cache.store(
-            query_text, agent_id, confidence, condensed_task,
+            query_text,
+            agent_id,
+            confidence,
+            condensed_task,
             language=language,
         )
 
     async def store_routing_async(
-        self, query_text: str, agent_id: str, confidence: float,
-        condensed_task: str = "", *, language: str = "en",
+        self,
+        query_text: str,
+        agent_id: str,
+        confidence: float,
+        condensed_task: str = "",
+        *,
+        language: str = "en",
     ) -> None:
         """Async wrapper around ``store_routing`` that offloads the ChromaDB
         write to a worker thread so the event loop is not blocked (PERF-4)."""
         await asyncio.to_thread(
-            self.store_routing, query_text, agent_id, confidence, condensed_task,
+            self.store_routing,
+            query_text,
+            agent_id,
+            confidence,
+            condensed_task,
             language=language,
         )
 
@@ -255,18 +274,14 @@ class CacheManager:
         if tier is None or tier == "routing":
             count = self._vector_store.count(COLLECTION_ROUTING_CACHE)
             if count > 0:
-                all_data = self._vector_store.get(
-                    COLLECTION_ROUTING_CACHE, include=[]
-                )
+                all_data = self._vector_store.get(COLLECTION_ROUTING_CACHE, include=[])
                 if all_data["ids"]:
                     self._vector_store.delete(COLLECTION_ROUTING_CACHE, ids=all_data["ids"])
             logger.info("Routing cache flushed")
         if tier is None or tier == "response":
             count = self._vector_store.count(COLLECTION_RESPONSE_CACHE)
             if count > 0:
-                all_data = self._vector_store.get(
-                    COLLECTION_RESPONSE_CACHE, include=[]
-                )
+                all_data = self._vector_store.get(COLLECTION_RESPONSE_CACHE, include=[])
                 if all_data["ids"]:
                     self._vector_store.delete(COLLECTION_RESPONSE_CACHE, ids=all_data["ids"])
             logger.info("Response cache flushed")

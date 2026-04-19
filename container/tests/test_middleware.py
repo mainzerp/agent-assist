@@ -4,20 +4,19 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-from starlette.testclient import TestClient
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import PlainTextResponse, JSONResponse
+from starlette.responses import PlainTextResponse
 from starlette.routing import Route
+from starlette.testclient import TestClient
 
 from app.middleware.auth import SetupRedirectMiddleware, apply_auth_dependencies
 from app.middleware.tracing import TracingMiddleware
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_test_app(middleware_cls, setup_complete: bool = True):
     """Build a minimal Starlette app with the given middleware."""
@@ -41,9 +40,7 @@ def _make_test_app(middleware_cls, setup_complete: bool = True):
         ],
     )
 
-    if middleware_cls == SetupRedirectMiddleware:
-        app.add_middleware(middleware_cls)
-    elif middleware_cls == TracingMiddleware:
+    if middleware_cls in (SetupRedirectMiddleware, TracingMiddleware):
         app.add_middleware(middleware_cls)
 
     return app
@@ -53,8 +50,8 @@ def _make_test_app(middleware_cls, setup_complete: bool = True):
 # SetupRedirectMiddleware
 # ---------------------------------------------------------------------------
 
-class TestSetupRedirectMiddleware:
 
+class TestSetupRedirectMiddleware:
     @patch("app.middleware.auth.SetupStateRepository")
     def test_redirects_when_setup_incomplete(self, mock_repo):
         mock_repo.is_complete = AsyncMock(return_value=False)
@@ -112,8 +109,8 @@ class TestSetupRedirectMiddleware:
 # TracingMiddleware
 # ---------------------------------------------------------------------------
 
-class TestTracingMiddleware:
 
+class TestTracingMiddleware:
     @patch("app.middleware.tracing.SpanCollector")
     def test_assigns_trace_id_header(self, mock_collector_cls):
         mock_collector_cls.return_value = MagicMock(
@@ -169,10 +166,11 @@ class TestTracingMiddleware:
 # apply_auth_dependencies
 # ---------------------------------------------------------------------------
 
-class TestApplyAuthDependencies:
 
+class TestApplyAuthDependencies:
     def test_registers_exception_handlers(self):
         from fastapi import FastAPI
+
         app = FastAPI()
         apply_auth_dependencies(app)
         # HTTPException and generic Exception should be registered

@@ -21,7 +21,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-
 _litellm_mock = MagicMock()
 
 
@@ -37,7 +36,6 @@ from app.agents.action_executor import (  # noqa: E402
     build_verified_speech,
     call_service_with_verification,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test fixtures
@@ -87,8 +85,7 @@ def _attach_ws_observer_shim(client, *, observed_state: str | None):
     client.set_state_observer = MagicMock()
     client.get_state = AsyncMock(
         side_effect=AssertionError(
-            "domain executors must not call get_state directly anymore "
-            "- use call_service_with_verification",
+            "domain executors must not call get_state directly anymore - use call_service_with_verification",
         ),
     )
     return client
@@ -116,7 +113,10 @@ class TestCallServiceWithVerification:
             observed_state="off",  # stale, must be ignored
         )
         result = await call_service_with_verification(
-            client, "light", "turn_on", "light.x",
+            client,
+            "light",
+            "turn_on",
+            "light.x",
             expected_state="on",
         )
         assert result["success"] is True
@@ -127,7 +127,10 @@ class TestCallServiceWithVerification:
     async def test_empty_rest_falls_back_to_ws_observer(self):
         client = _make_ha_client(call_result=[], observed_state="on")
         result = await call_service_with_verification(
-            client, "light", "turn_on", "light.x",
+            client,
+            "light",
+            "turn_on",
+            "light.x",
             expected_state="on",
         )
         assert result["success"] is True
@@ -138,7 +141,10 @@ class TestCallServiceWithVerification:
     async def test_empty_rest_no_observer_returns_unverified(self):
         client = _make_ha_client(call_result=[], observed_state=None)
         result = await call_service_with_verification(
-            client, "light", "turn_on", "light.x",
+            client,
+            "light",
+            "turn_on",
+            "light.x",
             expected_state="on",
         )
         assert result["success"] is True
@@ -150,7 +156,10 @@ class TestCallServiceWithVerification:
         client = _make_ha_client(observed_state="on")
         client.call_service = AsyncMock(side_effect=RuntimeError("boom"))
         result = await call_service_with_verification(
-            client, "light", "turn_on", "light.x",
+            client,
+            "light",
+            "turn_on",
+            "light.x",
             expected_state="on",
         )
         assert result["success"] is False
@@ -161,7 +170,10 @@ class TestCallServiceWithVerification:
     async def test_no_expected_accepts_any_observed_change(self):
         client = _make_ha_client(call_result=[], observed_state="playing")
         result = await call_service_with_verification(
-            client, "media_player", "media_play", "media_player.x",
+            client,
+            "media_player",
+            "media_play",
+            "media_player.x",
             expected_state=None,
         )
         assert result["verified"] is True
@@ -262,7 +274,7 @@ async def _assert_verified_action(
     assert result["new_state"] == expected_new_state
     for needle in speech_assertions:
         assert needle in result["speech"], result["speech"]
-    for needle in (negative_speech_assertions or []):
+    for needle in negative_speech_assertions or []:
         assert needle not in result["speech"], result["speech"]
     ha_client.call_service.assert_awaited_once()
     call_args = ha_client.call_service.await_args
@@ -496,7 +508,7 @@ class TestAutomationExecutorVerification:
 class TestTimerExecutorVerification:
     @pytest.mark.asyncio
     async def test_start_timer_ws_confirms_active(self):
-        from app.agents.timer_executor import execute_timer_action, _timer_pool
+        from app.agents.timer_executor import _timer_pool, execute_timer_action
 
         _timer_pool._name_to_entity.clear()
         _timer_pool._entity_to_name.clear()

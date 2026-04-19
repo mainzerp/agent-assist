@@ -19,10 +19,10 @@ from app.security.auth import (
     require_api_key,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 def _build_dashboard_app(*, override_session: bool = True):
     """Build a FastAPI app for dashboard integration tests."""
@@ -73,7 +73,9 @@ async def dashboard_client(db_repository):
     ):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
-            transport=transport, base_url="http://testserver", follow_redirects=False,
+            transport=transport,
+            base_url="http://testserver",
+            follow_redirects=False,
         ) as client:
             yield client
 
@@ -89,7 +91,9 @@ async def no_session_client(db_repository):
     ):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
-            transport=transport, base_url="http://testserver", follow_redirects=False,
+            transport=transport,
+            base_url="http://testserver",
+            follow_redirects=False,
         ) as client:
             yield client
 
@@ -101,7 +105,6 @@ async def no_session_client(db_repository):
 
 @pytest.mark.integration
 class TestDashboardLoginRequired:
-
     async def test_dashboard_index_requires_auth(self, no_session_client: httpx.AsyncClient):
         resp = await no_session_client.get("/dashboard/")
         # The require_admin_session_redirect raises HTTPException with 303
@@ -114,9 +117,7 @@ class TestDashboardLoginRequired:
         resp = await no_session_client.get("/dashboard/agents")
         assert resp.status_code == 303
 
-    async def test_login_page_accessible_without_session(
-        self, no_session_client: httpx.AsyncClient
-    ):
+    async def test_login_page_accessible_without_session(self, no_session_client: httpx.AsyncClient):
         resp = await no_session_client.get("/dashboard/login")
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
@@ -129,7 +130,6 @@ class TestDashboardLoginRequired:
 
 @pytest.mark.integration
 class TestDashboardPageAccessibility:
-
     async def test_dashboard_index(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/")
         assert resp.status_code == 200
@@ -151,16 +151,12 @@ class TestDashboardPageAccessibility:
         assert "text/html" in resp.headers.get("content-type", "")
 
     async def test_entity_visibility_redirects(self, dashboard_client: httpx.AsyncClient):
-        resp = await dashboard_client.get(
-            "/dashboard/entity-visibility", follow_redirects=False
-        )
+        resp = await dashboard_client.get("/dashboard/entity-visibility", follow_redirects=False)
         assert resp.status_code == 301
         assert "/dashboard/entity-index" in resp.headers.get("location", "")
 
     async def test_entity_visibility_redirect_preserves_agent(self, dashboard_client: httpx.AsyncClient):
-        resp = await dashboard_client.get(
-            "/dashboard/entity-visibility?agent=light-agent", follow_redirects=False
-        )
+        resp = await dashboard_client.get("/dashboard/entity-visibility?agent=light-agent", follow_redirects=False)
         assert resp.status_code == 301
         assert "agent=light-agent" in resp.headers.get("location", "")
 
@@ -187,7 +183,6 @@ class TestDashboardPageAccessibility:
 
 @pytest.mark.integration
 class TestDashboardTemplateRendering:
-
     async def test_login_page_contains_form(self, no_session_client: httpx.AsyncClient):
         resp = await no_session_client.get("/dashboard/login")
         html = resp.text
@@ -206,7 +201,6 @@ class TestDashboardTemplateRendering:
 
 @pytest.mark.integration
 class TestPersonalityPage:
-
     async def test_personality_page_accessible(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/personality")
         assert resp.status_code == 200
@@ -255,18 +249,25 @@ class TestPersonalityPage:
 
 @pytest.mark.integration
 class TestOverviewExtended:
-
     async def test_overview_extended_returns_all_fields(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/api/admin/overview/extended")
         assert resp.status_code == 200
         data = resp.json()
 
         expected_keys = {
-            "recent_requests", "cache_hit_rate", "agent_count",
-            "entity_count", "mcp_server_count", "presence_rooms",
-            "avg_latency_ms", "total_conversations",
-            "agent_distribution", "cache_tier", "request_trend",
-            "recent_traces", "warnings",
+            "recent_requests",
+            "cache_hit_rate",
+            "agent_count",
+            "entity_count",
+            "mcp_server_count",
+            "presence_rooms",
+            "avg_latency_ms",
+            "total_conversations",
+            "agent_distribution",
+            "cache_tier",
+            "request_trend",
+            "recent_traces",
+            "warnings",
         }
         assert expected_keys.issubset(data.keys())
 
@@ -303,18 +304,20 @@ class TestOverviewExtended:
 
 @pytest.mark.integration
 class TestSendDevicesAPI:
-
     async def test_list_empty(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/api/admin/send-devices")
         assert resp.status_code == 200
         assert resp.json() == []
 
     async def test_create_and_list(self, dashboard_client: httpx.AsyncClient):
-        resp = await dashboard_client.post("/api/admin/send-devices", json={
-            "display_name": "Laura Handy",
-            "device_type": "notify",
-            "ha_service_target": "mobile_app_lauras_iphone",
-        })
+        resp = await dashboard_client.post(
+            "/api/admin/send-devices",
+            json={
+                "display_name": "Laura Handy",
+                "device_type": "notify",
+                "ha_service_target": "mobile_app_lauras_iphone",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert "id" in data
@@ -326,32 +329,44 @@ class TestSendDevicesAPI:
         assert mappings[0]["display_name"] == "Laura Handy"
 
     async def test_create_duplicate_rejected(self, dashboard_client: httpx.AsyncClient):
-        await dashboard_client.post("/api/admin/send-devices", json={
-            "display_name": "Laura Handy",
-            "device_type": "notify",
-            "ha_service_target": "svc_a",
-        })
-        resp = await dashboard_client.post("/api/admin/send-devices", json={
-            "display_name": "Laura Handy",
-            "device_type": "notify",
-            "ha_service_target": "svc_b",
-        })
+        await dashboard_client.post(
+            "/api/admin/send-devices",
+            json={
+                "display_name": "Laura Handy",
+                "device_type": "notify",
+                "ha_service_target": "svc_a",
+            },
+        )
+        resp = await dashboard_client.post(
+            "/api/admin/send-devices",
+            json={
+                "display_name": "Laura Handy",
+                "device_type": "notify",
+                "ha_service_target": "svc_b",
+            },
+        )
         assert resp.status_code == 409
 
     async def test_create_invalid_type(self, dashboard_client: httpx.AsyncClient):
-        resp = await dashboard_client.post("/api/admin/send-devices", json={
-            "display_name": "Test",
-            "device_type": "invalid",
-            "ha_service_target": "svc",
-        })
+        resp = await dashboard_client.post(
+            "/api/admin/send-devices",
+            json={
+                "display_name": "Test",
+                "device_type": "invalid",
+                "ha_service_target": "svc",
+            },
+        )
         assert resp.status_code == 400
 
     async def test_delete(self, dashboard_client: httpx.AsyncClient):
-        resp = await dashboard_client.post("/api/admin/send-devices", json={
-            "display_name": "To Delete",
-            "device_type": "notify",
-            "ha_service_target": "svc_del",
-        })
+        resp = await dashboard_client.post(
+            "/api/admin/send-devices",
+            json={
+                "display_name": "To Delete",
+                "device_type": "notify",
+                "ha_service_target": "svc_del",
+            },
+        )
         mapping_id = resp.json()["id"]
         resp = await dashboard_client.delete(f"/api/admin/send-devices/{mapping_id}")
         assert resp.status_code == 200

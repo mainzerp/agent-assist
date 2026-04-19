@@ -56,16 +56,18 @@ class GeneralAgent(BaseAgent):
 
         if task.context and task.context.conversation_turns:
             for turn in task.context.conversation_turns:
-                messages.append({
-                    "role": turn.get("role", "user"),
-                    "content": turn.get("content", ""),
-                })
+                messages.append(
+                    {
+                        "role": turn.get("role", "user"),
+                        "content": turn.get("content", ""),
+                    }
+                )
 
         # task.description = condensed task from orchestrator (primary input)
         # task.user_text = original unmodified user text (fallback only)
         user_content = task.description
         if task.user_text and task.user_text != task.description:
-            user_content = f"{task.description}\n\n(Original user message: \"{task.user_text}\")"
+            user_content = f'{task.description}\n\n(Original user message: "{task.user_text}")'
         messages.append({"role": "user", "content": user_content})
 
         # Check for available MCP tools
@@ -76,7 +78,9 @@ class GeneralAgent(BaseAgent):
         if tools:
             tool_schemas = self._mcp_tools_to_openai_format(tools)
             async with _optional_span(span_collector, "llm_call", agent_id="general-agent") as span:
-                response = await self._call_llm_with_tools(messages, tool_schemas, tools, span_collector=span_collector, **llm_kwargs)
+                response = await self._call_llm_with_tools(
+                    messages, tool_schemas, tools, span_collector=span_collector, **llm_kwargs
+                )
                 span["metadata"]["model"] = "general-agent"
                 span["metadata"]["llm_response"] = response[:500] if response else ""
                 span["metadata"]["tools_available"] = len(tool_schemas)
@@ -103,14 +107,16 @@ class GeneralAgent(BaseAgent):
         """Convert MCP tool descriptors to OpenAI function-calling format."""
         openai_tools = []
         for tool in mcp_tools:
-            openai_tools.append({
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool.get("description", ""),
-                    "parameters": tool.get("input_schema", {}),
-                },
-            })
+            openai_tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool.get("description", ""),
+                        "parameters": tool.get("input_schema", {}),
+                    },
+                }
+            )
         return openai_tools
 
     async def _call_llm_with_tools(self, messages, tool_schemas, mcp_tools, span_collector=None, **overrides):

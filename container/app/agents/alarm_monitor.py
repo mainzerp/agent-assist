@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import datetime
 from typing import Any
@@ -31,10 +32,8 @@ class AlarmMonitor:
         """Stop the background monitoring task."""
         if self._task and not self._task.done():
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
         logger.info("AlarmMonitor stopped")
 
     @property
@@ -118,6 +117,7 @@ class AlarmMonitor:
         """Dispatch alarm notification via the notification dispatcher."""
         try:
             from app.agents.notification_dispatcher import dispatch_alarm_notification
+
             await dispatch_alarm_notification(
                 ha_client=self._ha_client,
                 alarm_name=friendly_name,

@@ -5,23 +5,24 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import random
 import re
 import time
 import uuid
 from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta
 
-from app.agents.base import BaseAgent
 from app.a2a.protocol import JsonRpcRequest
-from app.db.repository import ConversationRepository, SettingsRepository
-from app.agents.sanitize import strip_markdown
+from app.agents.base import BaseAgent
 from app.agents.language_detect import detect_user_language
-from app.analytics.collector import track_request, track_agent_timeout
-from app.analytics.tracer import _NoOpSpan, _optional_span
+from app.agents.sanitize import strip_markdown
+from app.analytics.collector import track_agent_timeout, track_request
+from app.analytics.tracer import _optional_span
+from app.db.repository import ConversationRepository, SettingsRepository
 from app.ha_client.home_context import home_context_provider
 from app.models.agent import AgentCard, AgentTask, TaskContext
-from app.models.cache import ResponseCacheEntry, CachedAction
+from app.models.cache import CachedAction, ResponseCacheEntry
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,16 @@ _CANNED_GENERAL_ERROR_SPEECH = "I couldn't process that request right now."
 class OrchestratorAgent(BaseAgent):
     """Classifies user intent and dispatches to specialized agents via A2A."""
 
-    def __init__(self, dispatcher, registry=None, cache_manager=None, ha_client=None, entity_index=None, presence_detector=None, filler_agent=None) -> None:
+    def __init__(
+        self,
+        dispatcher,
+        registry=None,
+        cache_manager=None,
+        ha_client=None,
+        entity_index=None,
+        presence_detector=None,
+        filler_agent=None,
+    ) -> None:
         super().__init__(ha_client=ha_client, entity_index=entity_index)
         self._dispatcher = dispatcher
         self._registry = registry
@@ -79,7 +89,8 @@ class OrchestratorAgent(BaseAgent):
             pass
         logger.info(
             "Orchestrator reliability config: timeout=%ds max_iterations=%d",
-            self._default_timeout, self._max_iterations,
+            self._default_timeout,
+            self._max_iterations,
         )
 
     async def _load_mediation_config(self) -> None:
@@ -113,7 +124,9 @@ class OrchestratorAgent(BaseAgent):
         cards = await self._registry.list_agents()
         return {card.agent_id for card in cards if card.agent_id != "orchestrator"}
 
-    async def _resolve_language(self, user_text: str, context_language: str | None = None, turns: list[dict] | None = None) -> str:
+    async def _resolve_language(
+        self, user_text: str, context_language: str | None = None, turns: list[dict] | None = None
+    ) -> str:
         """Resolve effective language: DB setting > auto-detect > turns-detect > fallback."""
         setting = await SettingsRepository.get_value("language", "auto")
         if setting and setting != "auto":
@@ -192,7 +205,7 @@ class OrchestratorAgent(BaseAgent):
                     now = datetime.now(tz)
                     context.local_time = now.strftime("%Y-%m-%d %H:%M")
                 except Exception:
-                    context.local_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+                    context.local_time = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
             except Exception:
                 logger.debug("Failed to populate home context", exc_info=True)
 
@@ -231,10 +244,11 @@ class OrchestratorAgent(BaseAgent):
                 span["metadata"]["condensed_task"] = condensed_task[:500]
             logger.info("Agent %s responded in %.1fms", target_agent, latency_ms)
             await track_request(target_agent, cache_hit=False, latency_ms=latency_ms)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Agent %s timed out after %ds, falling back",
-                target_agent, self._default_timeout,
+                target_agent,
+                self._default_timeout,
             )
             await track_agent_timeout(target_agent, self._default_timeout)
             if target_agent != _FALLBACK_AGENT:
@@ -246,7 +260,9 @@ class OrchestratorAgent(BaseAgent):
                     # the actual handler.
                     t_fb = time.perf_counter()
                     async with _optional_span(
-                        span_collector, "dispatch_fallback", agent_id=_FALLBACK_AGENT,
+                        span_collector,
+                        "dispatch_fallback",
+                        agent_id=_FALLBACK_AGENT,
                     ) as fb_span:
                         response = await asyncio.wait_for(
                             self._dispatcher.dispatch(request),
@@ -260,7 +276,7 @@ class OrchestratorAgent(BaseAgent):
                         fb_span["metadata"]["agent_response"] = (fb_result_data.get("speech") or "")[:500]
                     await track_request(_FALLBACK_AGENT, cache_hit=False, latency_ms=fb_latency_ms)
                     target_agent = _FALLBACK_AGENT
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     await track_agent_timeout(_FALLBACK_AGENT, self._default_timeout)
                     return target_agent, _CANNED_TIMEOUT_SPEECH, None
             else:
@@ -269,7 +285,9 @@ class OrchestratorAgent(BaseAgent):
         if response.error:
             logger.warning(
                 "Agent %s error: %s -- falling back to %s",
-                target_agent, response.error.message, _FALLBACK_AGENT,
+                target_agent,
+                response.error.message,
+                _FALLBACK_AGENT,
             )
             if target_agent != _FALLBACK_AGENT:
                 request.params["agent_id"] = _FALLBACK_AGENT
@@ -279,7 +297,9 @@ class OrchestratorAgent(BaseAgent):
                     # request to the actual fallback agent.
                     t_fb = time.perf_counter()
                     async with _optional_span(
-                        span_collector, "dispatch_fallback", agent_id=_FALLBACK_AGENT,
+                        span_collector,
+                        "dispatch_fallback",
+                        agent_id=_FALLBACK_AGENT,
                     ) as fb_span:
                         response = await asyncio.wait_for(
                             self._dispatcher.dispatch(request),
@@ -293,7 +313,7 @@ class OrchestratorAgent(BaseAgent):
                         fb_span["metadata"]["agent_response"] = (fb_result_data.get("speech") or "")[:500]
                     await track_request(_FALLBACK_AGENT, cache_hit=False, latency_ms=fb_latency_ms)
                     target_agent = _FALLBACK_AGENT
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     await track_agent_timeout(_FALLBACK_AGENT, self._default_timeout)
                     return target_agent, _CANNED_TIMEOUT_SPEECH, None
             else:
@@ -325,7 +345,9 @@ class OrchestratorAgent(BaseAgent):
             error_code = error.get("code", "unknown")
             logger.info(
                 "Agent %s returned error: %s (recoverable=%s)",
-                target_agent, error_code, error.get("recoverable", True),
+                target_agent,
+                error_code,
+                error.get("recoverable", True),
             )
 
         return target_agent, speech, result
@@ -351,8 +373,13 @@ class OrchestratorAgent(BaseAgent):
         if not send_classification:
             logger.warning("_handle_sequential_send called without send-agent classification")
             return await self._dispatch_single(
-                classifications[0][0], classifications[0][1], user_text,
-                conversation_id, turns, span_collector, incoming_context=incoming_context,
+                classifications[0][0],
+                classifications[0][1],
+                user_text,
+                conversation_id,
+                turns,
+                span_collector,
+                incoming_context=incoming_context,
                 resolved_language=resolved_language,
             )
 
@@ -364,11 +391,7 @@ class OrchestratorAgent(BaseAgent):
         if content_agents:
             content_aid, content_task, _ = content_agents[0]
             content_dispatched = True
-            content_language = (
-                resolved_language
-                or (incoming_context.language if incoming_context else None)
-                or "en"
-            )
+            content_language = resolved_language or (incoming_context.language if incoming_context else None) or "en"
             content_context = TaskContext(
                 conversation_turns=turns,
                 device_id=incoming_context.device_id if incoming_context else None,
@@ -397,12 +420,17 @@ class OrchestratorAgent(BaseAgent):
                         now = datetime.now(tz)
                         content_context.local_time = now.strftime("%Y-%m-%d %H:%M")
                     except Exception:
-                        content_context.local_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+                        content_context.local_time = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
                 except Exception:
                     logger.debug("Failed to populate home context for sequential send", exc_info=True)
             async with _optional_span(span_collector, "dispatch_content", agent_id=content_aid) as span:
                 content_agent_id, content_speech, _content_result = await self._dispatch_single(
-                    content_aid, content_task, user_text, conversation_id, turns, span_collector,
+                    content_aid,
+                    content_task,
+                    user_text,
+                    conversation_id,
+                    turns,
+                    span_collector,
                     incoming_context=content_context,
                     skip_dispatch_span=True,
                     resolved_language=resolved_language,
@@ -419,9 +447,13 @@ class OrchestratorAgent(BaseAgent):
             return (
                 "send-agent",
                 "No content available to send.",
-                {"speech": "No content available to send.", "error": {
-                    "code": "parse_error", "recoverable": True,
-                }},
+                {
+                    "speech": "No content available to send.",
+                    "error": {
+                        "code": "parse_error",
+                        "recoverable": True,
+                    },
+                },
             )
 
         # FLOW-CRIT-3: When the content agent dispatched but failed
@@ -433,9 +465,7 @@ class OrchestratorAgent(BaseAgent):
         if content_dispatched:
             result_dict = _content_result or {}
             content_failed = (
-                _content_result is None
-                or bool(result_dict.get("error"))
-                or bool(result_dict.get("partial_failure"))
+                _content_result is None or bool(result_dict.get("error")) or bool(result_dict.get("partial_failure"))
             )
             if content_failed:
                 fallback_speech = "I could not prepare the content to send."
@@ -453,11 +483,17 @@ class OrchestratorAgent(BaseAgent):
 
         # Step 2: Build augmented task for send-agent with the content
         from app.agents.send import _CONTENT_SEPARATOR
+
         augmented_task = f"{send_task_text}{_CONTENT_SEPARATOR}{content_speech}"
 
         async with _optional_span(span_collector, "dispatch_send", agent_id="send-agent") as span:
-            send_aid, send_speech, send_result = await self._dispatch_single(
-                "send-agent", augmented_task, user_text, conversation_id, turns, span_collector,
+            _send_aid, send_speech, send_result = await self._dispatch_single(
+                "send-agent",
+                augmented_task,
+                user_text,
+                conversation_id,
+                turns,
+                span_collector,
                 incoming_context=incoming_context,
                 skip_dispatch_span=True,
                 resolved_language=resolved_language,
@@ -469,14 +505,86 @@ class OrchestratorAgent(BaseAgent):
 
         routed_to = f"{content_agent_id}, send-agent"
 
-        return routed_to, send_speech, send_result
+        merged_result = dict(send_result) if send_result else {}
+        if _content_result and _content_result.get("voice_followup"):
+            merged_result["voice_followup"] = True
+
+        return routed_to, send_speech, merged_result
+
+    def _schedule_ha_voice_followup_if_requested(self, task: AgentTask, effective: bool) -> None:
+        """Re-open Assist STT on the user's device (HA voice requests only)."""
+        if not effective or not self._ha_client:
+            return
+        ctx = task.context
+        if not ctx or ctx.source != "ha":
+            logger.debug("Voice follow-up skipped (requires source=ha)")
+            return
+        if not ctx.area_id and not ctx.device_id:
+            logger.debug("Voice follow-up skipped (need area_id and/or device_id, e.g. Companion has device_id only)")
+            return
+        from app.agents.notification_dispatcher import spawn_voice_followup_after_conversation
+
+        spawn_voice_followup_after_conversation(
+            self._ha_client,
+            area_id=ctx.area_id,
+            origin_device_id=ctx.device_id,
+            entity_index=self._entity_index,
+        )
+
+    async def _organic_voice_followup_offer(
+        self,
+        ctx: TaskContext | None,
+        language: str,
+        has_error: bool,
+        speech: str,
+    ) -> tuple[str, bool]:
+        """Optionally append a short closing question for satellite sessions."""
+        if has_error or not speech or not speech.strip() or not ctx or ctx.source != "ha":
+            return speech, False
+        try:
+            enabled = (
+                await SettingsRepository.get_value("orchestrator.organic_followup_enabled", "false")
+            ).lower() == "true"
+            if not enabled:
+                return speech, False
+            raw_p = await SettingsRepository.get_value("orchestrator.organic_followup_probability", "0.08")
+            p = float(raw_p)
+        except (TypeError, ValueError):
+            p = 0.08
+        if random.random() >= p:
+            return speech, False
+        lang_key = "de" if (language or "en").lower().startswith("de") else "en"
+        suffix = {
+            "de": " Darf es noch etwas sein?",
+            "en": " Is there anything else I can help with?",
+        }[lang_key]
+        return speech + suffix, True
+
+    async def _merge_voice_followup_and_organic(
+        self,
+        speech: str,
+        *,
+        agent_requested: bool,
+        ctx: TaskContext | None,
+        language: str,
+        has_error: bool,
+    ) -> tuple[str, bool]:
+        """Extend speech for organic follow-up; combine agent + organic mic-open flags."""
+        if has_error:
+            return speech, bool(agent_requested)
+        speech_out, organic = await self._organic_voice_followup_offer(ctx, language, False, speech)
+        return speech_out, bool(agent_requested or organic)
 
     # ------------------------------------------------------------------
     # Shared helpers to reduce duplication between handle_task / handle_task_stream
     # ------------------------------------------------------------------
 
     async def _do_cache_lookup(
-        self, user_text: str, span_collector, *, language: str = "en",
+        self,
+        user_text: str,
+        span_collector,
+        *,
+        language: str = "en",
     ) -> tuple:
         """Perform cache lookup with optional span recording.
 
@@ -490,7 +598,8 @@ class OrchestratorAgent(BaseAgent):
         async with _optional_span(span_collector, "cache_lookup", agent_id="orchestrator") as cache_span:
             try:
                 cache_result = await self._cache_manager.process(
-                    user_text, language=language,
+                    user_text,
+                    language=language,
                 )
             except Exception:
                 logger.warning("Cache lookup failed", exc_info=True)
@@ -511,7 +620,7 @@ class OrchestratorAgent(BaseAgent):
                     if created:
                         try:
                             created_dt = datetime.fromisoformat(created)
-                            age = (datetime.now(timezone.utc) - created_dt).total_seconds()
+                            age = (datetime.now(UTC) - created_dt).total_seconds()
                             cache_span["metadata"]["entry_age_seconds"] = round(age, 1)
                         except Exception:
                             pass
@@ -522,9 +631,7 @@ class OrchestratorAgent(BaseAgent):
 
         return cache_result, cache_span_ref
 
-    async def _cached_action_is_still_visible(
-        self, agent_id: str, entity_id: str
-    ) -> bool:
+    async def _cached_action_is_still_visible(self, agent_id: str, entity_id: str) -> bool:
         """Re-evaluate per-agent visibility rules for a cached action's entity.
 
         Mirrors the include/exclude semantics enforced by
@@ -536,11 +643,14 @@ class OrchestratorAgent(BaseAgent):
             return False
         try:
             from app.db.repository import EntityVisibilityRepository
+
             rules = await EntityVisibilityRepository.get_rules(agent_id)
         except Exception:
             logger.debug(
                 "Visibility lookup failed for agent=%s entity=%s; treating as not visible",
-                agent_id, entity_id, exc_info=True,
+                agent_id,
+                entity_id,
+                exc_info=True,
             )
             return False
         if not rules:
@@ -567,9 +677,7 @@ class OrchestratorAgent(BaseAgent):
             return True
         if domain_include and domain not in domain_include:
             return False
-        if domain_exclude and domain in domain_exclude:
-            return False
-        return True
+        return not (domain_exclude and domain in domain_exclude)
 
     async def _handle_response_cache_hit(
         self,
@@ -593,29 +701,24 @@ class OrchestratorAgent(BaseAgent):
         # (admin revoking a light from an agent, etc.); without this check the
         # cached action would keep firing until LRU eviction.
         cached_action = cache_result.cached_action
-        if (
-            cached_action
-            and target_agent != "unknown"
-            and cached_action.entity_id
-        ):
-            visible = await self._cached_action_is_still_visible(
-                target_agent, cached_action.entity_id
-            )
+        if cached_action and target_agent != "unknown" and cached_action.entity_id:
+            visible = await self._cached_action_is_still_visible(target_agent, cached_action.entity_id)
             if not visible:
                 logger.info(
                     "Cached action for %s on %s no longer visible to %s; "
                     "invalidating cache entry and falling through to live dispatch",
-                    cached_action.service, cached_action.entity_id, target_agent,
+                    cached_action.service,
+                    cached_action.entity_id,
+                    target_agent,
                 )
                 try:
                     if self._cache_manager and cache_result.entry is not None:
                         import hashlib
+
                         # FLOW-HIGH-4: cache keys are language-scoped now, so
                         # the invalidation hash must include the language to
                         # target the correct row.
-                        entry_lang = (
-                            getattr(cache_result.entry, "language", None) or "en"
-                        ).lower()
+                        entry_lang = (getattr(cache_result.entry, "language", None) or "en").lower()
                         entry_id = hashlib.sha256(
                             f"{entry_lang}\n{cache_result.entry.query_text}".encode()
                         ).hexdigest()[:16]
@@ -655,9 +758,7 @@ class OrchestratorAgent(BaseAgent):
             if cache_span:
                 try:
                     _cs = datetime.fromisoformat(cache_span["start_time"])
-                    ha_span["start_time"] = (
-                        _cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))
-                    ).isoformat()
+                    ha_span["start_time"] = (_cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))).isoformat()
                 except Exception:
                     pass
         if cache_result.rewrite_applied:
@@ -671,9 +772,7 @@ class OrchestratorAgent(BaseAgent):
             if cache_span:
                 try:
                     _cs = datetime.fromisoformat(cache_span["start_time"])
-                    rw_span["start_time"] = (
-                        _cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))
-                    ).isoformat()
+                    rw_span["start_time"] = (_cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))).isoformat()
                 except Exception:
                     pass
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
@@ -687,6 +786,7 @@ class OrchestratorAgent(BaseAgent):
             if span_collector:
                 try:
                     from app.analytics.tracer import create_trace_summary
+
                     # FLOW-CTX-1 (0.18.6): task is passed by both cache-hit
                     # callers so we can annotate the trace with the
                     # originating satellite even for replayed responses.
@@ -733,12 +833,7 @@ class OrchestratorAgent(BaseAgent):
         The ChromaDB write is offloaded to a worker thread (PERF-4) so a
         slow embedding flush does not stall the event loop.
         """
-        if (
-            not self._cache_manager
-            or target_agent == _FALLBACK_AGENT
-            or not speech
-            or has_error
-        ):
+        if not self._cache_manager or target_agent == _FALLBACK_AGENT or not speech or has_error:
             return False
         # FLOW-MED-5 / FLOW-MED-6: informational responses (no
         # action_executed at all, or action_executed explicitly
@@ -800,6 +895,7 @@ class OrchestratorAgent(BaseAgent):
         """
         try:
             from app.analytics.tracer import create_trace_summary
+
             classify_duration = None
             for s in span_collector._spans:
                 if s.get("span_name") == "classify":
@@ -819,7 +915,9 @@ class OrchestratorAgent(BaseAgent):
                 condensed_task=condensed_task,
                 agents=agents,
                 source=getattr(span_collector, "source", "api"),
-                agent_instructions={aid: ctask for aid, ctask, _ in classifications} if len(classifications) > 1 else None,
+                agent_instructions={aid: ctask for aid, ctask, _ in classifications}
+                if len(classifications) > 1
+                else None,
                 conversation_turns=turns,
                 device_id=getattr(task_context, "device_id", None),
                 area_id=getattr(task_context, "area_id", None),
@@ -829,7 +927,9 @@ class OrchestratorAgent(BaseAgent):
         except Exception:
             logger.warning("Failed to create trace summary", exc_info=True)
 
-    async def handle_task(self, task: AgentTask, *, _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None) -> dict:
+    async def handle_task(
+        self, task: AgentTask, *, _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None
+    ) -> dict:
         user_text = task.user_text or task.description
         conversation_id = task.conversation_id
         if not conversation_id:
@@ -849,13 +949,19 @@ class OrchestratorAgent(BaseAgent):
         cache_span_ref = None
         if _pre_classified is None and self._cache_manager:
             cache_result, cache_span_ref = await self._do_cache_lookup(
-                user_text, span_collector, language=detected_language,
+                user_text,
+                span_collector,
+                language=detected_language,
             )
 
         # Response hit short-circuit: skip classify and dispatch entirely
         if cache_result and cache_result.hit_type == "response_hit":
             result = await self._handle_response_cache_hit(
-                cache_result, conversation_id, user_text, span_collector, cache_span_ref,
+                cache_result,
+                conversation_id,
+                user_text,
+                span_collector,
+                cache_span_ref,
                 task=task,
             )
             if result is not None:
@@ -873,7 +979,8 @@ class OrchestratorAgent(BaseAgent):
         else:
             async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
                 classifications, routing_cached = await self._classify(
-                    user_text, cache_result=cache_result,
+                    user_text,
+                    cache_result=cache_result,
                     conversation_id=conversation_id,
                     span_collector=span_collector,
                     language=detected_language,
@@ -887,41 +994,51 @@ class OrchestratorAgent(BaseAgent):
                 span["metadata"]["multi_agent"] = len(classifications) > 1
                 if len(classifications) > 1:
                     span["metadata"]["all_classifications"] = {
-                        a: {"task": t[:300], "confidence": c}
-                        for a, t, c in classifications
+                        a: {"task": t[:300], "confidence": c} for a, t, c in classifications
                     }
         logger.info(
             "Routed to %s (%.0f%%): %s (conversation=%s)",
-            target_agent, confidence * 100, condensed_task[:80], conversation_id,
+            target_agent,
+            confidence * 100,
+            condensed_task[:80],
+            conversation_id,
         )
 
         # 2. Build context with conversation turns
         turns = await self._get_turns(conversation_id)
 
         # Check for sequential send dispatch
-        is_sequential_send = (
-            len(classifications) > 1
-            and any(a == "send-agent" for a, _, _ in classifications)
-        )
+        is_sequential_send = len(classifications) > 1 and any(a == "send-agent" for a, _, _ in classifications)
 
         # 3-4. Dispatch
         incoming_context = task.context
         failed_agents: list[tuple[str, str]] = []
         agent_error = None
+        agent_voice_followup = False
         if is_sequential_send:
             # --- Sequential send dispatch (content agent -> send agent) ---
             routed_to, speech, result = await self._handle_sequential_send(
-                classifications, user_text, conversation_id, turns, span_collector,
+                classifications,
+                user_text,
+                conversation_id,
+                turns,
+                span_collector,
                 incoming_context=incoming_context,
                 resolved_language=detected_language,
             )
             action_executed = (result or {}).get("action_executed")
             has_error = bool((result or {}).get("error"))
             agent_error = (result or {}).get("error")
+            agent_voice_followup = bool((result or {}).get("voice_followup"))
         elif len(classifications) == 1:
             # --- Single agent path (unchanged flow) ---
             agent_id, speech, result = await self._dispatch_single(
-                target_agent, condensed_task, user_text, conversation_id, turns, span_collector,
+                target_agent,
+                condensed_task,
+                user_text,
+                conversation_id,
+                turns,
+                span_collector,
                 incoming_context=incoming_context,
                 resolved_language=detected_language,
             )
@@ -931,12 +1048,20 @@ class OrchestratorAgent(BaseAgent):
             # Check for agent-level error
             agent_error = (result or {}).get("error")
             has_error = agent_error is not None
+            agent_voice_followup = bool((result or {}).get("voice_followup"))
         else:
             # --- Multi-agent parallel dispatch ---
             dispatch_coros = [
-                self._dispatch_single(aid, ctask, user_text, conversation_id, turns, span_collector,
-                                      incoming_context=incoming_context,
-                                      resolved_language=detected_language)
+                self._dispatch_single(
+                    aid,
+                    ctask,
+                    user_text,
+                    conversation_id,
+                    turns,
+                    span_collector,
+                    incoming_context=incoming_context,
+                    resolved_language=detected_language,
+                )
                 for aid, ctask, _ in classifications
             ]
             dispatch_results = await asyncio.gather(*dispatch_coros, return_exceptions=True)
@@ -962,20 +1087,19 @@ class OrchestratorAgent(BaseAgent):
                 # them and appends the failure note.
                 res_dict = res or {}
                 res_error = res_dict.get("error") if isinstance(res_dict, dict) else None
-                if (
-                    res is None
-                    or res_error
-                    or sp in (_CANNED_TIMEOUT_SPEECH, _CANNED_GENERAL_ERROR_SPEECH)
-                ):
+                if res is None or res_error or sp in (_CANNED_TIMEOUT_SPEECH, _CANNED_GENERAL_ERROR_SPEECH):
                     if res_error:
-                        reason = res_error.get("code", "canned_error") if isinstance(res_error, dict) else "canned_error"
+                        reason = (
+                            res_error.get("code", "canned_error") if isinstance(res_error, dict) else "canned_error"
+                        )
                     elif res is None:
                         reason = "timeout"
                     else:
                         reason = "canned_speech"
                     logger.warning(
                         "Multi-agent dispatch reported error for %s: %s",
-                        agent_id_for_idx, reason,
+                        agent_id_for_idx,
+                        reason,
                     )
                     failed_agents.append((agent_id_for_idx, reason))
                     continue
@@ -984,6 +1108,8 @@ class OrchestratorAgent(BaseAgent):
                 agent_responses.append((aid, sp, acted))
                 if res and res.get("action_executed") and action_executed is None:
                     action_executed = res["action_executed"]
+                if res and res.get("voice_followup"):
+                    agent_voice_followup = True
 
             target_agent = routed_agents[0] if routed_agents else _FALLBACK_AGENT
             routed_to = ", ".join(routed_agents) if routed_agents else _FALLBACK_AGENT
@@ -993,6 +1119,7 @@ class OrchestratorAgent(BaseAgent):
         # 5. Mediate response, store turn, trace
         original_speech = speech
         cache_stored_response = False
+        voice_followup_effective = False
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = routed_to
             if len(classifications) > 1 and not is_sequential_send:
@@ -1008,20 +1135,42 @@ class OrchestratorAgent(BaseAgent):
             if (len(classifications) <= 1 or is_sequential_send) and not has_error:
                 mediation_agent = "send-agent" if is_sequential_send else target_agent
                 mediation_language = detected_language
-                speech = await self._mediate_response(speech, user_text, mediation_agent, language=mediation_language, span_collector=span_collector)
+                speech = await self._mediate_response(
+                    speech, user_text, mediation_agent, language=mediation_language, span_collector=span_collector
+                )
+            speech, voice_followup_effective = await self._merge_voice_followup_and_organic(
+                speech,
+                agent_requested=agent_voice_followup,
+                ctx=incoming_context,
+                language=detected_language,
+                has_error=has_error,
+            )
             ret_span["metadata"]["final_response"] = speech[:500]
             ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1
+            ret_span["metadata"]["voice_followup"] = voice_followup_effective
             if len(classifications) == 1:
                 cache_stored_response = await self._store_response_cache(
-                    user_text, speech, target_agent, confidence, action_executed, has_error,
+                    user_text,
+                    speech,
+                    target_agent,
+                    confidence,
+                    action_executed,
+                    has_error,
                     language=detected_language,
                 )
             ret_span["metadata"]["cache_stored_response"] = cache_stored_response
             await self._store_turn(conversation_id, user_text, speech, agent_id=routed_to)
             if span_collector:
                 await self._create_trace(
-                    span_collector, conversation_id, user_text, speech,
-                    target_agent, confidence, condensed_task, classifications, turns,
+                    span_collector,
+                    conversation_id,
+                    user_text,
+                    speech,
+                    target_agent,
+                    confidence,
+                    condensed_task,
+                    classifications,
+                    turns,
                     task_context=task.context,
                 )
 
@@ -1030,6 +1179,7 @@ class OrchestratorAgent(BaseAgent):
             "conversation_id": conversation_id,
             "routed_to": routed_to,
             "action_executed": action_executed,
+            "voice_followup": voice_followup_effective,
         }
         if has_error:
             response["error"] = {
@@ -1040,6 +1190,7 @@ class OrchestratorAgent(BaseAgent):
             response["partial_failure"] = {
                 "failed_agents": [{"agent_id": aid, "error": msg} for aid, msg in failed_agents],
             }
+        self._schedule_ha_voice_followup_if_requested(task, voice_followup_effective)
         return response
 
     async def handle_task_stream(self, task: AgentTask) -> AsyncGenerator[dict, None]:
@@ -1056,20 +1207,26 @@ class OrchestratorAgent(BaseAgent):
 
         span_collector = task.span_collector
         t0_request = time.perf_counter()  # Wall-clock start for filler threshold
-        t0_request_utc = datetime.now(timezone.utc)  # Absolute UTC for span timestamp overrides
+        t0_request_utc = datetime.now(UTC)  # Absolute UTC for span timestamp overrides
 
         # 0. Cache lookup (before classify)
         cache_result = None
         cache_span_ref = None
         if self._cache_manager:
             cache_result, cache_span_ref = await self._do_cache_lookup(
-                user_text, span_collector, language=detected_language,
+                user_text,
+                span_collector,
+                language=detected_language,
             )
 
         # Response hit short-circuit for streaming
         if cache_result and cache_result.hit_type == "response_hit":
             result = await self._handle_response_cache_hit(
-                cache_result, conversation_id, user_text, span_collector, cache_span_ref,
+                cache_result,
+                conversation_id,
+                user_text,
+                span_collector,
+                cache_span_ref,
                 task=task,
             )
             if result is not None:
@@ -1088,7 +1245,8 @@ class OrchestratorAgent(BaseAgent):
         # 1. Classify (non-streaming -- fast via Groq)
         async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
             classifications, routing_cached = await self._classify(
-                user_text, cache_result=cache_result,
+                user_text,
+                cache_result=cache_result,
                 conversation_id=conversation_id,
                 span_collector=span_collector,
                 language=detected_language,
@@ -1102,14 +1260,13 @@ class OrchestratorAgent(BaseAgent):
             span["metadata"]["multi_agent"] = len(classifications) > 1
         logger.info(
             "Stream routed to %s: %s (conversation=%s)",
-            target_agent, condensed_task[:80], conversation_id,
+            target_agent,
+            condensed_task[:80],
+            conversation_id,
         )
 
         # Multi-agent: yield progress marker, then fall back to non-streaming handle_task
-        is_sequential_send = (
-            len(classifications) > 1
-            and any(a == "send-agent" for a, _, _ in classifications)
-        )
+        is_sequential_send = len(classifications) > 1 and any(a == "send-agent" for a, _, _ in classifications)
 
         # Sequential send: fall back to non-streaming, with filler support
         if is_sequential_send:
@@ -1124,9 +1281,7 @@ class OrchestratorAgent(BaseAgent):
             content_agent_ids = [a for a, _, _ in classifications if a != "send-agent"]
             content_agent_for_filler = content_agent_ids[0] if content_agent_ids else None
             seq_use_filler = (
-                await self._should_send_filler(content_agent_for_filler)
-                if content_agent_for_filler
-                else False
+                await self._should_send_filler(content_agent_for_filler) if content_agent_for_filler else False
             )
             language = detected_language
 
@@ -1155,7 +1310,9 @@ class OrchestratorAgent(BaseAgent):
                     # Threshold exceeded -- generate filler
                     seq_filler_start_ms = (time.perf_counter() - t0_request) * 1000
                     filler_text = await self._invoke_filler_agent(
-                        user_text, content_agent_for_filler, language,
+                        user_text,
+                        content_agent_for_filler,
+                        language,
                     )
                     seq_filler_end_ms = (time.perf_counter() - t0_request) * 1000
 
@@ -1190,7 +1347,8 @@ class OrchestratorAgent(BaseAgent):
                         actual_start = t0_request_utc + timedelta(milliseconds=seq_filler_start_ms)
                         fg_span["start_time"] = actual_start.isoformat()
                         fg_span["_override_duration_ms"] = round(
-                            seq_filler_end_ms - seq_filler_start_ms, 2,
+                            seq_filler_end_ms - seq_filler_start_ms,
+                            2,
                         )
 
             # Record filler_send span
@@ -1204,12 +1362,15 @@ class OrchestratorAgent(BaseAgent):
                         fs_span["start_time"] = actual_start.isoformat()
                         fs_span["_override_duration_ms"] = 0
 
-            yield {
+            seq_final = {
                 "token": result["speech"],
                 "done": True,
                 "conversation_id": conversation_id,
                 "mediated_speech": result["speech"],
             }
+            if result.get("voice_followup"):
+                seq_final["voice_followup"] = True
+            yield seq_final
             return
 
         if len(classifications) > 1:
@@ -1221,12 +1382,15 @@ class OrchestratorAgent(BaseAgent):
                 "agents": [a for a, _, _ in classifications],
             }
             result = await self.handle_task(task, _pre_classified=(classifications, routing_cached))
-            yield {
+            multi_final = {
                 "token": result["speech"],
                 "done": True,
                 "conversation_id": conversation_id,
                 "mediated_speech": result["speech"],
             }
+            if result.get("voice_followup"):
+                multi_final["voice_followup"] = True
+            yield multi_final
             return
 
         # 2. Build context and task (single agent streaming)
@@ -1255,7 +1419,7 @@ class OrchestratorAgent(BaseAgent):
                     now = datetime.now(tz)
                     context.local_time = now.strftime("%Y-%m-%d %H:%M")
                 except Exception:
-                    context.local_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+                    context.local_time = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
             except Exception:
                 logger.debug("Failed to populate home context for streaming", exc_info=True)
         agent_task = AgentTask(
@@ -1280,6 +1444,7 @@ class OrchestratorAgent(BaseAgent):
         collected_speech = []
         action_executed = None
         stream_error = None
+        stream_voice_followup = False
         use_filler = await self._should_send_filler(target_agent)
         filler_threshold_ms = await self._get_filler_threshold_ms() if use_filler else 1000
         filler_sent = False
@@ -1292,7 +1457,7 @@ class OrchestratorAgent(BaseAgent):
 
         async def _process_chunk(chunk):
             """Process a single stream chunk: collect speech and detect actions."""
-            nonlocal action_executed, stream_error
+            nonlocal action_executed, stream_error, stream_voice_followup
             token = chunk.result.get("token", "")
             done = chunk.result.get("done", False)
             error = chunk.result.get("error")
@@ -1303,6 +1468,8 @@ class OrchestratorAgent(BaseAgent):
                 collected_speech.append(token)
             if done and chunk.result.get("action_executed"):
                 action_executed = chunk.result["action_executed"]
+            if done and chunk.result.get("voice_followup"):
+                stream_voice_followup = True
             return token
 
         async def _stream_with_filler(stream_iter, span=None):
@@ -1344,7 +1511,11 @@ class OrchestratorAgent(BaseAgent):
                 first_chunk = None
                 elapsed_since_request = time.perf_counter() - t0_request
                 remaining_threshold = max(0, filler_threshold_ms / 1000 - elapsed_since_request)
-                logger.info("Filler remaining threshold: %.1fms (elapsed %.0fms)", remaining_threshold * 1000, elapsed_since_request * 1000)
+                logger.info(
+                    "Filler remaining threshold: %.1fms (elapsed %.0fms)",
+                    remaining_threshold * 1000,
+                    elapsed_since_request * 1000,
+                )
                 try:
                     item = await asyncio.wait_for(
                         queue.get(),
@@ -1353,7 +1524,7 @@ class OrchestratorAgent(BaseAgent):
                     logger.info("First chunk arrived before threshold")
                     if item is not _sentinel:
                         first_chunk = item
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Agent is slow -- generate and yield filler
                     logger.info("Threshold exceeded, generating filler for %s", target_agent)
                     filler_start_ms = (time.perf_counter() - t0_request) * 1000
@@ -1476,14 +1647,30 @@ class OrchestratorAgent(BaseAgent):
         # 4. Store conversation turn and create trace summary
         full_speech = "".join(collected_speech)
         has_error = stream_error is not None
+        vf_eff = False
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = target_agent
             ret_span["metadata"]["agent_response"] = full_speech[:500]
-            full_speech = await self._mediate_response(full_speech, user_text, target_agent, language=language, span_collector=span_collector)
+            full_speech = await self._mediate_response(
+                full_speech, user_text, target_agent, language=language, span_collector=span_collector
+            )
+            full_speech, vf_eff = await self._merge_voice_followup_and_organic(
+                full_speech,
+                agent_requested=stream_voice_followup,
+                ctx=task.context,
+                language=language,
+                has_error=has_error,
+            )
             ret_span["metadata"]["final_response"] = full_speech[:500]
-            ret_span["metadata"]["mediated"] = (full_speech != "".join(collected_speech))
+            ret_span["metadata"]["mediated"] = full_speech != "".join(collected_speech)
+            ret_span["metadata"]["voice_followup"] = vf_eff
             cache_stored_response = await self._store_response_cache(
-                user_text, full_speech, target_agent, confidence, action_executed, has_error,
+                user_text,
+                full_speech,
+                target_agent,
+                confidence,
+                action_executed,
+                has_error,
                 language=language,
             )
             ret_span["metadata"]["cache_stored_response"] = cache_stored_response
@@ -1491,8 +1678,15 @@ class OrchestratorAgent(BaseAgent):
             if span_collector:
                 classifications = [(target_agent, condensed_task, confidence)]
                 await self._create_trace(
-                    span_collector, conversation_id, user_text, full_speech,
-                    target_agent, confidence, condensed_task, classifications, turns,
+                    span_collector,
+                    conversation_id,
+                    user_text,
+                    full_speech,
+                    target_agent,
+                    confidence,
+                    condensed_task,
+                    classifications,
+                    turns,
                     task_context=task.context,
                 )
 
@@ -1506,6 +1700,9 @@ class OrchestratorAgent(BaseAgent):
         }
         if stream_error:
             final_chunk["error"] = stream_error
+        if vf_eff:
+            final_chunk["voice_followup"] = True
+        self._schedule_ha_voice_followup_if_requested(task, vf_eff)
         yield final_chunk
 
     async def _should_send_filler(self, target_agent: str) -> bool:
@@ -1603,7 +1800,10 @@ class OrchestratorAgent(BaseAgent):
         # shared helper so the orchestrator and domain executors agree on
         # how empty REST responses are treated.
         verify = await call_service_with_verification(
-            self._ha_client, domain, action, entity_id,
+            self._ha_client,
+            domain,
+            action,
+            entity_id,
             service_data=service_data,
             expected_state=expected_state,
         )
@@ -1619,16 +1819,15 @@ class OrchestratorAgent(BaseAgent):
             return None
 
         # Non-empty REST response is authoritative: success.
-        non_empty = bool(call_result) and not (
-            isinstance(call_result, (list, dict)) and len(call_result) == 0
-        )
+        non_empty = bool(call_result) and not (isinstance(call_result, (list, dict)) and len(call_result) == 0)
         if non_empty:
             return {
                 "success": True,
                 "entity_id": entity_id,
                 "action": action,
                 "state": _extract_state_from_call_result(
-                    call_result, entity_id,
+                    call_result,
+                    entity_id,
                 ),
                 "source": "call_service",
             }
@@ -1651,9 +1850,11 @@ class OrchestratorAgent(BaseAgent):
                     "source": "ws_observer",
                 }
             logger.info(
-                "Cached action %s on %s: empty REST, observer saw %r "
-                "(expected %r); falling through to live dispatch",
-                service, entity_id, observed_state, expected_state,
+                "Cached action %s on %s: empty REST, observer saw %r (expected %r); falling through to live dispatch",
+                service,
+                entity_id,
+                observed_state,
+                expected_state,
             )
             return None
 
@@ -1669,9 +1870,9 @@ class OrchestratorAgent(BaseAgent):
             }
 
         logger.info(
-            "Cached action %s on %s: empty REST, no observer evidence; "
-            "falling through to live dispatch",
-            service, entity_id,
+            "Cached action %s on %s: empty REST, no observer evidence; falling through to live dispatch",
+            service,
+            entity_id,
         )
         return None
 
@@ -1696,7 +1897,15 @@ class OrchestratorAgent(BaseAgent):
             lines.append("- general-agent: fallback for general questions and unroutable requests")
         return "\n".join(lines)
 
-    async def _classify(self, user_text: str, *, cache_result=None, conversation_id: str | None = None, span_collector=None, language: str = "en") -> tuple[list[tuple[str, str, float]], bool]:
+    async def _classify(
+        self,
+        user_text: str,
+        *,
+        cache_result=None,
+        conversation_id: str | None = None,
+        span_collector=None,
+        language: str = "en",
+    ) -> tuple[list[tuple[str, str, float]], bool]:
         """Classify user intent and produce a condensed task.
 
         The condensed task is a clear, actionable English description of
@@ -1722,7 +1931,8 @@ class OrchestratorAgent(BaseAgent):
             # Fallback: no pre-computed result (e.g. called without handle_task)
             try:
                 cache_result = await self._cache_manager.process(
-                    user_text, language=language,
+                    user_text,
+                    language=language,
                 )
                 if cache_result.hit_type == "routing_hit" and cache_result.agent_id:
                     logger.info("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
@@ -1764,7 +1974,10 @@ class OrchestratorAgent(BaseAgent):
                 if target_agent != _FALLBACK_AGENT:
                     try:
                         await self._cache_manager.store_routing_async(
-                            user_text, target_agent, confidence, condensed,
+                            user_text,
+                            target_agent,
+                            confidence,
+                            condensed,
                             language=language,
                         )
                     except Exception:
@@ -1798,7 +2011,7 @@ class OrchestratorAgent(BaseAgent):
             line = line.lstrip()
             line = line.removeprefix("[SEQ]").strip()
             # Try new format: "agent-id (85%): task text"
-            match = re.match(r'^([\w-]+)\s*\((\d+)%?\)\s*:\s*(.+)$', line, re.DOTALL)
+            match = re.match(r"^([\w-]+)\s*\((\d+)%?\)\s*:\s*(.+)$", line, re.DOTALL)
             if match:
                 agent_id = match.group(1).strip().lower()
                 confidence = min(float(match.group(2)) / 100.0, 1.0)
@@ -1872,7 +2085,8 @@ class OrchestratorAgent(BaseAgent):
         except Exception:
             logger.debug(
                 "DB fallback for conversation turns failed for %s",
-                conversation_id, exc_info=True,
+                conversation_id,
+                exc_info=True,
             )
             return []
 
@@ -1897,7 +2111,9 @@ class OrchestratorAgent(BaseAgent):
             self._evict_stale_conversations()
         return list(turns)
 
-    async def _store_turn(self, conversation_id: str | None, user_text: str, assistant_text: str, agent_id: str | None = None) -> None:
+    async def _store_turn(
+        self, conversation_id: str | None, user_text: str, assistant_text: str, agent_id: str | None = None
+    ) -> None:
         """Store a conversation turn, keeping last _MAX_TURNS exchanges."""
         if not conversation_id:
             return
@@ -1973,10 +2189,8 @@ class OrchestratorAgent(BaseAgent):
 
         try:
             personality = ""
-            try:
+            with contextlib.suppress(Exception):
                 personality = await SettingsRepository.get_value("personality.prompt", "")
-            except Exception:
-                pass
 
             system_content = self._load_prompt("merge")
             personality_text = personality.strip() if personality and personality.strip() else ""
@@ -2012,7 +2226,9 @@ class OrchestratorAgent(BaseAgent):
         parts = [f"[{aid}] {sp}" for aid, sp, _ in agent_responses if sp and sp.strip()]
         return "\n\n".join(parts) if parts else "I couldn't process that request."
 
-    async def _mediate_response(self, agent_speech: str, user_text: str, agent_id: str, language: str = "en", span_collector=None) -> str:
+    async def _mediate_response(
+        self, agent_speech: str, user_text: str, agent_id: str, language: str = "en", span_collector=None
+    ) -> str:
         """Optionally mediate the domain agent response with personality.
 
         When personality.prompt is non-empty, passes the agent speech through

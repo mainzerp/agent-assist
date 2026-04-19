@@ -7,28 +7,30 @@ agent CRUD, prompt editing, extended health, and rewrite configuration.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import time
 import uuid
+from datetime import UTC
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app.security.auth import require_admin_session
 from app.a2a.protocol import JsonRpcRequest
-from app.models.conversation import StreamToken
-from app.models.agent import AgentTask, TaskContext
 from app.db.repository import (
     AgentConfigRepository,
-    SettingsRepository,
     AnalyticsRepository,
-    TraceSummaryRepository,
     ConversationRepository,
     SendDeviceMappingRepository,
+    SettingsRepository,
+    TraceSummaryRepository,
 )
+from app.models.agent import AgentTask, TaskContext
+from app.models.conversation import StreamToken
+from app.security.auth import require_admin_session
 
 logger = logging.getLogger(__name__)
 
@@ -55,15 +57,15 @@ def set_chat_dispatcher(dispatcher) -> None:
 
 def _create_phase2_agent(agent_id: str, app):
     """Instantiate a Phase 2 agent by ID for hot-registration."""
-    from app.agents.timer import TimerAgent
+    from app.agents.automation import AutomationAgent
     from app.agents.climate import ClimateAgent
     from app.agents.media import MediaAgent
     from app.agents.scene import SceneAgent
-    from app.agents.automation import AutomationAgent
     from app.agents.security import SecurityAgent
     from app.agents.send import SendAgent
+    from app.agents.timer import TimerAgent
 
-    _AGENT_MAP = {
+    agent_map = {
         "timer-agent": TimerAgent,
         "climate-agent": ClimateAgent,
         "media-agent": MediaAgent,
@@ -72,9 +74,9 @@ def _create_phase2_agent(agent_id: str, app):
         "security-agent": SecurityAgent,
         "send-agent": SendAgent,
     }
-    _WITH_MATCHER = {"climate-agent", "security-agent", "timer-agent", "scene-agent", "automation-agent", "media-agent"}
+    with_matcher = {"climate-agent", "security-agent", "timer-agent", "scene-agent", "automation-agent", "media-agent"}
 
-    cls = _AGENT_MAP.get(agent_id)
+    cls = agent_map.get(agent_id)
     if cls is None:
         return None
 
@@ -82,7 +84,7 @@ def _create_phase2_agent(agent_id: str, app):
     entity_index = getattr(app.state, "entity_index", None)
     entity_matcher = getattr(app.state, "entity_matcher", None)
 
-    if agent_id in _WITH_MATCHER:
+    if agent_id in with_matcher:
         return cls(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
     return cls(ha_client=ha_client, entity_index=entity_index)
 
@@ -99,6 +101,7 @@ def _validate_agent_path(agent_id: str) -> Path:
 
 
 # --- Request models ---
+
 
 class AgentConfigUpdate(BaseModel):
     enabled: bool | None = None
@@ -129,6 +132,7 @@ class PersonalityConfigUpdate(BaseModel):
 
 # --- Overview ---
 
+
 @router.get("/overview")
 async def get_overview(request: Request):
     """Aggregated overview metrics for the dashboard home page."""
@@ -140,12 +144,9 @@ async def get_overview(request: Request):
 
     agents = await registry.list_agents() if registry else []
 
-    cache_stats = {}
     if cache_manager:
-        try:
-            cache_stats = cache_manager.get_stats()
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            cache_manager.get_stats()
 
     entity_count = 0
     if entity_index:
@@ -174,10 +175,13 @@ async def get_overview(request: Request):
     # Count recent requests from analytics (last 24h)
     recent_requests = 0
     try:
-        from datetime import datetime, timedelta, timezone
-        start = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        from datetime import datetime, timedelta
+
+        start = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
         events = await AnalyticsRepository.query_by_range(
-            event_type="request", start=start, limit=100000,
+            event_type="request",
+            start=start,
+            limit=100000,
         )
         recent_requests = len(events)
     except Exception:
@@ -186,16 +190,18 @@ async def get_overview(request: Request):
     # Compute cache hit rate from analytics DB (cache tier stats don't track hits/queries)
     cache_hit_rate = 0
     try:
-        from datetime import datetime, timedelta, timezone as tz
-        start_cache = (datetime.now(tz.utc) - timedelta(hours=24)).isoformat()
+        from datetime import datetime, timedelta
+
+        start_cache = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
         cache_events = await AnalyticsRepository.query_by_range(
-            event_type="cache", start=start_cache, limit=100000,
+            event_type="cache",
+            start=start_cache,
+            limit=100000,
         )
         if cache_events:
             total_lookups = len(cache_events)
             hits = sum(
-                1 for e in cache_events
-                if e.get("hit_type", "") in ("routing_hit", "response_hit", "response_partial")
+                1 for e in cache_events if e.get("hit_type", "") in ("routing_hit", "response_hit", "response_partial")
             )
             cache_hit_rate = round(hits / total_lookups * 100, 1)
     except Exception:
@@ -225,9 +231,9 @@ async def get_overview_extended(request: Request):
     presence_detector = request.app.state.presence_detector
 
     from collections import defaultdict
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    start_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    start_24h = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
 
     # --- Basic counts (reuse existing overview logic) ---
     agents = await registry.list_agents() if registry else []
@@ -258,28 +264,28 @@ async def get_overview_extended(request: Request):
 
     # --- Analytics: requests, latency ---
     requests = []
-    try:
+    with contextlib.suppress(Exception):
         requests = await AnalyticsRepository.query_by_range(
-            event_type="request", start=start_24h, limit=100000,
+            event_type="request",
+            start=start_24h,
+            limit=100000,
         )
-    except Exception:
-        pass
 
     recent_requests = len(requests)
     latencies = [
-        r["data"]["latency_ms"] for r in requests
+        r["data"]["latency_ms"]
+        for r in requests
         if r.get("data") and isinstance(r["data"], dict) and "latency_ms" in r["data"]
     ]
     avg_latency = round(sum(latencies) / len(latencies), 1) if latencies else 0
 
     # --- Cache events (all non-request events for cache analysis) ---
     all_events = []
-    try:
+    with contextlib.suppress(Exception):
         all_events = await AnalyticsRepository.query_by_range(
-            start=start_24h, limit=100000,
+            start=start_24h,
+            limit=100000,
         )
-    except Exception:
-        pass
 
     hit_types = {"routing_hit", "response_hit", "response_partial"}
     miss_types = {"miss"}
@@ -290,18 +296,13 @@ async def get_overview_extended(request: Request):
 
     # Cache tier breakdown counts
     routing_hits = sum(1 for e in all_events if e.get("event_type") == "routing_hit")
-    response_hits = sum(
-        1 for e in all_events
-        if e.get("event_type") in ("response_hit", "response_partial")
-    )
+    response_hits = sum(1 for e in all_events if e.get("event_type") in ("response_hit", "response_partial"))
     cache_misses = misses
 
     # Conversations count
     total_conversations = 0
-    try:
+    with contextlib.suppress(Exception):
         total_conversations = await ConversationRepository.count()
-    except Exception:
-        pass
 
     # --- Agent distribution ---
     agent_counts: dict[str, int] = defaultdict(int)
@@ -316,11 +317,13 @@ async def get_overview_extended(request: Request):
     agent_distribution = []
     for agent_id in sorted(agent_counts.keys()):
         lats = agent_latencies_map.get(agent_id, [])
-        agent_distribution.append({
-            "agent_id": agent_id,
-            "request_count": agent_counts[agent_id],
-            "avg_latency_ms": round(sum(lats) / len(lats), 1) if lats else 0,
-        })
+        agent_distribution.append(
+            {
+                "agent_id": agent_id,
+                "request_count": agent_counts[agent_id],
+                "avg_latency_ms": round(sum(lats) / len(lats), 1) if lats else 0,
+            }
+        )
 
     # --- Request time-series (hourly buckets, last 24h) ---
     request_buckets: dict[str, int] = defaultdict(int)
@@ -332,9 +335,7 @@ async def get_overview_extended(request: Request):
             bucket_secs = bucket_minutes * 60
             ts_epoch = int(dt.timestamp())
             bucket_start = ts_epoch - (ts_epoch % bucket_secs)
-            bucket_label = datetime.fromtimestamp(
-                bucket_start, tz=timezone.utc
-            ).strftime("%H:%M")
+            bucket_label = datetime.fromtimestamp(bucket_start, tz=UTC).strftime("%H:%M")
             request_buckets[bucket_label] += 1
         except (ValueError, TypeError):
             pass
@@ -347,31 +348,30 @@ async def get_overview_extended(request: Request):
     recent_traces = []
     try:
         result = await TraceSummaryRepository.list_filtered(
-            page=1, per_page=8,
+            page=1,
+            per_page=8,
         )
         for t in result:
-            recent_traces.append({
-                "trace_id": t.get("trace_id", ""),
-                "created_at": t.get("created_at", ""),
-                "user_input": (t.get("user_input") or "")[:120],
-                "routing_agent": t.get("routing_agent", ""),
-                "total_duration_ms": t.get("total_duration_ms", 0),
-                "label": t.get("label", ""),
-            })
+            recent_traces.append(
+                {
+                    "trace_id": t.get("trace_id", ""),
+                    "created_at": t.get("created_at", ""),
+                    "user_input": (t.get("user_input") or "")[:120],
+                    "routing_agent": t.get("routing_agent", ""),
+                    "total_duration_ms": t.get("total_duration_ms", 0),
+                    "label": t.get("label", ""),
+                }
+            )
     except Exception:
         pass
 
     # --- Errors/warnings ---
-    agent_timeouts = sum(
-        1 for e in all_events if e.get("event_type") == "agent_timeout"
-    )
-    rewrite_events = [
-        e for e in all_events if e.get("event_type") == "rewrite_invocation"
-    ]
+    agent_timeouts = sum(1 for e in all_events if e.get("event_type") == "agent_timeout")
+    rewrite_events = [e for e in all_events if e.get("event_type") == "rewrite_invocation"]
     rewrite_failures = sum(
-        1 for e in rewrite_events
-        if e.get("data") and isinstance(e["data"], dict)
-        and not e["data"].get("success", True)
+        1
+        for e in rewrite_events
+        if e.get("data") and isinstance(e["data"], dict) and not e["data"].get("success", True)
     )
 
     return {
@@ -399,6 +399,7 @@ async def get_overview_extended(request: Request):
 
 
 # --- Agent CRUD ---
+
 
 @router.get("/agents/{agent_id}")
 async def get_agent_config(agent_id: str):
@@ -431,8 +432,8 @@ async def update_agent_config(agent_id: str, payload: AgentConfigUpdate, request
                     await _registry.register(agent_instance)
                     logger.info("Hot-registered agent: %s", agent_id)
         else:
-            _CORE_AGENTS = {"orchestrator", "general-agent", "light-agent", "music-agent", "rewrite-agent"}
-            if agent_id not in _CORE_AGENTS:
+            core_agents = {"orchestrator", "general-agent", "light-agent", "music-agent", "rewrite-agent"}
+            if agent_id not in core_agents:
                 await _registry.unregister(agent_id)
                 logger.info("Hot-unregistered agent: %s", agent_id)
 
@@ -440,6 +441,7 @@ async def update_agent_config(agent_id: str, payload: AgentConfigUpdate, request
 
 
 # --- Prompt read/write ---
+
 
 @router.get("/agents/{agent_id}/prompt")
 async def get_agent_prompt(agent_id: str):
@@ -469,6 +471,7 @@ async def update_agent_prompt(agent_id: str, payload: PromptUpdate):
 
 
 # --- Extended health ---
+
 
 @router.get("/health/extended")
 async def get_extended_health(request: Request):
@@ -535,6 +538,7 @@ async def get_extended_health(request: Request):
 
 # --- Rewrite config ---
 
+
 @router.get("/rewrite/config")
 async def get_rewrite_config():
     """Get current rewrite agent settings."""
@@ -551,18 +555,25 @@ async def update_rewrite_config(payload: RewriteConfigUpdate):
     """Update rewrite agent settings."""
     if payload.model is not None:
         await SettingsRepository.set(
-            "rewrite.model", payload.model,
-            "string", "rewrite", "Rewrite LLM model",
+            "rewrite.model",
+            payload.model,
+            "string",
+            "rewrite",
+            "Rewrite LLM model",
         )
     if payload.temperature is not None:
         await SettingsRepository.set(
-            "rewrite.temperature", str(payload.temperature),
-            "float", "rewrite", "Rewrite temperature",
+            "rewrite.temperature",
+            str(payload.temperature),
+            "float",
+            "rewrite",
+            "Rewrite temperature",
         )
     return {"status": "ok"}
 
 
 # --- Personality config ---
+
 
 @router.get("/personality/config")
 async def get_personality_config():
@@ -584,28 +595,41 @@ async def update_personality_config(payload: PersonalityConfigUpdate):
     """Save personality prompt, mediation temperature, and filler settings."""
     if payload.prompt is not None:
         await SettingsRepository.set(
-            "personality.prompt", payload.prompt,
-            "string", "personality", "Personality system prompt for response mediation",
+            "personality.prompt",
+            payload.prompt,
+            "string",
+            "personality",
+            "Personality system prompt for response mediation",
         )
     if payload.mediation_temperature is not None:
         await SettingsRepository.set(
-            "mediation.temperature", str(payload.mediation_temperature),
-            "float", "mediation", "Temperature for personality mediation LLM calls",
+            "mediation.temperature",
+            str(payload.mediation_temperature),
+            "float",
+            "mediation",
+            "Temperature for personality mediation LLM calls",
         )
     if payload.filler_enabled is not None:
         await SettingsRepository.set(
-            "filler.enabled", str(payload.filler_enabled).lower(),
-            "bool", "filler", "Enable interim filler responses for slow agents",
+            "filler.enabled",
+            str(payload.filler_enabled).lower(),
+            "bool",
+            "filler",
+            "Enable interim filler responses for slow agents",
         )
     if payload.filler_threshold_ms is not None:
         await SettingsRepository.set(
-            "filler.threshold_ms", str(payload.filler_threshold_ms),
-            "int", "filler", "Milliseconds to wait before sending filler",
+            "filler.threshold_ms",
+            str(payload.filler_threshold_ms),
+            "int",
+            "filler",
+            "Milliseconds to wait before sending filler",
         )
     return {"status": "ok"}
 
 
 # --- Chat bridge ---
+
 
 class ChatRequest(BaseModel):
     text: str
@@ -711,6 +735,7 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
 
 # --- Send device mappings ---
 
+
 class SendDeviceMappingCreate(BaseModel):
     display_name: str
     device_type: str
@@ -736,7 +761,9 @@ async def create_send_device(body: SendDeviceMappingCreate):
     if existing:
         return JSONResponse({"detail": f"Mapping for '{body.display_name}' already exists"}, status_code=409)
     row_id = await SendDeviceMappingRepository.create(
-        body.display_name, body.device_type, body.ha_service_target,
+        body.display_name,
+        body.device_type,
+        body.ha_service_target,
     )
     return {"id": row_id}
 

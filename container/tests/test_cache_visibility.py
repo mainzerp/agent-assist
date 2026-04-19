@@ -24,7 +24,6 @@ from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
 from app.cache.cache_manager import CacheResult  # noqa: E402
 from tests.helpers import make_cached_action, make_response_cache_entry  # noqa: E402
 
-
 pytestmark = pytest.mark.asyncio
 
 
@@ -67,14 +66,12 @@ def _make_cache_result(
 # FLOW-CRIT-1: visibility re-check on cached-action replay
 # ---------------------------------------------------------------------------
 
-class TestCachedActionVisibility:
 
+class TestCachedActionVisibility:
     async def test_cached_action_blocked_when_entity_revoked(self):
         """Visibility was revoked after caching: must invalidate + fall through."""
         orch, _dispatcher, cache_manager, ha_client = _make_orchestrator()
-        cached = make_cached_action(
-            service="light/turn_on", entity_id="light.kitchen"
-        )
+        cached = make_cached_action(service="light/turn_on", entity_id="light.kitchen")
         cache_result = _make_cache_result(cached_action=cached)
 
         # Visibility rules now exclude the light domain entirely for this agent.
@@ -84,7 +81,10 @@ class TestCachedActionVisibility:
             new=AsyncMock(return_value=rules),
         ):
             result = await orch._handle_response_cache_hit(
-                cache_result, "conv-1", "turn on the kitchen light", None,
+                cache_result,
+                "conv-1",
+                "turn on the kitchen light",
+                None,
             )
 
         assert result is None, "Cache hit must fall through when entity not visible"
@@ -94,24 +94,26 @@ class TestCachedActionVisibility:
     async def test_cached_action_executes_when_entity_still_visible(self):
         """Visibility unchanged: cached action runs normally."""
         orch, _dispatcher, _cache_manager, ha_client = _make_orchestrator()
-        ha_client.call_service.return_value = [
-            {"entity_id": "light.kitchen", "state": "on"}
-        ]
-        cached = make_cached_action(
-            service="light/turn_on", entity_id="light.kitchen"
-        )
+        ha_client.call_service.return_value = [{"entity_id": "light.kitchen", "state": "on"}]
+        cached = make_cached_action(service="light/turn_on", entity_id="light.kitchen")
         cache_result = _make_cache_result(cached_action=cached)
 
         rules = [{"rule_type": "domain_include", "rule_value": "light"}]
-        with patch(
-            "app.db.repository.EntityVisibilityRepository.get_rules",
-            new=AsyncMock(return_value=rules),
-        ), patch(
-            "app.agents.orchestrator.ConversationRepository.insert",
-            new=AsyncMock(return_value=1),
+        with (
+            patch(
+                "app.db.repository.EntityVisibilityRepository.get_rules",
+                new=AsyncMock(return_value=rules),
+            ),
+            patch(
+                "app.agents.orchestrator.ConversationRepository.insert",
+                new=AsyncMock(return_value=1),
+            ),
         ):
             result = await orch._handle_response_cache_hit(
-                cache_result, "conv-1", "turn on the kitchen light", None,
+                cache_result,
+                "conv-1",
+                "turn on the kitchen light",
+                None,
             )
 
         ha_client.call_service.assert_called_once()
@@ -121,23 +123,25 @@ class TestCachedActionVisibility:
     async def test_cached_action_no_rules_means_full_access(self):
         """No visibility rules at all: cached action executes (matches live matcher)."""
         orch, _dispatcher, _cache_manager, ha_client = _make_orchestrator()
-        ha_client.call_service.return_value = [
-            {"entity_id": "light.kitchen", "state": "on"}
-        ]
-        cached = make_cached_action(
-            service="light/turn_on", entity_id="light.kitchen"
-        )
+        ha_client.call_service.return_value = [{"entity_id": "light.kitchen", "state": "on"}]
+        cached = make_cached_action(service="light/turn_on", entity_id="light.kitchen")
         cache_result = _make_cache_result(cached_action=cached)
 
-        with patch(
-            "app.db.repository.EntityVisibilityRepository.get_rules",
-            new=AsyncMock(return_value=[]),
-        ), patch(
-            "app.agents.orchestrator.ConversationRepository.insert",
-            new=AsyncMock(return_value=1),
+        with (
+            patch(
+                "app.db.repository.EntityVisibilityRepository.get_rules",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "app.agents.orchestrator.ConversationRepository.insert",
+                new=AsyncMock(return_value=1),
+            ),
         ):
             result = await orch._handle_response_cache_hit(
-                cache_result, "conv-1", "turn on the kitchen light", None,
+                cache_result,
+                "conv-1",
+                "turn on the kitchen light",
+                None,
             )
 
         ha_client.call_service.assert_called_once()
@@ -146,9 +150,7 @@ class TestCachedActionVisibility:
     async def test_visibility_lookup_failure_fails_closed(self):
         """If visibility cannot be evaluated, treat as not visible."""
         orch, _dispatcher, cache_manager, ha_client = _make_orchestrator()
-        cached = make_cached_action(
-            service="light/turn_on", entity_id="light.kitchen"
-        )
+        cached = make_cached_action(service="light/turn_on", entity_id="light.kitchen")
         cache_result = _make_cache_result(cached_action=cached)
 
         with patch(
@@ -156,7 +158,10 @@ class TestCachedActionVisibility:
             new=AsyncMock(side_effect=RuntimeError("db down")),
         ):
             result = await orch._handle_response_cache_hit(
-                cache_result, "conv-1", "turn on the kitchen light", None,
+                cache_result,
+                "conv-1",
+                "turn on the kitchen light",
+                None,
             )
 
         assert result is None
@@ -168,14 +173,12 @@ class TestCachedActionVisibility:
 # FLOW-CRIT-2: empty HA REST response treated as cache miss
 # ---------------------------------------------------------------------------
 
-class TestCachedActionEmptyResponse:
 
+class TestCachedActionEmptyResponse:
     async def test_empty_list_response_returns_none(self):
         orch, _dispatcher, _cache_manager, ha_client = _make_orchestrator()
         ha_client.call_service.return_value = []
-        cached = make_cached_action(
-            service="light/turn_on", entity_id="light.kitchen"
-        )
+        cached = make_cached_action(service="light/turn_on", entity_id="light.kitchen")
 
         result = await orch._execute_cached_action(cached)
 
@@ -185,9 +188,7 @@ class TestCachedActionEmptyResponse:
     async def test_empty_dict_response_returns_none(self):
         orch, _dispatcher, _cache_manager, ha_client = _make_orchestrator()
         ha_client.call_service.return_value = {}
-        cached = make_cached_action(
-            service="light/turn_on", entity_id="light.kitchen"
-        )
+        cached = make_cached_action(service="light/turn_on", entity_id="light.kitchen")
 
         result = await orch._execute_cached_action(cached)
 
@@ -197,9 +198,7 @@ class TestCachedActionEmptyResponse:
         orch, _dispatcher, _cache_manager, ha_client = _make_orchestrator()
         payload = [{"entity_id": "light.kitchen", "state": "on"}]
         ha_client.call_service.return_value = payload
-        cached = make_cached_action(
-            service="light/turn_on", entity_id="light.kitchen"
-        )
+        cached = make_cached_action(service="light/turn_on", entity_id="light.kitchen")
 
         result = await orch._execute_cached_action(cached)
 
@@ -218,9 +217,7 @@ class TestCachedActionEmptyResponse:
         to return None so the orchestrator falls through to live dispatch."""
         orch, _dispatcher, _cache_manager, ha_client = _make_orchestrator()
         ha_client.call_service.return_value = []
-        cached = make_cached_action(
-            service="light/turn_on", entity_id="light.kitchen"
-        )
+        cached = make_cached_action(service="light/turn_on", entity_id="light.kitchen")
         cache_result = _make_cache_result(cached_action=cached)
 
         # Visibility allows the entity so we exercise the empty-result path.
@@ -230,7 +227,10 @@ class TestCachedActionEmptyResponse:
             new=AsyncMock(return_value=rules),
         ):
             result = await orch._handle_response_cache_hit(
-                cache_result, "conv-1", "turn on the kitchen light", None,
+                cache_result,
+                "conv-1",
+                "turn on the kitchen light",
+                None,
             )
 
         assert result is None
@@ -241,8 +241,8 @@ class TestCachedActionEmptyResponse:
 # FLOW-CRIT-3: sequential-send must not pipe canned content-failure text
 # ---------------------------------------------------------------------------
 
-class TestSequentialSendContentFailure:
 
+class TestSequentialSendContentFailure:
     def _orchestrator_for_send(self):
         orch, dispatcher, _cache_manager, _ha_client = _make_orchestrator()
         # ha_client must be falsy in _dispatch_single's home-context branch
@@ -259,9 +259,7 @@ class TestSequentialSendContentFailure:
             # Mimic the timeout fallback shape from _dispatch_single.
             return ("general-agent", "I couldn't process that request in time.", None)
 
-        with patch.object(
-            orch, "_dispatch_single", side_effect=fake_dispatch_single
-        ) as mock_ds:
+        with patch.object(orch, "_dispatch_single", side_effect=fake_dispatch_single) as mock_ds:
             classifications = [
                 ("general-agent", "summarize today", 0.9),
                 ("send-agent", "telegram", 0.9),
@@ -289,19 +287,21 @@ class TestSequentialSendContentFailure:
             return (
                 "general-agent",
                 "Sorry, that didn't work.",
-                {"speech": "Sorry, that didn't work.", "error": {
-                    "code": "llm_error", "recoverable": True,
-                }},
+                {
+                    "speech": "Sorry, that didn't work.",
+                    "error": {
+                        "code": "llm_error",
+                        "recoverable": True,
+                    },
+                },
             )
 
-        with patch.object(
-            orch, "_dispatch_single", side_effect=fake_dispatch_single
-        ) as mock_ds:
+        with patch.object(orch, "_dispatch_single", side_effect=fake_dispatch_single) as mock_ds:
             classifications = [
                 ("general-agent", "summarize today", 0.9),
                 ("send-agent", "telegram", 0.9),
             ]
-            routed_to, speech, result = await orch._handle_sequential_send(
+            _routed_to, speech, result = await orch._handle_sequential_send(
                 classifications,
                 user_text="send today summary to telegram",
                 conversation_id="conv-1",
@@ -324,9 +324,7 @@ class TestSequentialSendContentFailure:
                 {"speech": "Partial result text.", "partial_failure": True},
             )
 
-        with patch.object(
-            orch, "_dispatch_single", side_effect=fake_dispatch_single
-        ) as mock_ds:
+        with patch.object(orch, "_dispatch_single", side_effect=fake_dispatch_single) as mock_ds:
             classifications = [
                 ("general-agent", "summarize", 0.9),
                 ("send-agent", "telegram", 0.9),

@@ -65,7 +65,12 @@ async def execute_scene_action(
     # Read-only actions (no service call)
     if action_name in ("query_scene", "list_scenes"):
         return await _handle_scene_read_action(
-            action_name, entity_query, ha_client, entity_index, entity_matcher, agent_id,
+            action_name,
+            entity_query,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
             span_collector=span_collector,
         )
 
@@ -125,7 +130,10 @@ async def execute_scene_action(
     # the last activation, not a semantic state -- observing *any* change
     # means the scene fired. No expected_state; speech is intent-first.
     verify = await call_service_with_verification(
-        ha_client, domain, service, entity_id,
+        ha_client,
+        domain,
+        service,
+        entity_id,
         service_data=service_data,
         expected_state=None,
     )
@@ -148,6 +156,7 @@ async def execute_scene_action(
 # ---------------------------------------------------------------------------
 # Read-only scene action handlers
 # ---------------------------------------------------------------------------
+
 
 async def _query_scene(
     entity_query: str,
@@ -179,13 +188,21 @@ async def _query_scene(
         entity_id = None
 
     if not entity_id:
-        return {"success": False, "entity_id": None, "new_state": None,
-                "speech": f"Could not find a scene matching '{entity_query}'.",
-                "cacheable": False}
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"Could not find a scene matching '{entity_query}'.",
+            "cacheable": False,
+        }
 
-    return {"success": True, "entity_id": entity_id, "new_state": None,
-            "speech": f"Scene found: {friendly_name} ({entity_id}).",
-            "cacheable": False}
+    return {
+        "success": True,
+        "entity_id": entity_id,
+        "new_state": None,
+        "speech": f"Scene found: {friendly_name} ({entity_id}).",
+        "cacheable": False,
+    }
 
 
 async def _list_scenes(ha_client: Any) -> dict:
@@ -193,14 +210,12 @@ async def _list_scenes(ha_client: Any) -> dict:
         states = await ha_client.get_states()
     except Exception as exc:
         logger.error("Failed to fetch states for list_scenes", exc_info=True)
-        return {"success": False, "entity_id": "", "new_state": None,
-                "speech": f"Failed to list scenes: {exc}"}
+        return {"success": False, "entity_id": "", "new_state": None, "speech": f"Failed to list scenes: {exc}"}
 
     scenes = [s for s in states if s.get("entity_id", "").startswith("scene.")]
 
     if not scenes:
-        return {"success": True, "entity_id": "", "new_state": None,
-                "speech": "No scenes found."}
+        return {"success": True, "entity_id": "", "new_state": None, "speech": "No scenes found."}
 
     names = []
     for s in scenes:
@@ -208,8 +223,7 @@ async def _list_scenes(ha_client: Any) -> dict:
         names.append(name)
 
     speech = f"Available scenes ({len(names)}): {', '.join(names)}."
-    return {"success": True, "entity_id": "", "new_state": None, "speech": speech,
-            "cacheable": False}
+    return {"success": True, "entity_id": "", "new_state": None, "speech": speech, "cacheable": False}
 
 
 async def _handle_scene_read_action(
@@ -222,9 +236,9 @@ async def _handle_scene_read_action(
     span_collector=None,
 ) -> dict:
     if action_name == "query_scene":
-        return await _query_scene(entity_query, ha_client, entity_index, entity_matcher, agent_id,
-                                  span_collector=span_collector)
+        return await _query_scene(
+            entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
     if action_name == "list_scenes":
         return await _list_scenes(ha_client)
-    return {"success": False, "entity_id": "", "new_state": None,
-            "speech": f"Unknown read action: {action_name}"}
+    return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}

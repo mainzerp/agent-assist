@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from typing import Any
-from pydantic import BaseModel, Field
 
+from pydantic import BaseModel
 
 # --- Standard JSON-RPC 2.0 Error Codes ---
 
@@ -53,6 +53,7 @@ class JsonRpcStreamChunk(BaseModel):
 
 # --- A2A Envelope Param Types ---
 
+
 class MessageSendParams(BaseModel):
     """Params for method 'message/send'."""
 
@@ -74,6 +75,7 @@ class AgentDiscoverParams(BaseModel):
 
 
 # --- Helper factory functions ---
+
 
 def error_response(request_id: str, code: int, message: str, data: Any | None = None) -> JsonRpcResponse:
     """Build a JsonRpcResponse carrying an error."""

@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ _POLL_INTERVAL = 3.0
 @dataclass
 class DelayedTask:
     """A pending action to execute after a timer finishes."""
+
     timer_entity_id: str
     description: str
     callback: Callable[[], Awaitable[None]]
@@ -92,20 +94,17 @@ class DelayedTaskManager:
                 try:
                     state_resp = await self._ha_client.get_state(dt.timer_entity_id)
                     if not state_resp:
-                        logger.warning("Timer entity %s not found, aborting delayed task",
-                                       dt.timer_entity_id)
+                        logger.warning("Timer entity %s not found, aborting delayed task", dt.timer_entity_id)
                         return
                     state = state_resp.get("state", "")
                     if state == "idle":
                         break
                 except Exception:
-                    logger.warning("Poll failed for %s, retrying", dt.timer_entity_id,
-                                   exc_info=True)
+                    logger.warning("Poll failed for %s, retrying", dt.timer_entity_id, exc_info=True)
                 await asyncio.sleep(_POLL_INTERVAL)
 
             # Timer finished -- execute callback
-            logger.info("Timer %s finished, executing delayed task: %s",
-                        dt.timer_entity_id, dt.description)
+            logger.info("Timer %s finished, executing delayed task: %s", dt.timer_entity_id, dt.description)
             await dt.callback()
         except asyncio.CancelledError:
             logger.debug("Delayed task for %s was cancelled", dt.timer_entity_id)

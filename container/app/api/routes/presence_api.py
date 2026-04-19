@@ -8,8 +8,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
-from app.security.auth import require_admin_session
 from app.db.repository import SettingsRepository
+from app.security.auth import require_admin_session
 
 logger = logging.getLogger(__name__)
 

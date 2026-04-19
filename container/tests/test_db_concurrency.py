@@ -9,14 +9,12 @@ connections (see app/db/schema.py).
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from unittest.mock import patch
+import sqlite3
 
-import aiosqlite
 import pytest
 
 from app.db.repository import SettingsRepository
-from app.db.schema import _create_tables, _seed_defaults, get_db_read
+from app.db.schema import get_db_read
 
 
 @pytest.mark.asyncio
@@ -32,7 +30,7 @@ async def test_get_db_read_query_only_pragma_set(db_repository):
 async def test_get_db_read_writes_blocked(db_repository):
     """Writes through a read connection must fail (query_only enforced)."""
     async with get_db_read() as db:
-        with pytest.raises(Exception):
+        with pytest.raises(sqlite3.OperationalError):
             await db.execute(
                 "INSERT INTO settings (key, value, value_type) VALUES (?, ?, ?)",
                 ("crit2.write_attempt", "x", "string"),
@@ -42,9 +40,7 @@ async def test_get_db_read_writes_blocked(db_repository):
 @pytest.mark.asyncio
 async def test_concurrent_reads_succeed(db_repository):
     """50 concurrent SettingsRepository.get_value calls must all return."""
-    await SettingsRepository.set(
-        "crit2.test_key", "the_value", value_type="string"
-    )
+    await SettingsRepository.set("crit2.test_key", "the_value", value_type="string")
 
     async def fetch():
         return await SettingsRepository.get_value("crit2.test_key")
@@ -57,18 +53,14 @@ async def test_concurrent_reads_succeed(db_repository):
 @pytest.mark.asyncio
 async def test_concurrent_reads_during_write(db_repository):
     """Reads must not deadlock or fail when interleaved with a write."""
-    await SettingsRepository.set(
-        "crit2.interleave", "v0", value_type="string"
-    )
+    await SettingsRepository.set("crit2.interleave", "v0", value_type="string")
 
     async def reader():
         return await SettingsRepository.get_value("crit2.interleave")
 
     async def writer():
         for i in range(5):
-            await SettingsRepository.set(
-                "crit2.interleave", f"v{i}", value_type="string"
-            )
+            await SettingsRepository.set("crit2.interleave", f"v{i}", value_type="string")
             await asyncio.sleep(0)
 
     tasks = [writer()] + [reader() for _ in range(20)]

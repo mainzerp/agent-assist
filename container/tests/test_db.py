@@ -2,12 +2,7 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from unittest.mock import patch
-
 import aiosqlite
-import pytest
 
 from app.db.repository import (
     AdminAccountRepository,
@@ -17,40 +12,47 @@ from app.db.repository import (
     EntityVisibilityRepository,
     McpServerRepository,
     SecretsRepository,
+    SendDeviceMappingRepository,
     SettingsRepository,
     SetupStateRepository,
     TraceSummaryRepository,
-    SendDeviceMappingRepository,
 )
-
 
 # ---------------------------------------------------------------------------
 # Schema creation
 # ---------------------------------------------------------------------------
 
-class TestSchemaCreation:
 
+class TestSchemaCreation:
     async def test_all_expected_tables_exist(self, db_repository):
         expected_tables = {
-            "schema_version", "settings", "agent_configs", "custom_agents",
-            "entity_matching_config", "aliases", "mcp_servers", "secrets",
-            "admin_accounts", "setup_state", "entity_visibility_rules",
-            "plugins", "conversations", "analytics", "trace_spans",
-            "trace_summary", "send_device_mappings",
+            "schema_version",
+            "settings",
+            "agent_configs",
+            "custom_agents",
+            "entity_matching_config",
+            "aliases",
+            "mcp_servers",
+            "secrets",
+            "admin_accounts",
+            "setup_state",
+            "entity_visibility_rules",
+            "plugins",
+            "conversations",
+            "analytics",
+            "trace_spans",
+            "trace_summary",
+            "send_device_mappings",
         }
         async with aiosqlite.connect(str(db_repository)) as db:
-            cursor = await db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-            )
+            cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
             rows = await cursor.fetchall()
             actual_tables = {row[0] for row in rows}
         assert expected_tables.issubset(actual_tables), f"Missing: {expected_tables - actual_tables}"
 
     async def test_indexes_created(self, db_repository):
         async with aiosqlite.connect(str(db_repository)) as db:
-            cursor = await db.execute(
-                "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'"
-            )
+            cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'")
             rows = await cursor.fetchall()
             index_names = {row[0] for row in rows}
         assert "idx_settings_category" in index_names
@@ -68,8 +70,8 @@ class TestSchemaCreation:
 # Seed data
 # ---------------------------------------------------------------------------
 
-class TestSeedData:
 
+class TestSeedData:
     async def test_default_settings_populated(self, db_repository):
         all_settings = await SettingsRepository.get_all()
         keys = {s["key"] for s in all_settings}
@@ -115,8 +117,8 @@ class TestSeedData:
 # Repository CRUD -- settings
 # ---------------------------------------------------------------------------
 
-class TestSettingsRepository:
 
+class TestSettingsRepository:
     async def test_get_existing_setting(self, db_repository):
         result = await SettingsRepository.get("cache.routing.threshold")
         assert result is not None
@@ -178,8 +180,8 @@ class TestSettingsRepository:
 # Repository CRUD -- agent_configs
 # ---------------------------------------------------------------------------
 
-class TestAgentConfigRepository:
 
+class TestAgentConfigRepository:
     async def test_get_existing(self, db_repository):
         cfg = await AgentConfigRepository.get("light-agent")
         assert cfg is not None
@@ -215,8 +217,8 @@ class TestAgentConfigRepository:
 # Repository CRUD -- custom_agents
 # ---------------------------------------------------------------------------
 
-class TestCustomAgentRepository:
 
+class TestCustomAgentRepository:
     async def test_create_and_get(self, db_repository):
         await CustomAgentRepository.create(
             "test-custom",
@@ -275,8 +277,8 @@ class TestCustomAgentRepository:
 # Repository CRUD -- aliases
 # ---------------------------------------------------------------------------
 
-class TestAliasRepository:
 
+class TestAliasRepository:
     async def test_set_and_get(self, db_repository):
         await AliasRepository.set("nightstand lamp", "light.bedroom_nightstand")
         result = await AliasRepository.get("nightstand lamp")
@@ -311,8 +313,8 @@ class TestAliasRepository:
 # Repository CRUD -- mcp_servers
 # ---------------------------------------------------------------------------
 
-class TestMcpServerRepository:
 
+class TestMcpServerRepository:
     async def test_create_and_get(self, db_repository):
         await McpServerRepository.create("test-mcp", "stdio", "python mcp_server.py")
         server = await McpServerRepository.get("test-mcp")
@@ -321,7 +323,9 @@ class TestMcpServerRepository:
 
     async def test_create_with_env_vars(self, db_repository):
         await McpServerRepository.create(
-            "mcp-env", "http", "http://localhost:8000",
+            "mcp-env",
+            "http",
+            "http://localhost:8000",
             env_vars={"API_KEY": "secret123"},
         )
         server = await McpServerRepository.get("mcp-env")
@@ -352,8 +356,11 @@ class TestMcpServerRepository:
         and ``get`` deserializes it back to a ``dict``."""
         env = {"API_KEY": "secret123", "REGION": "eu-west-1"}
         await McpServerRepository.upsert(
-            "mcp-upsert", "http", "http://localhost:8000",
-            env_vars=env, timeout=45,
+            "mcp-upsert",
+            "http",
+            "http://localhost:8000",
+            env_vars=env,
+            timeout=45,
         )
         server = await McpServerRepository.get("mcp-upsert")
         assert server is not None
@@ -364,8 +371,11 @@ class TestMcpServerRepository:
         # Second upsert updates the row and round-trips the new env dict.
         new_env = {"API_KEY": "rotated"}
         await McpServerRepository.upsert(
-            "mcp-upsert", "http", "http://localhost:8000",
-            env_vars=new_env, timeout=60,
+            "mcp-upsert",
+            "http",
+            "http://localhost:8000",
+            env_vars=new_env,
+            timeout=60,
         )
         server = await McpServerRepository.get("mcp-upsert")
         assert isinstance(server["env_vars"], dict)
@@ -377,8 +387,8 @@ class TestMcpServerRepository:
 # Repository CRUD -- secrets
 # ---------------------------------------------------------------------------
 
-class TestSecretsRepository:
 
+class TestSecretsRepository:
     async def test_store_and_retrieve(self, db_repository):
         encrypted = b"encrypted_secret_data"
         await SecretsRepository.set("ha_token", encrypted)
@@ -399,24 +409,26 @@ class TestSecretsRepository:
 # Repository CRUD -- trace_summary
 # ---------------------------------------------------------------------------
 
-class TestTraceSummaryRepository:
 
+class TestTraceSummaryRepository:
     async def test_create_and_get(self, db_repository):
-        await TraceSummaryRepository.create({
-            "trace_id": "trace-001",
-            "conversation_id": "conv-001",
-            "user_input": "Turn on the kitchen light",
-            "final_response": "Done, the kitchen light is on.",
-            "agents": ["orchestrator", "light-agent"],
-            "total_duration_ms": 345.6,
-            "label": None,
-            "source": "ha",
-            "routing_agent": "light-agent",
-            "routing_confidence": 0.95,
-            "routing_duration_ms": 120.0,
-            "routing_reasoning": None,
-            "agent_instructions": {"light-agent": "Turn on the kitchen light"},
-        })
+        await TraceSummaryRepository.create(
+            {
+                "trace_id": "trace-001",
+                "conversation_id": "conv-001",
+                "user_input": "Turn on the kitchen light",
+                "final_response": "Done, the kitchen light is on.",
+                "agents": ["orchestrator", "light-agent"],
+                "total_duration_ms": 345.6,
+                "label": None,
+                "source": "ha",
+                "routing_agent": "light-agent",
+                "routing_confidence": 0.95,
+                "routing_duration_ms": 120.0,
+                "routing_reasoning": None,
+                "agent_instructions": {"light-agent": "Turn on the kitchen light"},
+            }
+        )
         result = await TraceSummaryRepository.get("trace-001")
         assert result is not None
         assert result["trace_id"] == "trace-001"
@@ -429,20 +441,24 @@ class TestTraceSummaryRepository:
         assert result["agent_instructions"]["light-agent"] == "Turn on the kitchen light"
 
     async def test_list_filtered(self, db_repository):
-        await TraceSummaryRepository.create({
-            "trace_id": "trace-f1",
-            "user_input": "Play some jazz music",
-            "routing_agent": "music-agent",
-            "agents": ["music-agent"],
-            "source": "chat",
-        })
-        await TraceSummaryRepository.create({
-            "trace_id": "trace-f2",
-            "user_input": "Turn off the bedroom light",
-            "routing_agent": "light-agent",
-            "agents": ["light-agent"],
-            "source": "ha",
-        })
+        await TraceSummaryRepository.create(
+            {
+                "trace_id": "trace-f1",
+                "user_input": "Play some jazz music",
+                "routing_agent": "music-agent",
+                "agents": ["music-agent"],
+                "source": "chat",
+            }
+        )
+        await TraceSummaryRepository.create(
+            {
+                "trace_id": "trace-f2",
+                "user_input": "Turn off the bedroom light",
+                "routing_agent": "light-agent",
+                "agents": ["light-agent"],
+                "source": "ha",
+            }
+        )
         # No filter
         all_rows = await TraceSummaryRepository.list_filtered()
         assert len(all_rows) >= 2
@@ -454,29 +470,35 @@ class TestTraceSummaryRepository:
         assert len(search_rows) >= 1
 
     async def test_update_label(self, db_repository):
-        await TraceSummaryRepository.create({
-            "trace_id": "trace-lbl",
-            "user_input": "Test label",
-            "routing_agent": "general-agent",
-            "agents": [],
-        })
+        await TraceSummaryRepository.create(
+            {
+                "trace_id": "trace-lbl",
+                "user_input": "Test label",
+                "routing_agent": "general-agent",
+                "agents": [],
+            }
+        )
         await TraceSummaryRepository.update_label("trace-lbl", "important")
         result = await TraceSummaryRepository.get("trace-lbl")
         assert result["label"] == "important"
 
     async def test_list_labels(self, db_repository):
-        await TraceSummaryRepository.create({
-            "trace_id": "trace-la",
-            "user_input": "a",
-            "label": "bug",
-            "agents": [],
-        })
-        await TraceSummaryRepository.create({
-            "trace_id": "trace-lb",
-            "user_input": "b",
-            "label": "slow",
-            "agents": [],
-        })
+        await TraceSummaryRepository.create(
+            {
+                "trace_id": "trace-la",
+                "user_input": "a",
+                "label": "bug",
+                "agents": [],
+            }
+        )
+        await TraceSummaryRepository.create(
+            {
+                "trace_id": "trace-lb",
+                "user_input": "b",
+                "label": "slow",
+                "agents": [],
+            }
+        )
         labels = await TraceSummaryRepository.list_labels()
         assert "bug" in labels
         assert "slow" in labels
@@ -499,8 +521,8 @@ class TestTraceSummaryRepository:
 # Repository CRUD -- admin_accounts
 # ---------------------------------------------------------------------------
 
-class TestAdminAccountRepository:
 
+class TestAdminAccountRepository:
     async def test_create_and_get(self, db_repository):
         await AdminAccountRepository.create("admin", "$2b$12$fakebcrypthash")
         account = await AdminAccountRepository.get("admin")
@@ -552,8 +574,8 @@ class TestAdminAccountRepository:
 # Repository CRUD -- setup_state
 # ---------------------------------------------------------------------------
 
-class TestSetupStateRepository:
 
+class TestSetupStateRepository:
     async def test_get_step(self, db_repository):
         step = await SetupStateRepository.get_step("admin_password")
         assert step is not None
@@ -585,16 +607,22 @@ class TestSetupStateRepository:
 # Schema migration v2 -- temperature defaults
 # ---------------------------------------------------------------------------
 
-class TestMigrationV2:
 
+class TestMigrationV2:
     async def test_migration_v2_lowers_agent_temperatures(self, db_repository):
         """Migration v2 should lower temperatures for action agents from 0.7 to 0.2/0.5."""
         from app.db.schema import _run_migrations
 
         # Simulate pre-migration state: set agents to old 0.7 default
         old_temp_agents = [
-            "light-agent", "music-agent", "timer-agent", "climate-agent",
-            "media-agent", "scene-agent", "automation-agent", "security-agent",
+            "light-agent",
+            "music-agent",
+            "timer-agent",
+            "climate-agent",
+            "media-agent",
+            "scene-agent",
+            "automation-agent",
+            "security-agent",
             "general-agent",
         ]
         for aid in old_temp_agents:
@@ -609,8 +637,16 @@ class TestMigrationV2:
             await db.commit()
 
         # Verify temperatures updated
-        for aid in ["light-agent", "music-agent", "timer-agent", "climate-agent",
-                     "media-agent", "scene-agent", "automation-agent", "security-agent"]:
+        for aid in [
+            "light-agent",
+            "music-agent",
+            "timer-agent",
+            "climate-agent",
+            "media-agent",
+            "scene-agent",
+            "automation-agent",
+            "security-agent",
+        ]:
             cfg = await AgentConfigRepository.get(aid)
             assert cfg["temperature"] == 0.2, f"{aid} should be 0.2"
         general = await AgentConfigRepository.get("general-agent")
@@ -644,12 +680,12 @@ class TestMigrationV2:
 # Schema migration v4 -- entity visibility defaults and legacy migration
 # ---------------------------------------------------------------------------
 
-class TestMigrationV4:
 
+class TestMigrationV4:
     async def test_migration_v4_seeds_defaults_for_empty_agents(self, db_repository):
         """Migration v4 should insert domain_include defaults for agents with zero rules."""
-        from app.db.schema import _run_migrations
         from app.db.repository import EntityVisibilityRepository
+        from app.db.schema import _run_migrations
 
         # Clear all visibility rules to simulate pre-migration state
         async with aiosqlite.connect(str(db_repository)) as db:
@@ -673,8 +709,8 @@ class TestMigrationV4:
 
     async def test_migration_v4_skips_agents_with_existing_rules(self, db_repository):
         """Migration v4 should not overwrite existing user-configured rules."""
-        from app.db.schema import _run_migrations
         from app.db.repository import EntityVisibilityRepository
+        from app.db.schema import _run_migrations
 
         # Clear migration marker and set custom rules for light-agent
         async with aiosqlite.connect(str(db_repository)) as db:
@@ -697,8 +733,8 @@ class TestMigrationV4:
 
     async def test_migration_v4_migrates_legacy_entity_rule_type(self, db_repository):
         """Migration v4 should convert 'entity' -> 'entity_include'."""
-        from app.db.schema import _run_migrations
         from app.db.repository import EntityVisibilityRepository
+        from app.db.schema import _run_migrations
 
         async with aiosqlite.connect(str(db_repository)) as db:
             db.row_factory = aiosqlite.Row
@@ -719,8 +755,8 @@ class TestMigrationV4:
 
     async def test_migration_v4_migrates_legacy_domain_rule_type(self, db_repository):
         """Migration v4 should convert 'domain' -> 'domain_include'."""
-        from app.db.schema import _run_migrations
         from app.db.repository import EntityVisibilityRepository
+        from app.db.schema import _run_migrations
 
         async with aiosqlite.connect(str(db_repository)) as db:
             db.row_factory = aiosqlite.Row
@@ -740,8 +776,8 @@ class TestMigrationV4:
 
     async def test_migration_v4_migrates_legacy_area_rule_type(self, db_repository):
         """Migration v4 should convert 'area' -> 'area_include'."""
-        from app.db.schema import _run_migrations
         from app.db.repository import EntityVisibilityRepository
+        from app.db.schema import _run_migrations
 
         async with aiosqlite.connect(str(db_repository)) as db:
             db.row_factory = aiosqlite.Row
@@ -764,8 +800,8 @@ class TestMigrationV4:
 # Schema migration v5 -- rewrite-agent max_tokens bump
 # ---------------------------------------------------------------------------
 
-class TestMigrationV5:
 
+class TestMigrationV5:
     async def test_migration_v5_bumps_rewrite_agent_max_tokens(self, db_repository):
         """Migration v5 should increase rewrite-agent max_tokens from 128 to 512 (then migration 10 to 1024)."""
         from app.db.schema import _run_migrations
@@ -773,9 +809,7 @@ class TestMigrationV5:
         async with aiosqlite.connect(str(db_repository)) as db:
             db.row_factory = aiosqlite.Row
             # Simulate pre-migration state
-            await db.execute(
-                "UPDATE agent_configs SET max_tokens = 128 WHERE agent_id = 'rewrite-agent'"
-            )
+            await db.execute("UPDATE agent_configs SET max_tokens = 128 WHERE agent_id = 'rewrite-agent'")
             await db.execute("DELETE FROM schema_version WHERE version >= 5")
             await db.commit()
             await _run_migrations(db)
@@ -790,9 +824,7 @@ class TestMigrationV5:
 
         async with aiosqlite.connect(str(db_repository)) as db:
             db.row_factory = aiosqlite.Row
-            await db.execute(
-                "UPDATE agent_configs SET max_tokens = 1024 WHERE agent_id = 'rewrite-agent'"
-            )
+            await db.execute("UPDATE agent_configs SET max_tokens = 1024 WHERE agent_id = 'rewrite-agent'")
             await db.execute("DELETE FROM schema_version WHERE version >= 5")
             await db.commit()
             await _run_migrations(db)
@@ -806,11 +838,13 @@ class TestMigrationV5:
 # SendDeviceMappingRepository
 # ---------------------------------------------------------------------------
 
-class TestSendDeviceMappingRepository:
 
+class TestSendDeviceMappingRepository:
     async def test_create_and_get(self, db_repository):
         row_id = await SendDeviceMappingRepository.create(
-            "Laura Handy", "notify", "mobile_app_lauras_iphone",
+            "Laura Handy",
+            "notify",
+            "mobile_app_lauras_iphone",
         )
         assert row_id is not None
         mapping = await SendDeviceMappingRepository.get(row_id)
@@ -820,7 +854,9 @@ class TestSendDeviceMappingRepository:
 
     async def test_find_by_name_case_insensitive(self, db_repository):
         await SendDeviceMappingRepository.create(
-            "Laura Handy", "notify", "mobile_app_lauras_iphone",
+            "Laura Handy",
+            "notify",
+            "mobile_app_lauras_iphone",
         )
         result = await SendDeviceMappingRepository.find_by_name("laura handy")
         assert result is not None
@@ -856,7 +892,9 @@ class TestSendDeviceMappingRepository:
 
     async def test_find_by_name_apostrophe_mismatch(self, db_repository):
         await SendDeviceMappingRepository.create(
-            "Patric's Handy", "notify", "mobile_app_patrics_handy",
+            "Patric's Handy",
+            "notify",
+            "mobile_app_patrics_handy",
         )
         result = await SendDeviceMappingRepository.find_by_name("patrics handy")
         assert result is not None
@@ -864,7 +902,9 @@ class TestSendDeviceMappingRepository:
 
     async def test_find_by_name_special_chars_fallback(self, db_repository):
         await SendDeviceMappingRepository.create(
-            "Laura's Tablet", "notify", "mobile_app_lauras_tablet",
+            "Laura's Tablet",
+            "notify",
+            "mobile_app_lauras_tablet",
         )
         result = await SendDeviceMappingRepository.find_by_name("lauras tablet")
         assert result is not None
@@ -872,7 +912,9 @@ class TestSendDeviceMappingRepository:
 
     async def test_find_by_name_exact_still_works(self, db_repository):
         await SendDeviceMappingRepository.create(
-            "Patric's Handy", "notify", "mobile_app_patrics_handy",
+            "Patric's Handy",
+            "notify",
+            "mobile_app_patrics_handy",
         )
         result = await SendDeviceMappingRepository.find_by_name("Patric's Handy")
         assert result is not None
@@ -882,6 +924,7 @@ class TestSendDeviceMappingRepository:
 # ---------------------------------------------------------------------------
 # Read/Write Split
 # ---------------------------------------------------------------------------
+
 
 class TestReadWriteSplit:
     """Verify that read and write paths function correctly."""
@@ -902,8 +945,7 @@ class TestReadWriteSplit:
     async def test_write_then_read_consistent(self, db_repository):
         """A write followed by a read should see the written data."""
         await SettingsRepository.set(
-            "test.rw_split", "hello", value_type="string",
-            category="test", description="rw split test"
+            "test.rw_split", "hello", value_type="string", category="test", description="rw split test"
         )
         result = await SettingsRepository.get_value("test.rw_split")
         assert result == "hello"

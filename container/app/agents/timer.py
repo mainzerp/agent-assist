@@ -18,8 +18,13 @@ class TimerAgent(ActionableAgent):
         device_id = ctx.device_id if ctx else None
         area_id = ctx.area_id if ctx else None
         return await execute_timer_action(
-            action, ha_client, entity_index, entity_matcher,
-            agent_id=agent_id, device_id=device_id, area_id=area_id,
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id=agent_id,
+            device_id=device_id,
+            area_id=area_id,
             span_collector=span_collector,
         )
 
@@ -29,7 +34,18 @@ class TimerAgent(ActionableAgent):
             agent_id="timer-agent",
             name="Timer Agent",
             description="Manages timers, alarms, reminders, and scheduled actions. Start, cancel, pause, resume, snooze timers. Sets alarms, schedules delayed actions and sleep timers, creates calendar reminders. Reports timer status and remaining time.",
-            skills=["timer_set", "timer_cancel", "timer_pause", "timer_resume", "timer_snooze",
-                    "timer_query", "alarm", "reminder", "delayed_action", "sleep_timer", "calendar"],
+            skills=[
+                "timer_set",
+                "timer_cancel",
+                "timer_pause",
+                "timer_resume",
+                "timer_snooze",
+                "timer_query",
+                "alarm",
+                "reminder",
+                "delayed_action",
+                "sleep_timer",
+                "calendar",
+            ],
             endpoint="local://timer-agent",
         )

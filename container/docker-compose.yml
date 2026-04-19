@@ -1,20 +1,28 @@
+# HA-AgentHub container stack (default compose).
+# Legacy stack (service agent-assist, volume agent-assist-data): docker-compose_local.yml
+#
+# Build:   docker compose build
+# Run:     docker compose up -d
+# Tag:     IMAGE_TAG=0.18.14 docker compose build
+#
+# Daten von altem Volume übernehmen: Backup aus agent-assist-data, in ha-agenthub-data
+# einspielen, oder temporär unter volumes einen external/named volume eintragen.
+
 services:
-  agent-assist:
-    # Local image name (not the old compose default "container-agent-assist").
-    # Override tag: IMAGE_TAG=0.18.0 docker compose build
+  ha-agenthub:
     image: ha-agenthub:${IMAGE_TAG:-latest}
     build: .
-    container_name: agent-assist
+    container_name: ha-agenthub
     restart: unless-stopped
     ports:
-      - "${CONTAINER_PORT:-8080}:8080"
+      - "${CONTAINER_PORT:-8080}:${CONTAINER_PORT:-8080}"
     volumes:
-      - agent-assist-data:/data
+      - ha-agenthub-data:/data
     deploy:
       resources:
         limits:
           memory: 4G
-          cpus: '4.0'
+          cpus: "4.0"
         reservations:
           memory: 1G
     environment:
@@ -25,12 +33,16 @@ services:
       - SQLITE_DB_PATH=${SQLITE_DB_PATH:-/data/agent_assist.db}
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health')"]
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('CONTAINER_PORT','8080')+'/api/health')\"",
+        ]
       interval: 30s
       timeout: 10s
       start_period: 120s
       retries: 3
 
 volumes:
-  agent-assist-data:
+  ha-agenthub-data:
     driver: local

@@ -1,4 +1,4 @@
-﻿"""Request tracing middleware with trace ID propagation and span collection.
+"""Request tracing middleware with trace ID propagation and span collection.
 
 Implemented as pure ASGI middleware so it does not buffer the response body
 (SSE/WS first byte must flush immediately).
@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.analytics.tracer import SpanCollector
 
@@ -54,7 +54,7 @@ class TracingMiddleware:
 
         logger.info("[%s] %s %s started", trace_id, method, path)
         t0 = time.perf_counter()
-        start_time = datetime.now(timezone.utc).isoformat()
+        start_time = datetime.now(UTC).isoformat()
 
         root_span_id = uuid.uuid4().hex[:12]
         state["root_span_id"] = root_span_id
@@ -82,17 +82,19 @@ class TracingMiddleware:
             duration_ms = (time.perf_counter() - t0) * 1000
             status_code = status_code_holder["code"]
 
-            span_collector._spans.append({
-                "span_id": root_span_id,
-                "trace_id": trace_id,
-                "span_name": f"{method} {path}",
-                "agent_id": None,
-                "parent_span": None,
-                "start_time": start_time,
-                "duration_ms": round(duration_ms, 2),
-                "status": "ok" if status_code < 400 else "error",
-                "metadata": {"status_code": status_code},
-            })
+            span_collector._spans.append(
+                {
+                    "span_id": root_span_id,
+                    "trace_id": trace_id,
+                    "span_name": f"{method} {path}",
+                    "agent_id": None,
+                    "parent_span": None,
+                    "start_time": start_time,
+                    "duration_ms": round(duration_ms, 2),
+                    "status": "ok" if status_code < 400 else "error",
+                    "metadata": {"status_code": status_code},
+                }
+            )
 
             try:
                 await span_collector.flush()
@@ -101,11 +103,16 @@ class TracingMiddleware:
 
             try:
                 from app.db.repository import TraceSummaryRepository
+
                 await TraceSummaryRepository.update_duration(trace_id, round(duration_ms, 2))
             except Exception:
                 pass
 
             logger.info(
                 "[%s] %s %s -> %d (%.1fms)",
-                trace_id, method, path, status_code, duration_ms,
+                trace_id,
+                method,
+                path,
+                status_code,
+                duration_ms,
             )

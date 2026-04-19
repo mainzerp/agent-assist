@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 import pytest
@@ -38,10 +39,8 @@ async def test_spawn_logs_exception_and_does_not_crash(caplog):
     tasks_mod._pending.clear()
     with caplog.at_level(logging.ERROR, logger="app.util.tasks"):
         task = tasks_mod.spawn(_bad(), name="unit-bad")
-        try:
+        with contextlib.suppress(RuntimeError):
             await task
-        except RuntimeError:
-            pass
         await asyncio.sleep(0)
 
     assert any("Background task unit-bad failed" in r.message for r in caplog.records)

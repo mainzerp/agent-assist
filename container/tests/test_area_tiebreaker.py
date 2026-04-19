@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import pytest
-
 from app.agents.action_executor import (
     _select_deterministic_candidate,
     rerank_matches_by_area,
@@ -38,8 +36,8 @@ class _Match:
 # rerank_matches_by_area
 # ---------------------------------------------------------------------------
 
-class TestRerankMatchesByArea:
 
+class TestRerankMatchesByArea:
     def test_no_preferred_area_returns_unchanged(self):
         matches = [
             _Match("light.a", "A", 0.9, area="living"),
@@ -98,12 +96,14 @@ class TestRerankMatchesByArea:
 # _select_deterministic_candidate with preferred_area_id
 # ---------------------------------------------------------------------------
 
-class TestSelectDeterministicCandidateWithArea:
 
+class TestSelectDeterministicCandidateWithArea:
     def test_single_entry_returns_it(self):
         entry = _Entry("light.a", "A", "light", area="living")
         candidate, ambig = _select_deterministic_candidate(
-            [entry], "A", preferred_area_id="kitchen",
+            [entry],
+            "A",
+            preferred_area_id="kitchen",
         )
         assert candidate is entry
         assert ambig is None
@@ -114,7 +114,9 @@ class TestSelectDeterministicCandidateWithArea:
             _Entry("light.kitchen", "Licht", "light", area="kitchen"),
         ]
         candidate, ambig = _select_deterministic_candidate(
-            entries, "Licht", preferred_area_id="kitchen",
+            entries,
+            "Licht",
+            preferred_area_id="kitchen",
         )
         assert candidate is not None
         assert candidate.entity_id == "light.kitchen"
@@ -126,7 +128,9 @@ class TestSelectDeterministicCandidateWithArea:
             _Entry("light.kitchen", "Licht", "light", area="kitchen"),
         ]
         candidate, ambig = _select_deterministic_candidate(
-            entries, "Licht", preferred_area_id=None,
+            entries,
+            "Licht",
+            preferred_area_id=None,
         )
         assert candidate is None
         assert ambig is not None
@@ -137,7 +141,9 @@ class TestSelectDeterministicCandidateWithArea:
             _Entry("light.kitchen2", "Licht", "light", area="kitchen"),
         ]
         candidate, ambig = _select_deterministic_candidate(
-            entries, "Licht", preferred_area_id="kitchen",
+            entries,
+            "Licht",
+            preferred_area_id="kitchen",
         )
         assert candidate is None
         assert ambig is not None
@@ -147,8 +153,8 @@ class TestSelectDeterministicCandidateWithArea:
 # TaskContext + ConversationRequest: new fields round-trip
 # ---------------------------------------------------------------------------
 
-class TestTaskContextFields:
 
+class TestTaskContextFields:
     def test_defaults(self):
         from app.models.agent import TaskContext
 
@@ -167,8 +173,10 @@ class TestTaskContextFields:
         from app.models.agent import TaskContext
 
         ctx = TaskContext(
-            device_id="dev123", area_id="area456",
-            device_name="Kitchen Satellite", area_name="Kitchen",
+            device_id="dev123",
+            area_id="area456",
+            device_name="Kitchen Satellite",
+            area_name="Kitchen",
             source="ha",
         )
         assert ctx.device_name == "Kitchen Satellite"

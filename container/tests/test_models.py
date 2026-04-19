@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from pydantic import ValidationError
 
-from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.models.agent import AgentCard, AgentConfig, AgentTask, TaskContext
-from app.models.cache import CachedAction, ResponseCacheEntry, RoutingCacheEntry
+from app.models.cache import CachedAction, RoutingCacheEntry
+from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.models.entity_index import EntityIndexEntry
-
 from tests.helpers import (
     make_action_result,
     make_agent_card,
@@ -26,11 +23,10 @@ from tests.helpers import (
     make_stream_token,
 )
 
-
 # ---- Conversation models ----
 
-class TestConversationRequest:
 
+class TestConversationRequest:
     def test_valid_request_required_fields(self):
         req = ConversationRequest(text="turn on the light")
         assert req.text == "turn on the light"
@@ -55,7 +51,6 @@ class TestConversationRequest:
 
 
 class TestConversationResponse:
-
     def test_valid_response_minimal(self):
         resp = ConversationResponse(speech="Done.")
         assert resp.speech == "Done."
@@ -73,7 +68,6 @@ class TestConversationResponse:
 
 
 class TestActionResult:
-
     def test_defaults(self):
         ar = ActionResult(service="light/turn_on", entity_id="light.kitchen")
         assert ar.result == "success"
@@ -87,7 +81,6 @@ class TestActionResult:
 
 
 class TestStreamToken:
-
     def test_defaults(self):
         st = StreamToken(token="Hi")
         assert st.done is False
@@ -112,8 +105,8 @@ class TestStreamToken:
 
 # ---- Agent models ----
 
-class TestAgentCard:
 
+class TestAgentCard:
     def test_valid_card(self):
         card = make_agent_card()
         assert card.agent_id == "light-agent"
@@ -144,7 +137,6 @@ class TestAgentCard:
 
 
 class TestAgentConfig:
-
     def test_defaults(self):
         cfg = AgentConfig(agent_id="test")
         assert cfg.enabled is True
@@ -158,7 +150,6 @@ class TestAgentConfig:
 
 
 class TestAgentTask:
-
     def test_valid_task(self):
         task = make_agent_task()
         assert task.description == "Turn on the kitchen light"
@@ -184,8 +175,8 @@ class TestAgentTask:
 
 # ---- Cache models ----
 
-class TestRoutingCacheEntry:
 
+class TestRoutingCacheEntry:
     def test_valid_entry(self):
         entry = make_routing_cache_entry()
         assert entry.agent_id == "light-agent"
@@ -199,7 +190,6 @@ class TestRoutingCacheEntry:
 
 
 class TestResponseCacheEntry:
-
     def test_valid_entry(self):
         entry = make_response_cache_entry()
         assert entry.agent_id == "light-agent"
@@ -212,7 +202,6 @@ class TestResponseCacheEntry:
 
 
 class TestCachedAction:
-
     def test_defaults(self):
         ca = CachedAction(service="light/turn_on", entity_id="light.kitchen")
         assert ca.service_data == {}
@@ -224,8 +213,8 @@ class TestCachedAction:
 
 # ---- Entity index models ----
 
-class TestEntityIndexEntry:
 
+class TestEntityIndexEntry:
     def test_valid_entry(self):
         entry = make_entity_index_entry()
         assert entry.entity_id == "light.kitchen_ceiling"

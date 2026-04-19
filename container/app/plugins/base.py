@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
     from app.a2a.registry import AgentRegistry
-    from app.mcp.registry import MCPServerRegistry
     from app.db.repository import SettingsRepository
+    from app.mcp.registry import MCPServerRegistry
 
 
 class PluginContext:
@@ -46,10 +47,7 @@ class PluginContext:
 
         Use add_api_route() or include_router() instead.
         """
-        raise AttributeError(
-            "PluginContext.app has been removed. "
-            "Use add_api_route() or include_router() instead."
-        )
+        raise AttributeError("PluginContext.app has been removed. Use add_api_route() or include_router() instead.")
 
 
 class BasePlugin(ABC):
@@ -79,12 +77,16 @@ class BasePlugin(ABC):
 
     async def configure(self, ctx: PluginContext) -> None:
         """Called during the CONFIGURE phase. Read settings here."""
+        return None
 
     async def startup(self, ctx: PluginContext) -> None:
         """Called during the STARTUP phase. Initialize resources here."""
+        return None
 
     async def ready(self, ctx: PluginContext) -> None:
         """Called when all agents are registered and the system is ready."""
+        return None
 
     async def shutdown(self) -> None:
         """Called at system shutdown. Clean up resources here."""
+        return None

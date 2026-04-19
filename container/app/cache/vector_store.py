@@ -8,8 +8,8 @@ import logging
 import chromadb
 from chromadb.api.models.Collection import Collection
 
-from app.config import settings
 from app.cache.embedding import ChromaEmbeddingFunction, get_embedding_engine
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 

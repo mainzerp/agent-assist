@@ -7,30 +7,31 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.presence.sensors import discover_sensors, PresenceSensor, MOTION_CLASSES, OCCUPANCY_CLASSES
-from app.presence.scoring import compute_room_confidence, SensorEvent, SENSOR_WEIGHTS
 from app.presence.detector import PresenceDetector
-
+from app.presence.scoring import SENSOR_WEIGHTS, SensorEvent, compute_room_confidence
+from app.presence.sensors import PresenceSensor, discover_sensors
 
 # ---------------------------------------------------------------------------
 # Sensor discovery
 # ---------------------------------------------------------------------------
 
-class TestDiscoverSensors:
 
+class TestDiscoverSensors:
     async def test_discovers_motion_sensor(self):
         ha = AsyncMock()
-        ha.get_states = AsyncMock(return_value=[
-            {
-                "entity_id": "binary_sensor.hallway_motion",
-                "state": "on",
-                "attributes": {
-                    "device_class": "motion",
-                    "friendly_name": "Hallway Motion",
-                    "area_id": "hallway",
+        ha.get_states = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": "binary_sensor.hallway_motion",
+                    "state": "on",
+                    "attributes": {
+                        "device_class": "motion",
+                        "friendly_name": "Hallway Motion",
+                        "area_id": "hallway",
+                    },
                 },
-            },
-        ])
+            ]
+        )
         sensors = await discover_sensors(ha)
         assert len(sensors) == 1
         assert sensors[0].sensor_type == "motion"
@@ -38,62 +39,70 @@ class TestDiscoverSensors:
 
     async def test_discovers_occupancy_sensor(self):
         ha = AsyncMock()
-        ha.get_states = AsyncMock(return_value=[
-            {
-                "entity_id": "binary_sensor.office_occupancy",
-                "state": "off",
-                "attributes": {
-                    "device_class": "occupancy",
-                    "friendly_name": "Office Occupancy",
-                    "area_id": "office",
+        ha.get_states = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": "binary_sensor.office_occupancy",
+                    "state": "off",
+                    "attributes": {
+                        "device_class": "occupancy",
+                        "friendly_name": "Office Occupancy",
+                        "area_id": "office",
+                    },
                 },
-            },
-        ])
+            ]
+        )
         sensors = await discover_sensors(ha)
         assert len(sensors) == 1
         assert sensors[0].sensor_type == "occupancy"
 
     async def test_discovers_mmwave_by_name(self):
         ha = AsyncMock()
-        ha.get_states = AsyncMock(return_value=[
-            {
-                "entity_id": "binary_sensor.bedroom_mmwave",
-                "state": "on",
-                "attributes": {
-                    "device_class": "",
-                    "friendly_name": "Bedroom mmWave Sensor",
-                    "area_id": "bedroom",
+        ha.get_states = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": "binary_sensor.bedroom_mmwave",
+                    "state": "on",
+                    "attributes": {
+                        "device_class": "",
+                        "friendly_name": "Bedroom mmWave Sensor",
+                        "area_id": "bedroom",
+                    },
                 },
-            },
-        ])
+            ]
+        )
         sensors = await discover_sensors(ha)
         assert len(sensors) == 1
         assert sensors[0].sensor_type == "mmwave"
 
     async def test_ignores_non_binary_sensor_entities(self):
         ha = AsyncMock()
-        ha.get_states = AsyncMock(return_value=[
-            {
-                "entity_id": "light.kitchen",
-                "state": "on",
-                "attributes": {"friendly_name": "Kitchen Light"},
-            },
-        ])
+        ha.get_states = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": "light.kitchen",
+                    "state": "on",
+                    "attributes": {"friendly_name": "Kitchen Light"},
+                },
+            ]
+        )
         sensors = await discover_sensors(ha)
         assert len(sensors) == 0
 
     async def test_ignores_irrelevant_binary_sensors(self):
         ha = AsyncMock()
-        ha.get_states = AsyncMock(return_value=[
-            {
-                "entity_id": "binary_sensor.door_contact",
-                "state": "off",
-                "attributes": {
-                    "device_class": "door",
-                    "friendly_name": "Front Door",
+        ha.get_states = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": "binary_sensor.door_contact",
+                    "state": "off",
+                    "attributes": {
+                        "device_class": "door",
+                        "friendly_name": "Front Door",
+                    },
                 },
-            },
-        ])
+            ]
+        )
         sensors = await discover_sensors(ha)
         assert len(sensors) == 0
 
@@ -108,8 +117,8 @@ class TestDiscoverSensors:
 # Room scoring
 # ---------------------------------------------------------------------------
 
-class TestComputeRoomConfidence:
 
+class TestComputeRoomConfidence:
     def test_recent_mmwave_event_scores_high(self):
         now = time.time()
         events = [SensorEvent(sensor_type="mmwave", area="kitchen", triggered_at=now)]
@@ -182,15 +191,17 @@ class TestComputeRoomConfidence:
 # PresenceDetector
 # ---------------------------------------------------------------------------
 
-class TestPresenceDetector:
 
+class TestPresenceDetector:
     @patch("app.presence.detector.SettingsRepository")
     @patch("app.presence.detector.discover_sensors", new_callable=AsyncMock, return_value=[])
     async def test_initialize_loads_config(self, mock_discover, mock_settings):
-        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {
-            "presence.enabled": "true",
-            "presence.decay_timeout": "600",
-        }.get(k, d))
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "presence.enabled": "true",
+                "presence.decay_timeout": "600",
+            }.get(k, d)
+        )
         ha = AsyncMock()
         detector = PresenceDetector(ha)
         await detector.initialize()
@@ -200,9 +211,11 @@ class TestPresenceDetector:
     @patch("app.presence.detector.SettingsRepository")
     @patch("app.presence.detector.discover_sensors", new_callable=AsyncMock, return_value=[])
     async def test_initialize_disabled(self, mock_discover, mock_settings):
-        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {
-            "presence.enabled": "false",
-        }.get(k, d))
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda k, d=None: {
+                "presence.enabled": "false",
+            }.get(k, d)
+        )
         ha = AsyncMock()
         detector = PresenceDetector(ha)
         await detector.initialize()

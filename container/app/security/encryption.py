@@ -1,4 +1,3 @@
-import os
 import logging
 import threading
 from pathlib import Path
@@ -85,7 +84,7 @@ def decrypt(ciphertext: bytes) -> str:
         return get_fernet().decrypt(ciphertext).decode("utf-8")
     except InvalidToken:
         logger.warning("Failed to decrypt secret -- key may have changed")
-        raise ValueError("Decryption failed")
+        raise ValueError("Decryption failed") from None
 
 
 async def store_secret(key: str, plaintext: str) -> None:

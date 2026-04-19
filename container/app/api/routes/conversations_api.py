@@ -7,8 +7,8 @@ import logging
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
-from app.security.auth import require_admin_session
 from app.db.repository import ConversationRepository
+from app.security.auth import require_admin_session
 
 logger = logging.getLogger(__name__)
 

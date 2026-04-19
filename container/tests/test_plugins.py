@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,13 +10,12 @@ from app.plugins.base import BasePlugin, PluginContext
 from app.plugins.hooks import EventBus, LifecyclePhase
 from app.plugins.loader import PluginLoader
 
-
 # ---------------------------------------------------------------------------
 # EventBus
 # ---------------------------------------------------------------------------
 
-class TestEventBus:
 
+class TestEventBus:
     async def test_subscribe_and_publish(self):
         bus = EventBus()
         handler = AsyncMock()
@@ -61,8 +59,8 @@ class TestEventBus:
 # LifecyclePhase
 # ---------------------------------------------------------------------------
 
-class TestLifecyclePhase:
 
+class TestLifecyclePhase:
     def test_lifecycle_phases_exist(self):
         assert LifecyclePhase.CONFIGURE.value == "configure"
         assert LifecyclePhase.STARTUP.value == "startup"
@@ -74,8 +72,8 @@ class TestLifecyclePhase:
 # BasePlugin
 # ---------------------------------------------------------------------------
 
-class TestBasePlugin:
 
+class TestBasePlugin:
     def test_base_plugin_is_abstract(self):
         with pytest.raises(TypeError):
             BasePlugin()  # type: ignore[abstract]
@@ -118,8 +116,8 @@ class TestBasePlugin:
 # PluginContext
 # ---------------------------------------------------------------------------
 
-class TestPluginContext:
 
+class TestPluginContext:
     def test_context_provides_registries(self):
         agent_reg = MagicMock()
         mcp_reg = MagicMock()
@@ -177,8 +175,8 @@ class TestPluginContext:
 # PluginLoader
 # ---------------------------------------------------------------------------
 
-class TestPluginLoader:
 
+class TestPluginLoader:
     def test_loaded_plugins_empty_initially(self):
         ctx = MagicMock(spec=PluginContext)
         loader = PluginLoader(plugin_dir="/nonexistent", context=ctx)

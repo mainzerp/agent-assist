@@ -1,8 +1,41 @@
 # Version
 
-**Current Version:** 0.18.13
+**Current Version:** 0.18.16
 
 ## Version History
+
+### 0.18.16 -- Voice follow-up without ``area_id`` (Companion app)
+
+- When Assist comes from a **phone** there is often **no ``area_id``**,
+  but Home Assistant still supplies ``device_id`` (device registry).
+  Voice follow-up now runs ``assist_pipeline.run`` with that registry
+  id when ``area_id`` is missing or no satellite matches the area.
+
+### 0.18.15 -- Voice follow-up from orchestrator (HA satellite)
+
+- **TaskResult.voice_followup:** Specialized agents can set
+  ``voice_followup=True`` so that after TTS the container calls
+  ``assist_pipeline.run`` on the origin satellite (same mechanism as
+  timer notifications). When ``TaskContext.source`` is ``ha``, requires
+  ``area_id`` and/or ``device_id``.
+- **Organic follow-up (optional):** Settings
+  ``orchestrator.organic_followup_enabled`` (default false) and
+  ``orchestrator.organic_followup_probability`` (default ``0.08``)
+  occasionally append a short closing question and open the mic.
+- **Delay:** ``orchestrator.voice_followup_delay`` (seconds) overrides
+  the notification profile's ``tts_to_listen_delay`` when set.
+- **API:** ``ConversationResponse`` / ``StreamToken`` include
+  ``voice_followup`` for clients.
+
+### 0.18.14 -- CI: Ruff clean + stable tests
+
+- **Lint:** ``ruff check`` / ``ruff format`` pass on ``container/`` (import
+  sort, typing, SIM/B/N rules, explicit re-exports, ``raise ... from None``
+  where required, plugin hook bodies, test fixes).
+- **Tests:** Language-detection cases mock ``langdetect`` via ``sys.modules``
+  so they do not depend on the library being installed or on detector
+  randomness; embedding init test mocks ``_get_local_model`` so CI does not
+  need to load ``sentence_transformers`` weights.
 
 ### 0.18.13 -- HA integration display name (i18n)
 

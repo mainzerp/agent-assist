@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Coroutine
+from collections.abc import Coroutine
+from typing import Any
 
 _pending: set[asyncio.Task] = set()
 _log = logging.getLogger(__name__)
@@ -27,9 +28,7 @@ def spawn(coro: Coroutine[Any, Any, Any], *, name: str | None = None) -> asyncio
     def _done(t: asyncio.Task) -> None:
         _pending.discard(t)
         if not t.cancelled() and t.exception() is not None:
-            _log.error(
-                "Background task %s failed", t.get_name(), exc_info=t.exception()
-            )
+            _log.error("Background task %s failed", t.get_name(), exc_info=t.exception())
 
     task.add_done_callback(_done)
     return task

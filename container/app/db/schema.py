@@ -5,11 +5,11 @@ secrets, user accounts, conversation history, and analytics.
 """
 
 import asyncio
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 import aiosqlite
-from pathlib import Path
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from app.config import settings
 
@@ -302,68 +302,22 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
 
 async def _create_indexes(db: aiosqlite.Connection) -> None:
     """Create indexes for query performance."""
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_settings_category ON settings(category)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_aliases_entity_id ON aliases(entity_id)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_conversations_conversation_id "
-        "ON conversations(conversation_id)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_conversations_created_at "
-        "ON conversations(created_at)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_conversations_agent_id "
-        "ON conversations(agent_id)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_analytics_event_type "
-        "ON analytics(event_type)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_analytics_created_at "
-        "ON analytics(created_at)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_entity_visibility_agent "
-        "ON entity_visibility_rules(agent_id)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_mcp_servers_enabled "
-        "ON mcp_servers(enabled)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_agent_mcp_tools_agent "
-        "ON agent_mcp_tools(agent_id)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_trace_spans_trace_id "
-        "ON trace_spans(trace_id)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_trace_spans_created_at "
-        "ON trace_spans(created_at)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_trace_summary_trace_id "
-        "ON trace_summary(trace_id)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_trace_summary_created_at "
-        "ON trace_summary(created_at)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_trace_summary_routing_agent "
-        "ON trace_summary(routing_agent)"
-    )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_trace_summary_label "
-        "ON trace_summary(label)"
-    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_settings_category ON settings(category)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_aliases_entity_id ON aliases(entity_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_conversations_conversation_id ON conversations(conversation_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_conversations_created_at ON conversations(created_at)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_conversations_agent_id ON conversations(agent_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_analytics_event_type ON analytics(event_type)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_analytics_created_at ON analytics(created_at)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_entity_visibility_agent ON entity_visibility_rules(agent_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_mcp_servers_enabled ON mcp_servers(enabled)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_agent_mcp_tools_agent ON agent_mcp_tools(agent_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_spans_trace_id ON trace_spans(trace_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_spans_created_at ON trace_spans(created_at)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_trace_id ON trace_summary(trace_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_created_at ON trace_summary(created_at)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_routing_agent ON trace_summary(routing_agent)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_label ON trace_summary(label)")
 
 
 async def _seed_defaults(db: aiosqlite.Connection) -> None:
@@ -379,12 +333,30 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("cache.response.max_entries", "20000", "int", "cache", "Response cache max entries (LRU eviction)"),
         ("cache.response.enabled", "true", "bool", "cache", "Enable response cache storage"),
         # Embedding settings
-        ("embedding.provider", "local", "string", "embedding", "Embedding provider: local, openrouter, groq, anthropic, or ollama"),
+        (
+            "embedding.provider",
+            "local",
+            "string",
+            "embedding",
+            "Embedding provider: local, openrouter, groq, anthropic, or ollama",
+        ),
         ("embedding.local_model", "all-MiniLM-L6-v2", "string", "embedding", "Local embedding model name"),
-        ("embedding.external_model", "", "string", "embedding", "External embedding model (e.g., openai/text-embedding-3-small)"),
+        (
+            "embedding.external_model",
+            "",
+            "string",
+            "embedding",
+            "External embedding model (e.g., openai/text-embedding-3-small)",
+        ),
         ("embedding.dimension", "384", "int", "embedding", "Embedding dimension (auto-detected from model)"),
         # Entity matching settings
-        ("entity_matching.confidence_threshold", "0.75", "float", "entity_matching", "Minimum confidence for entity match"),
+        (
+            "entity_matching.confidence_threshold",
+            "0.75",
+            "float",
+            "entity_matching",
+            "Minimum confidence for entity match",
+        ),
         ("entity_matching.top_n_candidates", "3", "int", "entity_matching", "Top-N candidates for LLM disambiguation"),
         # Presence settings
         ("presence.enabled", "true", "bool", "presence", "Enable presence detection"),
@@ -395,7 +367,13 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         # Personality settings
         ("personality.prompt", "", "string", "personality", "Personality system prompt for response mediation"),
         # Communication settings
-        ("communication.streaming_mode", "websocket", "string", "communication", "Streaming mode: websocket, sse, none"),
+        (
+            "communication.streaming_mode",
+            "websocket",
+            "string",
+            "communication",
+            "Streaming mode: websocket, sse, none",
+        ),
         ("communication.ws_reconnect_interval", "5", "int", "communication", "WebSocket reconnect interval in seconds"),
         ("communication.stream_buffer_size", "1", "int", "communication", "Token batching buffer size"),
         # A2A settings
@@ -404,16 +382,27 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         # General settings
         ("general.conversation_context_turns", "3", "int", "general", "Number of conversation turns to keep"),
         # Home context settings
-        ("home.timezone", "", "string", "home", "Manual timezone override (e.g., Europe/Berlin). Empty = auto-detect from HA."),
-        ("home.location_name", "", "string", "home", "Manual home location name override. Empty = auto-detect from HA."),
+        (
+            "home.timezone",
+            "",
+            "string",
+            "home",
+            "Manual timezone override (e.g., Europe/Berlin). Empty = auto-detect from HA.",
+        ),
+        (
+            "home.location_name",
+            "",
+            "string",
+            "home",
+            "Manual home location name override. Empty = auto-detect from HA.",
+        ),
         # HA URL is normally set in setup; seed empty so admin UI can upsert
         # before first run and ``GET /api/admin/settings`` stays consistent.
         ("ha_url", "", "string", "ha", "Home Assistant base URL (http/https)"),
     ]
 
     await db.executemany(
-        "INSERT OR IGNORE INTO settings (key, value, value_type, category, description) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO settings (key, value, value_type, category, description) VALUES (?, ?, ?, ?, ?)",
         default_settings,
     )
 
@@ -429,7 +418,16 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("scene-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Scene activation"),
         ("automation-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Automation management"),
         ("security-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 3, 0.2, 1024, "Security system control"),
-        ("send-agent", 0, "openrouter/openai/gpt-4o-mini", 5, 1, 0.2, 512, "Send content to devices via notification or TTS"),
+        (
+            "send-agent",
+            0,
+            "openrouter/openai/gpt-4o-mini",
+            5,
+            1,
+            0.2,
+            512,
+            "Send content to devices via notification or TTS",
+        ),
         ("rewrite-agent", 0, "groq/llama-3.1-8b-instant", 2, 1, 0.8, 1024, "Cached response phrasing variation"),
         ("filler-agent", 1, "groq/llama-3.1-8b-instant", 3, 1, 0.7, 50, "Interim filler TTS phrase generation"),
     ]
@@ -451,8 +449,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
     ]
 
     await db.executemany(
-        "INSERT OR IGNORE INTO entity_matching_config (key, value, description) "
-        "VALUES (?, ?, ?)",
+        "INSERT OR IGNORE INTO entity_matching_config (key, value, description) VALUES (?, ?, ?)",
         default_matching,
     )
 
@@ -471,9 +468,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
     )
 
     # Initial schema version
-    await db.execute(
-        "INSERT OR IGNORE INTO schema_version (version) VALUES (1)"
-    )
+    await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (1)")
 
     # Default entity visibility rules
     default_visibility_rules = [
@@ -522,8 +517,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
     ]
 
     await db.executemany(
-        "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) "
-        "VALUES (?, ?, ?)",
+        "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
         default_visibility_rules,
     )
 
@@ -552,9 +546,7 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             WHERE agent_id = 'general-agent'
             AND temperature = 0.7
         """)
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (2)"
-        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (2)")
 
     if current_version < 3:
         # Migration 3: Increase light-agent max_tokens and default timeout
@@ -576,9 +568,7 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             WHERE agent_id = 'music-agent'
             AND max_tokens = 256
         """)
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (3)"
-        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (3)")
 
     if current_version < 4:
         # Migration 4: Seed default entity visibility rules for agents with zero rules
@@ -607,22 +597,11 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
                     )
 
         # Migrate legacy rule_types
-        await db.execute(
-            "UPDATE entity_visibility_rules SET rule_type = 'entity_include' "
-            "WHERE rule_type = 'entity'"
-        )
-        await db.execute(
-            "UPDATE entity_visibility_rules SET rule_type = 'domain_include' "
-            "WHERE rule_type = 'domain'"
-        )
-        await db.execute(
-            "UPDATE entity_visibility_rules SET rule_type = 'area_include' "
-            "WHERE rule_type = 'area'"
-        )
+        await db.execute("UPDATE entity_visibility_rules SET rule_type = 'entity_include' WHERE rule_type = 'entity'")
+        await db.execute("UPDATE entity_visibility_rules SET rule_type = 'domain_include' WHERE rule_type = 'domain'")
+        await db.execute("UPDATE entity_visibility_rules SET rule_type = 'area_include' WHERE rule_type = 'area'")
 
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (4)"
-        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (4)")
 
     if current_version < 5:
         # Migration 5: Increase rewrite-agent max_tokens from 128 to 512
@@ -632,9 +611,7 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             WHERE agent_id = 'rewrite-agent'
             AND max_tokens IN (128, 256)
         """)
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (5)"
-        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (5)")
 
     if current_version < 6:
         # Migration 6: Upgrade timer/scene/automation agents to ActionableAgent
@@ -647,18 +624,14 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         """)
         # Add timer-agent visibility rules
         await db.execute(
-            "INSERT OR IGNORE INTO entity_visibility_rules "
-            "(agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
             ("timer-agent", "domain_include", "timer"),
         )
         await db.execute(
-            "INSERT OR IGNORE INTO entity_visibility_rules "
-            "(agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
             ("timer-agent", "domain_include", "input_datetime"),
         )
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (6)"
-        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (6)")
 
     if current_version < 7:
         # Migration 7: Upgrade media-agent to ActionableAgent
@@ -669,9 +642,7 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             WHERE agent_id = 'media-agent'
             AND max_tokens = 256
         """)
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (7)"
-        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (7)")
 
     if current_version < 8:
         # Migration 8: Timer agent extensions -- add visibility for notification, media_player, calendar
@@ -681,25 +652,16 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             ("timer-agent", "domain_include", "calendar"),
         ]
         await db.executemany(
-            "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) "
-            "VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
             new_rules,
         )
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (8)"
-        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (8)")
 
     if current_version < 9:
         # Migration 9: Add conversation_turns column to trace_summary
-        try:
-            await db.execute(
-                "ALTER TABLE trace_summary ADD COLUMN conversation_turns TEXT"
-            )
-        except Exception:
-            pass  # Column may already exist
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (9)"
-        )
+        with suppress(Exception):
+            await db.execute("ALTER TABLE trace_summary ADD COLUMN conversation_turns TEXT")
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (9)")
 
     if current_version < 10:
         # Migration 10: Increase max_tokens to prevent response truncation
@@ -707,21 +669,13 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             UPDATE agent_configs SET max_tokens = 1024
             WHERE max_tokens IN (256, 512)
         """)
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (10)"
-        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (10)")
 
     if current_version < 11:
         # Migration 11: Add reasoning_effort column to agent_configs
-        try:
-            await db.execute(
-                "ALTER TABLE agent_configs ADD COLUMN reasoning_effort TEXT"
-            )
-        except Exception:
-            pass  # Column may already exist
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (11)"
-        )
+        with suppress(Exception):
+            await db.execute("ALTER TABLE agent_configs ADD COLUMN reasoning_effort TEXT")
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (11)")
 
     if current_version < 12:
         # Migration 12: Send device mappings for send-agent
@@ -734,21 +688,13 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
         """)
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (12)"
-        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (12)")
 
     if current_version < 13:
         # Migration 13: Add end_time column to trace_spans
-        try:
-            await db.execute(
-                "ALTER TABLE trace_spans ADD COLUMN end_time TEXT"
-            )
-        except Exception:
-            pass  # Column may already exist
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (13)"
-        )
+        with suppress(Exception):
+            await db.execute("ALTER TABLE trace_spans ADD COLUMN end_time TEXT")
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (13)")
 
     if current_version < 14:
         # Migration 14: Ensure device_class_include rules exist for all agents
@@ -780,8 +726,7 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             ("light-agent", "device_class_include", "illuminance"),
         ]
         await db.executemany(
-            "INSERT OR IGNORE INTO entity_visibility_rules "
-            "(agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
             dc_rules,
         )
         # Also ensure domain_include sensor rules exist for agents that need device_class filtering
@@ -792,24 +737,18 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             ("light-agent", "domain_include", "sensor"),
         ]
         await db.executemany(
-            "INSERT OR IGNORE INTO entity_visibility_rules "
-            "(agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
             sensor_domain_rules,
         )
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (14)"
-        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (14)")
 
     if current_version < 15:
         # Migration 15: Add weather domain visibility for climate-agent
         await db.execute(
-            "INSERT OR IGNORE INTO entity_visibility_rules "
-            "(agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO entity_visibility_rules (agent_id, rule_type, rule_value) VALUES (?, ?, ?)",
             ("climate-agent", "domain_include", "weather"),
         )
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (15)"
-        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (15)")
 
     if current_version < 16:
         # Migration 16 (0.18.6, FLOW-CTX-1): record the originating
@@ -817,12 +756,6 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         # can show "Kitchen Satellite / Kitchen" next to each
         # conversation instead of an opaque device_id UUID.
         for column in ("device_id", "area_id", "device_name", "area_name"):
-            try:
-                await db.execute(
-                    f"ALTER TABLE trace_summary ADD COLUMN {column} TEXT"
-                )
-            except Exception:
-                pass  # Column may already exist from a partial earlier run.
-        await db.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (16)"
-        )
+            with suppress(Exception):
+                await db.execute(f"ALTER TABLE trace_summary ADD COLUMN {column} TEXT")
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (16)")

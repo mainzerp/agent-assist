@@ -8,9 +8,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
-from app.security.auth import require_admin_session
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX
 from app.db.repository import CustomAgentRepository, EntityVisibilityRepository
+from app.security.auth import require_admin_session
 
 logger = logging.getLogger(__name__)
 
@@ -82,24 +82,32 @@ async def get_domain_agent_map(request: Request) -> dict[str, Any]:
     all_domains = set(domains_counts.keys()) | set(domain_agents.keys())
     result = []
     for domain in sorted(all_domains):
-        result.append({
-            "domain": domain,
-            "entity_count": domains_counts.get(domain, 0),
-            "agents": domain_agents.get(domain, []),
-        })
+        result.append(
+            {
+                "domain": domain,
+                "entity_count": domains_counts.get(domain, 0),
+                "agents": domain_agents.get(domain, []),
+            }
+        )
 
     # Build device_classes result list
     all_device_classes = sorted(set(dc_counts.keys()) | set(dc_agents.keys()))
     device_classes_result = []
     for dc in all_device_classes:
-        device_classes_result.append({
-            "device_class": dc,
-            "entity_count": dc_counts.get(dc, 0),
-            "agents": dc_agents.get(dc, []),
-        })
+        device_classes_result.append(
+            {
+                "device_class": dc,
+                "entity_count": dc_counts.get(dc, 0),
+                "agents": dc_agents.get(dc, []),
+            }
+        )
 
-    return {"domains": result, "all_agents": all_agents, "device_class_agents": dc_agents,
-            "device_classes": device_classes_result}
+    return {
+        "domains": result,
+        "all_agents": all_agents,
+        "device_class_agents": dc_agents,
+        "device_classes": device_classes_result,
+    }
 
 
 @router.put("")

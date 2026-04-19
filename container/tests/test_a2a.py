@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
+from app.a2a.dispatcher import Dispatcher
 from app.a2a.protocol import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
@@ -24,19 +23,16 @@ from app.a2a.protocol import (
     success_response,
 )
 from app.a2a.registry import AgentRegistry
-from app.a2a.dispatcher import Dispatcher
 from app.a2a.transport import InProcessTransport, Transport
-from app.models.agent import AgentCard, AgentTask
-
-from tests.helpers import make_a2a_request, make_a2a_response, make_agent_card, make_agent_task
-
+from app.models.agent import AgentTask
+from tests.helpers import make_agent_card
 
 # ---------------------------------------------------------------------------
 # Protocol models
 # ---------------------------------------------------------------------------
 
-class TestJsonRpcRequest:
 
+class TestJsonRpcRequest:
     def test_valid_request(self):
         req = JsonRpcRequest(method="message/send", id="req-1")
         assert req.jsonrpc == "2.0"
@@ -57,7 +53,6 @@ class TestJsonRpcRequest:
 
 
 class TestJsonRpcResponse:
-
     def test_success_response(self):
         resp = JsonRpcResponse(id="1", result={"status": "ok"})
         assert resp.error is None
@@ -70,7 +65,6 @@ class TestJsonRpcResponse:
 
 
 class TestJsonRpcError:
-
     def test_standard_codes(self):
         assert PARSE_ERROR == -32700
         assert INVALID_REQUEST == -32600
@@ -85,7 +79,6 @@ class TestJsonRpcError:
 
 
 class TestJsonRpcStreamChunk:
-
     def test_chunk_not_done(self):
         c = JsonRpcStreamChunk(id="1", result={"token": "Hello"}, done=False)
         assert c.done is False
@@ -96,7 +89,6 @@ class TestJsonRpcStreamChunk:
 
 
 class TestHelperFactories:
-
     def test_error_response_factory(self):
         resp = error_response("req-1", METHOD_NOT_FOUND, "Not found")
         assert resp.error is not None
@@ -110,7 +102,6 @@ class TestHelperFactories:
 
 
 class TestParamModels:
-
     def test_message_send_params(self):
         p = MessageSendParams(agent_id="light-agent", task={"description": "test"})
         assert p.agent_id == "light-agent"
@@ -128,6 +119,7 @@ class TestParamModels:
 # Registry
 # ---------------------------------------------------------------------------
 
+
 def _make_mock_agent(agent_id: str = "light-agent") -> MagicMock:
     """Create a mock agent with an agent_card attribute."""
     agent = AsyncMock()
@@ -136,7 +128,6 @@ def _make_mock_agent(agent_id: str = "light-agent") -> MagicMock:
 
 
 class TestAgentRegistry:
-
     async def test_register_and_discover(self):
         reg = AgentRegistry()
         agent = _make_mock_agent("light-agent")
@@ -195,8 +186,8 @@ class TestAgentRegistry:
 # Dispatcher
 # ---------------------------------------------------------------------------
 
-class TestDispatcher:
 
+class TestDispatcher:
     def _make_dispatcher(self) -> tuple[Dispatcher, AgentRegistry, InProcessTransport]:
         reg = AgentRegistry()
         transport = InProcessTransport(reg)
@@ -228,18 +219,14 @@ class TestDispatcher:
     async def test_dispatch_agent_discover(self):
         dispatcher, reg, _ = self._make_dispatcher()
         await reg.register(_make_mock_agent("light-agent"))
-        request = JsonRpcRequest(
-            method="agent/discover", id="r3", params={"agent_id": "light-agent"}
-        )
+        request = JsonRpcRequest(method="agent/discover", id="r3", params={"agent_id": "light-agent"})
         resp = await dispatcher.dispatch(request)
         assert resp.result is not None
         assert resp.result["agent_id"] == "light-agent"
 
     async def test_dispatch_agent_discover_missing(self):
         dispatcher, _, _ = self._make_dispatcher()
-        request = JsonRpcRequest(
-            method="agent/discover", id="r4", params={"agent_id": "nope"}
-        )
+        request = JsonRpcRequest(method="agent/discover", id="r4", params={"agent_id": "nope"})
         resp = await dispatcher.dispatch(request)
         assert resp.error is not None
         assert resp.error.code == INVALID_PARAMS
@@ -272,7 +259,8 @@ class TestDispatcher:
         await reg.register(agent)
 
         request = JsonRpcRequest(
-            method="message/stream", id="s1",
+            method="message/stream",
+            id="s1",
             params={"agent_id": "s-agent", "task": {"description": "test", "user_text": "test"}},
         )
         chunks = []
@@ -295,8 +283,8 @@ class TestDispatcher:
 # Transport
 # ---------------------------------------------------------------------------
 
-class TestInProcessTransport:
 
+class TestInProcessTransport:
     async def test_send_calls_handler(self):
         reg = AgentRegistry()
         agent = _make_mock_agent("t-agent")

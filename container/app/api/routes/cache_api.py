@@ -7,11 +7,11 @@ import logging
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 
-from app.security.auth import require_admin_session
 from app.cache.vector_store import (
-    COLLECTION_ROUTING_CACHE,
     COLLECTION_RESPONSE_CACHE,
+    COLLECTION_ROUTING_CACHE,
 )
+from app.security.auth import require_admin_session
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +101,8 @@ async def browse_cache_entries(
         if search:
             search_lower = search.lower()
             entries = [
-                e for e in entries
+                e
+                for e in entries
                 if search_lower in (e.get("document") or "").lower()
                 or search_lower in str(e.get("agent_id", "")).lower()
             ]
@@ -112,7 +113,7 @@ async def browse_cache_entries(
         # Paginate
         filtered_total = len(entries)
         offset = (page - 1) * per_page
-        entries = entries[offset:offset + per_page]
+        entries = entries[offset : offset + per_page]
 
         return {
             "entries": entries,

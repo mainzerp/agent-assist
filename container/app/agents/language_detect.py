@@ -22,8 +22,8 @@ def detect_user_language(text: str, fallback: str = "en") -> str:
     if not text or len(text.strip()) < _MIN_TEXT_LENGTH:
         return fallback
     try:
-        from langdetect import detect_langs, LangDetectException
-        from langdetect import DetectorFactory
+        from langdetect import DetectorFactory, LangDetectException, detect_langs
+
         DetectorFactory.seed = 0
     except ImportError:
         logger.debug("langdetect not installed, using fallback '%s'", fallback)
@@ -35,7 +35,9 @@ def detect_user_language(text: str, fallback: str = "en") -> str:
         top = results[0]
         logger.debug("Detected language '%s' (%.2f) for text: %s", top.lang, top.prob, text[:60])
         if top.prob < _MIN_CONFIDENCE:
-            logger.debug("Confidence %.2f below threshold %.2f, using fallback '%s'", top.prob, _MIN_CONFIDENCE, fallback)
+            logger.debug(
+                "Confidence %.2f below threshold %.2f, using fallback '%s'", top.prob, _MIN_CONFIDENCE, fallback
+            )
             return fallback
         return top.lang
     except LangDetectException:

@@ -3,20 +3,19 @@
 from __future__ import annotations
 
 import logging
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from app.a2a.protocol import (
+    INVALID_PARAMS,
+    METHOD_NOT_FOUND,
+    AgentDiscoverParams,
     JsonRpcRequest,
     JsonRpcResponse,
     JsonRpcStreamChunk,
     MessageSendParams,
     MessageStreamParams,
-    AgentDiscoverParams,
     error_response,
     success_response,
-    METHOD_NOT_FOUND,
-    INVALID_PARAMS,
-    INTERNAL_ERROR,
 )
 from app.a2a.registry import AgentRegistry
 from app.a2a.transport import Transport
@@ -58,9 +57,7 @@ class Dispatcher:
         try:
             raw_params = request.params or {}
             span_collector = raw_params.get("_span_collector")
-            params = MessageStreamParams(
-                **{k: v for k, v in raw_params.items() if k != "_span_collector"}
-            )
+            params = MessageStreamParams(**{k: v for k, v in raw_params.items() if k != "_span_collector"})
         except Exception as exc:
             yield JsonRpcStreamChunk(
                 id=request.id,
@@ -78,9 +75,7 @@ class Dispatcher:
         try:
             raw_params = request.params or {}
             span_collector = raw_params.get("_span_collector")
-            params = MessageSendParams(
-                **{k: v for k, v in raw_params.items() if k != "_span_collector"}
-            )
+            params = MessageSendParams(**{k: v for k, v in raw_params.items() if k != "_span_collector"})
         except Exception as exc:
             return error_response(request.id, INVALID_PARAMS, f"Invalid params: {exc}")
 

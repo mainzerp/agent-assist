@@ -47,11 +47,13 @@ async def discover_sensors(ha_client) -> list[PresenceSensor]:
                 sensor_type = "mmwave"
 
         if sensor_type:
-            sensors.append(PresenceSensor(
-                entity_id=entity_id,
-                friendly_name=friendly_name,
-                sensor_type=sensor_type,
-                area=area,
-                state=state.get("state", "off"),
-            ))
+            sensors.append(
+                PresenceSensor(
+                    entity_id=entity_id,
+                    friendly_name=friendly_name,
+                    sensor_type=sensor_type,
+                    area=area,
+                    state=state.get("state", "off"),
+                )
+            )
     return sensors
