@@ -1,8 +1,13 @@
 # Version
 
-**Current Version:** 0.18.18
+**Current Version:** 0.18.19
 
 ## Version History
+
+### 0.18.19 -- Setup wizard test coverage
+
+- Integration tests for **step 4** Groq/Ollama URL branches and **LLM test** endpoint
+  for ``groq`` and ``ollama`` providers (full branch coverage in ``app/setup/routes.py``).
 
 ### 0.18.18 -- Parallel tool execution in ``complete_with_tools``
 

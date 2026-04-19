@@ -10,7 +10,7 @@
 
 services:
   ha-agenthub:
-    image: ha-agenthub:${IMAGE_TAG:-latest}
+    image: docker pull ghcr.io/mainzerp/ha-agenthub:main
     build: .
     container_name: ha-agenthub
     restart: unless-stopped
