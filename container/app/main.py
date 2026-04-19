@@ -43,6 +43,7 @@ from app.middleware.auth import SetupRedirectMiddleware, apply_auth_dependencies
 from app.middleware.tracing import TracingMiddleware
 from app.models.entity_index import EntityIndexEntry
 from app.presence.detector import PresenceDetector
+from app.runtime_setup import schedule_entity_index_prime
 from app.setup.routes import router as setup_router
 
 logger = logging.getLogger(__name__)
@@ -221,27 +222,9 @@ async def lifespan(app: FastAPI):
         ha_client = HARestClient()
         await ha_client.initialize()
 
-        # Initialize entity index and populate from HA
+        # Initialize entity index and prime it in the background.
         entity_index = EntityIndex(vector_store)
-        try:
-            states = await ha_client.get_states()
-            entities = _parse_ha_states(states)
-            existing_count = vector_store.count(COLLECTION_ENTITY_INDEX)
-            if existing_count > 0:
-                result = await entity_index.sync_async(entities)
-                logger.info(
-                    "Entity index synced (existing=%d): +%d ~%d -%d =%d",
-                    existing_count,
-                    result["added"],
-                    result["updated"],
-                    result["removed"],
-                    result["unchanged"],
-                )
-            else:
-                await entity_index.populate_async(entities)
-                logger.info("Entity index populated with %d entities", len(entities))
-        except Exception:
-            logger.warning("Failed to populate entity index from HA", exc_info=True)
+        await schedule_entity_index_prime(app, ha_client, entity_index, vector_store)
 
         # Pre-warm home context cache (location/timezone)
         from app.ha_client.home_context import home_context_provider
@@ -532,6 +515,7 @@ async def lifespan(app: FastAPI):
     app.state.presence_detector = presence_detector
     app.state.sync_task = sync_task
     app.state.alarm_monitor = alarm_monitor
+    app.state.entity_index_init_task = getattr(app.state, "entity_index_init_task", None)
     app.state.setup_runtime_initialized = bool(setup_complete)
 
     # --- Plugin System (Batch F) ---
@@ -570,6 +554,7 @@ async def lifespan(app: FastAPI):
     ws_task = getattr(app.state, "ws_task", ws_task)
     sync_task = getattr(app.state, "sync_task", sync_task)
     alarm_monitor = getattr(app.state, "alarm_monitor", alarm_monitor)
+    entity_index_init_task = getattr(app.state, "entity_index_init_task", None)
 
     if alarm_monitor:
         await alarm_monitor.stop()
@@ -591,6 +576,9 @@ async def lifespan(app: FastAPI):
     if sync_task and not sync_task.done():
         sync_task.cancel()
         tasks_to_cancel.append(sync_task)
+    if entity_index_init_task and not entity_index_init_task.done():
+        entity_index_init_task.cancel()
+        tasks_to_cancel.append(entity_index_init_task)
     if tasks_to_cancel:
         await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
 

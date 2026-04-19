@@ -307,6 +307,30 @@ class TestOverviewExtended:
             assert resp.status_code == 200
             mock_init.assert_awaited_once()
 
+    async def test_extended_health_reports_entity_index_building_as_warning(self, dashboard_client: httpx.AsyncClient):
+        app = dashboard_client._transport.app
+        app.state.ha_client.get_states = AsyncMock(return_value=[])
+        entity_index = MagicMock()
+        entity_index.get_stats.return_value = {
+            "count": 0,
+            "embedding_status": {
+                "state": "building",
+                "progress": 25,
+                "processed": 500,
+                "total": 2000,
+                "error": None,
+            },
+        }
+        app.state.entity_index = entity_index
+        app.state.cache_manager = MagicMock()
+        app.state.cache_manager.get_stats.return_value = {"routing": {}, "response": {}}
+
+        resp = await dashboard_client.get("/api/admin/health/extended")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["entity_index"]["status"] == "warning"
+        assert data["entity_index"]["progress"] == 25
+
 
 # ===================================================================
 # Send devices API

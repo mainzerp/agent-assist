@@ -2456,6 +2456,31 @@ class TestOrchestratorAgent:
         # Cache should NOT be stored on error
         cache_manager.store_response.assert_not_called()
 
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_stream_general_agent_error_returns_canned_speech(
+        self, mock_complete, mock_track, mock_settings
+    ):
+        """General-agent streaming errors should yield one canned response without a final error field."""
+        orch, dispatcher, _, cache_manager = self._make_orchestrator()
+        mock_complete.return_value = "general-agent (85%): respond to greeting"
+        mock_settings.get_value = AsyncMock(return_value="")
+
+        async def mock_stream(request):
+            yield MagicMock(result={"token": "", "done": True, "error": "Agent error: general-agent"})
+
+        dispatcher.dispatch_stream = mock_stream
+
+        task = _make_task("wie gehts?")
+        task.conversation_id = "conv-general-stream-err"
+        chunks = [c async for c in orch.handle_task_stream(task)]
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        assert done_chunks[0].get("error") is None
+        assert done_chunks[0].get("mediated_speech") == "I couldn't process that request right now."
+        cache_manager.store_response.assert_not_called()
+
     # --- Fix 2: Multi-agent partial failure tests ---
 
     @patch("app.agents.orchestrator.SettingsRepository")

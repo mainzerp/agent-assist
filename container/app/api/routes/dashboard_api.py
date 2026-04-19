@@ -502,7 +502,21 @@ async def get_extended_health(request: Request):
     try:
         if entity_index:
             stats = entity_index.get_stats()
-            components["entity_index"] = {"status": "healthy", "count": stats.get("count", 0)}
+            embedding_status = stats.get("embedding_status", {})
+            state = embedding_status.get("state", "ready")
+            if state in {"building", "syncing"}:
+                components["entity_index"] = {
+                    "status": "warning",
+                    "detail": f"{state} ({embedding_status.get('processed', 0)}/{embedding_status.get('total', 0)})",
+                    "progress": embedding_status.get("progress", 0),
+                }
+            elif state == "error":
+                components["entity_index"] = {
+                    "status": "error",
+                    "detail": embedding_status.get("error") or "Index build failed",
+                }
+            else:
+                components["entity_index"] = {"status": "healthy", "count": stats.get("count", 0)}
         else:
             components["entity_index"] = {"status": "error", "detail": "Not initialized"}
     except Exception as exc:

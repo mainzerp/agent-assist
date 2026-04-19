@@ -1,8 +1,24 @@
 # Version
 
-**Current Version:** 0.18.22
+**Current Version:** 0.18.24
 
 ## Version History
+
+### 0.18.24 -- HA voice stream error fallback deduplication
+
+- Streaming requests routed to ``general-agent`` now return the same canned
+  user-facing fallback speech as the REST path when the agent fails before
+  producing any text, instead of surfacing an empty WS error.
+- This prevents the Home Assistant integration from retrying the same utterance
+  via REST after a failed WS stream, which previously created duplicate traces
+  and left voice requests without a final response.
+
+### 0.18.23 -- Non-blocking entity index warm-up
+
+- App startup no longer waits for the full HA entity index populate/sync before
+  the dashboard becomes reachable; the index now warms in the background.
+- Extended health reports entity index `building` / `syncing` as a warning
+  state instead of making startup feel like a dead page.
 
 ### 0.18.22 -- In-process post-setup runtime bootstrap
 

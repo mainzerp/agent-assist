@@ -38,6 +38,58 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _set_entity_index_pending_status(entity_index: EntityIndex, *, state: str, total: int) -> None:
+    """Mark entity index as building/syncing before background priming starts."""
+    entity_index._status = {
+        "state": state,
+        "progress": 0,
+        "total": total,
+        "processed": 0,
+        "error": None,
+    }
+
+
+async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_index: EntityIndex, vector_store) -> None:
+    """Fetch HA states and build/sync the entity index in the background."""
+    try:
+        states = await ha_client.get_states()
+        entities = parse_ha_states(states)
+        existing_count = vector_store.count(COLLECTION_ENTITY_INDEX)
+        if existing_count > 0:
+            _set_entity_index_pending_status(entity_index, state="syncing", total=len(entities))
+            result = await entity_index.sync_async(entities)
+            logger.info(
+                "Entity index synced in background (existing=%d): +%d ~%d -%d =%d",
+                existing_count,
+                result["added"],
+                result["updated"],
+                result["removed"],
+                result["unchanged"],
+            )
+        else:
+            _set_entity_index_pending_status(entity_index, state="building", total=len(entities))
+            await entity_index.populate_async(entities)
+            logger.info("Entity index populated in background with %d entities", len(entities))
+    except Exception:
+        logger.warning("Failed to prime entity index in background", exc_info=True)
+
+
+async def schedule_entity_index_prime(
+    app: FastAPI,
+    ha_client: HARestClient,
+    entity_index: EntityIndex,
+    vector_store,
+) -> bool:
+    """Ensure a single background task exists to build/sync the entity index."""
+    task = getattr(app.state, "entity_index_init_task", None)
+    if task is not None and not task.done():
+        return False
+    app.state.entity_index_init_task = asyncio.create_task(
+        _prime_entity_index(app, ha_client, entity_index, vector_store)
+    )
+    return True
+
+
 async def _periodic_entity_sync(app: FastAPI) -> None:
     """Periodically sync entity index with Home Assistant state."""
     while True:
@@ -161,25 +213,7 @@ async def ensure_setup_runtime_initialized(app: FastAPI) -> bool:
             entity_index = EntityIndex(vector_store)
             app.state.entity_index = entity_index
 
-        try:
-            states = await ha_client.get_states()
-            entities = parse_ha_states(states)
-            existing_count = vector_store.count(COLLECTION_ENTITY_INDEX)
-            if existing_count > 0:
-                result = await entity_index.sync_async(entities)
-                logger.info(
-                    "Entity index synced during in-process setup init (existing=%d): +%d ~%d -%d =%d",
-                    existing_count,
-                    result["added"],
-                    result["updated"],
-                    result["removed"],
-                    result["unchanged"],
-                )
-            else:
-                await entity_index.populate_async(entities)
-                logger.info("Entity index populated during in-process setup init with %d entities", len(entities))
-        except Exception:
-            logger.warning("Failed to populate entity index during in-process setup init", exc_info=True)
+        await schedule_entity_index_prime(app, ha_client, entity_index, vector_store)
 
         try:
             await home_context_provider.refresh(ha_client)

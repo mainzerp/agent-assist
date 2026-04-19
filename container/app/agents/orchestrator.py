@@ -1709,6 +1709,12 @@ class OrchestratorAgent(BaseAgent):
 
         # 4. Store conversation turn and create trace summary
         full_speech = "".join(collected_speech)
+        if stream_error is not None and target_agent == _FALLBACK_AGENT:
+            if not full_speech.strip():
+                full_speech = _CANNED_GENERAL_ERROR_SPEECH
+            # For the fallback general-agent path, return a single user-facing
+            # response instead of surfacing a transport-level stream error.
+            stream_error = None
         has_error = stream_error is not None
         vf_eff = False
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
