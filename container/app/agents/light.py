@@ -25,6 +25,7 @@ class LightAgent(ActionableAgent):
             agent_id=agent_id,
             span_collector=span_collector,
             preferred_area_id=area_id,
+            task_context=ctx,
         )
 
     @property
@@ -32,7 +33,7 @@ class LightAgent(ActionableAgent):
         return AgentCard(
             agent_id="light-agent",
             name="Light Agent",
-            description="Controls and queries lights, switches, and illuminance sensors: on/off, toggle, brightness, color, color temperature. Reports light/switch status and light-level readings. Lists all lights and switches.",
+            description="Controls and queries lights, switches, and illuminance sensors: on/off, toggle, brightness, color, color temperature. Reports light/switch status and light-level readings. Lists all lights and switches. Reads Home Assistant Recorder history for lights, switches, and illuminance sensors (e.g. how long a light was on yesterday).",
             skills=[
                 "light_control",
                 "switch_control",
@@ -44,6 +45,8 @@ class LightAgent(ActionableAgent):
                 "light_query",
                 "switch_status",
                 "switch_query",
+                "entity_history",
+                "recorder_history",
             ],
             endpoint="local://light-agent",
         )

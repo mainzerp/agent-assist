@@ -3312,6 +3312,7 @@ class TestClimateExecutor:
         match_obj = MagicMock(entity_id="climate.living_room", friendly_name="Living Room")
         matcher.match = AsyncMock(return_value=[match_obj])
         ha = AsyncMock()
+        ha.expect_state = None
         ha.call_service = AsyncMock()
         ha.get_state = AsyncMock(return_value={"state": "heat"})
         result = await execute_climate_action(
@@ -3330,6 +3331,7 @@ class TestClimateExecutor:
         match_obj = MagicMock(entity_id="climate.living_room", friendly_name="Living Room")
         matcher.match = AsyncMock(return_value=[match_obj])
         ha = AsyncMock()
+        ha.expect_state = None
         ha.call_service = AsyncMock(side_effect=Exception("Connection refused"))
         result = await execute_climate_action(
             {"action": "turn_off", "entity": "thermostat", "parameters": {}}, ha, MagicMock(), matcher
@@ -3355,6 +3357,7 @@ class TestSecurityExecutor:
         match_obj = MagicMock(entity_id="lock.front_door", friendly_name="Front Door")
         matcher.match = AsyncMock(return_value=[match_obj])
         ha = AsyncMock()
+        ha.expect_state = None
         ha.call_service = AsyncMock()
         ha.get_state = AsyncMock(return_value={"state": "locked"})
         result = await execute_security_action(
@@ -3368,6 +3371,7 @@ class TestSecurityExecutor:
         match_obj = MagicMock(entity_id="alarm_control_panel.home", friendly_name="Home Alarm")
         matcher.match = AsyncMock(return_value=[match_obj])
         ha = AsyncMock()
+        ha.expect_state = None
         ha.call_service = AsyncMock()
         ha.get_state = AsyncMock(return_value={"state": "armed_away"})
         result = await execute_security_action(
@@ -3383,6 +3387,7 @@ class TestSecurityExecutor:
         match_obj = MagicMock(entity_id="lock.front_door", friendly_name="Front Door")
         matcher.match = AsyncMock(return_value=[match_obj])
         ha = AsyncMock()
+        ha.expect_state = None
         ha.call_service = AsyncMock()
         ha.get_state = AsyncMock(return_value={"state": "unlocked"})
         result = await execute_security_action(

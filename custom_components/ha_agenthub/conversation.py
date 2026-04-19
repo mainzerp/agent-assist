@@ -263,6 +263,7 @@ class HaAgentHubConversationEntity(
         flip to closed between the two steps. All REST-fallback paths
         run *outside* the lock to avoid serializing fallback traffic
         behind a hung WS send.
+
         """
         ws_ok = False
         try:

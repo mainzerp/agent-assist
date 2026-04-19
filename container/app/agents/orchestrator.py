@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.a2a.protocol import JsonRpcRequest
 from app.agents.base import BaseAgent
+from app.agents.cancel_speech import cancel_interaction_ack
 from app.agents.language_detect import detect_user_language
 from app.agents.sanitize import strip_markdown
 from app.analytics.collector import track_agent_timeout, track_request
@@ -35,6 +36,8 @@ _CONVERSATION_TTL_SECONDS = 1800  # 30 minutes
 
 # Fallback agent when classification fails
 _FALLBACK_AGENT = "general-agent"
+# Virtual agent: classification LLM routes here when the user only dismisses the chat/voice turn.
+_CANCEL_INTERACTION_AGENT = "cancel-interaction"
 
 # Canned fallback strings emitted by _dispatch_single when an agent
 # times out or the general-agent itself errors. Multi-agent merge
@@ -120,9 +123,11 @@ class OrchestratorAgent(BaseAgent):
     async def _get_known_agents(self) -> set[str]:
         """Return set of currently registered agent IDs (excluding orchestrator)."""
         if not self._registry:
-            return {"light-agent", "music-agent", "general-agent"}
+            return {"light-agent", "music-agent", "general-agent", _CANCEL_INTERACTION_AGENT}
         cards = await self._registry.list_agents()
-        return {card.agent_id for card in cards if card.agent_id != "orchestrator"}
+        return {card.agent_id for card in cards if card.agent_id != "orchestrator"} | {
+            _CANCEL_INTERACTION_AGENT
+        }
 
     async def _resolve_language(
         self, user_text: str, context_language: str | None = None, turns: list[dict] | None = None
@@ -169,6 +174,7 @@ class OrchestratorAgent(BaseAgent):
         resolved_language: str | None = None,
     ) -> tuple[str, str, dict | None]:
         """Dispatch a single task to one agent and return (agent_id, speech, result_dict)."""
+        t_dispatch = time.perf_counter()
         context = TaskContext(conversation_turns=turns)
         if self._presence_detector:
             room = self._presence_detector.get_most_likely_room()
@@ -191,6 +197,15 @@ class OrchestratorAgent(BaseAgent):
         # context language, which is usually "en" from HA.
         if resolved_language:
             context.language = resolved_language
+
+        if target_agent == _CANCEL_INTERACTION_AGENT:
+            speech = cancel_interaction_ack(context.language)
+            await track_request(
+                _CANCEL_INTERACTION_AGENT,
+                cache_hit=False,
+                latency_ms=(time.perf_counter() - t_dispatch) * 1000,
+            )
+            return _CANCEL_INTERACTION_AGENT, speech, {"speech": speech, "action_executed": None}
 
         # Populate home location/time context
         if self._ha_client:
@@ -1132,7 +1147,11 @@ class OrchestratorAgent(BaseAgent):
                         speech += f"\n\n(Note: {failed_names} could not be reached.)"
                 result = {"speech": speech}
             ret_span["metadata"]["agent_response"] = speech[:500]
-            if (len(classifications) <= 1 or is_sequential_send) and not has_error:
+            if (
+                (len(classifications) <= 1 or is_sequential_send)
+                and not has_error
+                and target_agent != _CANCEL_INTERACTION_AGENT
+            ):
                 mediation_agent = "send-agent" if is_sequential_send else target_agent
                 mediation_language = detected_language
                 speech = await self._mediate_response(
@@ -1148,7 +1167,7 @@ class OrchestratorAgent(BaseAgent):
             ret_span["metadata"]["final_response"] = speech[:500]
             ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1
             ret_span["metadata"]["voice_followup"] = voice_followup_effective
-            if len(classifications) == 1:
+            if len(classifications) == 1 and target_agent != _CANCEL_INTERACTION_AGENT:
                 cache_stored_response = await self._store_response_cache(
                     user_text,
                     speech,
@@ -1264,6 +1283,52 @@ class OrchestratorAgent(BaseAgent):
             condensed_task[:80],
             conversation_id,
         )
+
+        if len(classifications) == 1 and target_agent == _CANCEL_INTERACTION_AGENT:
+            full_speech = cancel_interaction_ack(detected_language)
+            latency_ms = (time.perf_counter() - t0_request) * 1000
+            await track_request(_CANCEL_INTERACTION_AGENT, cache_hit=False, latency_ms=latency_ms)
+            async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
+                ret_span["metadata"]["from_agent"] = target_agent
+                ret_span["metadata"]["agent_response"] = full_speech
+                full_speech, vf_eff = await self._merge_voice_followup_and_organic(
+                    full_speech,
+                    agent_requested=False,
+                    ctx=task.context,
+                    language=detected_language,
+                    has_error=False,
+                )
+                ret_span["metadata"]["final_response"] = full_speech[:500]
+                ret_span["metadata"]["mediated"] = False
+                ret_span["metadata"]["voice_followup"] = vf_eff
+                ret_span["metadata"]["cache_stored_response"] = False
+                await self._store_turn(conversation_id, user_text, full_speech, agent_id=target_agent)
+                if span_collector:
+                    clf = [(target_agent, condensed_task, confidence)]
+                    await self._create_trace(
+                        span_collector,
+                        conversation_id,
+                        user_text,
+                        full_speech,
+                        target_agent,
+                        confidence,
+                        condensed_task,
+                        clf,
+                        lang_turns,
+                        task_context=task.context,
+                    )
+            mediated_text = strip_markdown(full_speech)
+            final_chunk = {
+                "token": "",
+                "done": True,
+                "conversation_id": conversation_id,
+                "mediated_speech": mediated_text,
+            }
+            if vf_eff:
+                final_chunk["voice_followup"] = True
+            self._schedule_ha_voice_followup_if_requested(task, vf_eff)
+            yield final_chunk
+            return
 
         # Multi-agent: yield progress marker, then fall back to non-streaming handle_task
         is_sequential_send = len(classifications) > 1 and any(a == "send-agent" for a, _, _ in classifications)
@@ -1651,9 +1716,10 @@ class OrchestratorAgent(BaseAgent):
         async with _optional_span(span_collector, "return", agent_id="orchestrator") as ret_span:
             ret_span["metadata"]["from_agent"] = target_agent
             ret_span["metadata"]["agent_response"] = full_speech[:500]
-            full_speech = await self._mediate_response(
-                full_speech, user_text, target_agent, language=language, span_collector=span_collector
-            )
+            if target_agent != _CANCEL_INTERACTION_AGENT:
+                full_speech = await self._mediate_response(
+                    full_speech, user_text, target_agent, language=language, span_collector=span_collector
+                )
             full_speech, vf_eff = await self._merge_voice_followup_and_organic(
                 full_speech,
                 agent_requested=stream_voice_followup,
@@ -1662,17 +1728,21 @@ class OrchestratorAgent(BaseAgent):
                 has_error=has_error,
             )
             ret_span["metadata"]["final_response"] = full_speech[:500]
-            ret_span["metadata"]["mediated"] = full_speech != "".join(collected_speech)
-            ret_span["metadata"]["voice_followup"] = vf_eff
-            cache_stored_response = await self._store_response_cache(
-                user_text,
-                full_speech,
-                target_agent,
-                confidence,
-                action_executed,
-                has_error,
-                language=language,
+            ret_span["metadata"]["mediated"] = (
+                target_agent != _CANCEL_INTERACTION_AGENT and full_speech != "".join(collected_speech)
             )
+            ret_span["metadata"]["voice_followup"] = vf_eff
+            cache_stored_response = False
+            if target_agent != _CANCEL_INTERACTION_AGENT:
+                cache_stored_response = await self._store_response_cache(
+                    user_text,
+                    full_speech,
+                    target_agent,
+                    confidence,
+                    action_executed,
+                    has_error,
+                    language=language,
+                )
             ret_span["metadata"]["cache_stored_response"] = cache_stored_response
             await self._store_turn(conversation_id, user_text, full_speech, agent_id=target_agent)
             if span_collector:
@@ -1876,10 +1946,23 @@ class OrchestratorAgent(BaseAgent):
         )
         return None
 
+    @staticmethod
+    def _cancel_interaction_description_line() -> str:
+        return (
+            "- cancel-interaction: User dismisses or aborts ONLY the current voice/chat turn "
+            "(nevermind, forget it, scratch that, no thanks, stop as in stop talking, "
+            "German e.g. abbrechen/egal/schon gut when meaning dismiss—not device control). "
+            "NOT for canceling timers, alarms, or media playback—route those to timer-agent, "
+            "music-agent, etc."
+        )
+
     async def _build_agent_descriptions(self) -> str:
         """Build agent list for classification prompt from registered AgentCards."""
+        cancel_line = self._cancel_interaction_description_line()
         if not self._registry:
-            return "- general-agent: fallback for general questions and unroutable requests"
+            return (
+                "- general-agent: fallback for general questions and unroutable requests\n" + cancel_line
+            )
 
         cards = await self._registry.list_agents()
         lines = []
@@ -1895,7 +1978,7 @@ class OrchestratorAgent(BaseAgent):
                 lines.append(f"- {card.agent_id}: {card.description}")
         if not lines:
             lines.append("- general-agent: fallback for general questions and unroutable requests")
-        return "\n".join(lines)
+        return "\n".join(lines) + "\n" + cancel_line
 
     async def _classify(
         self,
@@ -1971,7 +2054,7 @@ class OrchestratorAgent(BaseAgent):
             # Store routing decision only for single-agent results
             if self._cache_manager and len(classifications) == 1:
                 target_agent, condensed, confidence = classifications[0]
-                if target_agent != _FALLBACK_AGENT:
+                if target_agent not in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT):
                     try:
                         await self._cache_manager.store_routing_async(
                             user_text,

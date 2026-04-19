@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -405,6 +406,62 @@ class TestCompleteWithTools:
         )
         assert result == "Here are the latest news..."
         tool_executor.assert_awaited_once_with("web_search", {"query": "latest news"})
+
+    @patch("litellm.acompletion", new_callable=AsyncMock)
+    @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
+    @patch("app.llm.client.AgentConfigRepository")
+    async def test_parallel_tool_calls_same_round(self, mock_repo, mock_params, mock_acompletion):
+        """Several tool_calls in one assistant message execute concurrently."""
+        mock_repo.get = AsyncMock(
+            return_value={
+                "agent_id": "general-agent",
+                "model": "groq/test",
+                "max_tokens": 256,
+                "temperature": 0.2,
+            }
+        )
+        tc1 = MagicMock()
+        tc1.id = "call_a"
+        tc1.function.name = "tool_a"
+        tc1.function.arguments = "{}"
+        tc2 = MagicMock()
+        tc2.id = "call_b"
+        tc2.function.name = "tool_b"
+        tc2.function.arguments = "{}"
+
+        first_response = MagicMock()
+        first_response.choices = [MagicMock()]
+        first_response.choices[0].message.content = None
+        first_response.choices[0].message.tool_calls = [tc1, tc2]
+
+        second_response = MagicMock()
+        second_response.choices = [MagicMock()]
+        second_response.choices[0].message.content = "done"
+        second_response.choices[0].message.tool_calls = None
+
+        mock_acompletion.side_effect = [first_response, second_response]
+
+        concurrent = 0
+        max_conc: list[int] = [0]
+
+        async def tool_executor(name, args):
+            nonlocal concurrent
+            concurrent += 1
+            max_conc[0] = max(max_conc[0], concurrent)
+            await asyncio.sleep(0.02)
+            concurrent -= 1
+            return f"result-{name}"
+
+        from app.llm.client import complete_with_tools
+
+        result = await complete_with_tools(
+            "general-agent",
+            [{"role": "user", "content": "test"}],
+            tools=[{"type": "function", "function": {"name": "tool_a", "parameters": {}}}],
+            tool_executor=tool_executor,
+        )
+        assert result == "done"
+        assert max_conc[0] == 2
 
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})

@@ -11,6 +11,8 @@ from app.agents.action_executor import (
     rerank_matches_by_area,
 )
 from app.analytics.tracer import _optional_span
+from app.ha_client.history_query import execute_recorder_history_query
+from app.models.agent import TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,7 @@ async def execute_climate_action(
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
+    task_context: TaskContext | None = None,
 ) -> dict:
     """Resolve an entity, call a climate HA service, and verify the result.
 
@@ -95,7 +98,13 @@ async def execute_climate_action(
     entity_query = action.get("entity", "")
 
     # Read-only actions (no service call)
-    if action_name in ("query_climate_state", "list_climate", "query_weather", "query_weather_forecast"):
+    if action_name in (
+        "query_climate_state",
+        "list_climate",
+        "query_weather",
+        "query_weather_forecast",
+        "query_entity_history",
+    ):
         return await _handle_climate_read_action(
             action_name,
             entity_query,
@@ -104,6 +113,9 @@ async def execute_climate_action(
             entity_matcher,
             agent_id,
             span_collector=span_collector,
+            parameters=action.get("parameters") or {},
+            preferred_area_id=preferred_area_id,
+            task_context=task_context,
         )
 
     # Validate action name
@@ -583,6 +595,56 @@ async def _query_weather_forecast(
     }
 
 
+async def _query_entity_history(
+    entity_query: str,
+    parameters: dict[str, Any],
+    ha_client: Any,
+    entity_matcher: Any,
+    agent_id: str | None,
+    span_collector=None,
+    *,
+    preferred_area_id: str | None = None,
+    task_context: TaskContext | None = None,
+) -> dict:
+    """Fetch Recorder history for a resolved climate/sensor/weather entity (visibility-respected)."""
+    entity_id = None
+    friendly_name = entity_query
+    try:
+        if entity_matcher:
+            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
+                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
+                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
+                if matches:
+                    reranked = rerank_matches_by_area(matches, preferred_area_id)
+                    chosen = reranked[0]
+                    entity_id = chosen.entity_id
+                    friendly_name = chosen.friendly_name or entity_id
+                    em_span["metadata"]["top_entity_id"] = entity_id
+    except Exception:
+        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
+
+    if entity_id and not _validate_domain(entity_id):
+        entity_id = None
+
+    if not entity_id:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"Could not find a visible entity matching '{entity_query}'.",
+            "cacheable": False,
+        }
+
+    return await execute_recorder_history_query(
+        entity_id,
+        friendly_name,
+        parameters,
+        ha_client,
+        allowed_domains=_ALLOWED_DOMAINS,
+        task_context=task_context,
+    )
+
+
 async def _handle_climate_read_action(
     action_name: str,
     entity_query: str,
@@ -591,7 +653,12 @@ async def _handle_climate_read_action(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
+    *,
+    parameters: dict[str, Any] | None = None,
+    preferred_area_id: str | None = None,
+    task_context: TaskContext | None = None,
 ) -> dict:
+    params = parameters or {}
     if action_name == "query_climate_state":
         return await _query_climate_state(
             entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
@@ -605,5 +672,16 @@ async def _handle_climate_read_action(
     if action_name == "query_weather_forecast":
         return await _query_weather_forecast(
             entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+        )
+    if action_name == "query_entity_history":
+        return await _query_entity_history(
+            entity_query,
+            params,
+            ha_client,
+            entity_matcher,
+            agent_id,
+            span_collector=span_collector,
+            preferred_area_id=preferred_area_id,
+            task_context=task_context,
         )
     return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}

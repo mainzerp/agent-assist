@@ -8,8 +8,11 @@ from typing import Any
 from app.agents.action_executor import (
     build_verified_speech,
     call_service_with_verification,
+    rerank_matches_by_area,
 )
 from app.analytics.tracer import _optional_span
+from app.ha_client.history_query import execute_recorder_history_query
+from app.models.agent import TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +81,9 @@ async def execute_security_action(
     entity_matcher: Any,
     agent_id: str | None = None,
     span_collector=None,
+    *,
+    preferred_area_id: str | None = None,
+    task_context: TaskContext | None = None,
 ) -> dict:
     """Resolve an entity, call a security HA service, and verify the result.
 
@@ -95,7 +101,7 @@ async def execute_security_action(
     entity_query = action.get("entity", "")
 
     # Read-only actions (no service call)
-    if action_name in ("query_security_state", "list_security"):
+    if action_name in ("query_security_state", "list_security", "query_entity_history"):
         return await _handle_security_read_action(
             action_name,
             entity_query,
@@ -104,6 +110,9 @@ async def execute_security_action(
             entity_matcher,
             agent_id,
             span_collector=span_collector,
+            parameters=action.get("parameters") or {},
+            preferred_area_id=preferred_area_id,
+            task_context=task_context,
         )
 
     # Validate action name
@@ -239,6 +248,8 @@ async def _query_security_state(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
+    *,
+    preferred_area_id: str | None = None,
 ) -> dict:
     entity_id = None
     friendly_name = entity_query
@@ -248,12 +259,14 @@ async def _query_security_state(
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
                 if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
+                    reranked = rerank_matches_by_area(matches, preferred_area_id)
+                    chosen = reranked[0]
+                    entity_id = chosen.entity_id
+                    friendly_name = chosen.friendly_name or entity_id
                     em_span["metadata"]["top_entity_id"] = entity_id
                     em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = matches[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                    em_span["metadata"]["top_score"] = chosen.score
+                    em_span["metadata"]["signal_scores"] = getattr(chosen, "signal_scores", {})
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
@@ -297,6 +310,56 @@ async def _query_security_state(
             "speech": f"Failed to query security status: {exc}",
             "cacheable": False,
         }
+
+
+async def _query_security_entity_history(
+    entity_query: str,
+    parameters: dict[str, Any],
+    ha_client: Any,
+    entity_matcher: Any,
+    agent_id: str | None,
+    span_collector=None,
+    *,
+    preferred_area_id: str | None = None,
+    task_context: TaskContext | None = None,
+) -> dict:
+    """Recorder history for a single lock, alarm, camera, or security sensor entity."""
+    entity_id = None
+    friendly_name = entity_query
+    try:
+        if entity_matcher:
+            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
+                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
+                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
+                if matches:
+                    reranked = rerank_matches_by_area(matches, preferred_area_id)
+                    chosen = reranked[0]
+                    entity_id = chosen.entity_id
+                    friendly_name = chosen.friendly_name or entity_id
+                    em_span["metadata"]["top_entity_id"] = entity_id
+    except Exception:
+        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
+
+    if entity_id and not _validate_domain(entity_id):
+        entity_id = None
+
+    if not entity_id:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"Could not find a visible entity matching '{entity_query}'.",
+            "cacheable": False,
+        }
+
+    return await execute_recorder_history_query(
+        entity_id,
+        friendly_name,
+        parameters,
+        ha_client,
+        allowed_domains=_ALLOWED_DOMAINS,
+        task_context=task_context,
+    )
 
 
 async def _list_security(ha_client: Any) -> dict:
@@ -353,11 +416,32 @@ async def _handle_security_read_action(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
+    *,
+    parameters: dict[str, Any] | None = None,
+    preferred_area_id: str | None = None,
+    task_context: TaskContext | None = None,
 ) -> dict:
     if action_name == "query_security_state":
         return await _query_security_state(
-            entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+            entity_query,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            span_collector=span_collector,
+            preferred_area_id=preferred_area_id,
         )
     if action_name == "list_security":
         return await _list_security(ha_client)
+    if action_name == "query_entity_history":
+        return await _query_security_entity_history(
+            entity_query,
+            parameters or {},
+            ha_client,
+            entity_matcher,
+            agent_id,
+            span_collector=span_collector,
+            preferred_area_id=preferred_area_id,
+            task_context=task_context,
+        )
     return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}

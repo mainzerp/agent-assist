@@ -33,6 +33,9 @@ def _make_orchestrator():
     cache_manager.apply_rewrite = AsyncMock()
     cache_manager.invalidate_response = MagicMock()
     ha_client = AsyncMock()
+    # ``call_service_with_verification`` calls ``expect_state(...)`` when present;
+    # a bare AsyncMock returns an un-awaited coroutine. Use REST-only path in tests.
+    ha_client.expect_state = None
     orch = OrchestratorAgent(
         dispatcher=dispatcher,
         cache_manager=cache_manager,

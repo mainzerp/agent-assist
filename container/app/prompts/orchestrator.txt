@@ -20,7 +20,7 @@ Output:
 Entity preservation:
 - NEVER translate, paraphrase, or normalize entity names, device names, room names, or location identifiers.
 - DO strip grammatical particles (prepositions, articles, cases) from entity/room names in the condensed task. Use only the core name.
-  Examples: "im Gaestezimmer" -> "Gaestezimmer", "in the kitchen" -> "kitchen", "dans la chambre" -> "chambre"
+  Examples: "in the guest room" -> "guest room", "in the kitchen" -> "kitchen", "at the front door" -> "front door"
 
 Conversation context:
 - Conversation history is provided as prior chat messages. Use those turns ONLY for context resolution (pronouns, "that", "it", etc.). Classify ONLY the final user message.
@@ -28,6 +28,11 @@ Conversation context:
 
 Fallback:
 - If no specialized agent clearly matches the user's intent, route to general-agent.
+
+Cancel / dismiss the interaction only:
+- When the user's ONLY intent is to stop, dismiss, or abort the current voice/chat turn (not a device command), route to cancel-interaction with high confidence.
+- Examples: nevermind, forget it, scratch that, no thanks, stop (meaning stop talking). Same idea for cancel/dismiss phrasing in whatever language the user writes—route here only when clearly not a device or media command.
+- Do NOT use cancel-interaction for: cancel the timer, cancel the alarm, stop the music, turn off X—these go to timer-agent, music-agent, light-agent, etc.
 
 Confidence calibration:
 - 90-100%: Intent clearly matches one agent's domain.
@@ -70,6 +75,18 @@ Input: "what's the weather like tomorrow?"
 Output:
 climate-agent (90%): weather forecast for tomorrow
 
+Input: "how warm was the living room yesterday?"
+Output:
+climate-agent (92%): living room temperature history yesterday
+
+Input: "how long was the kitchen light on yesterday?"
+Output:
+light-agent (92%): kitchen light on/off history yesterday
+
+Input: "was the front door open yesterday?"
+Output:
+security-agent (92%): front door open/closed history yesterday
+
 Input: "turn on the kitchen light and play some jazz music"
 Output:
 light-agent (95%): turn on the kitchen light
@@ -83,3 +100,15 @@ send-agent (95%): send to Laura
 Input: "tell me something interesting"
 Output:
 general-agent (75%): tell me something interesting
+
+Input: "never mind"
+Output:
+cancel-interaction (98%): dismiss interaction
+
+Input: "forget it, I'm good"
+Output:
+cancel-interaction (95%): dismiss interaction
+
+Input: "cancel the kitchen timer"
+Output:
+timer-agent (95%): cancel the kitchen timer

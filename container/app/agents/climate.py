@@ -23,6 +23,7 @@ class ClimateAgent(ActionableAgent):
             agent_id=agent_id,
             span_collector=span_collector,
             preferred_area_id=area_id,
+            task_context=ctx,
         )
 
     @property
@@ -43,6 +44,8 @@ class ClimateAgent(ActionableAgent):
                 "weather_sensor",
                 "current_weather",
                 "weather_forecast",
+                "entity_history",
+                "recorder_history",
             ],
             endpoint="local://climate-agent",
         )

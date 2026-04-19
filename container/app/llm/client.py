@@ -121,6 +121,9 @@ async def complete_with_tools(
         messages: Conversation messages (system + user).
         tools: OpenAI-format tool schemas.
         tool_executor: Async callable (tool_name, arguments) -> str.
+            When the model returns multiple ``tool_calls`` in one assistant message,
+            they are executed **in parallel** (``asyncio.gather``); tool messages are
+            still appended in the same order as ``tool_calls`` for the next LLM turn.
         max_tool_rounds: Max LLM<->tool round-trips (default 5).
         **overrides: Model/temperature/max_tokens overrides.
 
@@ -200,8 +203,7 @@ async def complete_with_tools(
         # Append the assistant message with tool_calls to the conversation
         msgs.append(msg)
 
-        # Execute each tool call and append results
-        for tc in tool_calls:
+        async def _run_one_tool(tc) -> tuple[str | None, str]:
             fn_name = tc.function.name
             try:
                 fn_args = json.loads(tc.function.arguments) if tc.function.arguments else {}
@@ -216,11 +218,18 @@ async def complete_with_tools(
             except Exception as e:
                 logger.warning("Tool executor '%s' raised: %s", fn_name, e)
                 result_str = f"Tool error: {e}"
+            return tc.id, result_str
 
+        # Parallel execution: all tool_calls for this round run concurrently.
+        # ``asyncio.gather`` preserves completion order matching the input awaitables,
+        # so tool messages stay aligned with ``tool_calls`` order for the API.
+        tool_results = await asyncio.gather(*[_run_one_tool(tc) for tc in tool_calls])
+
+        for tool_call_id, result_str in tool_results:
             msgs.append(
                 {
                     "role": "tool",
-                    "tool_call_id": tc.id,
+                    "tool_call_id": tool_call_id,
                     "content": result_str,
                 }
             )

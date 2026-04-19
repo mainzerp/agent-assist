@@ -11,8 +11,17 @@ class SecurityAgent(ActionableAgent):
     _prompt_name = "security"
 
     async def _do_execute(self, action, ha_client, entity_index, entity_matcher, *, agent_id, span_collector=None):
+        ctx = getattr(self, "_current_task_context", None)
+        area_id = ctx.area_id if ctx else None
         return await execute_security_action(
-            action, ha_client, entity_index, entity_matcher, agent_id=agent_id, span_collector=span_collector
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id=agent_id,
+            span_collector=span_collector,
+            preferred_area_id=area_id,
+            task_context=ctx,
         )
 
     @property
@@ -20,7 +29,7 @@ class SecurityAgent(ActionableAgent):
         return AgentCard(
             agent_id="security-agent",
             name="Security Agent",
-            description="Controls and queries locks, alarm panels, cameras, and security sensors (motion, door, window, doorbell, smoke, gas). Lock/unlock, arm/disarm, camera on/off. Reports status and lists all security devices.",
+            description="Controls and queries locks, alarm panels, cameras, and security sensors (motion, door, window, doorbell, smoke, gas). Lock/unlock, arm/disarm, camera on/off. Reports status and lists all security devices. Reads Home Assistant Recorder history for those entities (e.g. door open events yesterday).",
             skills=[
                 "lock_control",
                 "alarm_control",
@@ -32,6 +41,8 @@ class SecurityAgent(ActionableAgent):
                 "smoke_sensor",
                 "security_status",
                 "security_query",
+                "entity_history",
+                "recorder_history",
             ],
             endpoint="local://security-agent",
         )

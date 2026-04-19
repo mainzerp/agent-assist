@@ -1,8 +1,31 @@
 # Version
 
-**Current Version:** 0.18.16
+**Current Version:** 0.18.18
 
 ## Version History
+
+### 0.18.18 -- Parallel tool execution in ``complete_with_tools``
+
+- When the LLM returns **multiple** ``tool_calls`` in a single assistant message, the
+  container now runs ``tool_executor`` for each **concurrently** via ``asyncio.gather``
+  (same ordering of tool messages for the follow-up LLM call).
+
+### 0.18.17 -- Recorder history on light-agent and security-agent
+
+- **Shared helper** ``app.ha_client.history_query.execute_recorder_history_query`` centralizes
+  HA ``/api/history/period`` loading and speech summarization; **climate-agent** uses it too.
+- **light-agent**: action ``query_entity_history`` for ``light`` / ``switch`` / ``sensor``
+  (e.g. illuminance) entities.
+- **security-agent**: action ``query_entity_history`` for locks, alarms, cameras, and security
+  sensors. **query_security_state** resolution now uses the same area tie-break as other agents.
+
+### Integration ``custom_components/ha_agenthub`` 0.5.5 -- Cancel via container LLM
+
+- **Dismiss / nevermind** is decided by the **orchestrator classification LLM**, which
+  can route to virtual agent ``cancel-interaction`` for varied phrasing (not only fixed
+  keywords). The container returns a short acknowledgement without domain-agent dispatch.
+- The HA integration **always forwards** the user text to the container (no local
+  phrase shortcut).
 
 ### 0.18.16 -- Voice follow-up without ``area_id`` (Companion app)
 

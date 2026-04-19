@@ -6,7 +6,9 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import httpx
 
@@ -210,6 +212,42 @@ class HARestClient:
         resp = await self._client.post(f"/api/events/{event_type}", json=event_data or {})
         resp.raise_for_status()
         return resp.json()
+
+    async def get_history_period(
+        self,
+        start_time_utc: datetime,
+        *,
+        entity_id: str | None = None,
+        end_time_utc: datetime | None = None,
+        significant_changes_only: bool = True,
+        minimal_response: bool = True,
+    ) -> list[list[dict[str, Any]]]:
+        """GET /api/history/period/<start> -- Recorder state changes.
+
+        Returns HA's nested list format (one inner list per entity when
+        ``filter_entity_id`` is set). Requires the Recorder integration.
+        """
+        if self._client is None:
+            return []
+        if start_time_utc.tzinfo is None:
+            start_time_utc = start_time_utc.replace(tzinfo=UTC)
+        start_iso = start_time_utc.astimezone(UTC).isoformat()
+        path = f"/api/history/period/{quote(start_iso, safe='')}"
+        params: dict[str, str] = {}
+        if entity_id:
+            params["filter_entity_id"] = entity_id
+        if end_time_utc is not None:
+            if end_time_utc.tzinfo is None:
+                end_time_utc = end_time_utc.replace(tzinfo=UTC)
+            params["end_time"] = end_time_utc.astimezone(UTC).isoformat()
+        if significant_changes_only:
+            params["significant_changes_only"] = "1"
+        if minimal_response:
+            params["minimal_response"] = "1"
+        resp = await self._client.get(path, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else []
 
     # ------------------------------------------------------------------
     # FLOW-VERIFY-1: post-action state verification helpers.

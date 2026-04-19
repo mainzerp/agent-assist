@@ -9,6 +9,8 @@ import unicodedata
 from typing import Any
 
 from app.analytics.tracer import _optional_span
+from app.ha_client.history_query import execute_recorder_history_query
+from app.models.agent import TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -759,6 +761,7 @@ async def execute_action(
     span_collector=None,
     *,
     preferred_area_id: str | None = None,
+    task_context: TaskContext | None = None,
 ) -> dict:
     """Resolve an entity, call a HA service, and verify the result.
 
@@ -775,7 +778,7 @@ async def execute_action(
     entity_query = action.get("entity", "")
 
     # Read-only actions (no service call)
-    if action_name in ("query_light_state", "list_lights"):
+    if action_name in ("query_light_state", "list_lights", "query_entity_history"):
         return await _handle_light_read_action(
             action_name,
             entity_query,
@@ -784,6 +787,9 @@ async def execute_action(
             entity_matcher,
             agent_id,
             span_collector=span_collector,
+            parameters=action.get("parameters") or {},
+            preferred_area_id=preferred_area_id,
+            task_context=task_context,
         )
 
     # Validate action name
@@ -913,6 +919,8 @@ async def _query_light_state(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
+    *,
+    preferred_area_id: str | None = None,
 ) -> dict:
     resolution = {
         "entity_id": None,
@@ -923,7 +931,13 @@ async def _query_light_state(
     try:
         if entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                resolution = await _resolve_light_entity(entity_query, entity_index, entity_matcher, agent_id)
+                resolution = await _resolve_light_entity(
+                    entity_query,
+                    entity_index,
+                    entity_matcher,
+                    agent_id,
+                    preferred_area_id=preferred_area_id,
+                )
                 em_span["metadata"] = resolution["metadata"]
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
@@ -971,6 +985,65 @@ async def _query_light_state(
             "speech": f"Failed to query light status: {exc}",
             "cacheable": False,
         }
+
+
+async def _query_light_entity_history(
+    entity_query: str,
+    parameters: dict[str, Any],
+    ha_client: Any,
+    entity_index: Any,
+    entity_matcher: Any,
+    agent_id: str | None,
+    span_collector=None,
+    *,
+    preferred_area_id: str | None = None,
+    task_context: TaskContext | None = None,
+) -> dict:
+    """Recorder history for a single light, switch, or illuminance/light-level sensor entity."""
+    resolution = {
+        "entity_id": None,
+        "friendly_name": entity_query,
+        "speech": None,
+        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
+    }
+    try:
+        if entity_matcher:
+            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
+                resolution = await _resolve_light_entity(
+                    entity_query,
+                    entity_index,
+                    entity_matcher,
+                    agent_id,
+                    preferred_area_id=preferred_area_id,
+                )
+                em_span["metadata"] = resolution["metadata"]
+    except Exception:
+        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
+
+    entity_id = resolution["entity_id"]
+    friendly_name = resolution["friendly_name"] or entity_query
+
+    if entity_id and not _validate_domain(entity_id):
+        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
+        entity_id = None
+
+    if not entity_id:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": resolution["speech"] or f"Could not find a visible entity matching '{entity_query}'.",
+            "cacheable": False,
+        }
+
+    return await execute_recorder_history_query(
+        entity_id,
+        friendly_name,
+        parameters,
+        ha_client,
+        allowed_domains=_ALLOWED_DOMAINS,
+        task_context=task_context,
+    )
 
 
 async def _list_lights(ha_client: Any) -> dict:
@@ -1035,13 +1108,35 @@ async def _handle_light_read_action(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
+    *,
+    parameters: dict[str, Any] | None = None,
+    preferred_area_id: str | None = None,
+    task_context: TaskContext | None = None,
 ) -> dict:
     if action_name == "query_light_state":
         return await _query_light_state(
-            entity_query, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+            entity_query,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            span_collector=span_collector,
+            preferred_area_id=preferred_area_id,
         )
     if action_name == "list_lights":
         return await _list_lights(ha_client)
+    if action_name == "query_entity_history":
+        return await _query_light_entity_history(
+            entity_query,
+            parameters or {},
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            span_collector=span_collector,
+            preferred_area_id=preferred_area_id,
+            task_context=task_context,
+        )
     return {
         "success": False,
         "entity_id": "",
