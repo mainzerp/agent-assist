@@ -79,6 +79,14 @@
 - **security-agent**: action ``query_entity_history`` for locks, alarms, cameras, and security
   sensors. **query_security_state** resolution now uses the same area tie-break as other agents.
 
+### Integration ``custom_components/ha_agenthub`` 0.5.6 -- Duplicate request coalescing
+
+- Conversation bridge **coalesces** parallel ``_async_handle_message`` calls that
+  share the same ``conversation_id`` and user text into **one** WebSocket/REST
+  round-trip (in-flight task shared). Mitigates duplicate container traces when
+  Home Assistant invokes the same turn twice in quick succession or when WS and
+  REST paths would otherwise overlap.
+
 ### Integration ``custom_components/ha_agenthub`` 0.5.5 -- Cancel via container LLM
 
 - **Dismiss / nevermind** is decided by the **orchestrator classification LLM**, which

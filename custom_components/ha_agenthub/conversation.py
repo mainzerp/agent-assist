@@ -113,6 +113,10 @@ class HaAgentHubConversationEntity(
         self._reconnect_delay = RECONNECT_BASE_DELAY
         self._ws_lock = asyncio.Lock()
         self._ws_last_active: float = 0.0
+        # Coalesce parallel HA calls with the same conversation_id + text (duplicate
+        # pipeline invocations or WS+REST overlap) into a single bridge request.
+        self._coalesce_lock = asyncio.Lock()
+        self._inflight_bridge: dict[tuple[str, str], asyncio.Task] = {}
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
@@ -264,8 +268,46 @@ class HaAgentHubConversationEntity(
         run *outside* the lock to avoid serializing fallback traffic
         behind a hung WS send.
 
+        Duplicate invocations with the same ``conversation_id`` and user
+        text are coalesced so only one WebSocket/REST round-trip runs;
+        this matches traces where the container saw two identical turns
+        back-to-back from production HA setups.
         """
-        ws_ok = False
+        cid = user_input.conversation_id or ""
+        text = (user_input.text or "").strip()
+        key = (cid, text)
+        coalesced = False
+        async with self._coalesce_lock:
+            existing = self._inflight_bridge.get(key)
+            if existing is not None:
+                bridge_task = existing
+                coalesced = True
+            else:
+                bridge_task = self.hass.async_create_task(
+                    self._async_bridge_with_cleanup(user_input, key)
+                )
+                self._inflight_bridge[key] = bridge_task
+        if coalesced:
+            logger.info(
+                "HA-AgentHub: coalescing duplicate request (same conversation + text) onto in-flight bridge"
+            )
+        return await bridge_task
+
+    async def _async_bridge_with_cleanup(
+        self,
+        user_input: conversation.ConversationInput,
+        key: tuple[str, str],
+    ) -> conversation.ConversationResult:
+        task = asyncio.current_task()
+        try:
+            return await self._async_bridge_to_container(user_input)
+        finally:
+            async with self._coalesce_lock:
+                if task is not None and self._inflight_bridge.get(key) is task:
+                    self._inflight_bridge.pop(key, None)
+
+    async def _async_bridge_to_container(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
+        """Single WS (preferred) or REST attempt to the HA-AgentHub container."""
         try:
             async with self._ws_lock:
                 if await self._ensure_connected_locked():
@@ -274,15 +316,8 @@ class HaAgentHubConversationEntity(
                     except (aiohttp.ClientError, asyncio.TimeoutError):
                         logger.warning("WebSocket error, falling back to REST")
                         await self._disconnect_ws_locked()
-                        ws_ok = False
-                    else:
-                        ws_ok = True
         except Exception:
             logger.warning("Unexpected WS dispatch failure, falling back to REST", exc_info=True)
-            ws_ok = False
-
-        if ws_ok:
-            raise RuntimeError("internal: ws path succeeded but did not return")
 
         result = await self._process_via_rest(user_input)
         self._schedule_reconnect()
