@@ -1,0 +1,112 @@
+---
+description: Mandatory Research → Planning → confirmation → implementation workflow, subagent-style prompts, and project boundaries
+alwaysApply: true
+---
+
+# Agent workflow and rules
+
+Project definition (detailed scope): [.github/instructions/project-definition.md](.github/instructions/project-definition.md)
+
+## Cursor vs GitHub Copilot tooling
+
+This workflow was written for GitHub Copilot agent mode. In Cursor, use these equivalents:
+
+- **`plan_review` / plan approval before coding**: Present the plan in chat (or use Plan mode), then wait for explicit user approval before implementing.
+- **`ask_user`**: Confirm outcomes and open questions in chat; do not treat work as complete until the user agrees.
+- **`runSubagent` / orchestrator**: Use the **Task** tool for isolated exploration, or run **Research → Planning → Implementation** as clear phases in one session. Do not skip phases for “simple” tasks unless the user explicitly opts out.
+
+## Capabilities
+
+- Interpret requests, read and edit the codebase, run commands, search (semantic + grep), Git, Docker.
+- Confirm completion with the user.
+
+### Boundaries
+
+- No harmful or destructive commands without confirmation.
+- Gather context before assuming.
+- Do not skip user confirmation before treating a task as done.
+
+## Mandatory workflow for any task
+
+**Do not skip, merge, or reorder these phases. Do not implement without an approved plan. Do not jump straight from a user request to code.**
+
+```
+User Request
+    ↓
+ORCHESTRATOR: Receive request; delegate research/planning/implementation as needed
+    ↓
+PHASE 1 — Research & analysis
+    - Read files, analyze codebase
+    - Create analysis doc: docs/SubAgent/[NAME_ANALYSIS].md
+    - Return summary and path
+    ↓
+ORCHESTRATOR: Continue to planning
+    ↓
+PHASE 2 — Planning
+    - Read docs/SubAgent/[NAME_ANALYSIS].md
+    - Create step-by-step plan + checklist: docs/SubAgent/[NAME_PLAN].md
+    - Return summary and path
+    ↓
+ORCHESTRATOR: Get plan approved (equivalent to plan_review)
+    - If user requests changes: revise plan (Phase 2 again)
+    - If approved: proceed to implementation (fresh context / focused pass)
+    - Prefer not to mix “orchestrator-only chat” with heavy implementation in the same turn when a strict separation helps quality
+    ↓
+PHASE 3 — Implementation
+    - Read approved docs/SubAgent/[NAME_PLAN].md
+    - Implement per plan; return completion summary
+    ↓
+ORCHESTRATOR: Confirm with user until they accept completion
+```
+
+## Phase prompt templates
+
+### Research
+
+```
+Research [topic]. Analyze relevant files in the codebase.
+Think thoroughly: edge cases, dependencies, implications.
+Create analysis doc: docs/SubAgent/[NAME_ANALYSIS].md
+Do not substitute for plan approval or final user sign-off tools from other products.
+Return: summary of findings and analysis file path.
+```
+
+### Planning
+
+```
+Read analysis: docs/SubAgent/[NAME_ANALYSIS].md
+Think through edge cases, risks, ordering constraints.
+Create detailed plan + checklist: docs/SubAgent/[NAME_PLAN].md
+Return: summary and plan file path.
+```
+
+### Implementation
+
+```
+Read approved plan: docs/SubAgent/[NAME_PLAN].md
+Follow the plan; do not re-litigate decisions already captured.
+Implement accordingly.
+Return: summary of changes and relevant details.
+```
+
+## Important rules
+
+1. Confirm with the **user in chat** before treating implementation (or the overall task) as complete when the workflow calls for it.
+2. **Present plans and get approval** before implementation starts (after Planning phase).
+3. **Never skip Research or Planning** for work that fits this workflow—even when it looks small.
+4. If using agent APIs that mirror `runSubagent`: do not pass unsupported parameters; include short **description** plus full **prompt** when required.
+5. **Gather context first**—no guessing about the codebase.
+6. **Orchestrator pattern**: Prefer delegating implementation to a focused implementation pass that follows the approved plan, instead of ad-hoc edits that ignore the plan.
+7. **Update [VERSION.md](VERSION.md)** when adding features; record notable changes in the changelog (see `version-semver` rule).
+8. **No emojis** in messages, docs, comments, commits, generated UI copy, or string literals—unless the user explicitly requests them.
+
+## GitHub Copilot agent troubleshooting (if applicable)
+
+- “disabled by user” → remove `agentName` (or equivalent) from subagent calls.
+- “missing required property” → include both description and prompt where the API requires them.
+
+## Progress reporting
+
+- Report status after major steps.
+- Summarize changes before asking for final confirmation.
+- State clear next steps when blocked.

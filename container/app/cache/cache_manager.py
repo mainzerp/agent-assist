@@ -55,6 +55,23 @@ class CacheManager:
         self._rewrite_enabled = bool(personality.strip())
         raw = await SettingsRepository.get_value("cache.response.enabled", "true")
         self._response_cache_enabled = raw.lower() == "true"
+        # FLOW-HIGH-4: one-shot purge of pre-0.18.0 entries that lack a
+        # ``language`` metadata field. The new lookup filters on
+        # ``language`` so those entries would be unreachable anyway;
+        # removing them keeps the collection tidy and avoids wasted
+        # LRU slots.
+        try:
+            await asyncio.to_thread(
+                self._routing_cache.purge_entries_without_language,
+            )
+            await asyncio.to_thread(
+                self._response_cache.purge_entries_without_language,
+            )
+        except Exception:
+            logger.warning(
+                "Cache language-migration purge failed (non-fatal)",
+                exc_info=True,
+            )
 
     async def reload_config(self) -> None:
         """Hot-reload thresholds and rewrite setting from DB."""
@@ -67,14 +84,18 @@ class CacheManager:
         raw = await SettingsRepository.get_value("cache.response.enabled", "true")
         self._response_cache_enabled = raw.lower() == "true"
 
-    async def process(self, query_text: str) -> CacheResult:
+    async def process(
+        self, query_text: str, *, language: str = "en",
+    ) -> CacheResult:
         """Check both cache tiers in order: routing first, then response.
 
         Returns a CacheResult indicating what was found.
         Rewrite is NOT applied here; call apply_rewrite() separately.
         """
         try:
-            result = await asyncio.to_thread(self._process_inner, query_text)
+            result = await asyncio.to_thread(
+                self._process_inner, query_text, language,
+            )
             # Track cache event
             await track_cache_event(
                 tier="response" if result.hit_type.startswith("response") else "routing",
@@ -114,10 +135,12 @@ class CacheManager:
             await track_rewrite(latency_ms=rewrite_ms, success=False)
             logger.warning("Rewrite failed, using original cached text", exc_info=True)
 
-    def _process_inner(self, query_text: str) -> CacheResult:
+    def _process_inner(self, query_text: str, language: str = "en") -> CacheResult:
         """Internal cache lookup logic."""
         # 1. Check routing cache first (cheaper -- just agent_id + condensed_task)
-        routing_entry, routing_similarity = self._routing_cache.lookup(query_text)
+        routing_entry, routing_similarity = self._routing_cache.lookup(
+            query_text, language=language,
+        )
         if routing_entry:
             return CacheResult(
                 hit_type="routing_hit",
@@ -128,7 +151,9 @@ class CacheManager:
             )
 
         # 2. Check response cache (full response + cached action)
-        hit_type, resp_entry, resp_similarity = self._response_cache.lookup(query_text)
+        hit_type, resp_entry, resp_similarity = self._response_cache.lookup(
+            query_text, language=language,
+        )
         if hit_type == "hit":
             return CacheResult(
                 hit_type="response_hit",
@@ -153,17 +178,25 @@ class CacheManager:
         # downstream consumers already treat ``similarity is None`` as N/A.
         return CacheResult(hit_type="miss", similarity=None)
 
-    def store_routing(self, query_text: str, agent_id: str, confidence: float, condensed_task: str = "") -> None:
+    def store_routing(
+        self, query_text: str, agent_id: str, confidence: float,
+        condensed_task: str = "", *, language: str = "en",
+    ) -> None:
         """Store a routing decision after an agent handles a request."""
-        self._routing_cache.store(query_text, agent_id, confidence, condensed_task)
+        self._routing_cache.store(
+            query_text, agent_id, confidence, condensed_task,
+            language=language,
+        )
 
     async def store_routing_async(
-        self, query_text: str, agent_id: str, confidence: float, condensed_task: str = ""
+        self, query_text: str, agent_id: str, confidence: float,
+        condensed_task: str = "", *, language: str = "en",
     ) -> None:
         """Async wrapper around ``store_routing`` that offloads the ChromaDB
         write to a worker thread so the event loop is not blocked (PERF-4)."""
         await asyncio.to_thread(
-            self.store_routing, query_text, agent_id, confidence, condensed_task
+            self.store_routing, query_text, agent_id, confidence, condensed_task,
+            language=language,
         )
 
     def store_response(self, entry: ResponseCacheEntry) -> None:

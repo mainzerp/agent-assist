@@ -15,6 +15,9 @@ class RoutingCacheEntry(BaseModel):
     condensed_task: str | None = None
     created_at: str | None = None
     last_accessed: str | None = None
+    # FLOW-HIGH-4: detected language at store time. Lookup filters on
+    # this so cross-language hits cannot leak.
+    language: str = "en"
 
 
 class CachedAction(BaseModel):
@@ -37,3 +40,6 @@ class ResponseCacheEntry(BaseModel):
     entity_ids: list[str] = Field(default_factory=list)
     created_at: str | None = None
     last_accessed: str | None = None
+    # FLOW-HIGH-4: detected language at store time. Lookup filters on
+    # this so cross-language hits cannot leak.
+    language: str = "en"

@@ -177,17 +177,24 @@ async def _resolve_media_player(ha_client: Any, device_id: str | None, area_id: 
     return None
 
 
-async def on_timer_finished(entity_id: str, ha_client: Any) -> None:
-    """Handle timer.finished WebSocket event -- dispatch notifications."""
+async def on_timer_finished(
+    entity_id: str,
+    ha_client: Any,
+    entity_index: Any = None,
+) -> None:
+    """Handle timer.finished WebSocket event -- dispatch notifications.
+
+    ``entity_index`` is forwarded to the dispatcher so the follow-up
+    voice pipeline can target the correct assist_satellite via area
+    (FLOW-HIGH-6).
+    """
     metadata = _timer_pool.get_metadata(entity_id)
     timer_name = _timer_pool.get_name(entity_id) or entity_id
 
     logger.info("Timer finished: %s (name=%s)", entity_id, timer_name)
 
-    # Record as recently expired before releasing
     record_expired(timer_name, entity_id, metadata)
 
-    # Dispatch notification via the notification dispatcher
     try:
         from app.agents.notification_dispatcher import dispatch_timer_notification
         await dispatch_timer_notification(
@@ -195,6 +202,7 @@ async def on_timer_finished(entity_id: str, ha_client: Any) -> None:
             timer_name=timer_name,
             entity_id=entity_id,
             metadata=metadata,
+            entity_index=entity_index,
         )
     except Exception:
         logger.error("Notification dispatch failed for %s", entity_id, exc_info=True)
@@ -606,6 +614,7 @@ async def _start_timer_with_notification(
                 timer_name=timer_name,
                 entity_id=entity_id,
                 metadata=metadata,
+                entity_index=entity_index,
             )
         except Exception:
             logger.error("Failed to send timer notification", exc_info=True)

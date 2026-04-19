@@ -16,11 +16,13 @@ from app.security.auth import (
     verify_csrf,
     SESSION_COOKIE_NAME,
 )
+from app import __version__ as _app_version
 from app.config import settings as app_settings
 
 logger = logging.getLogger(__name__)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+templates.env.globals["app_version"] = _app_version
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 

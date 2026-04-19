@@ -28,7 +28,21 @@ class TracingMiddleware:
             return
 
         trace_id = uuid.uuid4().hex[:16]
-        span_collector = SpanCollector(trace_id)
+        # FLOW-MED-9: derive the span source from the route prefix so
+        # it is set at construction, not patched post-hoc. HA-facing
+        # routes under /api/conversation* and /ws/conversation use
+        # ``"ha"``; dashboard chat is ``"chat"``; everything else
+        # falls back to ``"api"``. Route handlers that hit this
+        # middleware before the final classification can still
+        # override by rebuilding the collector.
+        path = scope.get("path", "")
+        if path.startswith("/api/admin/chat"):
+            source: str = "chat"
+        elif path.startswith("/api/conversation") or path.startswith("/ws/conversation"):
+            source = "ha"
+        else:
+            source = "api"
+        span_collector = SpanCollector(trace_id, source=source)
 
         # Make trace_id and span_collector available via request.state.
         # Starlette's Request reads state from scope["state"].
@@ -37,7 +51,6 @@ class TracingMiddleware:
         state["span_collector"] = span_collector
 
         method = scope.get("method", "")
-        path = scope.get("path", "")
 
         logger.info("[%s] %s %s started", trace_id, method, path)
         t0 = time.perf_counter()

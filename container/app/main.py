@@ -442,7 +442,10 @@ async def lifespan(app: FastAPI):
             data = event.get("data", {})
             eid = data.get("entity_id", "")
             if eid:
-                await on_timer_finished(eid, ha_client)
+                await on_timer_finished(
+                    eid, ha_client,
+                    entity_index=getattr(app.state, "entity_index", None),
+                )
 
         async def _on_timer_cancelled_event(event: dict) -> None:
             data = event.get("data", {})

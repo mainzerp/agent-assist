@@ -333,6 +333,48 @@ main {
     margin: 0;
 }
 
+/* App version footer (dashboard + login) */
+.app-footer {
+    flex-shrink: 0;
+    padding: 0.65rem 1.5rem;
+    border-top: 1px solid color-mix(in srgb, var(--bg-stone) 55%, transparent);
+    background: color-mix(in srgb, var(--bg-basalt) 55%, transparent);
+    font-size: 0.8125rem;
+    color: var(--color-dust);
+}
+
+.app-footer-text {
+    display: block;
+    text-align: center;
+}
+
+.app-footer-version {
+    color: var(--color-fog);
+    font-variant-numeric: tabular-nums;
+}
+
+.base-simple-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+.base-simple-main {
+    flex: 1;
+    max-width: 960px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+    width: 100%;
+}
+
+.app-footer--simple {
+    max-width: 960px;
+    margin-left: auto;
+    margin-right: auto;
+    width: 100%;
+    border-radius: 0.5rem 0.5rem 0 0;
+}
+
 /* --- Cards --- */
 
 .card-grid {

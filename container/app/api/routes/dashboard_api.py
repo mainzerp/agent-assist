@@ -619,10 +619,9 @@ async def admin_chat(request: Request, payload: ChatRequest):
     if _dispatcher is None:
         return JSONResponse(status_code=503, content={"detail": "Dispatcher not ready"})
 
+    # FLOW-MED-9: source is now set by TracingMiddleware from the
+    # route path (``/api/admin/chat`` -> ``"chat"``).
     span_collector = getattr(request.state, "span_collector", None)
-    if span_collector:
-        span_collector.source = "chat"
-    # Resolve language: request > DB settings > fallback "en"
     language = payload.language
     if not language:
         language = await SettingsRepository.get_value("language") or "en"
@@ -659,10 +658,9 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
     if _dispatcher is None:
         return JSONResponse(status_code=503, content={"detail": "Dispatcher not ready"})
 
+    # FLOW-MED-9: source is set by TracingMiddleware from the route
+    # path.
     span_collector = getattr(request.state, "span_collector", None)
-    if span_collector:
-        span_collector.source = "chat"
-    # Resolve language: request > DB settings > fallback "en"
     language = payload.language
     if not language:
         language = await SettingsRepository.get_value("language") or "en"

@@ -1557,6 +1557,20 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_classify_strips_seq_prefix_with_leading_whitespace(self, mock_complete, mock_track, mock_settings):
+        """FLOW-LOW-3: ``[SEQ]`` is stripped even with leading whitespace
+        before it, which the old ``startswith`` check missed."""
+        orch, *_ = self._make_orchestrator()
+        mock_complete.return_value = "  [SEQ]light-agent (95%): turn on kitchen"
+        classifications, _ = await orch._classify("turn on kitchen")
+        assert len(classifications) == 1
+        agent_id, task_text, _conf = classifications[0]
+        assert agent_id == "light-agent"
+        assert task_text == "turn on kitchen"
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_pre_classified_skips_classify(self, mock_complete, mock_track, mock_settings):
         """handle_task with _pre_classified skips the _classify() call entirely."""
         orch, dispatcher, *_ = self._make_orchestrator()
@@ -1936,7 +1950,7 @@ class TestOrchestratorAgent:
     async def test_store_turn_includes_agent_id(self):
         orch, *_ = self._make_orchestrator()
         await orch._store_turn("conv-agent-id", "hello", "world", agent_id="general-agent")
-        turns = orch._get_turns("conv-agent-id")
+        turns = await orch._get_turns("conv-agent-id")
         assert len(turns) == 2
         assert turns[0] == {"role": "user", "content": "hello"}
         assert turns[1]["role"] == "assistant"
@@ -1946,9 +1960,44 @@ class TestOrchestratorAgent:
     async def test_store_turn_no_agent_id_when_none(self):
         orch, *_ = self._make_orchestrator()
         await orch._store_turn("conv-no-aid", "hello", "world")
-        turns = orch._get_turns("conv-no-aid")
+        turns = await orch._get_turns("conv-no-aid")
         assert len(turns) == 2
         assert "agent_id" not in turns[1]
+
+    async def test_get_turns_falls_back_to_db_on_memory_miss(self):
+        """FLOW-MED-7: on in-memory miss, _get_turns should hydrate
+        the turn list from ConversationRepository (multi-worker and
+        post-restart replay)."""
+        orch, *_ = self._make_orchestrator()
+        orch._conversations.clear()
+        rows = [
+            {"user_text": "hello", "response_text": "hi there", "agent_id": "general-agent"},
+            {"user_text": "and again?", "response_text": "sure", "agent_id": None},
+        ]
+        with patch(
+            "app.agents.orchestrator.ConversationRepository.get_by_conversation_id",
+            new_callable=AsyncMock,
+            return_value=rows,
+        ) as mock_get:
+            turns = await orch._get_turns("conv-db-miss")
+        mock_get.assert_awaited_once_with("conv-db-miss")
+        assert [t["role"] for t in turns] == ["user", "assistant", "user", "assistant"]
+        assert turns[0]["content"] == "hello"
+        assert turns[1]["content"] == "hi there"
+        assert turns[1].get("agent_id") == "general-agent"
+        assert "agent_id" not in turns[3]
+        assert "conv-db-miss" in orch._conversations
+
+    async def test_get_turns_db_fallback_ignores_errors(self):
+        orch, *_ = self._make_orchestrator()
+        orch._conversations.clear()
+        with patch(
+            "app.agents.orchestrator.ConversationRepository.get_by_conversation_id",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("db down"),
+        ):
+            turns = await orch._get_turns("conv-db-err")
+        assert turns == []
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -2504,7 +2553,14 @@ class TestOrchestratorFiller:
         """When filler generation fails, agent tokens are still yielded normally."""
         orch, dispatcher, _ = self._make_filler_orchestrator()
 
-        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {"filler.enabled": "true", "filler.threshold_ms": "50"}.get(k, "groq/llama-3.1-8b-instant"))
+        # FLOW-MED-8: explicitly disable personality mediation so interim
+        # tokens are not suppressed; this test is about filler failure,
+        # not mediation behavior.
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: {
+            "filler.enabled": "true",
+            "filler.threshold_ms": "50",
+            "personality.prompt": "",
+        }.get(k, "groq/llama-3.1-8b-instant"))
 
         # Classification call only
         mock_complete.return_value = "general-agent: search the web"
@@ -3467,15 +3523,19 @@ class TestConversationMemoryEviction:
         assert "old-conv" not in orch._conversations
         assert "new-conv" in orch._conversations
 
-    def test_get_turns_returns_empty_for_expired(self):
+    async def test_get_turns_returns_empty_for_expired(self):
         """_get_turns should return empty for TTL-expired conversations."""
         import app.agents.orchestrator as orch_mod
         orch = self._make_orchestrator()
         old_ts = _time.monotonic() - orch_mod._CONVERSATION_TTL_SECONDS - 1
         orch._conversations["expired-conv"] = (old_ts, [{"role": "user", "content": "hi"}])
-        turns = orch._get_turns("expired-conv")
+        with patch(
+            "app.agents.orchestrator.ConversationRepository.get_by_conversation_id",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            turns = await orch._get_turns("expired-conv")
         assert turns == []
-        # Should also be removed from dict
         assert "expired-conv" not in orch._conversations
 
     def test_active_conversations_preserved(self):
@@ -3647,7 +3707,14 @@ class TestStreamMediatedSpeech:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_stream_yields_mediated_speech_when_changed(self, mock_complete, mock_track, mock_settings):
-        """Final done chunk includes mediated_speech when mediation changes the text."""
+        """Final done chunk includes mediated_speech when mediation changes the text.
+
+        FLOW-MED-8: when personality mediation is on, the streaming
+        pipeline suppresses non-filler interim tokens to avoid
+        pre-mediation flicker, and delivers the final text once via
+        ``mediated_speech`` on the terminal chunk. Non-done chunks, if
+        any, must only be filler.
+        """
         orch, dispatcher, _ = self._make_orchestrator()
         # First call: classify. Second call: mediation.
         mock_complete.side_effect = [
@@ -3669,11 +3736,13 @@ class TestStreamMediatedSpeech:
         task.conversation_id = "conv-mediated"
         chunks = [c async for c in orch.handle_task_stream(task)]
 
-        # Intermediate chunks should NOT have done=True
         intermediate = [c for c in chunks if not c["done"]]
-        assert len(intermediate) >= 1
+        for chunk in intermediate:
+            assert chunk.get("is_filler"), (
+                "non-filler interim tokens must be suppressed when "
+                "mediation is enabled"
+            )
 
-        # Final chunk should have done=True and mediated_speech
         final = [c for c in chunks if c["done"]]
         assert len(final) == 1
         assert final[0]["conversation_id"] == "conv-mediated"

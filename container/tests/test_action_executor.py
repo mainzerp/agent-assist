@@ -89,6 +89,32 @@ class TestParseAction:
         assert result is not None
         assert result["action"] == "toggle"
 
+    def test_parse_action_accepts_plain_fence(self):
+        """FLOW-LOW-1: unlabelled ``` fences are parsed too."""
+        response = (
+            "Sure:\n"
+            '```\n{"action": "turn_on", "entity": "kitchen light", "parameters": {}}\n```\n'
+        )
+        result = parse_action(response)
+        assert result is not None
+        assert result["action"] == "turn_on"
+        assert result["entity"] == "kitchen light"
+
+    def test_parse_action_prefers_json_fence_over_plain_fence(self):
+        """FLOW-LOW-1: when both labelled and plain fences exist, the
+        labelled one wins so a prose example in a plain fence cannot
+        override the real action block."""
+        response = (
+            "Example of the format:\n"
+            '```\n{"action": "turn_off", "entity": "bogus"}\n```\n'
+            "Actual command:\n"
+            '```json\n{"action": "turn_on", "entity": "kitchen light", "parameters": {}}\n```\n'
+        )
+        result = parse_action(response)
+        assert result is not None
+        assert result["action"] == "turn_on"
+        assert result["entity"] == "kitchen light"
+
     def test_brace_in_string_literal_does_not_break_parsing(self):
         """COR-10: braces inside string literals must not confuse the
         balanced-brace scanner. The first ``{`` in the description must

@@ -32,13 +32,22 @@ logger = logging.getLogger(__name__)
 
 
 def _strip_markdown(text: str) -> str:
-    """Remove Markdown formatting for TTS-friendly output."""
+    """Remove Markdown formatting for TTS-friendly output.
+
+    FLOW-MED-4: this implementation MUST stay in lock-step with
+    ``container/app/agents/sanitize.strip_markdown``; the container
+    side is the canonical authoritative reference. When adding a new
+    rule here, mirror it there and extend
+    ``container/tests/data/sanitize_corpus.txt`` so both copies are
+    regression-tested against the same inputs.
+    """
     if not text:
         return text
     text = re.sub(r"```[a-zA-Z]*\n?", "", text)
     text = re.sub(r"`([^`]+)`", r"\1", text)
     text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\[[^\]]*\]", r"\1", text)
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
     text = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", text)
     text = re.sub(r"_{1,3}([^_]+)_{1,3}", r"\1", text)
@@ -132,35 +141,45 @@ class AgentAssistConversationEntity(
     async def _connect_ws(self) -> bool:
         """Establish persistent WebSocket connection to the container."""
         async with self._ws_lock:
-            try:
-                if self._session is None:
-                    self._session = aiohttp.ClientSession()
+            return await self._connect_ws_locked()
 
-                ws_url = self._url.replace("http://", "ws://").replace("https://", "wss://")
-                self._ws = await self._session.ws_connect(
-                    f"{ws_url}{WS_PATH}",
-                    headers={"Authorization": f"Bearer {self._api_key}"},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                    heartbeat=WS_HEARTBEAT_INTERVAL,
-                )
-                self._reconnect_delay = RECONNECT_BASE_DELAY
-                self._ws_last_active = time.monotonic()
-                logger.info("Connected to agent-assist container at %s", self._url)
-                return True
-            except (aiohttp.ClientError, TimeoutError):
-                logger.warning("Failed to connect to container at %s", self._url)
-                # Clean up session to prevent resource leak
-                if self._session:
-                    try:
-                        await self._session.close()
-                    except Exception:
-                        pass
-                    self._session = None
-                self._ws = None
-                return False
+    async def _connect_ws_locked(self) -> bool:
+        """Locked body of :meth:`_connect_ws`. Caller MUST hold
+        ``self._ws_lock``. See FLOW-HIGH-8."""
+        try:
+            if self._session is None:
+                self._session = aiohttp.ClientSession()
+
+            ws_url = self._url.replace("http://", "ws://").replace("https://", "wss://")
+            self._ws = await self._session.ws_connect(
+                f"{ws_url}{WS_PATH}",
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                timeout=aiohttp.ClientTimeout(total=10),
+                heartbeat=WS_HEARTBEAT_INTERVAL,
+            )
+            self._reconnect_delay = RECONNECT_BASE_DELAY
+            self._ws_last_active = time.monotonic()
+            logger.info("Connected to agent-assist container at %s", self._url)
+            return True
+        except (aiohttp.ClientError, TimeoutError):
+            logger.warning("Failed to connect to container at %s", self._url)
+            if self._session:
+                try:
+                    await self._session.close()
+                except Exception:
+                    pass
+                self._session = None
+            self._ws = None
+            return False
 
     async def _disconnect_ws(self) -> None:
         """Close the WebSocket and session."""
+        async with self._ws_lock:
+            await self._disconnect_ws_locked()
+
+    async def _disconnect_ws_locked(self) -> None:
+        """Locked body of :meth:`_disconnect_ws`. Caller MUST hold
+        ``self._ws_lock``."""
         if self._ws and not self._ws.closed:
             await self._ws.close()
         self._ws = None
@@ -184,8 +203,19 @@ class AgentAssistConversationEntity(
 
     async def _ensure_connected(self) -> bool:
         """Ensure WebSocket is connected, reconnect if needed."""
+        async with self._ws_lock:
+            return await self._ensure_connected_locked()
+
+    async def _ensure_connected_locked(self) -> bool:
+        """Body of :meth:`_ensure_connected` that assumes the caller
+        already holds ``self._ws_lock``.
+
+        FLOW-HIGH-8 extracts this so ``_async_handle_message`` can
+        hold the lock across both the connectivity check and the
+        subsequent send -- closing the race where the WS flips to
+        closed between the two calls.
+        """
         if self._ws is not None and not self._ws.closed:
-            # If idle too long, verify the connection with a ping
             if time.monotonic() - self._ws_last_active > WS_IDLE_THRESHOLD:
                 try:
                     pong = await self._ws.ping()
@@ -193,11 +223,10 @@ class AgentAssistConversationEntity(
                     self._ws_last_active = time.monotonic()
                 except (asyncio.TimeoutError, Exception):
                     logger.warning("WebSocket idle ping failed, reconnecting")
-                    await self._disconnect_ws()
-                    return await self._connect_ws()
+                    await self._disconnect_ws_locked()
+                    return await self._connect_ws_locked()
             return True
-        # Attempt reconnect
-        connected = await self._connect_ws()
+        connected = await self._connect_ws_locked()
         if not connected:
             self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
         return connected
@@ -216,21 +245,36 @@ class AgentAssistConversationEntity(
         user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
-        """Process a conversation turn by forwarding to the container."""
-        if not await self._ensure_connected():
-            result = await self._process_via_rest(user_input)
-            self._schedule_reconnect()
-            return result
+        """Process a conversation turn by forwarding to the container.
 
+        FLOW-HIGH-8: hold ``self._ws_lock`` across both the
+        connectivity probe and the actual send so the socket cannot
+        flip to closed between the two steps. All REST-fallback paths
+        run *outside* the lock to avoid serializing fallback traffic
+        behind a hung WS send.
+        """
+        ws_ok = False
         try:
             async with self._ws_lock:
-                return await self._process_via_ws(user_input)
-        except (aiohttp.ClientError, asyncio.TimeoutError):
-            logger.warning("WebSocket error, falling back to REST")
-            await self._disconnect_ws()
-            result = await self._process_via_rest(user_input)
-            self._schedule_reconnect()
-            return result
+                if await self._ensure_connected_locked():
+                    try:
+                        return await self._process_via_ws(user_input)
+                    except (aiohttp.ClientError, asyncio.TimeoutError):
+                        logger.warning("WebSocket error, falling back to REST")
+                        await self._disconnect_ws_locked()
+                        ws_ok = False
+                    else:
+                        ws_ok = True
+        except Exception:
+            logger.warning("Unexpected WS dispatch failure, falling back to REST", exc_info=True)
+            ws_ok = False
+
+        if ws_ok:
+            raise RuntimeError("internal: ws path succeeded but did not return")
+
+        result = await self._process_via_rest(user_input)
+        self._schedule_reconnect()
+        return result
 
     async def _process_via_ws(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         """Send request via WebSocket and accumulate streaming tokens."""
@@ -350,25 +394,66 @@ class AgentAssistConversationEntity(
         return conversation.ConversationResult(response=response, conversation_id=conversation_id)
 
     async def _speak_filler(self, text: str, user_input) -> None:
-        """Speak filler text immediately via TTS, bypassing the conversation result."""
+        """Speak filler text immediately via TTS, bypassing the
+        conversation result.
+
+        FLOW-HIGH-7: ``tts.speak`` validates ``entity_id`` against the
+        ``tts`` domain -- passing a ``media_player.*`` entity (old
+        behavior) makes HA drop the call with ``vol.Invalid`` and no
+        audio is ever produced. The correct schema is:
+        ``entity_id`` = a ``tts.*`` engine entity, and
+        ``media_player_entity_id`` = the target media_player.
+        """
         try:
             device_id = getattr(user_input, "device_id", None)
             if not device_id:
                 return
-            tts_entity = self._resolve_tts_entity(device_id)
-            if not tts_entity:
+            media_player = self._resolve_tts_entity(device_id)
+            tts_engine = self._resolve_tts_engine_entity()
+            if not media_player or not tts_engine:
                 return
             await self.hass.services.async_call(
                 "tts",
                 "speak",
                 {
-                    "entity_id": tts_entity,
+                    "entity_id": tts_engine,
+                    "media_player_entity_id": media_player,
                     "message": _strip_markdown(text),
                 },
                 blocking=False,
             )
         except Exception:
             logger.debug("Failed to speak filler text", exc_info=True)
+
+    def _resolve_tts_engine_entity(self) -> str | None:
+        """Return a configured TTS engine entity_id (``tts.*``).
+
+        Preferred source: the TTS engine configured on the Assist
+        pipeline currently bound to this conversation entity. If
+        pipeline_select is not reachable, fall back to the first
+        ``tts.*`` entity in the entity registry so filler audio still
+        plays on single-engine installations (the common case).
+        """
+        try:
+            pipeline = None
+            try:
+                get_pipeline = getattr(assist_pipeline, "async_get_pipeline", None)
+                if get_pipeline is not None:
+                    pipeline = get_pipeline(self.hass)
+            except Exception:
+                pipeline = None
+            if pipeline is not None:
+                engine = getattr(pipeline, "tts_engine", None)
+                if isinstance(engine, str) and engine.startswith("tts."):
+                    return engine
+
+            entity_reg = er.async_get(self.hass)
+            for entry in entity_reg.entities.values():
+                if entry.domain == "tts":
+                    return entry.entity_id
+        except Exception:
+            logger.debug("Failed to resolve TTS engine entity", exc_info=True)
+        return None
 
     def _resolve_tts_entity(self, device_id: str) -> str | None:
         """Resolve a device_id to a TTS-capable media_player entity in the same area."""

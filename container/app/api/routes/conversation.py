@@ -72,9 +72,9 @@ async def conversation_rest(
     _: str = Depends(require_api_key),
 ):
     """REST endpoint -- full response."""
+    # FLOW-MED-9: source is now set by TracingMiddleware from the
+    # route path, no post-hoc assignment needed.
     span_collector = getattr(request.state, "span_collector", None)
-    if span_collector:
-        span_collector.source = "ha"
     a2a_request, _ = _build_a2a_request(conv_request, "message/send", span_collector)
     response = await _dispatcher.dispatch(a2a_request)
 
@@ -98,9 +98,9 @@ async def conversation_sse(
     _: str = Depends(require_api_key),
 ):
     """SSE streaming endpoint."""
+    # FLOW-MED-9: source is now set by TracingMiddleware from the
+    # route path.
     span_collector = getattr(request.state, "span_collector", None)
-    if span_collector:
-        span_collector.source = "ha"
     a2a_request, _ = _build_a2a_request(conv_request, "message/stream", span_collector)
 
     async def generate():
@@ -144,8 +144,7 @@ async def ws_conversation(
             data = json.loads(raw)
             conv_request = ConversationRequest(**data)
             trace_id = uuid.uuid4().hex[:16]
-            span_collector = SpanCollector(trace_id)
-            span_collector.source = "ha"
+            span_collector = SpanCollector(trace_id, source="ha")
             a2a_request, _ = _build_a2a_request(conv_request, "message/stream", span_collector)
 
             try:

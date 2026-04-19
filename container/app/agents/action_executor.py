@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 # Regex to find JSON blocks in LLM output (fenced)
 _JSON_FENCE_RE = re.compile(r"```json\s*\n?(.*?)\n?\s*```", re.DOTALL)
+# FLOW-LOW-1: smaller models occasionally emit an unlabelled ```...```
+# fence around the action JSON. Accept those as a secondary match so we
+# do not fall through to the looser raw-decode scanner, which is
+# noticeably more permissive and can misparse surrounding prose.
+_PLAIN_FENCE_RE = re.compile(r"```\s*\n?(.*?)\n?\s*```", re.DOTALL)
 _ENTITY_ID_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 _NON_WORD_LOOKUP_RE = re.compile(r"[^\w\s\.]")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -70,14 +75,18 @@ def parse_action(llm_response: str) -> dict | None:
 
     Returns None if no valid action block is found.
     """
-    # Try fenced JSON blocks first
-    match = _JSON_FENCE_RE.search(llm_response)
-    if match:
-        result = _try_parse_json_with_action(match.group(1))
-        if result:
-            return result
+    # FLOW-LOW-1: try labelled ```json fences first (preferred, most
+    # specific), then fall back to unlabelled ``` fences before the raw
+    # scanner. Ordering matters: a labelled fence MUST win over a plain
+    # fence when both are present so we do not silently parse a prose
+    # example block.
+    for regex in (_JSON_FENCE_RE, _PLAIN_FENCE_RE):
+        match = regex.search(llm_response)
+        if match:
+            result = _try_parse_json_with_action(match.group(1))
+            if result:
+                return result
 
-    # Fallback: raw JSON object with "action" key
     return _try_parse_json_with_action(llm_response)
 
 
@@ -585,7 +594,8 @@ async def _list_lights(ha_client: Any) -> dict:
     except Exception as exc:
         logger.error("Failed to fetch states for list_lights", exc_info=True)
         return {"success": False, "entity_id": "", "new_state": None,
-                "speech": f"Failed to list lights: {exc}"}
+                "speech": f"Failed to list lights: {exc}",
+                "cacheable": False}
 
     lights_on = []
     lights_off = []
@@ -608,7 +618,8 @@ async def _list_lights(ha_client: Any) -> dict:
 
     if not lights_on and not lights_off and not switches_on and not switches_off:
         return {"success": True, "entity_id": "", "new_state": None,
-                "speech": "No light or switch entities found."}
+                "speech": "No light or switch entities found.",
+                "cacheable": False}
 
     parts = []
     if lights_on:
@@ -639,4 +650,5 @@ async def _handle_light_read_action(
     if action_name == "list_lights":
         return await _list_lights(ha_client)
     return {"success": False, "entity_id": "", "new_state": None,
-            "speech": f"Unknown read action: {action_name}"}
+            "speech": f"Unknown read action: {action_name}",
+            "cacheable": False}

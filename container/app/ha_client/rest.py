@@ -39,13 +39,67 @@ class HARestClient:
             await self._client.aclose()
             self._client = None
 
-    async def _refresh_headers(self) -> None:
-        """Refresh auth headers (e.g. after token update during setup)."""
-        if self._client is None:
-            return
+    async def reload(self) -> None:
+        """Re-read ha_url and auth from settings; rebuild the httpx
+        client if the base_url changed.
+
+        FLOW-HIGH-9: ``httpx.AsyncClient.base_url`` is immutable after
+        construction, so when the setup wizard (or admin settings UI)
+        updates ``ha_url``, simply refreshing headers on the existing
+        client leaves it pointing at the old host until container
+        restart. Rebuild the client when the URL actually changes;
+        otherwise fall back to cheap header-only refresh.
+        """
+        new_url = await SettingsRepository.get_value("ha_url")
+        if new_url:
+            new_url = new_url.rstrip("/")
         headers = await get_auth_headers()
+
+        if self._client is None:
+            self._base_url = new_url
+            self._client = httpx.AsyncClient(
+                base_url=new_url or "",
+                headers=headers or {},
+                timeout=httpx.Timeout(30.0),
+            )
+            logger.info("HARestClient initialized via reload() with base_url=%s", self._base_url)
+            return
+
+        if new_url and new_url != self._base_url:
+            logger.info(
+                "HARestClient base_url changed (%s -> %s); rebuilding client",
+                self._base_url, new_url,
+            )
+            old = self._client
+            self._base_url = new_url
+            self._client = httpx.AsyncClient(
+                base_url=new_url,
+                headers=headers or {},
+                timeout=httpx.Timeout(30.0),
+            )
+            try:
+                await old.aclose()
+            except Exception:
+                logger.debug("Failed to close old HA REST client", exc_info=True)
+            return
+
         if headers:
             self._client.headers.update(headers)
+
+    async def _refresh_headers(self) -> None:
+        """Refresh auth headers and (if the configured ``ha_url``
+        changed) rebuild the underlying httpx client so the new
+        base_url takes effect.
+
+        Post-:meth:`close` this is a safe no-op: if ``_client`` is
+        ``None`` we do not resurrect it here -- callers that want to
+        recreate the client after a clean shutdown must call
+        :meth:`initialize` or :meth:`reload` explicitly. This matches
+        the contract asserted by COR-5 in ``test_ha_client.py``.
+        """
+        if self._client is None:
+            return
+        await self.reload()
 
     async def test_connection(self) -> bool:
         """Test connectivity to HA by hitting GET /api/.
@@ -114,6 +168,27 @@ class HARestClient:
         except Exception:
             logger.warning("Failed to fetch HA config", exc_info=True)
             return {}
+
+    async def render_template(self, template: str) -> str | None:
+        """POST /api/template -- render a Jinja2 template server-side.
+
+        Returns the rendered text on success or ``None`` on any error.
+        Used by callers that need to resolve registry-only data such as
+        ``device_id('<entity_id>')`` without requiring full HA
+        WebSocket / registry access.
+        """
+        if self._client is None:
+            return None
+        try:
+            resp = await self._client.post(
+                "/api/template", json={"template": template},
+            )
+            resp.raise_for_status()
+            rendered = (resp.text or "").strip()
+            return rendered or None
+        except Exception:
+            logger.debug("Template render failed for %r", template, exc_info=True)
+            return None
 
     async def fire_event(
         self,

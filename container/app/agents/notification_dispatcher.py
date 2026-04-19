@@ -33,8 +33,15 @@ async def dispatch_timer_notification(
     timer_name: str,
     entity_id: str,
     metadata: Any = None,
+    entity_index: Any = None,
 ) -> None:
-    """Dispatch notifications across all configured channels."""
+    """Dispatch notifications across all configured channels.
+
+    ``entity_index`` (optional) is the live EntityIndex; when supplied
+    it is used to resolve the assist_satellite entity_id for the
+    origin area via FLOW-HIGH-6 (EntityIndex.area is authoritative,
+    unlike HA state attributes which do not carry area_id).
+    """
     profile = await _load_notification_profile()
     language = await SettingsRepository.get_value("language") or "en"
     lang_key = "de" if language.startswith("de") else "en"
@@ -71,6 +78,7 @@ async def dispatch_timer_notification(
         spawn(
             _trigger_conversation_continuation(
                 ha_client, media_player, area, profile,
+                entity_index=entity_index,
             ),
             name="tts-followup",
         )
@@ -302,10 +310,34 @@ async def _load_notification_profile() -> dict:
 async def _resolve_satellite_device(
     ha_client: Any,
     area: str | None,
+    entity_index: Any = None,
 ) -> str | None:
-    """Find the assist_satellite entity_id in the given area."""
+    """Find the assist_satellite entity_id for the given area.
+
+    FLOW-HIGH-6: HA ``state.attributes`` does not carry ``area_id``,
+    so the old state-scan loop never matched in production. The
+    EntityIndex tracks area assignments from the device/entity
+    registry and is authoritative. If an EntityIndex is provided, use
+    it; otherwise fall back to the (mostly non-functional) state scan
+    so callers without an index still behave as before.
+    """
     if not area:
         return None
+
+    if entity_index is not None:
+        try:
+            entries = await entity_index.list_entries_async(
+                domains={"assist_satellite"},
+            )
+            for e in entries:
+                if getattr(e, "area", None) == area:
+                    return e.entity_id
+        except Exception:
+            logger.warning(
+                "EntityIndex satellite lookup failed for area %s", area,
+                exc_info=True,
+            )
+
     try:
         states = await ha_client.get_states()
         for s in states:
@@ -318,11 +350,50 @@ async def _resolve_satellite_device(
     return None
 
 
+async def _resolve_ha_device_id(
+    ha_client: Any,
+    entity_id: str,
+) -> str | None:
+    """Look up the HA device registry id for ``entity_id`` via the
+    template endpoint.
+
+    FLOW-HIGH-5: HA's ``assist_pipeline.run`` validates ``device_id``
+    as a registry UUID, not an entity_id. We resolve it by rendering
+    ``{{ device_id('<entity_id>') }}`` server-side. Returns ``None``
+    on any error or when HA renders ``"None"`` / empty text (entity
+    unknown or not tied to a device).
+    """
+    if not entity_id:
+        return None
+    template = "{{ device_id('" + entity_id + "') }}"
+    rendered: str | None = None
+    try:
+        if hasattr(ha_client, "render_template"):
+            rendered = await ha_client.render_template(template)
+        else:
+            client = getattr(ha_client, "_client", None)
+            if client is None:
+                return None
+            resp = await client.post("/api/template", json={"template": template})
+            resp.raise_for_status()
+            rendered = (resp.text or "").strip()
+    except Exception:
+        logger.debug("Failed to resolve device_id for %s", entity_id, exc_info=True)
+        return None
+
+    if not rendered:
+        return None
+    if rendered.lower() == "none":
+        return None
+    return rendered
+
+
 async def _trigger_conversation_continuation(
     ha_client: Any,
     media_player_entity: str,
     area: str | None,
     profile: dict,
+    entity_index: Any = None,
 ) -> None:
     """After TTS plays, trigger the satellite to listen for a voice follow-up."""
     if not profile.get("voice_followup_enabled", True):
@@ -331,25 +402,34 @@ async def _trigger_conversation_continuation(
     delay = profile.get("tts_to_listen_delay", _TTS_TO_LISTEN_DELAY)
     await asyncio.sleep(delay)
 
+    # Prefer the assist_satellite entity registered for the origin
+    # area; the voice pipeline is tied to satellite devices, not the
+    # media_player chosen for TTS playback. Fall back to the
+    # media_player entity so single-device setups still resolve.
+    target_entity = (
+        await _resolve_satellite_device(ha_client, area, entity_index=entity_index)
+    ) or media_player_entity
+
     try:
         pipeline_data: dict[str, Any] = {
             "start_stage": "stt",
             "end_stage": "tts",
         }
-        if media_player_entity:
-            pipeline_data["device_id"] = media_player_entity
+        device_id = await _resolve_ha_device_id(ha_client, target_entity)
+        if device_id:
+            pipeline_data["device_id"] = device_id
 
         await ha_client.call_service(
             "assist_pipeline", "run", None,
             pipeline_data,
         )
         logger.info(
-            "Conversation continuation triggered on %s (area=%s)",
-            media_player_entity, area,
+            "Conversation continuation triggered on %s (area=%s, device_id=%s)",
+            target_entity, area, device_id or "<unresolved>",
         )
     except Exception:
         logger.warning(
             "Failed to trigger conversation continuation on %s -- "
             "user must use wake word for follow-up",
-            media_player_entity, exc_info=True,
+            target_entity, exc_info=True,
         )

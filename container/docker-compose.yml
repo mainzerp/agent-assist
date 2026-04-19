@@ -1,5 +1,8 @@
 services:
   agent-assist:
+    # Local image name (not the old compose default "container-agent-assist").
+    # Override tag: IMAGE_TAG=0.18.0 docker compose build
+    image: ha-agenthub:${IMAGE_TAG:-latest}
     build: .
     container_name: agent-assist
     restart: unless-stopped

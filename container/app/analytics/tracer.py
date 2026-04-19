@@ -13,7 +13,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Literal
 
 from app.db.repository import TraceSpanRepository, TraceSummaryRepository
 
@@ -44,12 +44,24 @@ def _sanitize_metadata(metadata: dict) -> dict:
     return sanitized
 
 
-class SpanCollector:
-    """Collects spans during a single request and flushes them in bulk."""
+SpanSource = Literal["ha", "chat", "api"]
 
-    def __init__(self, trace_id: str) -> None:
+
+class SpanCollector:
+    """Collects spans during a single request and flushes them in bulk.
+
+    FLOW-MED-9: ``source`` must be supplied at construction so it
+    cannot silently default to ``"api"`` when a future call site
+    forgets to assign it post-hoc. Callers that truly do not know
+    the source (middleware building a collector before the route
+    handler runs) pass ``source="api"`` explicitly and the route
+    handler may rebuild the collector with the correct source if
+    needed.
+    """
+
+    def __init__(self, trace_id: str, source: SpanSource = "api") -> None:
         self.trace_id = trace_id
-        self.source = "api"  # default, overridden by caller ("ha", "chat")
+        self.source: SpanSource = source
         self._spans: list[dict[str, Any]] = []
 
     def push_parent(self, span_id: str) -> contextvars.Token:

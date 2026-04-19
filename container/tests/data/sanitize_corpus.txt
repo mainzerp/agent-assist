@@ -1,0 +1,74 @@
+# Shared sanitize corpus for FLOW-MED-4 (strip_markdown parity).
+# One block per test case, separated by a single "---" line.
+# Each block is: INPUT, blank line, EXPECTED.
+# Used by container/tests/test_sanitize.py. The HA custom_component's
+# _strip_markdown MUST produce identical output for every block here.
+
+Plain text.
+
+Plain text.
+---
+**bold** and *italic* and ~~strike~~
+
+bold and italic and strike
+---
+# Header one
+## Header two
+### Header three
+
+Header one
+Header two
+Header three
+---
+See [the docs](https://example.com/docs) for details.
+
+See the docs for details.
+---
+![alt](https://example.com/a.png) starts the line.
+
+alt starts the line.
+---
+Refer to [spec][ref1] soon.
+
+Refer to spec soon.
+---
+`code snippet` inside text.
+
+code snippet inside text.
+---
+```python
+print("hi")
+```
+
+print("hi")
+---
+Visit https://example.com/x/y?z=1 today.
+
+Visit today.
+---
+- item one
+- item two
+* item three
+
+item one
+item two
+item three
+---
+1. first
+2. second
+
+first
+second
+---
+> quoted text
+
+quoted text
+---
+HTML <b>bold</b> and <br> breaks.
+
+HTML bold and breaks.
+---
+---
+Horizontal rule above should be blank.
+
+Horizontal rule above should be blank.

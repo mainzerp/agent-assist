@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -25,6 +26,11 @@ class HomeContextProvider:
         self._context: HomeContext | None = None
         self._last_fetched: float = 0.0
         self._ttl_seconds: int = 3600  # 1 hour
+        # FLOW-MED-2: lazily created inside :meth:`refresh` so an
+        # event-loop is guaranteed to be running when the lock is
+        # bound. Building the Lock at module-import time would tie it
+        # to whatever loop existed then, which is usually none.
+        self._refresh_lock: asyncio.Lock | None = None
 
     async def get(self, ha_client: Any) -> HomeContext:
         """Return cached HomeContext, refreshing from HA if stale."""
@@ -34,37 +40,51 @@ class HomeContextProvider:
         return await self.refresh(ha_client)
 
     async def refresh(self, ha_client: Any) -> HomeContext:
-        """Force-fetch from HA /api/config and update cache."""
-        ctx = HomeContext()
-        try:
-            config = await ha_client.get_config()
-            if config:
-                ctx = HomeContext(
-                    timezone=config.get("time_zone", "UTC") or "UTC",
-                    location_name=config.get("location_name", "") or "",
-                )
+        """Force-fetch from HA /api/config and update cache.
+
+        FLOW-MED-2: de-duplicate concurrent refresh calls. On cold
+        start / TTL expiry, `_dispatch_single` + the streaming branch
+        + the dashboard can all call `refresh` at once. We serialize
+        them behind a single lock and re-check TTL inside the lock so
+        only the first caller actually hits HA; the rest return the
+        freshly cached context.
+        """
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            now = time.monotonic()
+            if self._context and (now - self._last_fetched) < self._ttl_seconds:
+                return self._context
+
+            ctx = HomeContext()
+            try:
+                config = await ha_client.get_config()
+                if config:
+                    ctx = HomeContext(
+                        timezone=config.get("time_zone", "UTC") or "UTC",
+                        location_name=config.get("location_name", "") or "",
+                    )
+                    self._context = ctx
+                    self._last_fetched = time.monotonic()
+                    logger.info(
+                        "HomeContext refreshed: tz=%s location=%s",
+                        ctx.timezone, ctx.location_name,
+                    )
+                    return ctx
+            except Exception:
+                logger.warning("Failed to fetch HA config for HomeContext", exc_info=True)
+
+            overrides = await self._load_overrides()
+            if overrides:
+                self._context = overrides
+                self._last_fetched = time.monotonic()
+                return overrides
+
+            if not self._context:
                 self._context = ctx
                 self._last_fetched = time.monotonic()
-                logger.info(
-                    "HomeContext refreshed: tz=%s location=%s",
-                    ctx.timezone, ctx.location_name,
-                )
-                return ctx
-        except Exception:
-            logger.warning("Failed to fetch HA config for HomeContext", exc_info=True)
-
-        # Fallback: try DB overrides
-        overrides = await self._load_overrides()
-        if overrides:
-            self._context = overrides
-            self._last_fetched = time.monotonic()
-            return overrides
-
-        # Final fallback: defaults
-        if not self._context:
-            self._context = ctx
-            self._last_fetched = time.monotonic()
-        return self._context
+            return self._context
 
     async def _load_overrides(self) -> HomeContext | None:
         """Check DB settings for manual overrides."""

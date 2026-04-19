@@ -1,8 +1,50 @@
 # Version
 
-**Current Version:** 0.17.0
+**Current Version:** 0.18.0
 
 ## Version History
+
+### 0.18.0 -- Request-Flow Bug Fixes
+
+- Cached action replay re-checks entity visibility (closes
+  permission-bypass on cache hits).
+- Cached HA service responses with empty body are treated as
+  replay failures and fall through to live dispatch.
+- Sequential-send no longer pipes timeout / error strings to the
+  send-agent's content slot.
+- `_dispatch_single` returns a structured error + canned message
+  when the fallback agent itself errors (no more empty speech).
+- Detected language is propagated to agents on the non-streaming
+  dispatch path (REST + multi-agent + sequential-send).
+- Multi-agent dispatch detects canned-error tuples as failures so
+  "(Note: X could not be reached.)" works as designed.
+- Timeout-fallback dispatch is attributed to the actual fallback
+  agent in spans and request analytics.
+- Routing and response cache keys now include language. ChromaDB
+  cache collections are purged on first start of 0.18.0; SQLite
+  schema is unchanged. The vector store under
+  `container/data/vector/` is regenerated on demand.
+- `notification_dispatcher` resolves a real HA device id for
+  `assist_pipeline.run` and uses `EntityIndex.area` to find
+  `assist_satellite` entities.
+- HA component's filler TTS uses the correct `tts.speak` schema
+  (`entity_id` = TTS engine, `media_player_entity_id` = speaker).
+- HA component holds the WS lock across `_ensure_connected` and
+  send to avoid spurious REST fallbacks.
+- `HARestClient.reload()` rebuilds the underlying httpx client
+  when `ha_url` changes after the setup wizard.
+- Routing / response cache mutations and `home_context_provider`
+  refreshes are de-duplicated under explicit locks.
+- Filler skip-on-fast-agent uses an atomic queue probe.
+- Sanitizer corpus shared between container and HA copy.
+- General-agent / informational responses no longer enter the
+  response cache by default.
+- Conversation-turn store hydrates from the DB on miss.
+- Streaming pipeline collapses to a single mediated chunk when
+  personality is enabled.
+- `SpanCollector` source is required at construction.
+- `parse_action` accepts unlabelled markdown fences.
+- `[SEQ]` prefix stripping tolerates leading whitespace.
 
 ### 0.17.0 -- Security & Reliability Hardening
 
@@ -359,6 +401,6 @@ New send-agent enables content delivery to smartphones (via HA notify) and satel
 - Project scaffolding and directory structure
 - Project definition document
 
-## Recent Changes (since 0.8.0)
+## Recent Changes (since 0.18.0)
 
 (none yet)

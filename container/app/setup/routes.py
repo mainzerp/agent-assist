@@ -24,11 +24,13 @@ from app.security.auth import (
     set_csrf_cookie,
     verify_csrf,
 )
+from app import __version__ as _app_version
 from app.ha_client.rest import test_ha_connection
 
 logger = logging.getLogger(__name__)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+templates.env.globals["app_version"] = _app_version
 
 router = APIRouter(prefix="/setup", tags=["setup"])
 
