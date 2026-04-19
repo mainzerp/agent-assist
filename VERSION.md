@@ -1,8 +1,14 @@
 # Version
 
-**Current Version:** 0.18.20
+**Current Version:** 0.18.21
 
 ## Version History
+
+### 0.18.21 -- Docker Compose GHCR tag
+
+- **docker-compose.yml** default image tag **:main** (CI never published **:latest** before).
+  Override with ``HA_AGENTHUB_TAG`` (e.g. ``latest`` after next main push).
+- **docker-build** workflow also pushes **:latest** on pushes to **main**.
 
 ### 0.18.20 -- CI tests faster and more reliable
 

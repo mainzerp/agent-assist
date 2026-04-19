@@ -52,6 +52,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=sha,format=short,prefix=sha-
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
 
       - name: Build and push to GHCR
         if: env.PUSH_TO_GHCR == 'true'
