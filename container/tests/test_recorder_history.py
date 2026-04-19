@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -14,9 +15,6 @@ from app.ha_client.history_query import execute_recorder_history_query
 from app.ha_client.history_util import parse_history_window, summarize_history_for_speech
 from app.ha_client.rest import HARestClient
 from app.models.agent import TaskContext
-from zoneinfo import ZoneInfo
-
-pytestmark = pytest.mark.asyncio
 
 
 class TestParseHistoryWindow:
@@ -77,6 +75,8 @@ class TestSummarizeHistory:
 
 
 class TestHARestClientHistory:
+    pytestmark = pytest.mark.asyncio
+
     @respx.mock
     async def test_get_history_period_encodes_path(self):
         start = datetime(2024, 6, 1, 10, 0, 0, tzinfo=UTC)
@@ -101,6 +101,8 @@ class TestHARestClientHistory:
 
 
 class TestQueryEntityHistoryExecutor:
+    pytestmark = pytest.mark.asyncio
+
     async def test_history_action_calls_ha(self):
         matcher = AsyncMock()
         match_obj = MagicMock(entity_id="sensor.living_temperature", friendly_name="Living temperature")
@@ -145,6 +147,8 @@ class TestQueryEntityHistoryExecutor:
 
 
 class TestExecuteRecorderHistoryQuery:
+    pytestmark = pytest.mark.asyncio
+
     async def test_happy_path(self):
         ha = AsyncMock()
         ha.get_history_period = AsyncMock(

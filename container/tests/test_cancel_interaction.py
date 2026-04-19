@@ -14,7 +14,6 @@ _litellm_mock.exceptions.AuthenticationError = type("AuthenticationError", (Exce
 sys.modules.setdefault("litellm", _litellm_mock)
 
 import app.llm.client  # noqa: E402,F401
-
 from app.agents.cancel_speech import cancel_interaction_ack  # noqa: E402
 from app.agents.orchestrator import OrchestratorAgent  # noqa: E402
 from app.models.agent import AgentCard, AgentTask, TaskContext  # noqa: E402

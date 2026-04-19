@@ -61,9 +61,7 @@ def parse_history_window(
         start_utc = start.astimezone(UTC)
         end_utc = end.astimezone(UTC)
     elif period == "yesterday":
-        start_local = (now_local - timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        start_local = (now_local - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         end_local = start_local + timedelta(days=1)
         start_utc = start_local.astimezone(UTC)
         end_utc = end_local.astimezone(UTC)
@@ -154,4 +152,4 @@ def summarize_history_for_speech(
     parts = [f"{st} (from {ts})" for st, ts in uniq]
     more = len(states) - len(uniq)
     suffix = f"; … plus {more} more updates" if more > 0 else ""
-    return f"{friendly_name}: " + "; ".join(parts) + suffix + f". Window {t_first} – {t_last}."
+    return f"{friendly_name}: " + "; ".join(parts) + suffix + f". Window {t_first} - {t_last}."

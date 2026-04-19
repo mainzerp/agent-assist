@@ -125,9 +125,7 @@ class OrchestratorAgent(BaseAgent):
         if not self._registry:
             return {"light-agent", "music-agent", "general-agent", _CANCEL_INTERACTION_AGENT}
         cards = await self._registry.list_agents()
-        return {card.agent_id for card in cards if card.agent_id != "orchestrator"} | {
-            _CANCEL_INTERACTION_AGENT
-        }
+        return {card.agent_id for card in cards if card.agent_id != "orchestrator"} | {_CANCEL_INTERACTION_AGENT}
 
     async def _resolve_language(
         self, user_text: str, context_language: str | None = None, turns: list[dict] | None = None
@@ -1728,8 +1726,8 @@ class OrchestratorAgent(BaseAgent):
                 has_error=has_error,
             )
             ret_span["metadata"]["final_response"] = full_speech[:500]
-            ret_span["metadata"]["mediated"] = (
-                target_agent != _CANCEL_INTERACTION_AGENT and full_speech != "".join(collected_speech)
+            ret_span["metadata"]["mediated"] = target_agent != _CANCEL_INTERACTION_AGENT and full_speech != "".join(
+                collected_speech
             )
             ret_span["metadata"]["voice_followup"] = vf_eff
             cache_stored_response = False
@@ -1960,9 +1958,7 @@ class OrchestratorAgent(BaseAgent):
         """Build agent list for classification prompt from registered AgentCards."""
         cancel_line = self._cancel_interaction_description_line()
         if not self._registry:
-            return (
-                "- general-agent: fallback for general questions and unroutable requests\n" + cancel_line
-            )
+            return "- general-agent: fallback for general questions and unroutable requests\n" + cancel_line
 
         cards = await self._registry.list_agents()
         lines = []
