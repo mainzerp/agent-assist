@@ -1,8 +1,17 @@
 # Version
 
-**Current Version:** 0.18.27
+**Current Version:** 0.18.28
 
 ## Version History
+
+### 0.18.28 -- ActionableAgent: LLM failures return TaskResult, not exceptions
+
+- **ActionableAgent** wraps the domain LLM call in ``try``/``except`` and returns
+  ``LLM_ERROR`` speech instead of letting exceptions propagate (which triggered
+  the generic ``BaseAgent.handle_task_stream`` message and confused traces).
+- **handle_task** also catches any remaining uncaught errors and returns
+  ``INTERNAL`` ``TaskResult`` so streaming never surfaces a transport-style failure
+  for normal agent faults.
 
 ### 0.18.27 -- Stream: handle_task exceptions vs transport error chunk
 

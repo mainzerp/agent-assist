@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -50,7 +51,16 @@ class ActionableAgent(BaseAgent):
         # tasks (same agent instance, two concurrent requests).
         self._current_task_context = task.context
         try:
-            return await self._handle_task_inner(task)
+            try:
+                return await self._handle_task_inner(task)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Unhandled failure in %s", self.agent_card.agent_id)
+                return self._error_result(
+                    AgentErrorCode.INTERNAL,
+                    "Sorry, something went wrong while handling that request.",
+                )
         finally:
             self._current_task_context = None
 
@@ -87,13 +97,22 @@ class ActionableAgent(BaseAgent):
             user_content = f'{task.description}\n\n(Original user message: "{task.user_text}")'
         messages.append({"role": "user", "content": user_content})
 
-        if span_collector:
-            async with span_collector.start_span("llm_call", agent_id=agent_id) as span:
-                response = await self._call_llm(messages, span_collector=span_collector)
-                span["metadata"]["model"] = agent_id
-                span["metadata"]["llm_response"] = response[:500] if response else ""
-        else:
-            response = await self._call_llm(messages)
+        try:
+            if span_collector:
+                async with span_collector.start_span("llm_call", agent_id=agent_id) as span:
+                    response = await self._call_llm(messages, span_collector=span_collector)
+                    span["metadata"]["model"] = agent_id
+                    span["metadata"]["llm_response"] = response[:500] if response else ""
+            else:
+                response = await self._call_llm(messages)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("LLM call failed for %s", agent_id)
+            return self._error_result(
+                AgentErrorCode.LLM_ERROR,
+                "The language model could not complete this request. Please try again.",
+            )
 
         if not response:
             logger.warning("LLM returned empty response for %s task: %s", agent_id, task.description[:100])
