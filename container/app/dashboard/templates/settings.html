@@ -146,6 +146,79 @@
     <details class="card mb-md">
         <summary>Communication</summary>
         <div class="details-content">
+            <h4 class="section-header mb-sm" style="font-size: 0.875rem;">Home Assistant</h4>
+            <p class="text-muted mb-md" style="font-size: 0.8125rem;">
+                REST and WebSocket traffic to your HA instance (entity sync, service calls, real-time state).
+                Matches the setup wizard; changing URL or token reloads clients immediately.
+            </p>
+            <div style="display:flex; flex-direction:column; gap:0.75rem; max-width:720px;">
+                <div class="form-group" style="margin:0;">
+                    <label class="form-label">HA base URL</label>
+                    <input type="url" class="form-input" x-model="haConn.url"
+                           placeholder="http://homeassistant.local:8123">
+                </div>
+                <div class="form-group" style="margin:0;">
+                    <label class="form-label">Long-lived access token</label>
+                    <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                        <input type="password" class="form-input" style="flex:1; min-width:200px;"
+                               x-model="haConn.token" placeholder="Leave blank to keep existing token"
+                               autocomplete="off">
+                        <span x-show="haConn.token_configured" class="badge badge-teal" style="font-size:0.7rem;"
+                              x-text="haConn.token_masked ? ('Saved ' + haConn.token_masked) : 'Saved'"></span>
+                        <span x-show="!haConn.token_configured" class="badge" style="font-size:0.7rem; background:var(--danger, #ef4444); color:#fff;">No token</span>
+                    </div>
+                </div>
+                <div style="display:flex; gap:0.35rem; flex-wrap:wrap;">
+                    <button type="button" class="btn btn-primary btn-sm" @click="saveHaConnection()">Save HA connection</button>
+                    <button type="button" class="btn btn-secondary btn-sm" @click="testHaConnection()">Test connection</button>
+                </div>
+            </div>
+            <div x-show="haConnMessage" x-transition class="alert mt-sm"
+                 :class="haConnMessageType === 'error' ? 'alert-error' : 'alert-success'"
+                 x-text="haConnMessage"></div>
+
+            <h4 class="section-header mt-md mb-sm" style="font-size: 0.875rem;">Home Assistant integration (HA to Agent Hub)</h4>
+            <p class="text-muted mb-md" style="font-size: 0.8125rem;">
+                The Agent Assist component in Home Assistant calls this container with
+                <span class="text-mono" style="font-size: 0.75rem;">Authorization: Bearer &lt;this key&gt;</span>
+                on <span class="text-mono" style="font-size: 0.75rem;">/api/conversation</span> and the conversation WebSocket.
+                Paste the same key under Agent Assist integration settings (API Key).
+            </p>
+            <div style="max-width:720px;">
+                <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.5rem;">
+                    <span x-show="containerApiKey.configured" class="badge badge-teal" style="font-size:0.7rem;"
+                          x-text="containerApiKey.token_masked ? ('Key saved ' + containerApiKey.token_masked) : 'Key saved'"></span>
+                    <span x-show="!containerApiKey.configured" class="badge" style="font-size:0.7rem; background:var(--danger, #ef4444); color:#fff;">No key configured</span>
+                </div>
+                <div class="form-group" style="margin:0 0 0.5rem 0;">
+                    <label class="form-label">Set custom API key (min. 16 characters)</label>
+                    <div style="display:flex; gap:0.35rem; flex-wrap:wrap; align-items:center;">
+                        <input type="password" class="form-input" style="flex:1; min-width:200px;"
+                               x-model="containerApiKey.customInput" placeholder="Paste a key or leave empty"
+                               autocomplete="off">
+                        <button type="button" class="btn btn-primary btn-sm" @click="saveContainerApiKey()">Save key</button>
+                    </div>
+                </div>
+                <div style="display:flex; gap:0.35rem; flex-wrap:wrap; align-items:center;">
+                    <button type="button" class="btn btn-secondary btn-sm" @click="rotateContainerApiKey()">Generate new key</button>
+                </div>
+                <template x-if="containerApiKey.shownOnce">
+                    <div class="mt-sm" style="padding:0.75rem; border:1px solid var(--teal-glow, #14b8a6); border-radius:0.35rem; background:rgba(20,184,166,0.06);">
+                        <p class="text-muted mb-sm" style="font-size:0.78rem; margin:0;">Copy this key now. It is not shown again after you leave the page.</p>
+                        <pre style="margin:0 0 0.5rem 0; font-size:0.75rem; word-break:break-all; white-space:pre-wrap; color:var(--color-cloud);"
+                             x-text="containerApiKey.shownOnce"></pre>
+                        <div style="display:flex; gap:0.35rem; flex-wrap:wrap;">
+                            <button type="button" class="btn btn-primary btn-sm" @click="copyContainerApiKeyShown()">Copy to clipboard</button>
+                            <button type="button" class="btn btn-secondary btn-sm" @click="containerApiKey.shownOnce = null">Hide</button>
+                        </div>
+                    </div>
+                </template>
+            </div>
+            <div x-show="containerApiKeyMessage" x-transition class="alert mt-sm"
+                 :class="containerApiKeyMessageType === 'error' ? 'alert-error' : 'alert-success'"
+                 x-text="containerApiKeyMessage"></div>
+
+            <h4 class="section-header mt-md mb-sm" style="font-size: 0.875rem;">Voice / streaming to HA</h4>
             <div class="form-grid-2">
                 <div class="form-group">
                     <label class="form-label">Streaming Mode</label>
@@ -241,6 +314,17 @@ function settingsPage() {
         providerKeys: { openrouter: '', groq: '', anthropic: '', ollama: '' },
         providerMessage: '',
         providerMessageType: 'success',
+        haConn: { url: '', token: '', token_configured: false, token_masked: null },
+        haConnMessage: '',
+        haConnMessageType: 'success',
+        containerApiKey: {
+            configured: false,
+            token_masked: null,
+            customInput: '',
+            shownOnce: null,
+        },
+        containerApiKeyMessage: '',
+        containerApiKeyMessageType: 'success',
         weightKeys: [
             { key: 'weight.levenshtein', label: 'Levenshtein' },
             { key: 'weight.jaro_winkler', label: 'Jaro-Winkler' },
@@ -250,7 +334,183 @@ function settingsPage() {
         ],
 
         async loadAll() {
-            await Promise.all([this.loadSettings(), this.loadWeights(), this.loadProviders()]);
+            await Promise.all([
+                this.loadSettings(), this.loadWeights(), this.loadProviders(),
+                this.loadHaConnection(), this.loadContainerApiKey(),
+            ]);
+        },
+
+        async loadHaConnection() {
+            try {
+                var resp = await fetch('/api/admin/ha-connection', { credentials: 'same-origin' });
+                if (!resp.ok) return;
+                var data = await resp.json();
+                this.haConn.url = data.ha_url || '';
+                this.haConn.token = '';
+                this.haConn.token_configured = !!data.token_configured;
+                this.haConn.token_masked = data.token_masked || null;
+            } catch (e) {
+                console.error('Failed to load HA connection', e);
+            }
+        },
+
+        async saveHaConnection() {
+            var url = (this.haConn.url || '').trim();
+            if (!url) {
+                this.showHaConnMessage('HA URL is required.', 'error');
+                return;
+            }
+            try {
+                var body = { ha_url: url };
+                if (this.haConn.token && this.haConn.token.trim()) {
+                    body.ha_token = this.haConn.token.trim();
+                }
+                var resp = await fetch('/api/admin/ha-connection', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(body),
+                });
+                if (resp.ok) {
+                    this.haConn.token = '';
+                    await this.loadHaConnection();
+                    this.showHaConnMessage('Home Assistant connection saved. REST and WebSocket reloaded.', 'success');
+                } else {
+                    var err = await resp.json().catch(function() { return {}; });
+                    var d = err.detail;
+                    var msg = 'Failed to save HA connection.';
+                    if (typeof d === 'string') {
+                        msg = d;
+                    } else if (Array.isArray(d) && d.length && d[0].msg) {
+                        msg = d[0].msg;
+                    }
+                    this.showHaConnMessage(msg, 'error');
+                }
+            } catch (e) {
+                this.showHaConnMessage('Network error.', 'error');
+            }
+        },
+
+        async testHaConnection() {
+            try {
+                var body = {};
+                var u = (this.haConn.url || '').trim();
+                if (u) body.ha_url = u;
+                var t = (this.haConn.token || '').trim();
+                if (t) body.ha_token = t;
+                var resp = await fetch('/api/admin/ha-connection/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(body),
+                });
+                var data = await resp.json();
+                if (data.status === 'ok') {
+                    this.showHaConnMessage('Connected to Home Assistant.', 'success');
+                } else {
+                    this.showHaConnMessage(data.detail || 'Test failed.', 'error');
+                }
+            } catch (e) {
+                this.showHaConnMessage('Network error.', 'error');
+            }
+        },
+
+        showHaConnMessage(msg, type) {
+            this.haConnMessage = msg;
+            this.haConnMessageType = type;
+            var self = this;
+            setTimeout(function() { self.haConnMessage = ''; }, 5000);
+        },
+
+        async loadContainerApiKey() {
+            try {
+                var resp = await fetch('/api/admin/container-api-key', { credentials: 'same-origin' });
+                if (!resp.ok) return;
+                var data = await resp.json();
+                this.containerApiKey.configured = !!data.configured;
+                this.containerApiKey.token_masked = data.token_masked || null;
+            } catch (e) {
+                console.error('Failed to load container API key status', e);
+            }
+        },
+
+        async saveContainerApiKey() {
+            var key = (this.containerApiKey.customInput || '').trim();
+            if (!key) {
+                this.showContainerApiKeyMessage('Enter an API key (or use Generate new key).', 'error');
+                return;
+            }
+            if (key.length < 16) {
+                this.showContainerApiKeyMessage('API key must be at least 16 characters.', 'error');
+                return;
+            }
+            try {
+                var resp = await fetch('/api/admin/container-api-key', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ api_key: key }),
+                });
+                if (resp.ok) {
+                    this.containerApiKey.customInput = '';
+                    this.containerApiKey.shownOnce = null;
+                    await this.loadContainerApiKey();
+                    this.showContainerApiKeyMessage('API key saved. Update Agent Assist in HA if you changed it.', 'success');
+                } else {
+                    var err = await resp.json().catch(function() { return {}; });
+                    var d = err.detail;
+                    var msg = 'Failed to save API key.';
+                    if (typeof d === 'string') msg = d;
+                    else if (Array.isArray(d) && d.length && d[0].msg) msg = d[0].msg;
+                    this.showContainerApiKeyMessage(msg, 'error');
+                }
+            } catch (e) {
+                this.showContainerApiKeyMessage('Network error.', 'error');
+            }
+        },
+
+        async rotateContainerApiKey() {
+            if (!window.confirm(
+                'Generate a new API key? The old key stops working immediately. '
+                + 'You must paste the new key into the Agent Assist integration in Home Assistant.'
+            )) {
+                return;
+            }
+            try {
+                var resp = await fetch('/api/admin/container-api-key/rotate', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                });
+                var data = await resp.json();
+                if (resp.ok && data.api_key) {
+                    this.containerApiKey.shownOnce = data.api_key;
+                    this.containerApiKey.customInput = '';
+                    await this.loadContainerApiKey();
+                    this.showContainerApiKeyMessage('New key generated. Copy it below and update Home Assistant.', 'success');
+                } else {
+                    this.showContainerApiKeyMessage(data.detail || 'Rotation failed.', 'error');
+                }
+            } catch (e) {
+                this.showContainerApiKeyMessage('Network error.', 'error');
+            }
+        },
+
+        async copyContainerApiKeyShown() {
+            var t = this.containerApiKey.shownOnce;
+            if (!t) return;
+            try {
+                await navigator.clipboard.writeText(t);
+                this.showContainerApiKeyMessage('Copied to clipboard.', 'success');
+            } catch (e) {
+                this.showContainerApiKeyMessage('Could not copy (browser blocked). Select the text manually.', 'error');
+            }
+        },
+
+        showContainerApiKeyMessage(msg, type) {
+            this.containerApiKeyMessage = msg;
+            this.containerApiKeyMessageType = type;
+            var self = this;
+            setTimeout(function() { self.containerApiKeyMessage = ''; }, 6000);
         },
 
         async loadProviders() {

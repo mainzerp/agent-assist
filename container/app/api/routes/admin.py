@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
-from app.security.auth import require_admin_session
+from app.ha_client.auth import get_ha_token, set_ha_token
+from app.ha_client.rest import test_ha_connection
+
+from app.security.auth import API_KEY_SECRET_NAME, require_admin_session
 from app.security.encryption import store_secret, retrieve_secret, delete_secret
 from app.db.repository import (
     AgentConfigRepository,
@@ -55,6 +59,61 @@ class SettingsUpdatePayload(BaseModel):
             if not isinstance(key, str) or len(key) > 128:
                 raise ValueError(f"Invalid setting key: {key}")
         return v
+
+
+class HaConnectionUpdate(BaseModel):
+    """Dashboard: Home Assistant REST/WebSocket endpoint + optional new token."""
+
+    ha_url: str
+    ha_token: str | None = None
+
+    @field_validator("ha_url")
+    @classmethod
+    def normalize_ha_url(cls, v: str) -> str:
+        v = (v or "").strip().rstrip("/")
+        if not v:
+            raise ValueError("Home Assistant URL is required")
+        low = v.lower()
+        if not low.startswith(("http://", "https://")):
+            raise ValueError("URL must start with http:// or https://")
+        return v
+
+
+class HaConnectionTestRequest(BaseModel):
+    """Optional overrides; when omitted, stored settings are used."""
+
+    ha_url: str | None = None
+    ha_token: str | None = None
+
+
+class ContainerApiKeySetPayload(BaseModel):
+    """Set the HA-to-container API key manually (paste from backup or external generator)."""
+
+    api_key: str
+
+    @field_validator("api_key")
+    @classmethod
+    def strip_and_min_len(cls, v: str) -> str:
+        v = (v or "").strip()
+        if len(v) < 16:
+            raise ValueError("API key must be at least 16 characters")
+        return v
+
+
+async def _reload_ha_clients_after_settings_change(request: Request) -> None:
+    """Rebuild REST client and drop WS so ``run()`` reconnects with new URL/token."""
+    ha_client = getattr(request.app.state, "ha_client", None)
+    if ha_client is not None:
+        try:
+            await ha_client.reload()
+        except Exception:
+            logger.warning("HARestClient.reload() after HA settings change failed", exc_info=True)
+    ws_client = getattr(request.app.state, "ws_client", None)
+    if ws_client is not None:
+        try:
+            await ws_client.drop_connection()
+        except Exception:
+            logger.warning("HA WebSocket drop_connection() failed", exc_info=True)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin_session)])
 
@@ -179,6 +238,100 @@ async def update_single_setting(key: str, payload: dict):
                                  category=existing.get("category", "general"),
                                  description=existing.get("description"))
     return {"status": "ok", "key": key}
+
+
+@router.get("/ha-connection")
+async def get_ha_connection():
+    """Return HA base URL and whether a long-lived token is stored (masked)."""
+    url = await SettingsRepository.get_value("ha_url") or ""
+    token = await get_ha_token()
+    masked = None
+    if token:
+        masked = f"...{token[-4:]}" if len(token) >= 4 else "****"
+    return {
+        "ha_url": url or None,
+        "token_configured": bool(token),
+        "token_masked": masked,
+    }
+
+
+@router.put("/ha-connection")
+async def update_ha_connection(request: Request, payload: HaConnectionUpdate):
+    """Persist HA URL and optionally replace the long-lived access token.
+
+    Empty or omitted ``ha_token`` leaves the existing encrypted token
+    unchanged. After a successful save, the REST client reloads and the
+    WebSocket client is dropped so it reconnects with fresh settings.
+    """
+    await SettingsRepository.set(
+        "ha_url",
+        payload.ha_url,
+        "string",
+        "ha",
+        "Home Assistant URL",
+    )
+    if payload.ha_token and payload.ha_token.strip():
+        await set_ha_token(payload.ha_token.strip())
+    await _reload_ha_clients_after_settings_change(request)
+    return {"status": "ok"}
+
+
+@router.post("/ha-connection/test")
+async def test_ha_connection_admin(payload: HaConnectionTestRequest):
+    """Probe ``GET {ha_url}/api/`` with a bearer token (wizard parity)."""
+    url = (payload.ha_url or "").strip().rstrip("/")
+    if not url:
+        url = (await SettingsRepository.get_value("ha_url") or "").strip().rstrip("/")
+    token = payload.ha_token.strip() if payload.ha_token else ""
+    if not token:
+        raw = await get_ha_token()
+        token = (raw or "").strip()
+    if not url or not token:
+        return {
+            "status": "error",
+            "detail": "Need both URL and token (enter token in the form or save it first).",
+        }
+    low = url.lower()
+    if not low.startswith(("http://", "https://")):
+        return {"status": "error", "detail": "URL must start with http:// or https://"}
+    ok = await test_ha_connection(url, token)
+    if ok:
+        return {"status": "ok"}
+    return {
+        "status": "error",
+        "detail": "Could not reach Home Assistant /api/ with these credentials.",
+    }
+
+
+@router.get("/container-api-key")
+async def get_container_api_key_status():
+    """Return whether the HA integration key exists and a last-4 mask (never full key)."""
+    raw = await retrieve_secret(API_KEY_SECRET_NAME)
+    if not raw:
+        return {"configured": False, "token_masked": None}
+    masked = f"...{raw[-4:]}" if len(raw) >= 4 else "****"
+    return {"configured": True, "token_masked": masked}
+
+
+@router.post("/container-api-key/rotate")
+async def rotate_container_api_key():
+    """Generate a new random key, replace the stored secret, return it once for the UI.
+
+    After rotation, update the **Agent Assist** integration in Home Assistant
+    with the new value (Settings - Devices - Agent Assist - Reconfigure).
+    """
+    api_key = secrets.token_urlsafe(32)
+    await store_secret(API_KEY_SECRET_NAME, api_key)
+    logger.info("Container API key rotated from admin dashboard")
+    return {"status": "ok", "api_key": api_key}
+
+
+@router.put("/container-api-key")
+async def set_container_api_key(payload: ContainerApiKeySetPayload):
+    """Persist a user-supplied API key (same auth semantics as setup wizard)."""
+    await store_secret(API_KEY_SECRET_NAME, payload.api_key)
+    logger.info("Container API key set manually from admin dashboard")
+    return {"status": "ok"}
 
 
 @router.get("/entity-matching-weights")

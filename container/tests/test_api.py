@@ -313,6 +313,61 @@ class TestAdminSettingsEndpoints:
         resp = await unauthed_client.get("/api/admin/settings")
         assert resp.status_code == 401
 
+    async def test_get_ha_connection_returns_shape(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/api/admin/ha-connection")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "ha_url" in data
+        assert "token_configured" in data
+        assert "token_masked" in data
+
+    async def test_put_ha_connection_rejects_invalid_url(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/ha-connection",
+            json={"ha_url": "not-a-valid-url"},
+        )
+        assert resp.status_code == 422
+
+    async def test_put_ha_connection_accepts_http_url(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/ha-connection",
+            json={"ha_url": "http://example.local:8123"},
+        )
+        assert resp.status_code == 200
+        assert resp.json().get("status") == "ok"
+
+    async def test_post_ha_connection_test_requires_credentials(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.post(
+            "/api/admin/ha-connection/test",
+            json={},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("status") == "error"
+        assert "detail" in data
+
+    async def test_get_container_api_key_returns_shape(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.get("/api/admin/container-api-key")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "configured" in data
+        assert "token_masked" in data
+
+    async def test_put_container_api_key_rejects_short_key(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.put(
+            "/api/admin/container-api-key",
+            json={"api_key": "short"},
+        )
+        assert resp.status_code == 422
+
+    async def test_post_container_api_key_rotate_returns_key(self, authed_client: httpx.AsyncClient):
+        resp = await authed_client.post("/api/admin/container-api-key/rotate")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("status") == "ok"
+        assert "api_key" in data
+        assert len(data["api_key"]) >= 16
+
     async def test_put_settings_updates_value(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(
             "/api/admin/settings",

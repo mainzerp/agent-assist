@@ -1,8 +1,42 @@
 # Version
 
-**Current Version:** 0.18.6
+**Current Version:** 0.18.8
 
 ## Version History
+
+### 0.18.8 -- Container API Key in Dashboard Settings
+
+- **Settings - Communication** includes **Home Assistant integration
+  (HA to Agent Hub)**: status (key saved / not configured), masked
+  suffix of the stored key, optional **custom key** save (PUT), and
+  **Generate new key** (POST) with confirmation. The new key is shown
+  once with copy-to-clipboard until dismissed.
+- Admin API: ``GET /api/admin/container-api-key``,
+  ``POST /api/admin/container-api-key/rotate``,
+  ``PUT /api/admin/container-api-key`` (body: ``{"api_key": "..."}``,
+  min 16 characters).
+- Tests in ``tests/test_api.py`` (``TestAdminSettingsEndpoints``).
+
+### 0.18.7 -- Home Assistant Connection in Dashboard Settings
+
+- The **Communication** settings page now includes a **Home
+  Assistant** block: base URL, long-lived access token (optional on
+  save to keep the existing encrypted token), **Save** and **Test
+  connection** actions. Saving persists ``ha_url`` to the settings
+  table and optionally replaces the token via the existing secrets
+  store, then calls ``HARestClient.reload()`` and
+  ``HAWebSocketClient.drop_connection()`` so the running container
+  picks up new credentials without a restart.
+- New admin API: ``GET/PUT /api/admin/ha-connection`` and
+  ``POST /api/admin/ha-connection/test`` (same probe as the setup
+  wizard: ``GET {url}/api/`` with bearer auth).
+- ``HAWebSocketClient.drop_connection()`` closes the socket while
+  leaving ``run()`` alive so the reconnect loop uses fresh URL/token
+  from the DB.
+- Default seed adds ``ha_url`` (empty) for installs that open the
+  dashboard before the setup wizard completes.
+- Tests in ``tests/test_api.py`` (``TestAdminSettingsEndpoints``)
+  cover the new endpoints.
 
 ### 0.18.6 -- Request Origin + Spatial Context End-to-End
 

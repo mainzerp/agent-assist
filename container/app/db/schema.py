@@ -406,6 +406,9 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         # Home context settings
         ("home.timezone", "", "string", "home", "Manual timezone override (e.g., Europe/Berlin). Empty = auto-detect from HA."),
         ("home.location_name", "", "string", "home", "Manual home location name override. Empty = auto-detect from HA."),
+        # HA URL is normally set in setup; seed empty so admin UI can upsert
+        # before first run and ``GET /api/admin/settings`` stays consistent.
+        ("ha_url", "", "string", "ha", "Home Assistant base URL (http/https)"),
     ]
 
     await db.executemany(

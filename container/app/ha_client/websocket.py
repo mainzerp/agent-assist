@@ -112,6 +112,17 @@ class HAWebSocketClient:
         await self._close_session()
         self._logger.info("Disconnected from HA WebSocket")
 
+    async def drop_connection(self) -> None:
+        """Close the live socket without stopping ``run()``.
+
+        Used after admin updates ``ha_url`` / token so the receive loop
+        exits and ``run()`` reconnects with fresh settings from the DB.
+        """
+        if not self._running:
+            return
+        await self._close_session()
+        self._logger.info("HA WebSocket connection dropped for reconnect")
+
     async def run(self) -> None:
         self._running = True
         while self._running:
