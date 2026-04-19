@@ -1,8 +1,16 @@
 # Version
 
-**Current Version:** 0.18.12
+**Current Version:** 0.18.13
 
 ## Version History
+
+### 0.18.13 -- HA integration display name (i18n)
+
+- Root-level **title** in ``strings.json`` and translations so the
+  integration picker and UI use **HA-AgentHub** consistently.
+  ``INTEGRATION_TITLE`` in ``const.py``; config flow entry title uses
+  the same constant.
+- Custom component **manifest 0.5.3**.
 
 ### 0.18.12 -- GitHub owner ``mainzerp``
 

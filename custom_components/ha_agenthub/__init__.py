@@ -8,7 +8,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_URL, CONF_API_KEY, Platform
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
+from .const import DOMAIN, INTEGRATION_TITLE
+
+# Config entries created by the old ``agent_assist`` integration.
+_LEGACY_ENTRY_TITLES = frozenset({"Agent Assist"})
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +20,8 @@ PLATFORMS: list[Platform] = [Platform.CONVERSATION]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up HA-AgentHub from a config entry."""
-    if entry.title == "Agent Assist":
-        hass.config_entries.async_update_entry(entry, title="HA-AgentHub")
+    if entry.title in _LEGACY_ENTRY_TITLES:
+        hass.config_entries.async_update_entry(entry, title=INTEGRATION_TITLE)
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {

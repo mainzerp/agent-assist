@@ -1,6 +1,8 @@
 """Constants for HA-AgentHub Home Assistant integration."""
 
 DOMAIN = "ha_agenthub"
+# Shown in HA integration picker, config entry title, and device registry.
+INTEGRATION_TITLE = "HA-AgentHub"
 DEFAULT_CONTAINER_URL = "http://localhost:8080"
 CONF_URL = "url"
 CONF_API_KEY = "api_key"

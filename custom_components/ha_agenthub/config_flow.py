@@ -11,7 +11,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_URL, CONF_API_KEY
 
-from .const import DOMAIN, DEFAULT_CONTAINER_URL, HEALTH_PATH
+from .const import DOMAIN, DEFAULT_CONTAINER_URL, HEALTH_PATH, INTEGRATION_TITLE
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ class HaAgentHubConfigFlow(ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(DOMAIN)
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title="HA-AgentHub",
+                    title=INTEGRATION_TITLE,
                     data={CONF_URL: url, CONF_API_KEY: api_key},
                 )
 

@@ -1,4 +1,5 @@
 {
+  "title": "HA-AgentHub",
   "config": {
     "step": {
       "user": {
