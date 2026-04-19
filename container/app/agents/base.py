@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
@@ -60,7 +61,21 @@ class BaseAgent(ABC):
             The last chunk must have done=True and may include
             conversation_id.
         """
-        result = await self.handle_task(task)
+        try:
+            result = await self.handle_task(task)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            agent_id = getattr(
+                getattr(self, "agent_card", None),
+                "agent_id",
+                type(self).__name__,
+            )
+            logger.exception("handle_task failed inside default stream wrapper for %s", agent_id)
+            result = self._error_result(
+                AgentErrorCode.INTERNAL,
+                "Sorry, something went wrong while handling that request.",
+            )
         # Support both TaskResult and raw dict
         result_dict = result.model_dump() if hasattr(result, "model_dump") else result
         chunk = {

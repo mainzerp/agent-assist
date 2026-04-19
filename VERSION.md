@@ -1,8 +1,17 @@
 # Version
 
-**Current Version:** 0.18.26
+**Current Version:** 0.18.27
 
 ## Version History
+
+### 0.18.27 -- Stream: handle_task exceptions vs transport error chunk
+
+- **BaseAgent.handle_task_stream** (default): exceptions from ``handle_task`` are
+  caught and turned into a normal ``TaskResult`` with ``INTERNAL`` error speech,
+  so **InProcessTransport** does not emit the generic ``Agent error: {id}`` stream
+  chunk (which set ``stream_error`` and confused the HA WebSocket client).
+- **InProcessTransport.stream**: re-raises ``asyncio.CancelledError``; other failures
+  include ``{agent_id}: {ExcType}: {message}`` in the diagnostic chunk.
 
 ### 0.18.26 -- Routing flush vs in-flight store race
 
@@ -78,6 +87,13 @@
   (e.g. illuminance) entities.
 - **security-agent**: action ``query_entity_history`` for locks, alarms, cameras, and security
   sensors. **query_security_state** resolution now uses the same area tie-break as other agents.
+
+### Integration ``custom_components/ha_agenthub`` 0.5.8 -- Agent error in WS ``done`` chunk
+
+- If the final WebSocket frame has ``done: true`` and an ``error`` field (agent/stream
+  error from the container), treat it as a **completed** turn with user-facing text
+  (``mediated_speech`` or a short fallback), not as a transport failure. Avoids
+  incorrectly showing the “connection dropped” message from 0.5.7.
 
 ### Integration ``custom_components/ha_agenthub`` 0.5.7 -- No REST after WebSocket payload sent
 

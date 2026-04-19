@@ -412,13 +412,22 @@ class HaAgentHubConversationEntity(
                         speech_parts.append(token_text)
                     if data.get("done", False):
                         received_done = True
-                        error = data.get("error")
-                        if error:
-                            raise aiohttp.ClientError(f"Agent streaming error: {error}")
+                        stream_err = data.get("error")
                         final_conversation_id = data.get("conversation_id", final_conversation_id)
                         mediated = data.get("mediated_speech")
                         if mediated:
                             speech_parts = [mediated]
+                        if stream_err:
+                            # Application-level error from the container (done chunk), not a
+                            # transport failure — do not raise (would become _WsDroppedAfterSend).
+                            logger.warning(
+                                "Container reported error in stream done chunk: %s", stream_err
+                            )
+                            if not "".join(speech_parts).strip():
+                                speech_parts = [
+                                    "The assistant could not complete that request. "
+                                    f"({stream_err})"
+                                ]
                         break
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                     self._ws = None

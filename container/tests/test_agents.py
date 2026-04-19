@@ -1350,6 +1350,17 @@ class TestBaseAgentStream:
         assert len(chunks) == 1
         assert chunks[0]["voice_followup"] is True
 
+    async def test_handle_task_stream_converts_handle_task_exception(self):
+        """Default stream must not propagate exceptions to InProcessTransport (generic error chunk)."""
+        agent = LightAgent()
+        agent.handle_task = AsyncMock(side_effect=RuntimeError("simulated failure"))
+        task = _make_task("turn on light")
+        chunks = [c async for c in agent.handle_task_stream(task)]
+        assert len(chunks) == 1
+        assert chunks[0]["done"] is True
+        assert "error" not in chunks[0]
+        assert "Sorry, something went wrong" in chunks[0]["token"]
+
 
 # ---------------------------------------------------------------------------
 # RewriteAgent

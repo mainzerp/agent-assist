@@ -77,10 +77,16 @@ class InProcessTransport(Transport):
                     result=token_dict,
                     done=token_dict.get("done", False),
                 )
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
             logger.exception("Agent %s failed on handle_task_stream", agent_id)
             yield JsonRpcStreamChunk(
                 id=request_id,
-                result={"token": "", "done": True, "error": f"Agent error: {agent_id}"},
+                result={
+                    "token": "",
+                    "done": True,
+                    "error": f"{agent_id}: {type(exc).__name__}: {exc}",
+                },
                 done=True,
             )
