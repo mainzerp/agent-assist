@@ -1,8 +1,25 @@
 # Version
 
-**Current Version:** 0.18.24
+**Current Version:** 0.18.26
 
 ## Version History
+
+### 0.18.26 -- Routing flush vs in-flight store race
+
+- Admin cache flush now calls ``RoutingCache.prepare_for_flush()`` before
+  deleting Chroma routing rows: pending hit-count buffers are cleared and
+  in-flight ``store_routing`` worker threads skip ``upsert`` if a flush
+  happened mid-write. Without this, a classify that finished just before
+  flush could still repopulate the routing tier so the next request showed
+  ``routing_hit`` immediately after “flush all”.
+
+### 0.18.25 -- LLM whitespace retry for HA voice
+
+- The shared ``llm.client`` now treats whitespace-only model output as empty,
+  so it triggers the existing retry path instead of passing a blank response
+  into the agent layer.
+- ``general-agent`` keeps the response generation in the LLM path and only
+  turns a still-empty result into a standard ``llm_empty_response`` agent error.
 
 ### 0.18.24 -- HA voice stream error fallback deduplication
 

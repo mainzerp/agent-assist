@@ -272,6 +272,7 @@ class CacheManager:
             tier: "routing", "response", or None (both).
         """
         if tier is None or tier == "routing":
+            self._routing_cache.prepare_for_flush()
             count = self._vector_store.count(COLLECTION_ROUTING_CACHE)
             if count > 0:
                 all_data = self._vector_store.get(COLLECTION_ROUTING_CACHE, include=[])

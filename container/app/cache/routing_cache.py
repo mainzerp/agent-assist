@@ -26,11 +26,26 @@ class RoutingCache:
         self._pending_updates: dict[str, tuple[str, dict]] = {}
         self._flush_interval: int = 5
         self._hit_since_flush: int = 0
+        # Incremented when admin flush clears Chroma; in-flight store() calls
+        # must not upsert after invalidation (PERF-4 async thread race).
+        self._invalidation_generation: int = 0
         # FLOW-MED-1: both lookup() and the flush path run via
         # asyncio.to_thread on worker threads; the in-memory counters
         # and pending map must be mutated under a lock. I/O against
         # the underlying vector store happens OUTSIDE the lock.
         self._mutation_lock = threading.Lock()
+
+    def prepare_for_flush(self) -> None:
+        """Invalidate in-flight routing writes before vector store delete.
+
+        Admin ``flush`` clears Chroma; without this, a worker thread still
+        running :meth:`store` could ``upsert`` after delete and repopulate
+        the routing tier so the next request immediately hits ``routing_hit``.
+        """
+        with self._mutation_lock:
+            self._invalidation_generation += 1
+            self._pending_updates.clear()
+            self._hit_since_flush = 0
 
     async def load_config(self) -> None:
         """Load thresholds from settings table."""
@@ -110,6 +125,8 @@ class RoutingCache:
         language: str = "en",
     ) -> None:
         """Store a new routing decision in the cache."""
+        with self._mutation_lock:
+            gen_at_start = self._invalidation_generation
         self._store_count += 1
         if self._store_count >= self._eviction_interval:
             self._store_count = 0
@@ -120,6 +137,10 @@ class RoutingCache:
         # in different languages produces distinct entries.
         entry_id = hashlib.sha256(f"{lang}\n{query_text}".encode()).hexdigest()[:16]
         self._flush_pending_updates()
+        with self._mutation_lock:
+            if gen_at_start != self._invalidation_generation:
+                logger.info("Skipping routing store — cache was flushed during write")
+                return
         self._store.upsert(
             COLLECTION_ROUTING_CACHE,
             ids=[entry_id],

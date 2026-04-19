@@ -1235,6 +1235,14 @@ class TestGeneralAgent:
         call_messages = mock_complete.call_args[0][1]
         assert call_messages[0]["role"] == "system"
 
+    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="   ")
+    async def test_handle_task_empty_response_returns_localized_error(self, mock_complete):
+        agent = GeneralAgent()
+        result = await agent.handle_task(_make_task("erzähl was", context=TaskContext(language="de")))
+        assert result.error is not None
+        assert result.error.code == "llm_empty_response"
+        assert result.speech == "The language model did not return a response. Please try again."
+
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="Here is the recipe with link.")
     async def test_sequential_send_prompt_override(self, mock_complete):
         agent = GeneralAgent()

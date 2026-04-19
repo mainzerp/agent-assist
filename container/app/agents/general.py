@@ -6,6 +6,7 @@ import logging
 
 from app.agents.base import BaseAgent
 from app.analytics.tracer import _optional_span
+from app.models.agent import AgentErrorCode
 from app.models.agent import AgentCard, AgentTask, TaskResult
 
 logger = logging.getLogger(__name__)
@@ -33,15 +34,14 @@ class GeneralAgent(BaseAgent):
         span_collector = task.span_collector
         system_prompt = self._load_prompt("general")
 
+        language = task.context.language if task.context else None
+
         # Inject time/location context
         time_location = self._build_time_location_context(task.context)
         if time_location:
             system_prompt += f"\n\n{time_location}"
 
         # Inject language directive for non-English users
-        language = None
-        if task.context:
-            language = task.context.language
         if language and language.lower() not in ("en", "english", ""):
             system_prompt += f"\n\nIMPORTANT: Respond in {language}. The user's language is {language}. Keep entity names, device names, and room names exactly as the user wrote them -- do NOT translate those."
 
@@ -89,6 +89,13 @@ class GeneralAgent(BaseAgent):
                 response = await self._call_llm(messages, span_collector=span_collector, **llm_kwargs)
                 span["metadata"]["model"] = "general-agent"
                 span["metadata"]["llm_response"] = response[:500] if response else ""
+
+        if not response or not response.strip():
+            logger.warning("LLM returned empty response for general-agent task: %s", task.description[:100])
+            return self._error_result(
+                AgentErrorCode.LLM_EMPTY_RESPONSE,
+                "The language model did not return a response. Please try again.",
+            )
 
         return TaskResult(speech=response)
 

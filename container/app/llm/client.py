@@ -61,7 +61,7 @@ async def complete(
                 model,
                 max_tokens,
             )
-        content = response.choices[0].message.content
+        content = (response.choices[0].message.content or "").strip()
 
         # Single retry on empty response (e.g. rate limiting)
         if not content:
@@ -83,7 +83,7 @@ async def complete(
                     model,
                     max_tokens,
                 )
-            content = response.choices[0].message.content
+            content = (response.choices[0].message.content or "").strip()
 
         if not content:
             raise ValueError(
@@ -190,7 +190,7 @@ async def complete_with_tools(
                     model,
                     max_tokens,
                 )
-            content = msg.content
+            content = (msg.content or "").strip()
             if not content:
                 logger.warning(
                     "Empty LLM response in tool-call loop for agent=%s round=%d",
@@ -269,5 +269,5 @@ async def complete_with_tools(
             model,
             max_tokens,
         )
-    content = response.choices[0].message.content
+    content = (response.choices[0].message.content or "").strip()
     return content or ""

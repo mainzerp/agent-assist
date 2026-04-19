@@ -161,6 +161,29 @@ class TestRoutingCache:
         store.upsert.assert_not_called()
         assert len(cache._pending_updates) == 0
 
+    def test_prepare_for_flush_clears_pending_and_bumps_generation(self):
+        cache, _store = self._make_cache()
+        cache._pending_updates = {"id-1": ("q", {"hit_count": "3"})}
+        gen0 = cache._invalidation_generation
+        cache.prepare_for_flush()
+        assert cache._invalidation_generation == gen0 + 1
+        assert len(cache._pending_updates) == 0
+        assert cache._hit_since_flush == 0
+
+    def test_store_skips_upsert_when_invalidated_mid_flight(self):
+        """Admin flush can run while store() is on the worker thread; upsert must not run."""
+        cache, store = self._make_cache()
+        store.count.return_value = 0
+        original_flush_pending = cache._flush_pending_updates
+
+        def flush_pending_then_invalidate():
+            original_flush_pending()
+            cache.prepare_for_flush()
+
+        cache._flush_pending_updates = flush_pending_then_invalidate
+        cache.store("q", "light-agent", 0.95)
+        store.upsert.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Response cache
