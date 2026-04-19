@@ -79,6 +79,14 @@
 - **security-agent**: action ``query_entity_history`` for locks, alarms, cameras, and security
   sensors. **query_security_state** resolution now uses the same area tie-break as other agents.
 
+### Integration ``custom_components/ha_agenthub`` 0.5.7 -- No REST after WebSocket payload sent
+
+- If the WebSocket **already sent** the JSON payload and the stream then fails
+  (timeout, close, bad frame, etc.), the bridge **no longer** falls back to
+  REST. That fallback duplicated work on the container and produced misleading
+  ``routing_hit`` / “two prior messages” traces. The user gets a short spoken
+  notice instead; use REST only when the WS path fails **before** ``send_json``.
+
 ### Integration ``custom_components/ha_agenthub`` 0.5.6 -- Duplicate request coalescing
 
 - Conversation bridge **coalesces** parallel ``_async_handle_message`` calls that

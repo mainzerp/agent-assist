@@ -31,6 +31,10 @@ from .const import (
 logger = logging.getLogger(__name__)
 
 
+class _WsDroppedAfterSendError(Exception):
+    """Request was written to the WebSocket; REST fallback would duplicate server work."""
+
+
 def _strip_markdown(text: str) -> str:
     """Remove Markdown formatting for TTS-friendly output.
 
@@ -313,6 +317,19 @@ class HaAgentHubConversationEntity(
                 if await self._ensure_connected_locked():
                     try:
                         return await self._process_via_ws(user_input)
+                    except _WsDroppedAfterSendError:
+                        logger.warning(
+                            "WebSocket failed after the request was sent; skipping REST "
+                            "(avoids duplicate container traces)",
+                            exc_info=True,
+                        )
+                        await self._disconnect_ws_locked()
+                        return self._build_result(
+                            "The connection dropped before the reply finished. "
+                            "If the action may have run, check your devices.",
+                            user_input.conversation_id,
+                            user_input.language,
+                        )
                     except (aiohttp.ClientError, asyncio.TimeoutError):
                         logger.warning("WebSocket error, falling back to REST")
                         await self._disconnect_ws_locked()
@@ -372,49 +389,52 @@ class HaAgentHubConversationEntity(
         payload.update(self._resolve_origin_context(user_input))
         await self._ws.send_json(payload)
 
-        speech_parts: list[str] = []
-        final_conversation_id = user_input.conversation_id
+        try:
+            speech_parts: list[str] = []
+            final_conversation_id = user_input.conversation_id
 
-        received_done = False
+            received_done = False
 
-        while True:
-            msg = await asyncio.wait_for(self._ws.receive(), timeout=30.0)
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                data = json.loads(msg.data)
+            while True:
+                msg = await asyncio.wait_for(self._ws.receive(), timeout=30.0)
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    data = json.loads(msg.data)
 
-                # Handle filler tokens -- speak immediately via TTS, do not accumulate
-                if data.get("is_filler", False):
-                    filler_text = data.get("token", "")
-                    if filler_text:
-                        await self._speak_filler(filler_text, user_input)
-                    continue
+                    # Handle filler tokens -- speak immediately via TTS, do not accumulate
+                    if data.get("is_filler", False):
+                        filler_text = data.get("token", "")
+                        if filler_text:
+                            await self._speak_filler(filler_text, user_input)
+                        continue
 
-                token_text = data.get("token", "")
-                if token_text:
-                    speech_parts.append(token_text)
-                if data.get("done", False):
-                    received_done = True
-                    error = data.get("error")
-                    if error:
-                        raise aiohttp.ClientError(f"Agent streaming error: {error}")
-                    final_conversation_id = data.get("conversation_id", final_conversation_id)
-                    mediated = data.get("mediated_speech")
-                    if mediated:
-                        speech_parts = [mediated]
-                    break
-            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    token_text = data.get("token", "")
+                    if token_text:
+                        speech_parts.append(token_text)
+                    if data.get("done", False):
+                        received_done = True
+                        error = data.get("error")
+                        if error:
+                            raise aiohttp.ClientError(f"Agent streaming error: {error}")
+                        final_conversation_id = data.get("conversation_id", final_conversation_id)
+                        mediated = data.get("mediated_speech")
+                        if mediated:
+                            speech_parts = [mediated]
+                        break
+                elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    self._ws = None
+                    raise aiohttp.ClientError(
+                        f"WebSocket {'closed' if msg.type == aiohttp.WSMsgType.CLOSED else 'error'} mid-stream"
+                    )
+
+            if not received_done:
                 self._ws = None
-                raise aiohttp.ClientError(
-                    f"WebSocket {'closed' if msg.type == aiohttp.WSMsgType.CLOSED else 'error'} mid-stream"
-                )
+                raise aiohttp.ClientError("WebSocket stream ended without done token")
 
-        if not received_done:
-            self._ws = None
-            raise aiohttp.ClientError("WebSocket stream ended without done token")
-
-        self._ws_last_active = time.monotonic()
-        speech = "".join(speech_parts)
-        return self._build_result(speech, final_conversation_id, user_input.language)
+            self._ws_last_active = time.monotonic()
+            speech = "".join(speech_parts)
+            return self._build_result(speech, final_conversation_id, user_input.language)
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as err:
+            raise _WsDroppedAfterSendError() from err
 
     async def _process_via_rest(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         """Fallback: send request via REST and get full response."""
