@@ -38,6 +38,8 @@ Thumbs.db
 # Testing
 .pytest_cache/
 container/tests/.pytest_runtime/
+# Ad-hoc pytest / shell captures in container root (do not commit)
+container/_*.txt
 .coverage
 htmlcov/
 
