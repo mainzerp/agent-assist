@@ -8,9 +8,16 @@ from pathlib import Path
 # Writable paths before any ``app.*`` import (CI runners have no ``/data``).
 _test_root = Path(__file__).resolve().parent / ".pytest_runtime"
 _test_root.mkdir(exist_ok=True)
-os.environ.setdefault("SQLITE_DB_PATH", str(_test_root / "agent_assist.db"))
-os.environ.setdefault("FERNET_KEY_PATH", str(_test_root / ".fernet_key"))
-os.environ.setdefault("CHROMADB_PERSIST_DIR", str(_test_root / "chromadb"))
+# pytest-xdist workers must not share the same SQLite/Chroma paths (file locks / races).
+_xdist_wid = os.environ.get("PYTEST_XDIST_WORKER")
+if _xdist_wid:
+    os.environ["SQLITE_DB_PATH"] = str(_test_root / f"agent_assist_{_xdist_wid}.db")
+    os.environ["FERNET_KEY_PATH"] = str(_test_root / f".fernet_key_{_xdist_wid}")
+    os.environ["CHROMADB_PERSIST_DIR"] = str(_test_root / f"chromadb_{_xdist_wid}")
+else:
+    os.environ.setdefault("SQLITE_DB_PATH", str(_test_root / "agent_assist.db"))
+    os.environ.setdefault("FERNET_KEY_PATH", str(_test_root / ".fernet_key"))
+    os.environ.setdefault("CHROMADB_PERSIST_DIR", str(_test_root / "chromadb"))
 
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch

@@ -10,8 +10,7 @@
 
 services:
   ha-agenthub:
-    image: docker pull ghcr.io/mainzerp/ha-agenthub:main
-    build: .
+    image: ghcr.io/mainzerp/ha-agenthub:latest
     container_name: ha-agenthub
     restart: unless-stopped
     ports:

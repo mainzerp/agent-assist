@@ -1,8 +1,14 @@
 # Version
 
-**Current Version:** 0.18.19
+**Current Version:** 0.18.20
 
 ## Version History
+
+### 0.18.20 -- CI tests faster and more reliable
+
+- **GitHub Actions** ``Tests`` job: timeout **30** minutes (was 15), ``pytest -n auto`` via
+  **pytest-xdist**, quieter output (``-q --tb=short``).
+- **conftest:** separate SQLite/Chroma/Fernet paths per **xdist worker** to avoid races.
 
 ### 0.18.19 -- Setup wizard test coverage
 
