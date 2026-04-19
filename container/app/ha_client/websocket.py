@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 from typing import Any, Callable, Coroutine, Optional
 
 import aiohttp
@@ -16,6 +17,8 @@ logger = logging.getLogger(__name__)
 BASE_DELAY = 1.0
 MAX_DELAY = 60.0
 MAX_JITTER = 1.0
+HEARTBEAT_INTERVAL = 15.0
+IDLE_TIMEOUT = 2 * HEARTBEAT_INTERVAL
 
 
 class HAWebSocketClient:
@@ -28,6 +31,8 @@ class HAWebSocketClient:
         self._message_id: int = 0
         self._listeners: dict[str, list[Callable]] = {}
         self._logger = logging.getLogger("ha_client.websocket")
+        self._ws_lock: asyncio.Lock = asyncio.Lock()
+        self._ws_last_active: float = time.monotonic()
 
     def is_connected(self) -> bool:
         """Return True if the WebSocket connection is active and running."""
@@ -51,8 +56,12 @@ class HAWebSocketClient:
             ws_url = ha_url.replace("http://", "ws://") + "/api/websocket"
 
         try:
-            self._session = aiohttp.ClientSession()
-            self._ws = await self._session.ws_connect(ws_url)
+            async with self._ws_lock:
+                self._session = aiohttp.ClientSession()
+                self._ws = await self._session.ws_connect(
+                    ws_url, heartbeat=HEARTBEAT_INTERVAL
+                )
+            self._ws_last_active = time.monotonic()
 
             msg = await self._ws.receive_json()
             if msg.get("type") != "auth_required":
@@ -82,12 +91,13 @@ class HAWebSocketClient:
             return False
 
     async def _close_session(self) -> None:
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
-        if self._session and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        async with self._ws_lock:
+            if self._ws and not self._ws.closed:
+                await self._ws.close()
+            self._ws = None
+            if self._session and not self._session.closed:
+                await self._session.close()
+            self._session = None
 
     async def disconnect(self) -> None:
         self._running = False
@@ -140,7 +150,17 @@ class HAWebSocketClient:
 
     async def _receive_loop(self) -> None:
         while self._running and self._ws and not self._ws.closed:
-            msg = await self._ws.receive()
+            try:
+                msg = await asyncio.wait_for(
+                    self._ws.receive(), timeout=IDLE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                self._logger.warning(
+                    "HA WebSocket idle for >%.0fs, forcing reconnect",
+                    IDLE_TIMEOUT,
+                )
+                break
+            self._ws_last_active = time.monotonic()
             if msg.type == aiohttp.WSMsgType.TEXT:
                 try:
                     data = json.loads(msg.data)

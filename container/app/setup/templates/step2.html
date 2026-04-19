@@ -3,6 +3,7 @@
 <h2>Home Assistant Connection</h2>
 <p style="color: #94a3b8; margin-bottom: 1rem;">Enter your HA instance URL and Long-Lived Access Token.</p>
 <form method="post" action="/setup/step/2" id="ha-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label for="ha_url">HA URL</label>
     <input type="url" id="ha_url" name="ha_url" placeholder="http://homeassistant.local:8123" required>
     <label for="ha_token">Long-Lived Access Token</label>

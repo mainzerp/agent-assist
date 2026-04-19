@@ -105,8 +105,9 @@ async def conversation_sse(
 
     async def generate():
         root_span_id = getattr(request.state, "root_span_id", None)
+        parent_token = None
         if span_collector and root_span_id:
-            span_collector._span_stack.append(root_span_id)
+            parent_token = span_collector.push_parent(root_span_id)
         try:
             async for chunk in _dispatcher.dispatch_stream(a2a_request):
                 token = StreamToken(
@@ -119,8 +120,8 @@ async def conversation_sse(
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
-            if span_collector and root_span_id and root_span_id in span_collector._span_stack:
-                span_collector._span_stack.remove(root_span_id)
+            if span_collector and parent_token is not None:
+                span_collector.pop_parent(parent_token)
             if span_collector:
                 await span_collector.flush()
 

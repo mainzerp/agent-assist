@@ -20,6 +20,9 @@ _litellm_mock.exceptions.AuthenticationError = _AuthenticationError
 sys.modules.setdefault("litellm", _litellm_mock)
 
 from app.agents.action_executor import parse_action, execute_action  # noqa: E402
+from app.entity.index import EntityIndex  # noqa: E402
+from app.entity.matcher import EntityMatcher  # noqa: E402
+from tests.helpers import make_entity_index_entry  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +88,20 @@ class TestParseAction:
         result = parse_action(response)
         assert result is not None
         assert result["action"] == "toggle"
+
+    def test_brace_in_string_literal_does_not_break_parsing(self):
+        """COR-10: braces inside string literals must not confuse the
+        balanced-brace scanner. The first ``{`` in the description must
+        not be treated as a JSON object start."""
+        response = (
+            'Sure thing. {"action": "turn_on", "entity": "kitchen light", '
+            '"parameters": {"note": "use {placeholder} value"}}'
+        )
+        result = parse_action(response)
+        assert result is not None
+        assert result["action"] == "turn_on"
+        assert result["entity"] == "kitchen light"
+        assert result["parameters"]["note"] == "use {placeholder} value"
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +280,121 @@ class TestExecuteAction:
 
         assert result["success"] is True
         assert result["entity_id"] == "switch.kitchen_outlet"
+
+    @pytest.mark.asyncio
+    async def test_exact_friendly_name_resolves_without_hybrid_match(self, ha_client):
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+        matcher.filter_visible_results = AsyncMock(side_effect=lambda agent_id, results: results)
+        index = MagicMock(spec=EntityIndex)
+        index.get_by_id.return_value = None
+        index.list_entries_async = AsyncMock(
+            return_value=[make_entity_index_entry("light.keller", "Keller", area="Basement")]
+        )
+
+        action = {"action": "turn_on", "entity": "Keller", "parameters": {}}
+        result = await execute_action(action, ha_client, index, matcher, agent_id="light-agent")
+
+        assert result["success"] is True
+        assert result["entity_id"] == "light.keller"
+        matcher.match.assert_not_awaited()
+        ha_client.call_service.assert_awaited_once_with("light", "turn_on", "light.keller", None)
+
+    @pytest.mark.asyncio
+    async def test_trailing_device_noun_resolves_exact_name(self, ha_client):
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+        matcher.filter_visible_results = AsyncMock(side_effect=lambda agent_id, results: results)
+        index = MagicMock(spec=EntityIndex)
+        index.get_by_id.return_value = None
+        index.list_entries_async = AsyncMock(
+            return_value=[make_entity_index_entry("light.keller", "Keller", area="Basement")]
+        )
+
+        action = {"action": "turn_on", "entity": "Keller light", "parameters": {}}
+        result = await execute_action(action, ha_client, index, matcher, agent_id="light-agent")
+
+        assert result["success"] is True
+        assert result["entity_id"] == "light.keller"
+        matcher.match.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_exact_entity_id_query_resolves_directly(self, ha_client):
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+        matcher.filter_visible_results = AsyncMock(side_effect=lambda agent_id, results: results)
+        index = MagicMock(spec=EntityIndex)
+        index.get_by_id.return_value = make_entity_index_entry("light.keller", "Keller", area="Basement")
+        index.list_entries_async = AsyncMock(return_value=[])
+
+        action = {"action": "turn_on", "entity": "light.keller", "parameters": {}}
+        result = await execute_action(action, ha_client, index, matcher, agent_id="light-agent")
+
+        assert result["success"] is True
+        assert result["entity_id"] == "light.keller"
+        index.get_by_id.assert_called_once_with("light.keller")
+        matcher.match.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_area_fallback_returns_ambiguity_for_multiple_lights(self, ha_client):
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+        matcher.filter_visible_results = AsyncMock(side_effect=lambda agent_id, results: results)
+        index = MagicMock(spec=EntityIndex)
+        index.get_by_id.return_value = None
+        index.list_entries_async = AsyncMock(
+            return_value=[
+                make_entity_index_entry("light.keller_main", "Deckenlicht", area="Keller"),
+                make_entity_index_entry("light.keller_side", "Wandlicht", area="Keller"),
+            ]
+        )
+
+        action = {"action": "turn_on", "entity": "Keller", "parameters": {}}
+        result = await execute_action(action, ha_client, index, matcher, agent_id="light-agent")
+
+        assert result["success"] is False
+        assert "Multiple entities match 'Keller'" in result["speech"]
+        ha_client.call_service.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_area_fallback_uses_refreshed_index(self, ha_client):
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+        matcher.filter_visible_results = AsyncMock(side_effect=lambda agent_id, results: results)
+        index = MagicMock(spec=EntityIndex)
+        index.get_by_id.return_value = None
+        index.list_entries_async = AsyncMock(
+            side_effect=[
+                [],
+                [make_entity_index_entry("light.keller", "Deckenlicht", area="Keller")],
+            ]
+        )
+
+        action = {"action": "turn_on", "entity": "Keller", "parameters": {}}
+        first_result = await execute_action(action, ha_client, index, matcher, agent_id="light-agent")
+        second_result = await execute_action(action, ha_client, index, matcher, agent_id="light-agent")
+
+        assert first_result["success"] is False
+        assert second_result["success"] is True
+        assert second_result["entity_id"] == "light.keller"
+
+    @pytest.mark.asyncio
+    async def test_query_light_state_uses_deterministic_resolution(self, ha_client):
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+        matcher.filter_visible_results = AsyncMock(side_effect=lambda agent_id, results: results)
+        index = MagicMock(spec=EntityIndex)
+        index.get_by_id.return_value = None
+        index.list_entries_async = AsyncMock(
+            return_value=[make_entity_index_entry("light.keller", "Keller", area="Basement")]
+        )
+
+        action = {"action": "query_light_state", "entity": "Keller"}
+        result = await execute_action(action, ha_client, index, matcher, agent_id="light-agent")
+
+        assert result["success"] is True
+        assert result["entity_id"] == "light.keller"
+        matcher.match.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +757,33 @@ class TestEntityMatchSpan:
 
         assert result["success"] is True
         assert result["entity_id"] == "light.kitchen_ceiling"
+
+    @pytest.mark.asyncio
+    async def test_entity_match_span_records_exact_resolution_path(self, ha_client):
+        matcher = MagicMock(spec=EntityMatcher)
+        matcher.match = AsyncMock(return_value=[])
+        matcher.filter_visible_results = AsyncMock(side_effect=lambda agent_id, results: results)
+        index = MagicMock(spec=EntityIndex)
+        index.get_by_id.return_value = None
+        index.list_entries_async = AsyncMock(
+            return_value=[make_entity_index_entry("light.keller", "Keller", area="Basement")]
+        )
+        span_collector = SpanCollector(trace_id="test-trace-deterministic")
+
+        result = await execute_action(
+            {"action": "turn_on", "entity": "Keller", "parameters": {}},
+            ha_client,
+            index,
+            matcher,
+            agent_id="light-agent",
+            span_collector=span_collector,
+        )
+
+        assert result["success"] is True
+        em_spans = [s for s in span_collector._spans if s["span_name"] == "entity_match"]
+        assert len(em_spans) == 1
+        assert em_spans[0]["metadata"]["resolution_path"] == "exact_friendly_name"
+        assert em_spans[0]["metadata"]["top_entity_id"] == "light.keller"
 
 
 # ---------------------------------------------------------------------------

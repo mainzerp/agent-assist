@@ -10,6 +10,7 @@ from app.security.auth import require_admin_session
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX
 from app.cache.embedding import get_embedding_info
 from app.db.repository import SettingsRepository
+from app.entity.ingest import parse_ha_states
 from app.models.entity_index import EntityIndexEntry
 
 logger = logging.getLogger(__name__)
@@ -77,19 +78,7 @@ async def refresh_entity_index(request: Request):
 
     try:
         states = await ha_client.get_states()
-        entities = []
-        for state in states:
-            entity_id = state.get("entity_id", "")
-            attrs = state.get("attributes", {})
-            domain = entity_id.split(".")[0] if "." in entity_id else ""
-            entities.append(EntityIndexEntry(
-                entity_id=entity_id,
-                friendly_name=attrs.get("friendly_name", ""),
-                domain=domain,
-                area=attrs.get("area_id"),
-                device_class=attrs.get("device_class"),
-                aliases=[],
-            ))
+        entities = parse_ha_states(states)
         entity_index.refresh(entities)
         return {
             "status": "ok",

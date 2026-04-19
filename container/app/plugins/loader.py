@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import inspect
 import logging
@@ -13,6 +14,8 @@ from app.plugins.base import BasePlugin, PluginContext
 from app.plugins.hooks import EventBus, LifecyclePhase
 
 logger = logging.getLogger(__name__)
+
+PLUGIN_IMPORT_TIMEOUT = 10.0
 
 
 class PluginLoader:
@@ -64,11 +67,9 @@ class PluginLoader:
                     logger.info("Plugin '%s' is disabled, skipping import", candidate_name)
                     continue
 
-                plugin_cls = self._import_plugin_class(py_file)
+                plugin_cls = await self._import_plugin_class(py_file)
                 if plugin_cls is None:
                     continue
-
-                # Instantiate to read metadata
                 instance = plugin_cls()
                 name = instance.name
                 # Update file map with actual name if different
@@ -116,8 +117,14 @@ class PluginLoader:
             len(self._file_map),
         )
 
-    def _import_plugin_class(self, py_file: Path) -> type[BasePlugin] | None:
-        """Safely import a single Python file and find a BasePlugin subclass."""
+    async def _import_plugin_class(self, py_file: Path) -> type[BasePlugin] | None:
+        """Safely import a single Python file and find a BasePlugin subclass.
+
+        The synchronous ``spec.loader.exec_module`` call is offloaded to a
+        worker thread and wrapped in ``asyncio.wait_for`` with a
+        ``PLUGIN_IMPORT_TIMEOUT`` second cap (PERF-5) so a misbehaving
+        plugin that hangs at import time cannot block application startup.
+        """
         module_name = f"plugin_{py_file.stem}"
         spec = importlib.util.spec_from_file_location(module_name, str(py_file))
         if spec is None or spec.loader is None:
@@ -125,7 +132,17 @@ class PluginLoader:
             return None
 
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(spec.loader.exec_module, module),
+                timeout=PLUGIN_IMPORT_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Plugin import for %s exceeded %.1fs timeout; skipping",
+                py_file, PLUGIN_IMPORT_TIMEOUT,
+            )
+            return None
 
         # Find the first concrete subclass of BasePlugin
         for _name, obj in inspect.getmembers(module, inspect.isclass):
@@ -162,7 +179,7 @@ class PluginLoader:
                 return False
 
         try:
-            plugin_cls = self._import_plugin_class(file_path)
+            plugin_cls = await self._import_plugin_class(file_path)
             if plugin_cls is None:
                 return False
             instance = plugin_cls()

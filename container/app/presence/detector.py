@@ -56,6 +56,11 @@ class PresenceDetector:
         """Return current per-room presence confidence map."""
         if not self._enabled:
             return {}
+        # COR-9: prune stale events here as well so that a long quiet period
+        # without any sensor activity still drops the confidence to zero
+        # instead of returning data older than ``decay_timeout``.
+        cutoff = time.time() - self._decay_timeout
+        self._events = [e for e in self._events if e.triggered_at > cutoff]
         return compute_room_confidence(self._events, self._decay_timeout)
 
     def get_most_likely_room(self) -> str | None:

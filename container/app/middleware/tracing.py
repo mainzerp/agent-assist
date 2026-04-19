@@ -1,4 +1,8 @@
-"""Request tracing middleware with trace ID propagation and span collection."""
+﻿"""Request tracing middleware with trace ID propagation and span collection.
+
+Implemented as pure ASGI middleware so it does not buffer the response body
+(SSE/WS first byte must flush immediately).
+"""
 
 from __future__ import annotations
 
@@ -7,52 +11,64 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
-
 from app.analytics.tracer import SpanCollector
 
 logger = logging.getLogger(__name__)
 
 
-class TracingMiddleware(BaseHTTPMiddleware):
-    """Generates a trace ID per request, attaches SpanCollector, and logs latency."""
+class TracingMiddleware:
+    """Pure ASGI middleware: trace ID per request, SpanCollector, latency log."""
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
         trace_id = uuid.uuid4().hex[:16]
-        request.state.trace_id = trace_id
-
-        # Attach span collector for downstream use
         span_collector = SpanCollector(trace_id)
-        request.state.span_collector = span_collector
 
-        method = request.method
-        path = request.url.path
+        # Make trace_id and span_collector available via request.state.
+        # Starlette's Request reads state from scope["state"].
+        state = scope.setdefault("state", {})
+        state["trace_id"] = trace_id
+        state["span_collector"] = span_collector
+
+        method = scope.get("method", "")
+        path = scope.get("path", "")
 
         logger.info("[%s] %s %s started", trace_id, method, path)
         t0 = time.perf_counter()
         start_time = datetime.now(timezone.utc).isoformat()
-        status_code = 500
 
         root_span_id = uuid.uuid4().hex[:12]
-        request.state.root_span_id = root_span_id
-        span_collector._span_stack.append(root_span_id)
+        state["root_span_id"] = root_span_id
+        parent_token = span_collector.push_parent(root_span_id)
+
+        status_code_holder = {"code": 500}
+        trace_header = (b"x-trace-id", trace_id.encode("ascii"))
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                status_code_holder["code"] = message.get("status", 500)
+                headers = list(message.get("headers") or [])
+                headers.append(trace_header)
+                message["headers"] = headers
+            await send(message)
 
         try:
-            response = await call_next(request)
-            status_code = response.status_code
-            response.headers["X-Trace-Id"] = trace_id
+            await self.app(scope, receive, send_wrapper)
         except Exception:
-            status_code = 500
+            status_code_holder["code"] = 500
             raise
         finally:
-            if span_collector._span_stack:
-                span_collector._span_stack.pop()
+            span_collector.pop_parent(parent_token)
 
             duration_ms = (time.perf_counter() - t0) * 1000
+            status_code = status_code_holder["code"]
 
-            # Record the top-level HTTP span
             span_collector._spans.append({
                 "span_id": root_span_id,
                 "trace_id": trace_id,
@@ -65,21 +81,18 @@ class TracingMiddleware(BaseHTTPMiddleware):
                 "metadata": {"status_code": status_code},
             })
 
-            # Flush all collected spans (fire-and-forget)
             try:
                 await span_collector.flush()
             except Exception:
                 logger.warning("Failed to flush spans for trace %s", trace_id, exc_info=True)
 
-            # Update trace summary duration (fire-and-forget)
             try:
                 from app.db.repository import TraceSummaryRepository
                 await TraceSummaryRepository.update_duration(trace_id, round(duration_ms, 2))
             except Exception:
                 pass
 
-        logger.info(
-            "[%s] %s %s -> %d (%.1fms)",
-            trace_id, method, path, response.status_code, duration_ms,
-        )
-        return response
+            logger.info(
+                "[%s] %s %s -> %d (%.1fms)",
+                trace_id, method, path, status_code, duration_ms,
+            )

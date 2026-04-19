@@ -1,8 +1,42 @@
 # Version
 
-**Current Version:** 0.16.0
+**Current Version:** 0.17.0
 
 ## Version History
+
+### 0.17.0 -- Security & Reliability Hardening
+
+- Setup wizard POST routes now require an admin session once setup is
+  complete (closes pre-auth admin-takeover hole).
+- CSRF tokens enforced on dashboard login and setup form POSTs.
+- WebSocket auth no longer accepts query-string tokens.
+- Session signing key is HKDF-derived with domain separation.
+- Replaced shared aiosqlite read connection with per-call connections;
+  fixes cross-task cursor corruption under load.
+- Pure ASGI SetupRedirectMiddleware restores SSE/streaming first-byte
+  latency.
+- MCP client lifecycle moved to per-server owner task; clean shutdown.
+- Orchestrator fallback dispatch now respects default_timeout.
+- Span collector preserved across fallback dispatch (no more trace
+  holes on retry).
+- HA WebSocket: heartbeat=15, _ws_lock for reconnect serialization,
+  and idle-detection added.
+- Background tasks tracked in a module-level set to prevent GC drops.
+- EntityIndex.list_entries pre-filters by domain in ChromaDB.
+- Plugin imports run under a 10s timeout.
+- Sanitization preserves ZWJ/ZWNJ for non-Latin scripts.
+- Action JSON parser uses raw_decode (no false-positive brace
+  matching).
+
+Note: existing admin sessions are invalidated by the SEC-6 signing-key
+change; users must log in again after upgrade.
+
+### 0.16.1 -- Deterministic Light Resolution Fix
+
+- **Deterministic light lookup before hybrid scoring**: `action_executor` now resolves exact entity IDs, exact friendly names, and benign variants such as `Keller light` before falling back to the hybrid matcher. This fixes false negatives for entities like `light.keller` with friendly name `Keller`.
+- **Deterministic ambiguity handling**: Room/area fallback now only auto-selects when it resolves to one clear light candidate; otherwise it returns a clarification response instead of guessing.
+- **Consistent entity ingestion paths**: Startup sync, admin refresh, and `state_changed` indexing now share the same HA-state parsing helper so direct matches are less likely to fail because one refresh path indexed different metadata.
+- **Regression coverage**: Added tests for `Keller`, `Keller light`, direct entity-id resolution, refreshed-index behavior, deterministic read-path resolution, and shared state-ingestion helpers.
 
 ### 0.16.0 -- Location/Time Context, Weather Support, Embedding Warmup
 

@@ -297,3 +297,13 @@ class EntityMatcher:
                     filtered.append(r)
 
         return filtered
+
+    async def filter_visible_results(
+        self,
+        agent_id: str | None,
+        results: list[MatchResult],
+    ) -> list[MatchResult]:
+        """Public wrapper for applying visibility rules to precomputed candidates."""
+        if not agent_id:
+            return results
+        return await self._apply_visibility_rules(agent_id, results)

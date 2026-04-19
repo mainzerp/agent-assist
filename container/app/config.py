@@ -20,7 +20,12 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     chromadb_persist_dir: str = "/data/chromadb"
     sqlite_db_path: str = "/data/agent_assist.db"
-    cookie_secure: bool = False  # Set True when behind HTTPS
+    # SEC-3: Defaults to False so local HTTP development still works.
+    # Production deployments behind HTTPS / a reverse proxy MUST set
+    # ``COOKIE_SECURE=true`` so the admin session and CSRF cookies are
+    # only sent over TLS. Setting this to True on a plain-HTTP install
+    # will silently break login (browser drops the cookie).
+    cookie_secure: bool = False
 
     model_config = SettingsConfigDict(
         env_prefix="",

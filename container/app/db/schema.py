@@ -14,44 +14,44 @@ from typing import AsyncGenerator
 from app.config import settings
 
 _write_conn: aiosqlite.Connection | None = None
-_read_conn: aiosqlite.Connection | None = None
 _write_lock = asyncio.Lock()
+
+
+def _db_path() -> Path:
+    """Resolve the SQLite database path and ensure the parent directory exists."""
+    p = Path(settings.sqlite_db_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 async def _get_or_create_write_connection() -> aiosqlite.Connection:
     """Get or create the shared write connection."""
     global _write_conn
     if _write_conn is None:
-        db_path = Path(settings.sqlite_db_path)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_conn = await aiosqlite.connect(str(db_path))
+        _write_conn = await aiosqlite.connect(str(_db_path()))
         _write_conn.row_factory = aiosqlite.Row
         await _write_conn.execute("PRAGMA journal_mode=WAL")
         await _write_conn.execute("PRAGMA foreign_keys=ON")
     return _write_conn
 
 
-async def _get_or_create_read_connection() -> aiosqlite.Connection:
-    """Get or create the shared read connection."""
-    global _read_conn
-    if _read_conn is None:
-        db_path = Path(settings.sqlite_db_path)
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        _read_conn = await aiosqlite.connect(str(db_path))
-        _read_conn.row_factory = aiosqlite.Row
-        await _read_conn.execute("PRAGMA journal_mode=WAL")
-        await _read_conn.execute("PRAGMA foreign_keys=ON")
-    return _read_conn
-
-
 @asynccontextmanager
 async def get_db_read() -> AsyncGenerator[aiosqlite.Connection, None]:
-    """Async context manager returning a read-only database connection.
+    """Async context manager returning a per-call read-only database connection.
 
-    No lock is acquired -- WAL mode allows concurrent readers.
+    A fresh ``aiosqlite`` connection is opened for every read scope and
+    closed on exit. WAL mode is persistent on the database file (set on
+    the write connection at startup), so concurrent readers do not block
+    each other and do not block writers. ``PRAGMA query_only=ON`` enforces
+    read-only access at the connection level.
     """
-    db = await _get_or_create_read_connection()
-    yield db
+    db = await aiosqlite.connect(str(_db_path()))
+    db.row_factory = aiosqlite.Row
+    await db.execute("PRAGMA query_only=ON")
+    try:
+        yield db
+    finally:
+        await db.close()
 
 
 @asynccontextmanager
@@ -70,14 +70,11 @@ get_db = get_db_write
 
 
 async def close_db() -> None:
-    """Close both connections. Call on shutdown."""
-    global _write_conn, _read_conn
+    """Close the shared write connection. Call on shutdown."""
+    global _write_conn
     if _write_conn is not None:
         await _write_conn.close()
         _write_conn = None
-    if _read_conn is not None:
-        await _read_conn.close()
-        _read_conn = None
 
 
 async def init_db() -> None:

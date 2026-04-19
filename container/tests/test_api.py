@@ -362,6 +362,27 @@ class TestAdminSettingsEndpoints:
         assert resp.status_code == 400
         assert "expected bool" in resp.json().get("detail", "")
 
+    async def test_single_setting_rejects_empty_string_for_bool(
+        self, authed_client: httpx.AsyncClient
+    ):
+        """COR-6: an empty-string value for a bool setting must be rejected."""
+        resp = await authed_client.put(
+            "/api/admin/settings/cache.response.enabled",
+            json={"value": ""},
+        )
+        assert resp.status_code == 400
+        assert "empty string" in resp.json().get("detail", "").lower()
+
+    async def test_bulk_update_rejects_empty_string_for_float(
+        self, authed_client: httpx.AsyncClient
+    ):
+        """COR-6: bulk update must reject empty-string for typed numeric settings."""
+        resp = await authed_client.put(
+            "/api/admin/settings",
+            json={"items": {"cache.routing.threshold": ""}},
+        )
+        assert resp.status_code == 400
+
     async def test_single_setting_preserves_metadata(self, authed_client: httpx.AsyncClient):
         resp = await authed_client.put(
             "/api/admin/settings/cache.routing.threshold",

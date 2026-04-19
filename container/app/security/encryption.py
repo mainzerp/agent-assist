@@ -1,29 +1,49 @@
 import os
 import logging
+import threading
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from app.db.repository import SecretsRepository
+
+SESSION_SIGNING_INFO = b"agent-assist session signing"
 
 logger = logging.getLogger(__name__)
 
 FERNET_KEY_PATH = Path("/data/.fernet_key")
 
 _fernet: Fernet | None = None
+_key_lock = threading.Lock()
+_key_bytes: bytes | None = None
 
 
 def _load_or_generate_key() -> bytes:
-    if FERNET_KEY_PATH.exists():
-        key = FERNET_KEY_PATH.read_bytes().strip()
-        logger.info("Fernet key loaded from file")
-        return key
-    key = Fernet.generate_key()
-    FERNET_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    FERNET_KEY_PATH.write_bytes(key)
-    FERNET_KEY_PATH.chmod(0o600)
-    logger.info("New Fernet key generated")
-    return key
+    """Load (or generate on first start) the Fernet key.
+
+    COR-4: result is cached in ``_key_bytes`` and the load-or-generate
+    block is guarded by a thread lock so two concurrent first-time
+    callers cannot race and overwrite each other's freshly generated key.
+    """
+    global _key_bytes
+    if _key_bytes is not None:
+        return _key_bytes
+    with _key_lock:
+        if _key_bytes is not None:
+            return _key_bytes
+        if FERNET_KEY_PATH.exists():
+            key = FERNET_KEY_PATH.read_bytes().strip()
+            logger.info("Fernet key loaded from file")
+        else:
+            key = Fernet.generate_key()
+            FERNET_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            FERNET_KEY_PATH.write_bytes(key)
+            FERNET_KEY_PATH.chmod(0o600)
+            logger.info("New Fernet key generated")
+        _key_bytes = key
+        return _key_bytes
 
 
 def get_fernet() -> Fernet:
@@ -36,6 +56,24 @@ def get_fernet() -> Fernet:
 def get_fernet_key() -> bytes:
     """Return the raw Fernet key bytes (for deriving secondary keys)."""
     return _load_or_generate_key()
+
+
+def get_session_signing_key() -> bytes:
+    """Derive a domain-separated signing key for the admin session cookie.
+
+    SEC-6: previously the session signer used ``sha256(fernet_key)`` directly,
+    which meant a leak of the Fernet key compromised both stored secrets and
+    every issued session cookie. We now derive a 32-byte key via HKDF-SHA256
+    with a fixed ``info`` label so the signing key is independent from the
+    raw Fernet key.
+    """
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=SESSION_SIGNING_INFO,
+    )
+    return hkdf.derive(_load_or_generate_key())
 
 
 def encrypt(plaintext: str) -> bytes:

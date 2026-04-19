@@ -1,0 +1,187 @@
+"""CSRF protection regression tests (SEC-1).
+
+Covers ``/dashboard/login`` and ``/setup/step/*`` form POSTs:
+- GET render sets the ``agent_assist_csrf`` cookie and embeds a token in the
+  HTML form.
+- POST without cookie+token is rejected with 401.
+- POST with mismatched token is rejected with 401.
+- POST with matching cookie+token is accepted.
+"""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+import pytest_asyncio
+
+
+def _build_app():
+    from app.main import create_app
+
+    app = create_app()
+
+    @asynccontextmanager
+    async def _noop_lifespan(a):
+        yield
+
+    app.router.lifespan_context = _noop_lifespan
+    app.state.startup_time = 0
+    app.state.registry = MagicMock()
+    app.state.dispatcher = MagicMock()
+    app.state.ha_client = MagicMock()
+    app.state.entity_index = None
+    app.state.cache_manager = None
+    app.state.entity_matcher = None
+    app.state.alias_resolver = None
+    app.state.custom_loader = None
+    app.state.mcp_registry = MagicMock()
+    app.state.mcp_registry.list_servers.return_value = []
+    app.state.mcp_tool_manager = MagicMock()
+    app.state.ws_client = None
+    app.state.presence_detector = None
+    app.state.plugin_loader = MagicMock()
+    app.state.plugin_loader.loaded_plugins = {}
+    return app
+
+
+@pytest_asyncio.fixture()
+async def setup_client(db_repository):
+    app = _build_app()
+    with patch(
+        "app.db.repository.SetupStateRepository.is_complete",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            follow_redirects=False,
+        ) as client:
+            yield client
+
+
+@pytest_asyncio.fixture()
+async def dashboard_client(db_repository):
+    app = _build_app()
+    with patch(
+        "app.db.repository.SetupStateRepository.is_complete",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            follow_redirects=False,
+        ) as client:
+            yield client
+
+
+@pytest.mark.integration
+class TestCsrfSetupForm:
+
+    async def test_get_sets_cookie_and_embeds_token(self, setup_client):
+        resp = await setup_client.get("/setup/step/1")
+        assert resp.status_code == 200
+        token = setup_client.cookies.get("agent_assist_csrf")
+        assert token, "agent_assist_csrf cookie missing"
+        assert f'value="{token}"' in resp.text
+        assert 'name="csrf_token"' in resp.text
+
+    async def test_post_without_cookie_or_token_rejected(self, setup_client):
+        resp = await setup_client.post(
+            "/setup/step/1",
+            data={"username": "admin", "password": "pw"},
+        )
+        assert resp.status_code == 401
+
+    async def test_post_with_mismatched_token_rejected(self, setup_client):
+        await setup_client.get("/setup/step/1")
+        cookie_token = setup_client.cookies.get("agent_assist_csrf")
+        assert cookie_token
+        resp = await setup_client.post(
+            "/setup/step/1",
+            data={
+                "username": "admin",
+                "password": "pw",
+                "csrf_token": cookie_token + "tampered",
+            },
+        )
+        assert resp.status_code == 401
+
+    async def test_post_with_matching_token_accepted(self, setup_client):
+        await setup_client.get("/setup/step/1")
+        cookie_token = setup_client.cookies.get("agent_assist_csrf")
+        assert cookie_token
+        with patch(
+            "app.setup.routes.AdminAccountRepository.create",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.setup.routes.SetupStateRepository.set_step_completed",
+            new_callable=AsyncMock,
+        ):
+            resp = await setup_client.post(
+                "/setup/step/1",
+                data={
+                    "username": "admin",
+                    "password": "pw",
+                    "csrf_token": cookie_token,
+                },
+            )
+            assert resp.status_code == 303
+
+
+@pytest.mark.integration
+class TestCsrfDashboardLogin:
+
+    async def test_login_get_sets_cookie(self, dashboard_client):
+        resp = await dashboard_client.get("/dashboard/login")
+        assert resp.status_code == 200
+        assert dashboard_client.cookies.get("agent_assist_csrf")
+        assert 'name="csrf_token"' in resp.text
+
+    async def test_login_post_without_cookie_rejected(self, dashboard_client):
+        resp = await dashboard_client.post(
+            "/dashboard/login",
+            data={"username": "admin", "password": "pw"},
+        )
+        assert resp.status_code == 401
+
+    async def test_login_post_with_wrong_token_rejected(self, dashboard_client):
+        await dashboard_client.get("/dashboard/login")
+        token = dashboard_client.cookies.get("agent_assist_csrf")
+        assert token
+        resp = await dashboard_client.post(
+            "/dashboard/login",
+            data={
+                "username": "admin",
+                "password": "pw",
+                "csrf_token": token + "x",
+            },
+        )
+        assert resp.status_code == 401
+
+    async def test_login_post_with_matching_token_proceeds(self, dashboard_client):
+        await dashboard_client.get("/dashboard/login")
+        token = dashboard_client.cookies.get("agent_assist_csrf")
+        assert token
+        with patch(
+            "app.dashboard.routes.authenticate_admin",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            resp = await dashboard_client.post(
+                "/dashboard/login",
+                data={
+                    "username": "admin",
+                    "password": "wrong",
+                    "csrf_token": token,
+                },
+            )
+            # Reaches the handler (renders error page) instead of CSRF 401.
+            assert resp.status_code == 200
+            assert "Invalid credentials" in resp.text

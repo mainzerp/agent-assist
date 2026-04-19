@@ -37,11 +37,14 @@ class HARestClient:
         """Close the underlying httpx client."""
         if self._client:
             await self._client.aclose()
+            self._client = None
 
     async def _refresh_headers(self) -> None:
         """Refresh auth headers (e.g. after token update during setup)."""
+        if self._client is None:
+            return
         headers = await get_auth_headers()
-        if headers and self._client:
+        if headers:
             self._client.headers.update(headers)
 
     async def test_connection(self) -> bool:

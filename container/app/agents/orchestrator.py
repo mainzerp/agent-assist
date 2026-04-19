@@ -217,7 +217,14 @@ class OrchestratorAgent(BaseAgent):
             await track_agent_timeout(target_agent, self._default_timeout)
             if target_agent != _FALLBACK_AGENT:
                 request.params["agent_id"] = _FALLBACK_AGENT
-                response = await self._dispatcher.dispatch(request)
+                try:
+                    response = await asyncio.wait_for(
+                        self._dispatcher.dispatch(request),
+                        timeout=self._default_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    await track_agent_timeout(_FALLBACK_AGENT, self._default_timeout)
+                    return target_agent, "I couldn't process that request in time.", None
             else:
                 return target_agent, "I couldn't process that request in time.", None
 
@@ -228,7 +235,14 @@ class OrchestratorAgent(BaseAgent):
             )
             if target_agent != _FALLBACK_AGENT:
                 request.params["agent_id"] = _FALLBACK_AGENT
-                response = await self._dispatcher.dispatch(request)
+                try:
+                    response = await asyncio.wait_for(
+                        self._dispatcher.dispatch(request),
+                        timeout=self._default_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    await track_agent_timeout(_FALLBACK_AGENT, self._default_timeout)
+                    return target_agent, "I couldn't process that request in time.", None
 
         result = response.result or {}
         speech = result.get("speech", "")
@@ -270,8 +284,11 @@ class OrchestratorAgent(BaseAgent):
         _send_agent_id, send_task_text, _send_confidence = send_classification
 
         # Step 1: Dispatch content agent(s)
+        _content_result: dict | None = None
+        content_dispatched = False
         if content_agents:
             content_aid, content_task, _ = content_agents[0]
+            content_dispatched = True
             content_context = TaskContext(
                 conversation_turns=turns,
                 device_id=incoming_context.device_id if incoming_context else None,
@@ -322,6 +339,33 @@ class OrchestratorAgent(BaseAgent):
                     "code": "parse_error", "recoverable": True,
                 }},
             )
+
+        # FLOW-CRIT-3: When the content agent dispatched but failed
+        # (timeout -> canned string + result=None, or returned a
+        # structured error/partial_failure), we must NOT pipe that
+        # canned text into the send-agent. Doing so would push messages
+        # like "I couldn't process that request in time." into Telegram /
+        # TTS as if the user had asked to send them.
+        if content_dispatched:
+            result_dict = _content_result or {}
+            content_failed = (
+                _content_result is None
+                or bool(result_dict.get("error"))
+                or bool(result_dict.get("partial_failure"))
+            )
+            if content_failed:
+                fallback_speech = "I could not prepare the content to send."
+                return (
+                    "send-agent",
+                    fallback_speech,
+                    {
+                        "speech": fallback_speech,
+                        "error": {
+                            "code": "content_unavailable",
+                            "recoverable": True,
+                        },
+                    },
+                )
 
         # Step 2: Build augmented task for send-agent with the content
         from app.agents.send import _CONTENT_SEPARATOR
@@ -377,7 +421,6 @@ class OrchestratorAgent(BaseAgent):
                     created = getattr(cache_result.entry, "created_at", None)
                     if created:
                         try:
-                            from datetime import datetime, timezone
                             created_dt = datetime.fromisoformat(created)
                             age = (datetime.now(timezone.utc) - created_dt).total_seconds()
                             cache_span["metadata"]["entry_age_seconds"] = round(age, 1)
@@ -389,6 +432,55 @@ class OrchestratorAgent(BaseAgent):
             cache_span_ref = cache_span
 
         return cache_result, cache_span_ref
+
+    async def _cached_action_is_still_visible(
+        self, agent_id: str, entity_id: str
+    ) -> bool:
+        """Re-evaluate per-agent visibility rules for a cached action's entity.
+
+        Mirrors the include/exclude semantics enforced by
+        ``EntityMatcher._apply_visibility_rules`` for the live path.
+        Fail-closed: any error is treated as "not visible" so a cached
+        action cannot fire when visibility cannot be evaluated.
+        """
+        if not entity_id:
+            return False
+        try:
+            from app.db.repository import EntityVisibilityRepository
+            rules = await EntityVisibilityRepository.get_rules(agent_id)
+        except Exception:
+            logger.debug(
+                "Visibility lookup failed for agent=%s entity=%s; treating as not visible",
+                agent_id, entity_id, exc_info=True,
+            )
+            return False
+        if not rules:
+            # No rules configured -> full access (matches live matcher behavior).
+            return True
+
+        domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
+        domain_include: set[str] = set()
+        domain_exclude: set[str] = set()
+        entity_include: set[str] = set()
+        for rule in rules:
+            rt = rule.get("rule_type")
+            rv = rule.get("rule_value")
+            if rt == "domain_include":
+                domain_include.add(rv)
+            elif rt == "domain_exclude":
+                domain_exclude.add(rv)
+            elif rt == "entity_include":
+                entity_include.add(rv)
+
+        # entity_include is a per-entity allow-list that bypasses domain
+        # filters in the live matcher; honor that semantic here too.
+        if entity_id in entity_include:
+            return True
+        if domain_include and domain not in domain_include:
+            return False
+        if domain_exclude and domain in domain_exclude:
+            return False
+        return True
 
     async def _handle_response_cache_hit(
         self,
@@ -404,6 +496,36 @@ class OrchestratorAgent(BaseAgent):
         """
         target_agent = cache_result.agent_id or "unknown"
         action_executed = None
+
+        # FLOW-CRIT-1: Re-check entity visibility before replaying any cached
+        # action. Visibility rules can change after a cache entry is created
+        # (admin revoking a light from an agent, etc.); without this check the
+        # cached action would keep firing until LRU eviction.
+        cached_action = cache_result.cached_action
+        if (
+            cached_action
+            and target_agent != "unknown"
+            and cached_action.entity_id
+        ):
+            visible = await self._cached_action_is_still_visible(
+                target_agent, cached_action.entity_id
+            )
+            if not visible:
+                logger.info(
+                    "Cached action for %s on %s no longer visible to %s; "
+                    "invalidating cache entry and falling through to live dispatch",
+                    cached_action.service, cached_action.entity_id, target_agent,
+                )
+                try:
+                    if self._cache_manager and cache_result.entry is not None:
+                        import hashlib
+                        entry_id = hashlib.sha256(
+                            cache_result.entry.query_text.encode()
+                        ).hexdigest()[:16]
+                        self._cache_manager.invalidate_response(entry_id)
+                except Exception:
+                    logger.debug("Cache invalidate failed", exc_info=True)
+                return None
 
         async def _do_ha():
             if not cache_result.cached_action:
@@ -435,7 +557,6 @@ class OrchestratorAgent(BaseAgent):
                 ha_span["metadata"]["cached"] = True
             if cache_span:
                 try:
-                    from datetime import datetime, timedelta
                     _cs = datetime.fromisoformat(cache_span["start_time"])
                     ha_span["start_time"] = (
                         _cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))
@@ -452,7 +573,6 @@ class OrchestratorAgent(BaseAgent):
                 rw_span["duration_ms"] = round(cache_result.rewrite_latency_ms, 2)
             if cache_span:
                 try:
-                    from datetime import datetime, timedelta
                     _cs = datetime.fromisoformat(cache_span["start_time"])
                     rw_span["start_time"] = (
                         _cs + timedelta(milliseconds=cache_span.get("duration_ms", 0))
@@ -492,7 +612,7 @@ class OrchestratorAgent(BaseAgent):
             "action_executed": action_executed,
         }
 
-    def _store_response_cache(
+    async def _store_response_cache(
         self,
         user_text: str,
         speech: str,
@@ -501,7 +621,11 @@ class OrchestratorAgent(BaseAgent):
         action_executed,
         has_error: bool,
     ) -> bool:
-        """Store a response in the cache. Returns True if stored."""
+        """Store a response in the cache. Returns True if stored.
+
+        The ChromaDB write is offloaded to a worker thread (PERF-4) so a
+        slow embedding flush does not stall the event loop.
+        """
         if (
             not self._cache_manager
             or target_agent == _FALLBACK_AGENT
@@ -531,7 +655,7 @@ class OrchestratorAgent(BaseAgent):
                 confidence=confidence,
                 entity_ids=entity_ids,
             )
-            self._cache_manager.store_response(entry)
+            await self._cache_manager.store_response_async(entry)
             return True
         except Exception:
             logger.warning("Failed to store response cache", exc_info=True)
@@ -721,7 +845,7 @@ class OrchestratorAgent(BaseAgent):
             ret_span["metadata"]["final_response"] = speech[:500]
             ret_span["metadata"]["mediated"] = (speech != original_speech) or len(classifications) > 1
             if len(classifications) == 1:
-                cache_stored_response = self._store_response_cache(
+                cache_stored_response = await self._store_response_cache(
                     user_text, speech, target_agent, confidence, action_executed, has_error,
                 )
             ret_span["metadata"]["cache_stored_response"] = cache_stored_response
@@ -1144,7 +1268,7 @@ class OrchestratorAgent(BaseAgent):
             full_speech = await self._mediate_response(full_speech, user_text, target_agent, language=language, span_collector=span_collector)
             ret_span["metadata"]["final_response"] = full_speech[:500]
             ret_span["metadata"]["mediated"] = (full_speech != "".join(collected_speech))
-            cache_stored_response = self._store_response_cache(
+            cache_stored_response = await self._store_response_cache(
                 user_text, full_speech, target_agent, confidence, action_executed, has_error,
             )
             ret_span["metadata"]["cache_stored_response"] = cache_stored_response
@@ -1230,6 +1354,20 @@ class OrchestratorAgent(BaseAgent):
                 entity_id=cached_action.entity_id,
                 service_data=cached_action.service_data or None,
             )
+            # FLOW-CRIT-2: HARestClient.call_service almost never returns
+            # None; it returns [] / {} when HA accepted the call but
+            # silently no-op'd (entity removed, action unsupported, etc.).
+            # Treat such empty payloads as failure so the orchestrator
+            # falls through to live dispatch and produces a truthful
+            # response instead of confirming a non-action.
+            if result is None:
+                return None
+            if isinstance(result, (list, dict)) and len(result) == 0:
+                logger.info(
+                    "Cached action %s on %s returned empty result; treating as cache miss",
+                    cached_action.service, cached_action.entity_id,
+                )
+                return None
             return result
         except Exception:
             logger.warning("Cached action execution failed", exc_info=True)
@@ -1321,7 +1459,7 @@ class OrchestratorAgent(BaseAgent):
                 target_agent, condensed, confidence = classifications[0]
                 if target_agent != _FALLBACK_AGENT:
                     try:
-                        self._cache_manager.store_routing(user_text, target_agent, confidence, condensed)
+                        await self._cache_manager.store_routing_async(user_text, target_agent, confidence, condensed)
                     except Exception:
                         logger.warning("Failed to store routing decision", exc_info=True)
             return classifications, False

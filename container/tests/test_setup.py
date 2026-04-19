@@ -21,6 +21,8 @@ from app.security.auth import (
     require_api_key,
 )
 
+from tests.helpers import csrf_post
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -173,9 +175,11 @@ class TestSetupStepSubmissions:
             "app.setup.routes.SetupStateRepository.set_step_completed",
             new_callable=AsyncMock,
         ):
-            resp = await setup_client.post(
+            resp = await csrf_post(
+                setup_client,
                 "/setup/step/1",
-                data={"username": "admin", "password": "test-password-123"},
+                {"username": "admin", "password": "test-password-123"},
+                get_url="/setup/step/1",
             )
             assert resp.status_code == 303
             assert "/setup/step/2" in resp.headers.get("location", "")
@@ -192,9 +196,11 @@ class TestSetupStepSubmissions:
             "app.setup.routes.SetupStateRepository.set_step_completed",
             new_callable=AsyncMock,
         ):
-            resp = await setup_client.post(
+            resp = await csrf_post(
+                setup_client,
                 "/setup/step/2",
-                data={"ha_url": "http://homeassistant.local:8123", "ha_token": "test-token"},
+                {"ha_url": "http://homeassistant.local:8123", "ha_token": "test-token"},
+                get_url="/setup/step/2",
             )
             assert resp.status_code == 303
             assert "/setup/step/3" in resp.headers.get("location", "")
@@ -217,7 +223,7 @@ class TestSetupStepSubmissions:
                 {"step": "review_complete", "completed": False},
             ],
         ):
-            resp = await setup_client.post("/setup/step/3")
+            resp = await csrf_post(setup_client, "/setup/step/3", get_url="/setup/step/3")
             assert resp.status_code == 200
             assert "text/html" in resp.headers.get("content-type", "")
 
@@ -229,9 +235,11 @@ class TestSetupStepSubmissions:
             "app.setup.routes.SetupStateRepository.set_step_completed",
             new_callable=AsyncMock,
         ):
-            resp = await setup_client.post(
+            resp = await csrf_post(
+                setup_client,
                 "/setup/step/4",
-                data={"openrouter_key": "sk-test-123", "groq_key": "", "ollama_url": ""},
+                {"openrouter_key": "sk-test-123", "groq_key": "", "ollama_url": ""},
+                get_url="/setup/step/4",
             )
             assert resp.status_code == 303
             assert "/setup/step/5" in resp.headers.get("location", "")
@@ -241,7 +249,7 @@ class TestSetupStepSubmissions:
             "app.setup.routes.SetupStateRepository.set_step_completed",
             new_callable=AsyncMock,
         ):
-            resp = await setup_client.post("/setup/step/5")
+            resp = await csrf_post(setup_client, "/setup/step/5", get_url="/setup/step/5")
             assert resp.status_code == 303
             assert "/dashboard/" in resp.headers.get("location", "")
 
@@ -282,9 +290,11 @@ class TestHAConnectionTest:
             new_callable=AsyncMock,
             return_value=True,
         ):
-            resp = await setup_client.post(
+            resp = await csrf_post(
+                setup_client,
                 "/setup/test/ha",
-                data={"ha_url": "http://ha.local:8123", "ha_token": "valid-token"},
+                {"ha_url": "http://ha.local:8123", "ha_token": "valid-token"},
+                get_url="/setup/step/2",
             )
             assert resp.status_code == 200
             assert "test-success" in resp.text
@@ -296,9 +306,11 @@ class TestHAConnectionTest:
             new_callable=AsyncMock,
             return_value=False,
         ):
-            resp = await setup_client.post(
+            resp = await csrf_post(
+                setup_client,
                 "/setup/test/ha",
-                data={"ha_url": "http://bad-url:8123", "ha_token": "bad-token"},
+                {"ha_url": "http://bad-url:8123", "ha_token": "bad-token"},
+                get_url="/setup/step/2",
             )
             assert resp.status_code == 200
             assert "test-error" in resp.text
@@ -322,9 +334,11 @@ class TestLLMTest:
         mock_litellm_mod = MagicMock()
         mock_litellm_mod.acompletion = AsyncMock(return_value=mock_resp)
         with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
-            resp = await setup_client.post(
+            resp = await csrf_post(
+                setup_client,
                 "/setup/test/llm",
-                data={"provider": "openrouter", "api_key": "sk-test"},
+                {"provider": "openrouter", "api_key": "sk-test"},
+                get_url="/setup/step/4",
             )
             assert resp.status_code == 200
             assert "test-success" in resp.text
@@ -334,9 +348,11 @@ class TestLLMTest:
         mock_litellm_mod = MagicMock()
         mock_litellm_mod.acompletion = AsyncMock(side_effect=Exception("API error"))
         with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
-            resp = await setup_client.post(
+            resp = await csrf_post(
+                setup_client,
                 "/setup/test/llm",
-                data={"provider": "openrouter", "api_key": "bad-key"},
+                {"provider": "openrouter", "api_key": "bad-key"},
+                get_url="/setup/step/4",
             )
             assert resp.status_code == 200
             assert "test-error" in resp.text
@@ -345,9 +361,11 @@ class TestLLMTest:
     async def test_llm_test_unknown_provider(self, setup_client: httpx.AsyncClient):
         mock_litellm_mod = MagicMock()
         with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
-            resp = await setup_client.post(
+            resp = await csrf_post(
+                setup_client,
                 "/setup/test/llm",
-                data={"provider": "unknown-provider", "api_key": "key"},
+                {"provider": "unknown-provider", "api_key": "key"},
+                get_url="/setup/step/4",
             )
             assert resp.status_code == 200
             assert "test-error" in resp.text
@@ -373,15 +391,19 @@ class TestSetupDuplicateAdmin:
             new_callable=AsyncMock,
         ):
             # First submission
-            resp1 = await setup_client.post(
+            resp1 = await csrf_post(
+                setup_client,
                 "/setup/step/1",
-                data={"username": "admin", "password": "first-password"},
+                {"username": "admin", "password": "first-password"},
+                get_url="/setup/step/1",
             )
             assert resp1.status_code == 303
             # Second submission (same username, different password)
-            resp2 = await setup_client.post(
+            resp2 = await csrf_post(
+                setup_client,
                 "/setup/step/1",
-                data={"username": "admin", "password": "second-password"},
+                {"username": "admin", "password": "second-password"},
+                get_url="/setup/step/1",
             )
             assert resp2.status_code == 303
             assert mock_create.await_count == 2
@@ -396,12 +418,14 @@ class TestSetupXSSPrevention:
         mock_litellm_mod = MagicMock()
         mock_litellm_mod.acompletion = AsyncMock(side_effect=Exception("fail"))
         with patch.dict(sys.modules, {"litellm": mock_litellm_mod}):
-            resp = await setup_client.post(
+            resp = await csrf_post(
+                setup_client,
                 "/setup/test/llm",
-                data={
+                {
                     "provider": '<script>alert("xss")</script>',
                     "api_key": "test-key",
                 },
+                get_url="/setup/step/4",
             )
             assert resp.status_code == 200
             body = resp.text

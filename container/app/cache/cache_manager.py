@@ -148,19 +148,35 @@ class CacheManager:
                 similarity=resp_similarity,
             )
 
-        # 3. Complete miss -- return best similarity seen
-        best_similarity = routing_similarity if routing_similarity is not None else resp_similarity
-        return CacheResult(hit_type="miss", similarity=best_similarity)
+        # 3. Complete miss -- do not surface a cross-tier similarity (COR-3).
+        # Mixing routing vs response similarities was misleading in the trace UI;
+        # downstream consumers already treat ``similarity is None`` as N/A.
+        return CacheResult(hit_type="miss", similarity=None)
 
     def store_routing(self, query_text: str, agent_id: str, confidence: float, condensed_task: str = "") -> None:
         """Store a routing decision after an agent handles a request."""
         self._routing_cache.store(query_text, agent_id, confidence, condensed_task)
+
+    async def store_routing_async(
+        self, query_text: str, agent_id: str, confidence: float, condensed_task: str = ""
+    ) -> None:
+        """Async wrapper around ``store_routing`` that offloads the ChromaDB
+        write to a worker thread so the event loop is not blocked (PERF-4)."""
+        await asyncio.to_thread(
+            self.store_routing, query_text, agent_id, confidence, condensed_task
+        )
 
     def store_response(self, entry: ResponseCacheEntry) -> None:
         """Store a full response after successful execution."""
         if not self._response_cache_enabled:
             return
         self._response_cache.store(entry)
+
+    async def store_response_async(self, entry: ResponseCacheEntry) -> None:
+        """Async wrapper around ``store_response`` that offloads the
+        ChromaDB write to a worker thread so the event loop is not
+        blocked (PERF-4)."""
+        await asyncio.to_thread(self.store_response, entry)
 
     def invalidate_response(self, entry_id: str) -> None:
         """Reactive invalidation -- remove a response entry on action failure."""

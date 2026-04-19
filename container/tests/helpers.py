@@ -291,3 +291,30 @@ def make_mock_llm_response(
 def make_mock_embedding(dim: int = 384) -> list[float]:
     """Return a random embedding vector of the given dimension."""
     return [random.uniform(-1.0, 1.0) for _ in range(dim)]
+
+
+# ---------------------------------------------------------------------------
+# CSRF helper
+# ---------------------------------------------------------------------------
+
+async def csrf_post(
+    client,
+    url: str,
+    data: dict | None = None,
+    *,
+    get_url: str | None = None,
+):
+    """POST a form with a valid CSRF cookie+token pair.
+
+    Performs a GET against ``get_url`` (or ``url`` if not provided) so the
+    server sets the ``agent_assist_csrf`` cookie; reads the cookie back from
+    the test client and adds the matching ``csrf_token`` form field on the
+    POST.
+    """
+    fetch_url = get_url or url
+    await client.get(fetch_url)
+    token = client.cookies.get("agent_assist_csrf")
+    payload = dict(data or {})
+    if token is not None:
+        payload["csrf_token"] = token
+    return await client.post(url, data=payload)

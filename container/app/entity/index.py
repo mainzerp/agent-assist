@@ -48,6 +48,19 @@ class EntityIndex:
             "aliases": ",".join(entry.aliases) if entry.aliases else "",
         }
 
+    @staticmethod
+    def _entry_from_metadata(entity_id: str, meta: dict) -> EntityIndexEntry:
+        """Build an EntityIndexEntry from stored Chroma metadata."""
+        aliases_str = meta.get("aliases", "")
+        return EntityIndexEntry(
+            entity_id=entity_id,
+            friendly_name=meta.get("friendly_name", ""),
+            domain=meta.get("domain", ""),
+            area=meta.get("area", "") or None,
+            device_class=meta.get("device_class", "") or None,
+            aliases=aliases_str.split(",") if aliases_str else [],
+        )
+
     def populate(self, entities: list[EntityIndexEntry]) -> None:
         """Bulk upsert all HA entities into the entity_index collection.
 
@@ -104,15 +117,7 @@ class EntityIndex:
         for i, eid in enumerate(result["ids"][0]):
             meta = result["metadatas"][0][i]
             distance = result["distances"][0][i]
-            aliases_str = meta.get("aliases", "")
-            entry = EntityIndexEntry(
-                entity_id=eid,
-                friendly_name=meta.get("friendly_name", ""),
-                domain=meta.get("domain", ""),
-                area=meta.get("area", "") or None,
-                device_class=meta.get("device_class", "") or None,
-                aliases=aliases_str.split(",") if aliases_str else [],
-            )
+            entry = self._entry_from_metadata(eid, meta)
             entries.append((entry, distance))
         return entries
 
@@ -139,15 +144,29 @@ class EntityIndex:
         if not data["ids"]:
             return None
         meta = data["metadatas"][0]
-        aliases_str = meta.get("aliases", "")
-        return EntityIndexEntry(
-            entity_id=entity_id,
-            friendly_name=meta.get("friendly_name", ""),
-            domain=meta.get("domain", ""),
-            area=meta.get("area", "") or None,
-            device_class=meta.get("device_class", "") or None,
-            aliases=aliases_str.split(",") if aliases_str else [],
+        return self._entry_from_metadata(entity_id, meta)
+
+    def list_entries(self, domains: set[str] | frozenset[str] | None = None) -> list[EntityIndexEntry]:
+        """Return all indexed entities, optionally filtered by domain."""
+        where: dict | None = None
+        if domains:
+            dlist = list(domains)
+            if len(dlist) == 1:
+                where = {"domain": dlist[0]}
+            else:
+                where = {"domain": {"$in": dlist}}
+        data = self._store.get(
+            COLLECTION_ENTITY_INDEX,
+            include=["metadatas"],
+            where=where,
         )
+        entries: list[EntityIndexEntry] = []
+        for entity_id, meta in zip(data.get("ids", []), data.get("metadatas", []), strict=False):
+            entry = self._entry_from_metadata(entity_id, meta)
+            if domains and entry.domain not in domains:
+                continue
+            entries.append(entry)
+        return entries
 
     def clear(self) -> None:
         """Remove all entities from the index."""
@@ -374,3 +393,11 @@ class EntityIndex:
         """Async wrapper -- offloads search() to thread pool."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, partial(self.search, query, n_results=n_results))
+
+    async def list_entries_async(
+        self,
+        domains: set[str] | frozenset[str] | None = None,
+    ) -> list[EntityIndexEntry]:
+        """Async wrapper -- offloads list_entries() to thread pool."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, partial(self.list_entries, domains=domains))

@@ -42,6 +42,7 @@ from app.api.routes import dashboard_api as dashboard_api_routes
 from app.dashboard.routes import router as dashboard_router
 from app.setup.routes import router as setup_router
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX
+from app.entity.ingest import parse_ha_states, state_to_entity_index_entry
 from app.models.entity_index import EntityIndexEntry
 
 logger = logging.getLogger(__name__)
@@ -59,20 +60,7 @@ def _configure_logging() -> None:
 
 def _parse_ha_states(states: list[dict[str, Any]]) -> list[EntityIndexEntry]:
     """Parse HA GET /api/states response into EntityIndexEntry list."""
-    entries = []
-    for state in states:
-        entity_id = state.get("entity_id", "")
-        attrs = state.get("attributes", {})
-        domain = entity_id.split(".")[0] if "." in entity_id else ""
-        entries.append(EntityIndexEntry(
-            entity_id=entity_id,
-            friendly_name=attrs.get("friendly_name", ""),
-            domain=domain,
-            area=attrs.get("area_id"),
-            device_class=attrs.get("device_class"),
-            aliases=[],
-        ))
-    return entries
+    return parse_ha_states(states)
 
 
 async def _periodic_entity_sync(app: FastAPI) -> None:
@@ -427,16 +415,7 @@ async def lifespan(app: FastAPI):
             if new_state is None and old_state is not None:
                 await entity_index.remove_async(entity_id)
             elif new_state is not None:
-                attrs = new_state.get("attributes", {})
-                domain = entity_id.split(".")[0] if "." in entity_id else ""
-                entry = EntityIndexEntry(
-                    entity_id=entity_id,
-                    friendly_name=attrs.get("friendly_name", ""),
-                    domain=domain,
-                    area=attrs.get("area_id"),
-                    device_class=attrs.get("device_class"),
-                    aliases=[],
-                )
+                entry = state_to_entity_index_entry(new_state, entity_id=entity_id)
                 _entity_update_queue.put_nowait(entry)
 
         ws_client.on_event("state_changed", on_state_changed)

@@ -165,12 +165,34 @@ class AdminAccountRepository:
     """CRUD for admin accounts."""
 
     @staticmethod
-    async def create(username: str, password_hash: str) -> None:
+    async def create(
+        username: str,
+        password_hash: str,
+        *,
+        force_overwrite: bool = False,
+    ) -> None:
+        """Create an admin account.
+
+        ``force_overwrite=True`` uses ``INSERT OR REPLACE`` (only the
+        one-time setup bootstrap should pass this). The default uses
+        ``INSERT OR IGNORE`` so an authenticated session cannot silently
+        overwrite an existing admin row via an unrelated code path.
+        """
+        verb = "INSERT OR REPLACE" if force_overwrite else "INSERT OR IGNORE"
         async with get_db_write() as db:
             await db.execute(
-                "INSERT OR REPLACE INTO admin_accounts (username, password_hash, created_at) "
+                f"{verb} INTO admin_accounts (username, password_hash, created_at) "
                 "VALUES (?, ?, ?)",
                 (username, password_hash, _now()),
+            )
+            await db.commit()
+
+    @staticmethod
+    async def update_password(username: str, password_hash: str) -> None:
+        async with get_db_write() as db:
+            await db.execute(
+                "UPDATE admin_accounts SET password_hash = ? WHERE username = ?",
+                (password_hash, username),
             )
             await db.commit()
 

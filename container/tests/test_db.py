@@ -347,6 +347,31 @@ class TestMcpServerRepository:
         names = {s["name"] for s in servers}
         assert "mcp-on" in names
 
+    async def test_upsert_roundtrips_env_vars_as_dict(self, db_repository):
+        """Q-7 regression: ``upsert`` serializes env_vars to JSON on write
+        and ``get`` deserializes it back to a ``dict``."""
+        env = {"API_KEY": "secret123", "REGION": "eu-west-1"}
+        await McpServerRepository.upsert(
+            "mcp-upsert", "http", "http://localhost:8000",
+            env_vars=env, timeout=45,
+        )
+        server = await McpServerRepository.get("mcp-upsert")
+        assert server is not None
+        assert isinstance(server["env_vars"], dict)
+        assert server["env_vars"] == env
+        assert server["timeout"] == 45
+
+        # Second upsert updates the row and round-trips the new env dict.
+        new_env = {"API_KEY": "rotated"}
+        await McpServerRepository.upsert(
+            "mcp-upsert", "http", "http://localhost:8000",
+            env_vars=new_env, timeout=60,
+        )
+        server = await McpServerRepository.get("mcp-upsert")
+        assert isinstance(server["env_vars"], dict)
+        assert server["env_vars"] == new_env
+        assert server["timeout"] == 60
+
 
 # ---------------------------------------------------------------------------
 # Repository CRUD -- secrets
@@ -506,10 +531,18 @@ class TestAdminAccountRepository:
         assert "u1" in usernames
         assert "u2" in usernames
 
-    async def test_duplicate_username_replaces(self, db_repository):
-        """INSERT OR REPLACE allows re-creating an admin with the same username."""
+    async def test_duplicate_username_ignored_by_default(self, db_repository):
+        """Default ``INSERT OR IGNORE`` keeps the original password (defense-in-depth)."""
         await AdminAccountRepository.create("dupuser", "$2b$12$h")
         await AdminAccountRepository.create("dupuser", "$2b$12$h2")
+        account = await AdminAccountRepository.get("dupuser")
+        assert account is not None
+        assert account["password_hash"] == "$2b$12$h"
+
+    async def test_duplicate_username_replaces_with_force(self, db_repository):
+        """``force_overwrite=True`` (setup bootstrap) replaces the existing row."""
+        await AdminAccountRepository.create("dupuser", "$2b$12$h")
+        await AdminAccountRepository.create("dupuser", "$2b$12$h2", force_overwrite=True)
         account = await AdminAccountRepository.get("dupuser")
         assert account is not None
         assert account["password_hash"] == "$2b$12$h2"

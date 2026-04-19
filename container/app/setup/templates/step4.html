@@ -3,6 +3,7 @@
 <h2>LLM Provider Configuration</h2>
 <p style="color: #94a3b8; margin-bottom: 1rem;">Configure at least one LLM provider. You can add more later in the dashboard.</p>
 <form method="post" action="/setup/step/4" id="llm-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label for="openrouter_key">OpenRouter API Key (optional)</label>
     <input type="password" id="openrouter_key" name="openrouter_key">
 
@@ -15,12 +16,12 @@
     <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
         <button type="button" class="btn-secondary"
             hx-post="/setup/test/llm"
-            hx-vals='js:{"provider": "openrouter", "api_key": document.getElementById("openrouter_key").value}'
+            hx-vals='js:{"provider": "openrouter", "api_key": document.getElementById("openrouter_key").value, "csrf_token": document.querySelector("#llm-form input[name=csrf_token]").value}'
             hx-target="#test-llm-result"
             hx-swap="innerHTML">Test OpenRouter</button>
         <button type="button" class="btn-secondary"
             hx-post="/setup/test/llm"
-            hx-vals='js:{"provider": "groq", "api_key": document.getElementById("groq_key").value}'
+            hx-vals='js:{"provider": "groq", "api_key": document.getElementById("groq_key").value, "csrf_token": document.querySelector("#llm-form input[name=csrf_token]").value}'
             hx-target="#test-llm-result"
             hx-swap="innerHTML">Test Groq</button>
     </div>

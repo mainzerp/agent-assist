@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 # Prompts directory (container/app/prompts/)
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
+# Module-level cache for loaded prompt files (Q-4). Prompts only change on
+# container restart, so there is no invalidation path.
+_prompt_cache: dict[str, str] = {}
+
 
 class BaseAgent(ABC):
     """Abstract base class for all specialized agents.
@@ -75,6 +79,9 @@ class BaseAgent(ABC):
     def _load_prompt(self, name: str) -> str:
         """Load a prompt file from the prompts/ directory.
 
+        Results are cached in ``_prompt_cache`` keyed by the resolved file
+        path (Q-4). Prompts only change on container restart.
+
         Args:
             name: Filename without extension (e.g. "light" loads "light.txt").
 
@@ -82,6 +89,10 @@ class BaseAgent(ABC):
             Prompt text content.
         """
         path = _PROMPTS_DIR / f"{name}.txt"
+        cache_key = str(path)
+        cached = _prompt_cache.get(cache_key)
+        if cached is not None:
+            return cached
         content = path.read_text(encoding="utf-8").strip()
         # Resolve {personality_base} include if present
         if "{personality_base}" in content:
@@ -89,6 +100,7 @@ class BaseAgent(ABC):
             if base_path.exists():
                 base_content = base_path.read_text(encoding="utf-8").strip()
                 content = content.replace("{personality_base}", base_content)
+        _prompt_cache[cache_key] = content
         return content
 
     def _error_result(

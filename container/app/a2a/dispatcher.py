@@ -57,8 +57,10 @@ class Dispatcher:
 
         try:
             raw_params = request.params or {}
-            span_collector = raw_params.pop("_span_collector", None)
-            params = MessageStreamParams(**raw_params)
+            span_collector = raw_params.get("_span_collector")
+            params = MessageStreamParams(
+                **{k: v for k, v in raw_params.items() if k != "_span_collector"}
+            )
         except Exception as exc:
             yield JsonRpcStreamChunk(
                 id=request.id,
@@ -75,8 +77,10 @@ class Dispatcher:
     async def _handle_message_send(self, request: JsonRpcRequest) -> JsonRpcResponse:
         try:
             raw_params = request.params or {}
-            span_collector = raw_params.pop("_span_collector", None)
-            params = MessageSendParams(**raw_params)
+            span_collector = raw_params.get("_span_collector")
+            params = MessageSendParams(
+                **{k: v for k, v in raw_params.items() if k != "_span_collector"}
+            )
         except Exception as exc:
             return error_response(request.id, INVALID_PARAMS, f"Invalid params: {exc}")
 

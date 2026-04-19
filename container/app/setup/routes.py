@@ -7,7 +7,7 @@ import logging
 import secrets
 from pathlib import Path
 
-from fastapi import APIRouter, Request, Form
+from fastapi import APIRouter, Depends, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -18,6 +18,12 @@ from app.db.repository import (
 )
 from app.security.encryption import store_secret, retrieve_secret
 from app.security.hashing import hash_password
+from app.security.auth import (
+    ensure_csrf_token,
+    require_admin_or_setup_open,
+    set_csrf_cookie,
+    verify_csrf,
+)
 from app.ha_client.rest import test_ha_connection
 
 logger = logging.getLogger(__name__)
@@ -56,15 +62,25 @@ async def render_step(request: Request, step_num: int):
         if step_num == 5
         else step_map
     )
+    token = ensure_csrf_token(request)
     context = {
         "step_num": step_num,
         "total_steps": len(STEP_ORDER),
         "steps": display_steps,
+        "csrf_token": token,
     }
-    return templates.TemplateResponse(request, f"step{step_num}.html", context=context)
+    response = templates.TemplateResponse(
+        request, f"step{step_num}.html", context=context
+    )
+    set_csrf_cookie(response, token)
+    return response
 
 
-@router.post("/step/1", response_class=HTMLResponse)
+@router.post(
+    "/step/1",
+    response_class=HTMLResponse,
+    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open)],
+)
 async def save_admin_password(
     request: Request,
     username: str = Form("admin"),
@@ -72,12 +88,16 @@ async def save_admin_password(
 ):
     """Step 1: Create admin account with bcrypt-hashed password."""
     hashed = hash_password(password)
-    await AdminAccountRepository.create(username, hashed)
+    await AdminAccountRepository.create(username, hashed, force_overwrite=True)
     await SetupStateRepository.set_step_completed("admin_password")
     return RedirectResponse(url="/setup/step/2", status_code=303)
 
 
-@router.post("/step/2", response_class=HTMLResponse)
+@router.post(
+    "/step/2",
+    response_class=HTMLResponse,
+    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open)],
+)
 async def save_ha_connection(
     request: Request,
     ha_url: str = Form(...),
@@ -91,7 +111,11 @@ async def save_ha_connection(
     return RedirectResponse(url="/setup/step/3", status_code=303)
 
 
-@router.post("/step/3", response_class=HTMLResponse)
+@router.post(
+    "/step/3",
+    response_class=HTMLResponse,
+    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open)],
+)
 async def generate_api_key(request: Request):
     """Step 3: Auto-generate container API key, store encrypted, show once."""
     api_key = secrets.token_urlsafe(32)
@@ -108,7 +132,11 @@ async def generate_api_key(request: Request):
     })
 
 
-@router.post("/step/4", response_class=HTMLResponse)
+@router.post(
+    "/step/4",
+    response_class=HTMLResponse,
+    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open)],
+)
 async def save_llm_keys(
     request: Request,
     openrouter_key: str = Form(""),
@@ -128,7 +156,11 @@ async def save_llm_keys(
     return RedirectResponse(url="/setup/step/5", status_code=303)
 
 
-@router.post("/step/5", response_class=HTMLResponse)
+@router.post(
+    "/step/5",
+    response_class=HTMLResponse,
+    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open)],
+)
 async def complete_setup(request: Request):
     """Step 5: Mark setup complete and trigger post-setup initialization."""
     await SetupStateRepository.set_step_completed("review_complete")
@@ -136,7 +168,10 @@ async def complete_setup(request: Request):
     return RedirectResponse(url="/dashboard/", status_code=303)
 
 
-@router.post("/test/ha")
+@router.post(
+    "/test/ha",
+    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open)],
+)
 async def test_ha_endpoint(ha_url: str = Form(...), ha_token: str = Form(...)):
     """Test HA connection with provided URL and token."""
     success = await test_ha_connection(ha_url, ha_token)
@@ -145,7 +180,10 @@ async def test_ha_endpoint(ha_url: str = Form(...), ha_token: str = Form(...)):
     return HTMLResponse('<div class="test-result test-error">Failed to connect to Home Assistant.</div>')
 
 
-@router.post("/test/llm")
+@router.post(
+    "/test/llm",
+    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open)],
+)
 async def test_llm_endpoint(provider: str = Form(...), api_key: str = Form(...)):
     """Test LLM provider with a small completion request."""
     try:

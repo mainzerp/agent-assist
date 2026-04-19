@@ -178,6 +178,22 @@ class TestHARestClient:
         assert client._client is not None
         await client.close()
 
+    @patch("app.ha_client.rest.get_auth_headers", new_callable=AsyncMock)
+    @patch("app.ha_client.rest.SettingsRepository")
+    async def test_close_nulls_client_and_refresh_is_noop(self, mock_settings, mock_auth):
+        """COR-5: after close() the httpx client is None and _refresh_headers
+        is a safe no-op instead of raising httpx.RuntimeError."""
+        mock_settings.get_value = AsyncMock(return_value="http://ha.local:8123")
+        mock_auth.return_value = {"Authorization": "Bearer x"}
+
+        client = HARestClient()
+        await client.initialize()
+        await client.close()
+        assert client._client is None
+        # Must not raise
+        await client._refresh_headers()
+        assert client._client is None
+
 
 # ---------------------------------------------------------------------------
 # Standalone test_ha_connection

@@ -62,6 +62,69 @@ class TestEncryption:
                 decrypt(ciphertext)
 
 
+class TestSessionSigningKey:
+    """SEC-6: signing key for admin sessions must be derived via HKDF and
+    differ from the raw Fernet key (and from sha256(fernet_key))."""
+
+    def test_signing_key_is_deterministic_for_same_fernet_key(self):
+        import hashlib
+
+        from app.security.encryption import get_session_signing_key
+
+        key = b"0" * 32
+        with patch(
+            "app.security.encryption._load_or_generate_key",
+            return_value=key,
+        ):
+            k1 = get_session_signing_key()
+            k2 = get_session_signing_key()
+        assert isinstance(k1, bytes)
+        assert len(k1) == 32
+        assert k1 == k2
+        assert k1 != hashlib.sha256(key).digest()
+
+    def test_signing_key_changes_with_fernet_key(self):
+        from app.security.encryption import get_session_signing_key
+
+        with patch(
+            "app.security.encryption._load_or_generate_key",
+            return_value=b"a" * 32,
+        ):
+            k1 = get_session_signing_key()
+        with patch(
+            "app.security.encryption._load_or_generate_key",
+            return_value=b"b" * 32,
+        ):
+            k2 = get_session_signing_key()
+        assert k1 != k2
+
+
+class TestFernetKeyCaching:
+    """COR-4: ``_load_or_generate_key`` must cache its result and serialize
+    concurrent first-time loads with a thread lock so two callers cannot
+    race and overwrite each other's freshly-generated key file."""
+
+    def test_concurrent_first_time_load_writes_single_key(self, tmp_path):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        import app.security.encryption as enc
+
+        key_path = tmp_path / ".fernet_key"
+        # Reset cached state and point at a fresh file
+        with patch.object(enc, "FERNET_KEY_PATH", key_path), \
+             patch.object(enc, "_key_bytes", None), \
+             patch.object(enc, "_key_lock", threading.Lock()):
+            results: list[bytes] = []
+            with ThreadPoolExecutor(max_workers=20) as pool:
+                futures = [pool.submit(enc._load_or_generate_key) for _ in range(20)]
+                for f in futures:
+                    results.append(f.result())
+            # Exactly one file written and all callers see the same key bytes
+            assert key_path.exists()
+            assert len({bytes(r) for r in results}) == 1
+            assert key_path.read_bytes().strip() == results[0]
+
+
 # ---------------------------------------------------------------------------
 # Hashing
 # ---------------------------------------------------------------------------
@@ -124,6 +187,21 @@ class TestSanitizeInput:
     def test_strips_whitespace(self):
         result = sanitize_input("  hello  ")
         assert result == "hello"
+
+    def test_preserves_zwj_and_zwnj(self):
+        """COR-11: zero-width joiner / non-joiner must survive sanitization
+        so non-Latin scripts and emoji ligatures are not mangled."""
+        # Family emoji uses ZWJ (U+200D) between codepoints
+        text = "\U0001F468\u200D\U0001F469\u200D\U0001F467"
+        result = sanitize_input(text)
+        assert "\u200D" in result
+
+    def test_strips_bidi_override_but_keeps_zwj(self):
+        # Bidi override (RLO U+202E) must be stripped, ZWJ kept
+        text = "ok\u202Ebad\u200Cmix"
+        result = sanitize_input(text)
+        assert "\u202E" not in result
+        assert "\u200C" in result
 
 
 class TestCheckInjectionPatterns:
@@ -208,7 +286,7 @@ class TestSecurityAuth:
 
 class TestAdminSession:
 
-    @patch("app.security.auth.get_fernet_key", return_value=b"0" * 32)
+    @patch("app.security.auth.get_session_signing_key", return_value=b"0" * 32)
     async def test_valid_session_accepted(self, _mock_key):
         """A valid session cookie should be accepted."""
         from app.security.auth import (
@@ -225,7 +303,7 @@ class TestAdminSession:
         assert data["username"] == "admin"
         auth_mod._session_serializer = None
 
-    @patch("app.security.auth.get_fernet_key", return_value=b"0" * 32)
+    @patch("app.security.auth.get_session_signing_key", return_value=b"0" * 32)
     async def test_missing_cookie_rejected(self, _mock_key):
         """Missing session cookie should raise 401."""
         from app.security.auth import require_admin_session
@@ -239,7 +317,7 @@ class TestAdminSession:
         assert exc_info.value.status_code == 401
         auth_mod._session_serializer = None
 
-    @patch("app.security.auth.get_fernet_key", return_value=b"0" * 32)
+    @patch("app.security.auth.get_session_signing_key", return_value=b"0" * 32)
     async def test_tampered_cookie_rejected(self, _mock_key):
         """A tampered session cookie should raise 401."""
         from app.security.auth import require_admin_session, SESSION_COOKIE_NAME
@@ -379,15 +457,21 @@ class TestWebSocketAuth:
 
     @patch("app.security.auth.logger")
     @patch("app.security.auth.retrieve_secret", new_callable=AsyncMock, return_value="valid-key")
-    async def test_ws_auth_query_string_accepted_with_deprecation_warning(self, mock_retrieve, mock_logger):
+    async def test_ws_auth_query_string_rejected(self, mock_retrieve, mock_logger):
+        """SEC-2: ?token= fallback removed; query-string auth must be rejected."""
         from app.security.auth import require_api_key_ws
+        from fastapi import HTTPException
         ws = MagicMock(spec=WebSocket)
         ws.headers = {}
         ws.query_params = {"token": "valid-key"}
-        result = await require_api_key_ws(ws)
-        assert result == "valid-key"
-        mock_logger.warning.assert_called()
-        assert "deprecated" in mock_logger.warning.call_args[0][0].lower()
+        ws.close = AsyncMock()
+        with pytest.raises(HTTPException) as exc_info:
+            await require_api_key_ws(ws)
+        assert exc_info.value.status_code == 401
+        ws.close.assert_awaited_once_with(code=4001, reason="Unauthorized")
+        # No deprecation warning anymore.
+        for call in mock_logger.warning.call_args_list:
+            assert "deprecated" not in str(call).lower()
 
     @patch("app.security.auth.retrieve_secret", new_callable=AsyncMock, return_value="valid-key")
     async def test_ws_auth_no_credentials_rejected(self, mock_retrieve):

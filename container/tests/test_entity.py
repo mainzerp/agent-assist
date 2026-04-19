@@ -14,6 +14,7 @@ from app.entity.signals import (
     LevenshteinSignal,
     PhoneticSignal,
 )
+from app.entity.ingest import parse_ha_states, state_to_entity_index_entry
 from app.entity.matcher import EntityMatcher, MatchResult, _normalize_for_containment, _digraphs_to_umlauts
 from app.entity.aliases import AliasResolver
 from app.entity.index import EntityIndex
@@ -776,6 +777,94 @@ class TestVisibilityRules:
         assert "light.kitchen" in entity_ids
         assert "sensor.illum" in entity_ids
         assert "sensor.temp" not in entity_ids
+
+
+# ---------------------------------------------------------------------------
+# Entity ingest helpers
+# ---------------------------------------------------------------------------
+
+class TestEntityIngest:
+
+    def test_state_to_entity_index_entry_preserves_state_fields(self):
+        entry = state_to_entity_index_entry(
+            {
+                "entity_id": "light.keller",
+                "attributes": {
+                    "friendly_name": "Keller",
+                    "area_id": "keller",
+                    "device_class": "light",
+                },
+            }
+        )
+
+        assert entry.entity_id == "light.keller"
+        assert entry.friendly_name == "Keller"
+        assert entry.domain == "light"
+        assert entry.area == "keller"
+        assert entry.device_class == "light"
+
+    def test_state_to_entity_index_entry_supports_event_entity_id_override(self):
+        entry = state_to_entity_index_entry(
+            {"attributes": {"friendly_name": "Keller"}},
+            entity_id="light.keller",
+        )
+
+        assert entry.entity_id == "light.keller"
+        assert entry.domain == "light"
+
+    def test_parse_ha_states_handles_missing_area_id(self):
+        entries = parse_ha_states(
+            [
+                {
+                    "entity_id": "light.keller",
+                    "attributes": {"friendly_name": "Keller"},
+                }
+            ]
+        )
+
+        assert len(entries) == 1
+        assert entries[0].entity_id == "light.keller"
+        assert entries[0].area is None
+
+
+# ---------------------------------------------------------------------------
+# Entity index helpers
+# ---------------------------------------------------------------------------
+
+class TestEntityIndexHelpers:
+
+    def _make_index(self):
+        store = MagicMock()
+        index = EntityIndex(store)
+        return index, store
+
+    def test_list_entries_returns_all_indexed_entities(self):
+        index, store = self._make_index()
+        store.get.return_value = {
+            "ids": ["light.keller", "switch.keller_fan"],
+            "metadatas": [
+                {"friendly_name": "Keller", "domain": "light", "area": "Keller", "device_class": "", "aliases": ""},
+                {"friendly_name": "Keller Fan", "domain": "switch", "area": "Keller", "device_class": "", "aliases": ""},
+            ],
+        }
+
+        entries = index.list_entries()
+
+        assert [entry.entity_id for entry in entries] == ["light.keller", "switch.keller_fan"]
+
+    def test_list_entries_can_filter_by_domain(self):
+        index, store = self._make_index()
+        store.get.return_value = {
+            "ids": ["light.keller", "switch.keller_fan"],
+            "metadatas": [
+                {"friendly_name": "Keller", "domain": "light", "area": "Keller", "device_class": "", "aliases": ""},
+                {"friendly_name": "Keller Fan", "domain": "switch", "area": "Keller", "device_class": "", "aliases": ""},
+            ],
+        }
+
+        entries = index.list_entries(domains={"light"})
+
+        assert [entry.entity_id for entry in entries] == ["light.keller"]
 
 
 # ---------------------------------------------------------------------------

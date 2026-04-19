@@ -1,4 +1,18 @@
-"""MCP client for connecting to MCP servers."""
+"""MCP client for connecting to MCP servers.
+
+Uses an owner-task pattern: a single asyncio task holds the
+``async with stdio_client(...) as (r, w): async with ClientSession(r, w):``
+context open for the lifetime of the client. All callers (``list_tools``,
+``call_tool``, ``disconnect``) submit requests to the owner via an
+``asyncio.Queue`` and await a per-request future. This guarantees that
+``__aenter__`` and ``__aexit__`` for the underlying transport contexts
+run in the same task, which is required by the MCP SDK's anyio task
+groups.
+
+Regression: see CRIT-4 in docs/SubAgent/DEEP_CODE_REVIEW_ANALYSIS.md.
+The legacy direct-context implementation is preserved as
+``app/mcp/client_legacy.py``.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +21,28 @@ import logging
 import shlex
 from typing import Any
 
+try:  # pragma: no cover - executed only when the optional SDK is missing
+    from mcp import ClientSession as _SDKClientSession
+    from mcp.client.stdio import stdio_client as _sdk_stdio_client, StdioServerParameters as _SDKStdioServerParameters
+    from mcp.client.sse import sse_client as _sdk_sse_client
+except Exception:  # pragma: no cover
+    _SDKClientSession = None  # type: ignore[assignment]
+    _sdk_stdio_client = None  # type: ignore[assignment]
+    _SDKStdioServerParameters = None  # type: ignore[assignment]
+    _sdk_sse_client = None  # type: ignore[assignment]
+
+# Re-exported as module attributes so tests can monkey-patch them.
+ClientSession = _SDKClientSession
+stdio_client = _sdk_stdio_client
+StdioServerParameters = _SDKStdioServerParameters
+sse_client = _sdk_sse_client
+
 logger = logging.getLogger(__name__)
+
+
+_STOP = "STOP"
+_LIST_TOOLS = "list_tools"
+_CALL_TOOL = "call_tool"
 
 
 class MCPClient:
@@ -27,9 +62,14 @@ class MCPClient:
         self._env_vars = env_vars or {}
         self._timeout = timeout
         self._session: Any = None
+        # Legacy attributes kept so existing tests that poke them still work.
         self._session_cm: Any = None
         self._transport_cm: Any = None
         self._connected: bool = False
+
+        self._owner_task: asyncio.Task | None = None
+        self._req_q: asyncio.Queue | None = None
+        self._ready: asyncio.Event | None = None
 
     @property
     def name(self) -> str:
@@ -67,63 +107,179 @@ class MCPClient:
                 "Connection to MCP server '%s' timed out after %ds",
                 self._name, self._timeout,
             )
+            await self._abort_owner()
             self._connected = False
             return False
         except Exception:
             logger.error(
                 "Failed to connect to MCP server '%s'", self._name, exc_info=True
             )
+            await self._abort_owner()
             self._connected = False
             return False
 
+    # ------------------------------------------------------------------
+    # owner-task setup
+    # ------------------------------------------------------------------
+
+    async def _start_owner(self, transport_factory) -> bool:
+        """Spawn the owner task and wait until it is ready (or fails)."""
+        self._req_q = asyncio.Queue()
+        self._ready = asyncio.Event()
+        self._owner_task = asyncio.create_task(
+            self._owner_loop(transport_factory),
+            name=f"mcp-owner-{self._name}",
+        )
+        await self._ready.wait()
+        return self._connected
+
+    async def _owner_loop(self, transport_factory) -> None:
+        """Hold the transport + session contexts open and serve requests."""
+        # Resolve module-level binding fresh on every call so tests can
+        # monkey-patch ``app.mcp.client.ClientSession``.
+        import app.mcp.client as _mod
+        _ClientSession = _mod.ClientSession
+
+        try:
+            async with transport_factory() as (read, write):
+                async with _ClientSession(read, write) as session:
+                    await session.initialize()
+                    self._session = session
+                    self._connected = True
+                    assert self._ready is not None
+                    self._ready.set()
+
+                    while True:
+                        assert self._req_q is not None
+                        fut, op, args = await self._req_q.get()
+                        if op == _STOP:
+                            if not fut.done():
+                                fut.set_result(None)
+                            return
+                        try:
+                            if op == _LIST_TOOLS:
+                                result = await session.list_tools()
+                            elif op == _CALL_TOOL:
+                                tool_name, arguments = args
+                                result = await session.call_tool(
+                                    tool_name, arguments=arguments or {}
+                                )
+                            else:
+                                raise ValueError(f"unknown op: {op}")
+                            if not fut.done():
+                                fut.set_result(result)
+                        except asyncio.CancelledError:
+                            if not fut.done():
+                                fut.cancel()
+                            raise
+                        except Exception as exc:
+                            if not fut.done():
+                                fut.set_exception(exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error(
+                "MCP owner loop for '%s' crashed", self._name, exc_info=True
+            )
+        finally:
+            self._connected = False
+            self._session = None
+            if self._ready is not None and not self._ready.is_set():
+                self._ready.set()
+
     async def _connect_stdio(self) -> bool:
-        from mcp import ClientSession
-        from mcp.client.stdio import stdio_client, StdioServerParameters
+        import app.mcp.client as _mod
+        _stdio_client = _mod.stdio_client
+        _StdioServerParameters = _mod.StdioServerParameters
 
         parts = shlex.split(self._command_or_url)
         command = parts[0]
         args = parts[1:] if len(parts) > 1 else []
         env = dict(self._env_vars) if self._env_vars else None
 
-        server_params = StdioServerParameters(command=command, args=args, env=env)
-        self._transport_cm = stdio_client(server_params)
-        read, write = await self._transport_cm.__aenter__()
+        server_params = _StdioServerParameters(command=command, args=args, env=env)
 
-        self._session_cm = ClientSession(read, write)
-        self._session = await self._session_cm.__aenter__()
-        await self._session.initialize()
+        def _factory():
+            return _stdio_client(server_params)
 
-        self._connected = True
-        logger.info("Connected to MCP server '%s' via stdio", self._name)
-        return True
+        ok = await self._start_owner(_factory)
+        if ok:
+            logger.info("Connected to MCP server '%s' via stdio", self._name)
+        return ok
 
     async def _connect_sse(self) -> bool:
-        from mcp import ClientSession
-        from mcp.client.sse import sse_client
+        import app.mcp.client as _mod
+        _sse_client = _mod.sse_client
 
-        self._transport_cm = sse_client(self._command_or_url)
-        read, write = await self._transport_cm.__aenter__()
+        def _factory():
+            return _sse_client(self._command_or_url)
 
-        self._session_cm = ClientSession(read, write)
-        self._session = await self._session_cm.__aenter__()
-        await self._session.initialize()
+        ok = await self._start_owner(_factory)
+        if ok:
+            logger.info("Connected to MCP server '%s' via SSE", self._name)
+        return ok
 
-        self._connected = True
-        logger.info("Connected to MCP server '%s' via SSE", self._name)
-        return True
+    # ------------------------------------------------------------------
+    # request dispatch helpers
+    # ------------------------------------------------------------------
+
+    def _has_owner(self) -> bool:
+        return (
+            self._owner_task is not None
+            and not self._owner_task.done()
+            and self._req_q is not None
+        )
+
+    async def _submit(self, op: str, args: tuple) -> Any:
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        assert self._req_q is not None
+        await self._req_q.put((fut, op, args))
+        return await fut
+
+    async def _abort_owner(self) -> None:
+        if self._owner_task is not None and not self._owner_task.done():
+            self._owner_task.cancel()
+            try:
+                await self._owner_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._owner_task = None
+        self._req_q = None
+
+    # ------------------------------------------------------------------
+    # public API
+    # ------------------------------------------------------------------
 
     async def disconnect(self) -> None:
         """Disconnect from the MCP server."""
         try:
-            if self._session_cm is not None:
-                await self._session_cm.__aexit__(None, None, None)
-            if self._transport_cm is not None:
-                await self._transport_cm.__aexit__(None, None, None)
+            if self._has_owner():
+                loop = asyncio.get_running_loop()
+                fut: asyncio.Future = loop.create_future()
+                assert self._req_q is not None
+                await self._req_q.put((fut, _STOP, ()))
+                try:
+                    await asyncio.wait_for(self._owner_task, timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "MCP owner for '%s' did not stop within 5s; cancelling",
+                        self._name,
+                    )
+                    assert self._owner_task is not None
+                    self._owner_task.cancel()
+                    try:
+                        await self._owner_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
         except Exception:
             logger.warning(
                 "Error disconnecting from MCP server '%s'", self._name, exc_info=True
             )
         finally:
+            self._owner_task = None
+            self._req_q = None
+            self._ready = None
             self._session = None
             self._session_cm = None
             self._transport_cm = None
@@ -135,7 +291,11 @@ class MCPClient:
         if not self._connected or not self._session:
             return []
         try:
-            result = await self._session.list_tools()
+            if self._has_owner():
+                result = await self._submit(_LIST_TOOLS, ())
+            else:
+                # Fallback for tests that wire up _session directly without an owner.
+                result = await self._session.list_tools()
             return [
                 {
                     "name": tool.name,
@@ -155,8 +315,11 @@ class MCPClient:
         if not self._connected or not self._session:
             raise ConnectionError(f"Not connected to MCP server '{self._name}'")
         try:
-            result = await self._session.call_tool(tool_name, arguments=arguments or {})
-            return result
+            if self._has_owner():
+                return await self._submit(_CALL_TOOL, (tool_name, arguments))
+            return await self._session.call_tool(
+                tool_name, arguments=arguments or {}
+            )
         except Exception:
             logger.error(
                 "Failed to call tool '%s' on MCP server '%s'",

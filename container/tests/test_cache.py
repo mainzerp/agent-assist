@@ -533,6 +533,43 @@ class TestCacheManager:
         manager.store_response(entry)
         store.upsert.assert_not_called()
 
+    def test_complete_miss_returns_none_similarity(self):
+        """COR-3: a full miss must report similarity=None instead of leaking
+        the best cross-tier similarity into the trace UI."""
+        manager, store = self._make_manager()
+        # Routing miss: returns a result with low similarity (below threshold)
+        store.query.side_effect = [
+            {
+                "ids": [["r-1"]],
+                "distances": [[0.5]],
+                "documents": [["something else"]],
+                "metadatas": [[{
+                    "agent_id": "light-agent",
+                    "confidence": "0.5",
+                    "hit_count": "0",
+                    "condensed_task": "",
+                    "created_at": "2025-01-01T00:00:00",
+                    "last_accessed": "2025-01-01T00:00:00",
+                }]],
+            },
+            # Response miss as well
+            {
+                "ids": [["s-1"]],
+                "distances": [[0.6]],
+                "documents": [["yet another"]],
+                "metadatas": [[{
+                    "agent_id": "light-agent",
+                    "response_text": "x",
+                    "hit_count": "0",
+                    "created_at": "2025-01-01T00:00:00",
+                    "last_accessed": "2025-01-01T00:00:00",
+                }]],
+            },
+        ]
+        result = manager._process_inner("totally unrelated query")
+        assert result.hit_type == "miss"
+        assert result.similarity is None
+
     def test_store_response_enabled_delegates(self):
         """store_response should delegate when _response_cache_enabled is True."""
         manager, store = self._make_manager()
@@ -840,7 +877,9 @@ class TestCacheTraceSimilarity:
         assert result.similarity == pytest.approx(0.95)
 
     def test_cache_result_includes_similarity_on_miss(self):
-        """CacheResult.similarity is populated even on a complete miss."""
+        """COR-3: CacheResult.similarity is None on a complete miss; the
+        previous behavior of leaking the best cross-tier similarity was
+        misleading in the trace UI."""
         store = MagicMock(spec=VectorStore)
         manager = CacheManager(store)
         # Routing cache miss with similarity 0.80 (now checked first)
@@ -868,7 +907,7 @@ class TestCacheTraceSimilarity:
         ]
         result = manager._process_inner("some query")
         assert result.hit_type == "miss"
-        assert result.similarity == pytest.approx(0.80)
+        assert result.similarity is None
 
     def test_routing_cache_lookup_returns_similarity_tuple(self):
         """routing_cache.lookup() returns (entry, similarity) tuple."""
@@ -1039,12 +1078,18 @@ class TestStoreResponseCacheCacheable:
     def _make_orchestrator(self):
         from app.agents.orchestrator import OrchestratorAgent
         orch = OrchestratorAgent.__new__(OrchestratorAgent)
-        orch._cache_manager = MagicMock()
+        cache_manager = MagicMock()
+
+        async def _store_response_async(entry):
+            cache_manager.store_response(entry)
+
+        cache_manager.store_response_async = _store_response_async
+        orch._cache_manager = cache_manager
         return orch
 
-    def test_skips_non_cacheable_action(self):
+    async def test_skips_non_cacheable_action(self):
         orch = self._make_orchestrator()
-        stored = orch._store_response_cache(
+        stored = await orch._store_response_cache(
             user_text="what is the temperature",
             speech="It is 22 degrees.",
             target_agent="climate-agent",
@@ -1056,9 +1101,9 @@ class TestStoreResponseCacheCacheable:
         assert stored is False
         orch._cache_manager.store_response.assert_not_called()
 
-    def test_stores_cacheable_action(self):
+    async def test_stores_cacheable_action(self):
         orch = self._make_orchestrator()
-        stored = orch._store_response_cache(
+        stored = await orch._store_response_cache(
             user_text="turn on kitchen light",
             speech="Done, kitchen light is on.",
             target_agent="light-agent",
@@ -1070,9 +1115,9 @@ class TestStoreResponseCacheCacheable:
         assert stored is True
         orch._cache_manager.store_response.assert_called_once()
 
-    def test_stores_action_without_cacheable_field(self):
+    async def test_stores_action_without_cacheable_field(self):
         orch = self._make_orchestrator()
-        stored = orch._store_response_cache(
+        stored = await orch._store_response_cache(
             user_text="turn off bedroom light",
             speech="Done, bedroom light is off.",
             target_agent="light-agent",

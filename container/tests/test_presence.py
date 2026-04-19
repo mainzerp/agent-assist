@@ -275,3 +275,16 @@ class TestPresenceDetector:
         ha = MagicMock()
         detector = PresenceDetector(ha)
         assert detector.get_most_likely_room() is None
+
+    def test_get_room_confidence_prunes_stale_events(self):
+        """COR-9: get_room_confidence() must prune events older than
+        decay_timeout even when no new sensor activity arrives."""
+        ha = MagicMock()
+        detector = PresenceDetector(ha)
+        detector._decay_timeout = 60.0
+        # Inject an old event directly (bypassing on_sensor_state_change)
+        old_ts = time.time() - 600.0
+        detector._events = [SensorEvent("motion", "kitchen", old_ts)]
+        scores = detector.get_room_confidence()
+        assert scores == {}
+        assert detector._events == []

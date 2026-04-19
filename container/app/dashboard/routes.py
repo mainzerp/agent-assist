@@ -10,7 +10,10 @@ from fastapi.templating import Jinja2Templates
 from app.security.auth import (
     authenticate_admin,
     create_session_cookie,
+    ensure_csrf_token,
     require_admin_session_redirect,
+    set_csrf_cookie,
+    verify_csrf,
     SESSION_COOKIE_NAME,
 )
 from app.config import settings as app_settings
@@ -34,10 +37,21 @@ async def dashboard_index(
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, error: str | None = None):
     """Login page."""
-    return templates.TemplateResponse(request, "login.html", context={"title": "Login", "error": error})
+    token = ensure_csrf_token(request)
+    response = templates.TemplateResponse(
+        request,
+        "login.html",
+        context={"title": "Login", "error": error, "csrf_token": token},
+    )
+    set_csrf_cookie(response, token)
+    return response
 
 
-@router.post("/login", response_class=HTMLResponse)
+@router.post(
+    "/login",
+    response_class=HTMLResponse,
+    dependencies=[Depends(verify_csrf)],
+)
 async def login_submit(
     request: Request,
     username: str = Form("admin"),
@@ -46,11 +60,14 @@ async def login_submit(
     """Handle login form submission."""
     session_data = await authenticate_admin(username, password)
     if session_data is None:
-        return templates.TemplateResponse(
+        token = ensure_csrf_token(request)
+        response = templates.TemplateResponse(
             request,
             "login.html",
-            context={"title": "Login", "error": "Invalid credentials"},
+            context={"title": "Login", "error": "Invalid credentials", "csrf_token": token},
         )
+        set_csrf_cookie(response, token)
+        return response
     cookie_value = create_session_cookie(session_data)
     response = RedirectResponse(url="/dashboard/", status_code=303)
     response.set_cookie(

@@ -10,6 +10,7 @@
 {% else %}
 <p style="color: #94a3b8; margin-bottom: 1rem;">Generate an API key for authenticating requests to this container.</p>
 <form method="post" action="/setup/step/3">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="btn-primary">Generate API Key</button>
 </form>
 {% endif %}

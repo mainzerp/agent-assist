@@ -17,6 +17,7 @@
     {% endfor %}
 </table>
 <form method="post" action="/setup/step/5">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="btn-primary">Complete Setup</button>
 </form>
 {% endblock %}

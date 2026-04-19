@@ -6,6 +6,7 @@ All operations are fire-and-forget: errors are logged, never raised.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import logging
 import re
 import time
@@ -23,6 +24,13 @@ _SENSITIVE_PATTERNS = [
     (re.compile(r'\b\d{4,8}\b'), '[REDACTED_CODE]'),
     (re.compile(r'"code"\s*:\s*"[^"]*"'), '"code": "[REDACTED]"'),
 ]
+
+# Parent-span tracking per async context (Q-8). A ContextVar is the
+# correct mechanism for nested spans under ``asyncio.gather`` so parallel
+# branches don't see each other's parents via a shared list.
+_current_parent: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_current_parent", default=None,
+)
 
 
 def _sanitize_metadata(metadata: dict) -> dict:
@@ -43,7 +51,25 @@ class SpanCollector:
         self.trace_id = trace_id
         self.source = "api"  # default, overridden by caller ("ha", "chat")
         self._spans: list[dict[str, Any]] = []
-        self._span_stack: list[str] = []
+
+    def push_parent(self, span_id: str) -> contextvars.Token:
+        """Set ``span_id`` as the current parent for subsequent spans and
+        return a token that must be passed to :meth:`pop_parent` when done.
+
+        Used by entry points (middleware / stream handlers) that want every
+        nested span to be re-parented under a shared root span.
+        """
+        return _current_parent.set(span_id)
+
+    def pop_parent(self, token: contextvars.Token) -> None:
+        """Restore the previous parent span set by :meth:`push_parent`."""
+        try:
+            _current_parent.reset(token)
+        except ValueError:
+            # Token from a different context (e.g. reset after the setting
+            # task has finished). Safe to ignore -- parent tracking is
+            # best-effort.
+            logger.debug("Could not reset _current_parent token", exc_info=True)
 
     @asynccontextmanager
     async def start_span(
@@ -54,8 +80,8 @@ class SpanCollector:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Context manager that records a span's start time and duration."""
         span_id = uuid.uuid4().hex[:12]
-        if parent_span is None and self._span_stack:
-            parent_span = self._span_stack[-1]
+        if parent_span is None:
+            parent_span = _current_parent.get()
 
         span: dict[str, Any] = {
             "span_id": span_id,
@@ -67,7 +93,7 @@ class SpanCollector:
             "status": "ok",
             "metadata": {},
         }
-        self._span_stack.append(span_id)
+        token = _current_parent.set(span_id)
         t0 = time.perf_counter()
         try:
             yield span
@@ -75,7 +101,7 @@ class SpanCollector:
             span["status"] = "error"
             raise
         finally:
-            self._span_stack.pop()
+            _current_parent.reset(token)
             # Allow callers to override duration (e.g. filler spans with pre-recorded timestamps)
             if "_override_duration_ms" in span:
                 span["duration_ms"] = span.pop("_override_duration_ms")

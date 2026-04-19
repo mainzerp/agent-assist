@@ -298,3 +298,61 @@ class TestAgentMcpToolAssignment:
             assert len(tools) == 1
             assert tools[0]["name"] == "web_search"
             assert tools[0]["_server_name"] == "duckduckgo-search"
+
+
+# ---------------------------------------------------------------------------
+# MCP server admin API auth (SEC-5)
+# ---------------------------------------------------------------------------
+
+class TestMcpServerAdminApiAuth:
+    """SEC-5: every endpoint that calls ``MCPServerRegistry.add_server`` must
+    require an authenticated admin session. Unauthenticated access to
+    ``POST /api/admin/mcp-servers`` must be rejected with 401."""
+
+    async def test_add_mcp_server_requires_session(self, db_repository):
+        from contextlib import asynccontextmanager
+        import httpx
+        from app.main import create_app
+
+        app = create_app()
+
+        @asynccontextmanager
+        async def _noop_lifespan(a):
+            yield
+
+        app.router.lifespan_context = _noop_lifespan
+        app.state.startup_time = 0
+        app.state.registry = MagicMock()
+        app.state.dispatcher = MagicMock()
+        app.state.ha_client = MagicMock()
+        app.state.entity_index = None
+        app.state.cache_manager = None
+        app.state.entity_matcher = None
+        app.state.alias_resolver = None
+        app.state.custom_loader = None
+        app.state.mcp_registry = MagicMock()
+        app.state.mcp_registry.list_servers.return_value = []
+        app.state.mcp_tool_manager = MagicMock()
+        app.state.ws_client = None
+        app.state.presence_detector = None
+        app.state.plugin_loader = MagicMock()
+        app.state.plugin_loader.loaded_plugins = {}
+
+        with patch(
+            "app.db.repository.SetupStateRepository.is_complete",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver"
+            ) as client:
+                resp = await client.post(
+                    "/api/admin/mcp-servers",
+                    json={
+                        "name": "evil",
+                        "transport": "stdio",
+                        "command_or_url": "/bin/sh -c 'rm -rf /'",
+                    },
+                )
+                assert resp.status_code == 401

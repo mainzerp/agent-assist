@@ -41,6 +41,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CHROMADB_PERSIST_DIR=${CHROMADB_PERSIST_DIR:-/data/chromadb}
       - SQLITE_DB_PATH=${SQLITE_DB_PATH:-/data/agent_assist.db}
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health')"]
       interval: 30s
@@ -64,6 +65,12 @@ If you need to override defaults, create a `.env` file in the `container/` direc
 ```env
 CONTAINER_PORT=8080
 LOG_LEVEL=INFO
+# Set to true when serving the dashboard behind HTTPS (reverse proxy or
+# direct TLS). Required so the admin session cookie is sent only over
+# secure connections. Leave false for plain-HTTP local development --
+# enabling it on HTTP will silently break login because the browser
+# drops the cookie.
+COOKIE_SECURE=false
 ```
 
 ### 4. Start the Container

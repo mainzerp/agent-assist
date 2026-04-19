@@ -17,6 +17,10 @@ _INJECTION_PATTERNS: list[re.Pattern] = [
 ]
 
 _DIRECTIONAL_OVERRIDES = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A))
+# COR-11: keep zero-width joiner / non-joiner so non-Latin scripts (Hindi,
+# Arabic, family-emoji ligatures, ...) survive sanitization. Bidi overrides
+# above are still stripped via the ``_DIRECTIONAL_OVERRIDES`` set.
+_ALLOWED_FORMAT = {"\u200d", "\u200c"}
 
 
 def sanitize_input(text: str) -> str:
@@ -28,7 +32,7 @@ def sanitize_input(text: str) -> str:
             cleaned.append(ch)
             continue
         cat = unicodedata.category(ch)
-        if cat in ("Cc", "Cf"):
+        if cat in ("Cc", "Cf") and ch not in _ALLOWED_FORMAT:
             continue
         if ord(ch) in _DIRECTIONAL_OVERRIDES:
             continue

@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import unicodedata
 from typing import Any
 
 from app.analytics.tracer import _optional_span
@@ -14,44 +15,48 @@ logger = logging.getLogger(__name__)
 
 # Regex to find JSON blocks in LLM output (fenced)
 _JSON_FENCE_RE = re.compile(r"```json\s*\n?(.*?)\n?\s*```", re.DOTALL)
+_ENTITY_ID_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+_NON_WORD_LOOKUP_RE = re.compile(r"[^\w\s\.]")
+_WHITESPACE_RE = re.compile(r"\s+")
+_TRAILING_DEVICE_NOUNS: frozenset[str] = frozenset(
+    {
+        "bulb",
+        "lamp",
+        "lampe",
+        "lampen",
+        "light",
+        "lights",
+        "licht",
+        "lichter",
+        "schalter",
+        "switch",
+        "switches",
+    }
+)
 
 
 def _try_parse_json_with_action(text: str) -> dict | None:
     """Try to parse a JSON object containing an 'action' key from text.
 
-    Scans for '{' characters and attempts json.loads from each position.
+    COR-10: uses ``json.JSONDecoder().raw_decode`` so that braces inside
+    string literals (e.g. ``"description": "use {placeholder}"``) do not
+    trip up a hand-rolled brace counter. We scan from each ``{`` position
+    and let the decoder report where the object ends.
     """
-    start = 0
+    decoder = json.JSONDecoder()
+    idx = 0
     while True:
-        idx = text.find("{", start)
-        if idx == -1:
-            break
+        start = text.find("{", idx)
+        if start == -1:
+            return None
         try:
-            data = json.loads(text[idx:])
-            if isinstance(data, dict) and "action" in data:
-                return data
+            obj, end = decoder.raw_decode(text, start)
         except json.JSONDecodeError:
-            pass
-        # Try to find end of object by scanning for balanced braces
-        depth = 0
-        end = idx
-        for i, ch in enumerate(text[idx:], idx):
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    end = i + 1
-                    break
-        if end > idx:
-            try:
-                data = json.loads(text[idx:end])
-                if isinstance(data, dict) and "action" in data:
-                    return data
-            except json.JSONDecodeError:
-                pass
-        start = idx + 1
-    return None
+            idx = start + 1
+            continue
+        if isinstance(obj, dict) and "action" in obj:
+            return obj
+        idx = end
 
 
 def parse_action(llm_response: str) -> dict | None:
@@ -116,6 +121,275 @@ def _build_service_data(action: dict) -> dict[str, Any]:
     return data
 
 
+def _normalize_lookup_text(text: str) -> str:
+    """Normalize an entity lookup query for deterministic comparisons."""
+    normalized = unicodedata.normalize("NFKD", text.lower().strip())
+    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    normalized = _NON_WORD_LOOKUP_RE.sub(" ", normalized)
+    return _WHITESPACE_RE.sub(" ", normalized).strip()
+
+
+def _strip_trailing_device_noun(query: str) -> str | None:
+    """Strip a trailing light/switch noun from a query like 'Keller light'."""
+    normalized_query = _normalize_lookup_text(query)
+    parts = normalized_query.split()
+    if len(parts) <= 1:
+        return None
+    if parts[-1] not in _TRAILING_DEVICE_NOUNS:
+        return None
+    stripped = " ".join(parts[:-1]).strip()
+    return stripped or None
+
+
+def _supports_method(obj: Any, method_name: str) -> bool:
+    """Return True when an object or its mock spec exposes a callable method."""
+    spec_class = getattr(obj, "_spec_class", None)
+    if spec_class and hasattr(spec_class, method_name):
+        return callable(getattr(obj, method_name, None))
+    return hasattr(type(obj), method_name) and callable(getattr(obj, method_name, None))
+
+
+async def _list_index_entries(
+    entity_index: Any,
+    domains: set[str] | frozenset[str] | None = None,
+) -> list[Any]:
+    """Return indexed entities when the index supports deterministic listing."""
+    if not entity_index:
+        return []
+    if _supports_method(entity_index, "list_entries_async"):
+        return await entity_index.list_entries_async(domains=domains)
+    if _supports_method(entity_index, "list_entries"):
+        return entity_index.list_entries(domains=domains)
+    return []
+
+
+async def _filter_visible_entries(
+    entries: list[Any],
+    entity_matcher: Any,
+    agent_id: str | None,
+) -> list[Any]:
+    """Apply agent visibility rules to deterministic candidates."""
+    if not entries:
+        return []
+    if not agent_id:
+        return entries
+    if not entity_matcher or not _supports_method(entity_matcher, "filter_visible_results"):
+        return []
+
+    from app.entity.matcher import MatchResult
+
+    visible = await entity_matcher.filter_visible_results(
+        agent_id,
+        [
+            MatchResult(entity_id=entry.entity_id, friendly_name=entry.friendly_name, score=1.0)
+            for entry in entries
+        ],
+    )
+    visible_ids = {result.entity_id for result in visible}
+    return [entry for entry in entries if entry.entity_id in visible_ids]
+
+
+def _select_deterministic_candidate(entries: list[Any], entity_query: str) -> tuple[Any | None, str | None]:
+    """Prefer a single light candidate, otherwise require an unambiguous result."""
+    if not entries:
+        return None, None
+
+    light_entries = [entry for entry in entries if entry.domain == "light"]
+    if len(light_entries) == 1:
+        return light_entries[0], None
+    if len(entries) == 1:
+        return entries[0], None
+
+    return None, f"Multiple entities match '{entity_query}'. Please be more specific."
+
+
+def _build_resolution_result(
+    *,
+    entity_query: str,
+    metadata: dict[str, Any],
+    entity_id: str | None = None,
+    friendly_name: str | None = None,
+    speech: str | None = None,
+) -> dict[str, Any]:
+    """Build a normalized entity-resolution result payload."""
+    return {
+        "entity_id": entity_id,
+        "friendly_name": friendly_name or entity_query,
+        "speech": speech,
+        "metadata": metadata,
+    }
+
+
+async def _resolve_light_entity(
+    entity_query: str,
+    entity_index: Any,
+    entity_matcher: Any,
+    agent_id: str | None,
+) -> dict[str, Any]:
+    """Resolve light-agent entities via deterministic checks before hybrid matching."""
+    metadata: dict[str, Any] = {
+        "query": entity_query,
+        "normalized_query": _normalize_lookup_text(entity_query),
+        "match_count": 0,
+        "resolution_path": "unresolved",
+    }
+    normalized_query = metadata["normalized_query"]
+    stripped_query = _strip_trailing_device_noun(entity_query)
+
+    if entity_index and entity_matcher:
+        entity_id_query = entity_query.strip().lower()
+        if _ENTITY_ID_RE.fullmatch(entity_id_query) and _supports_method(entity_index, "get_by_id"):
+            exact_entry = entity_index.get_by_id(entity_id_query)
+            if exact_entry:
+                visible_entry = await _filter_visible_entries([exact_entry], entity_matcher, agent_id)
+                if visible_entry:
+                    metadata.update(
+                        {
+                            "match_count": 1,
+                            "resolution_path": "exact_entity_id",
+                            "top_entity_id": visible_entry[0].entity_id,
+                            "top_friendly_name": visible_entry[0].friendly_name or visible_entry[0].entity_id,
+                        }
+                    )
+                    return _build_resolution_result(
+                        entity_query=entity_query,
+                        metadata=metadata,
+                        entity_id=visible_entry[0].entity_id,
+                        friendly_name=visible_entry[0].friendly_name or visible_entry[0].entity_id,
+                    )
+
+        indexed_entries = await _list_index_entries(entity_index, domains=_ALLOWED_DOMAINS)
+        visible_entries = await _filter_visible_entries(indexed_entries, entity_matcher, agent_id)
+
+        if visible_entries:
+            exact_name_matches = [
+                entry
+                for entry in visible_entries
+                if _normalize_lookup_text(entry.friendly_name) == normalized_query
+            ]
+            candidate, ambiguity = _select_deterministic_candidate(exact_name_matches, entity_query)
+            if candidate:
+                metadata.update(
+                    {
+                        "match_count": 1,
+                        "resolution_path": "exact_friendly_name",
+                        "top_entity_id": candidate.entity_id,
+                        "top_friendly_name": candidate.friendly_name or candidate.entity_id,
+                    }
+                )
+                return _build_resolution_result(
+                    entity_query=entity_query,
+                    metadata=metadata,
+                    entity_id=candidate.entity_id,
+                    friendly_name=candidate.friendly_name or candidate.entity_id,
+                )
+            if ambiguity:
+                metadata.update(
+                    {
+                        "match_count": len(exact_name_matches),
+                        "resolution_path": "exact_friendly_name_ambiguous",
+                    }
+                )
+                return _build_resolution_result(
+                    entity_query=entity_query,
+                    metadata=metadata,
+                    speech=ambiguity,
+                )
+
+            if stripped_query and stripped_query != normalized_query:
+                stripped_matches = [
+                    entry
+                    for entry in visible_entries
+                    if _normalize_lookup_text(entry.friendly_name) == stripped_query
+                ]
+                candidate, ambiguity = _select_deterministic_candidate(stripped_matches, entity_query)
+                if candidate:
+                    metadata.update(
+                        {
+                            "match_count": 1,
+                            "resolution_path": "friendly_name_without_device_noun",
+                            "normalized_query_without_device_noun": stripped_query,
+                            "top_entity_id": candidate.entity_id,
+                            "top_friendly_name": candidate.friendly_name or candidate.entity_id,
+                        }
+                    )
+                    return _build_resolution_result(
+                        entity_query=entity_query,
+                        metadata=metadata,
+                        entity_id=candidate.entity_id,
+                        friendly_name=candidate.friendly_name or candidate.entity_id,
+                    )
+                if ambiguity:
+                    metadata.update(
+                        {
+                            "match_count": len(stripped_matches),
+                            "resolution_path": "friendly_name_without_device_noun_ambiguous",
+                            "normalized_query_without_device_noun": stripped_query,
+                        }
+                    )
+                    return _build_resolution_result(
+                        entity_query=entity_query,
+                        metadata=metadata,
+                        speech=ambiguity,
+                    )
+
+            area_queries = {normalized_query}
+            if stripped_query:
+                area_queries.add(stripped_query)
+            area_matches = [
+                entry
+                for entry in visible_entries
+                if entry.domain in {"light", "switch"}
+                and _normalize_lookup_text(entry.area or "") in area_queries
+            ]
+            candidate, ambiguity = _select_deterministic_candidate(area_matches, entity_query)
+            if candidate:
+                metadata.update(
+                    {
+                        "match_count": 1,
+                        "resolution_path": "exact_area",
+                        "top_entity_id": candidate.entity_id,
+                        "top_friendly_name": candidate.friendly_name or candidate.entity_id,
+                    }
+                )
+                return _build_resolution_result(
+                    entity_query=entity_query,
+                    metadata=metadata,
+                    entity_id=candidate.entity_id,
+                    friendly_name=candidate.friendly_name or candidate.entity_id,
+                )
+            if ambiguity:
+                metadata.update(
+                    {
+                        "match_count": len(area_matches),
+                        "resolution_path": "exact_area_ambiguous",
+                    }
+                )
+                return _build_resolution_result(
+                    entity_query=entity_query,
+                    metadata=metadata,
+                    speech=ambiguity,
+                )
+
+    if entity_matcher:
+        matches = await entity_matcher.match(entity_query, agent_id=agent_id)
+        metadata.update({"match_count": len(matches), "resolution_path": "hybrid_matcher"})
+        if matches:
+            metadata["top_entity_id"] = matches[0].entity_id
+            metadata["top_friendly_name"] = matches[0].friendly_name or matches[0].entity_id
+            metadata["top_score"] = matches[0].score
+            metadata["signal_scores"] = getattr(matches[0], "signal_scores", {})
+            return _build_resolution_result(
+                entity_query=entity_query,
+                metadata=metadata,
+                entity_id=matches[0].entity_id,
+                friendly_name=matches[0].friendly_name or matches[0].entity_id,
+            )
+
+    metadata["resolution_path"] = "no_match"
+    return _build_resolution_result(entity_query=entity_query, metadata=metadata)
+
+
 async def execute_action(
     action: dict,
     ha_client,
@@ -155,24 +429,22 @@ async def execute_action(
             "speech": f"Unknown action: {action_name}",
         }
 
-    # Resolve entity via matcher
-    entity_id = None
-    friendly_name = entity_query
+    resolution = {
+        "entity_id": None,
+        "friendly_name": entity_query,
+        "speech": None,
+        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
+    }
     try:
         if entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
-                    em_span["metadata"]["top_entity_id"] = entity_id
-                    em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = matches[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                resolution = await _resolve_light_entity(entity_query, entity_index, entity_matcher, agent_id)
+                em_span["metadata"] = resolution["metadata"]
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
+    entity_id = resolution["entity_id"]
+    friendly_name = resolution["friendly_name"]
     if entity_id and not _validate_domain(entity_id):
         logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
         entity_id = None
@@ -182,7 +454,7 @@ async def execute_action(
             "success": False,
             "entity_id": None,
             "new_state": None,
-            "speech": f"Could not find an entity matching '{entity_query}'.",
+            "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
         }
 
     # Extract domain from entity_id
@@ -264,22 +536,22 @@ async def _query_light_state(
     agent_id: str | None,
     span_collector=None,
 ) -> dict:
-    entity_id = None
-    friendly_name = entity_query
+    resolution = {
+        "entity_id": None,
+        "friendly_name": entity_query,
+        "speech": None,
+        "metadata": {"query": entity_query, "match_count": 0, "resolution_path": "not_attempted"},
+    }
     try:
         if entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
-                    em_span["metadata"]["top_entity_id"] = entity_id
-                    em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = matches[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                resolution = await _resolve_light_entity(entity_query, entity_index, entity_matcher, agent_id)
+                em_span["metadata"] = resolution["metadata"]
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
+
+    entity_id = resolution["entity_id"]
+    friendly_name = resolution["friendly_name"]
 
     if entity_id and not _validate_domain(entity_id):
         logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
@@ -287,7 +559,7 @@ async def _query_light_state(
 
     if not entity_id:
         return {"success": False, "entity_id": None, "new_state": None,
-                "speech": f"Could not find an entity matching '{entity_query}'.",
+                "speech": resolution["speech"] or f"Could not find an entity matching '{entity_query}'.",
                 "cacheable": False}
 
     try:

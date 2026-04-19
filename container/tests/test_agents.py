@@ -1055,6 +1055,15 @@ class TestOrchestratorAgent:
         cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
         cache_manager.apply_rewrite = AsyncMock()
 
+        async def _store_routing_async(*args, **kwargs):
+            return cache_manager.store_routing(*args, **kwargs)
+
+        async def _store_response_async(entry):
+            return cache_manager.store_response(entry)
+
+        cache_manager.store_routing_async = _store_routing_async
+        cache_manager.store_response_async = _store_response_async
+
         # Mock dispatch response
         response_mock = MagicMock()
         response_mock.error = None
@@ -2262,6 +2271,15 @@ class TestOrchestratorFiller:
         cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
         cache_manager.apply_rewrite = AsyncMock()
 
+        async def _store_routing_async(*args, **kwargs):
+            return cache_manager.store_routing(*args, **kwargs)
+
+        async def _store_response_async(entry):
+            return cache_manager.store_response(entry)
+
+        cache_manager.store_routing_async = _store_routing_async
+        cache_manager.store_response_async = _store_response_async
+
         response_mock = MagicMock()
         response_mock.error = None
         response_mock.result = {"speech": "Done!"}
@@ -3410,6 +3428,15 @@ class TestConversationMemoryEviction:
         cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
         cache_manager.apply_rewrite = AsyncMock()
 
+        async def _store_routing_async(*args, **kwargs):
+            return cache_manager.store_routing(*args, **kwargs)
+
+        async def _store_response_async(entry):
+            return cache_manager.store_response(entry)
+
+        cache_manager.store_routing_async = _store_routing_async
+        cache_manager.store_response_async = _store_response_async
+
         response_mock = MagicMock()
         response_mock.error = None
         response_mock.result = {"speech": "Done!"}
@@ -3594,6 +3621,15 @@ class TestStreamMediatedSpeech:
         cache_manager = MagicMock()
         cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
         cache_manager.apply_rewrite = AsyncMock()
+
+        async def _store_routing_async(*args, **kwargs):
+            return cache_manager.store_routing(*args, **kwargs)
+
+        async def _store_response_async(entry):
+            return cache_manager.store_response(entry)
+
+        cache_manager.store_routing_async = _store_routing_async
+        cache_manager.store_response_async = _store_response_async
 
         registry.list_agents = AsyncMock(return_value=[
             AgentCard(agent_id="light-agent", name="Light Agent", description="", skills=["light"]),
@@ -3996,6 +4032,15 @@ class TestSequentialSendFiller:
         cache_manager = MagicMock()
         cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
         cache_manager.apply_rewrite = AsyncMock()
+
+        async def _store_routing_async(*args, **kwargs):
+            return cache_manager.store_routing(*args, **kwargs)
+
+        async def _store_response_async(entry):
+            return cache_manager.store_response(entry)
+
+        cache_manager.store_routing_async = _store_routing_async
+        cache_manager.store_response_async = _store_response_async
 
         registry.list_agents = AsyncMock(return_value=[
             AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"], expected_latency="high"),
@@ -4537,6 +4582,15 @@ class TestResponseCacheFallThrough:
         cache_hit.rewrite_latency_ms = None
         cache_manager.process = AsyncMock(return_value=cache_hit)
         cache_manager.apply_rewrite = AsyncMock()
+
+        async def _store_routing_async(*args, **kwargs):
+            return cache_manager.store_routing(*args, **kwargs)
+
+        async def _store_response_async(entry):
+            return cache_manager.store_response(entry)
+
+        cache_manager.store_routing_async = _store_routing_async
+        cache_manager.store_response_async = _store_response_async
         cache_manager.store_response = MagicMock()
 
         response_mock = MagicMock()
@@ -4589,6 +4643,15 @@ class TestResponseCacheFallThrough:
         )
         cache_manager.process = AsyncMock(side_effect=[cache_hit, routing_hit])
         cache_manager.apply_rewrite = AsyncMock()
+
+        async def _store_routing_async(*args, **kwargs):
+            return cache_manager.store_routing(*args, **kwargs)
+
+        async def _store_response_async(entry):
+            return cache_manager.store_response(entry)
+
+        cache_manager.store_routing_async = _store_routing_async
+        cache_manager.store_response_async = _store_response_async
         cache_manager.store_response = MagicMock()
         cache_manager.store_routing = MagicMock()
 

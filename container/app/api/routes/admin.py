@@ -122,6 +122,14 @@ async def get_settings():
 
 def _validate_setting_value(key: str, value: str, value_type: str) -> None:
     """Validate a setting value against its stored type. Raises HTTPException on failure."""
+    # COR-6: typed numeric/boolean settings must not accept the empty string,
+    # otherwise the dashboard can blank out a value and silently store ""
+    # which later coerces to a default in unrelated code paths.
+    if value_type in ("int", "float", "bool") and value == "":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid value for '{key}': empty string is not a valid {value_type}",
+        )
     try:
         if value_type == "int":
             int(value)

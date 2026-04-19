@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from app.db.repository import SettingsRepository
+from app.util.tasks import spawn
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +68,12 @@ async def dispatch_timer_notification(
             await _notify_tts(ha_client, media_player, message, profile)
 
         # Trigger conversation continuation to listen for follow-up
-        asyncio.create_task(_trigger_conversation_continuation(
-            ha_client, media_player, area, profile,
-        ))
+        spawn(
+            _trigger_conversation_continuation(
+                ha_client, media_player, area, profile,
+            ),
+            name="tts-followup",
+        )
 
     # Channel 2: Persistent notification (always, if we have a message)
     if profile.get("persistent_enabled", True) and message:
