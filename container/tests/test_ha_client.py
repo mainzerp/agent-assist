@@ -454,7 +454,7 @@ class TestHAConversationWSCloseError:
         import json as _json
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
-        from custom_components.agent_assist.conversation import AgentAssistConversationEntity
+        from custom_components.ha_agenthub.conversation import HaAgentHubConversationEntity
 
         entity = MagicMock()
         entity._ws = AsyncMock()
@@ -476,7 +476,7 @@ class TestHAConversationWSCloseError:
         user_input.device_id = None
 
         with pytest.raises(aiohttp.ClientError, match="closed mid-stream"):
-            await AgentAssistConversationEntity._process_via_ws(entity, user_input)
+            await HaAgentHubConversationEntity._process_via_ws(entity, user_input)
 
     async def test_process_via_ws_error_mid_stream(self):
         """WS ERROR after partial tokens should raise aiohttp.ClientError."""
@@ -484,7 +484,7 @@ class TestHAConversationWSCloseError:
         import json as _json
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
-        from custom_components.agent_assist.conversation import AgentAssistConversationEntity
+        from custom_components.ha_agenthub.conversation import HaAgentHubConversationEntity
 
         entity = MagicMock()
         entity._ws = AsyncMock()
@@ -506,7 +506,7 @@ class TestHAConversationWSCloseError:
         user_input.device_id = None
 
         with pytest.raises(aiohttp.ClientError, match="error mid-stream"):
-            await AgentAssistConversationEntity._process_via_ws(entity, user_input)
+            await HaAgentHubConversationEntity._process_via_ws(entity, user_input)
         assert entity._ws is None
 
     async def test_process_via_ws_close_before_any_tokens(self):
@@ -514,7 +514,7 @@ class TestHAConversationWSCloseError:
         import aiohttp
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
-        from custom_components.agent_assist.conversation import AgentAssistConversationEntity
+        from custom_components.ha_agenthub.conversation import HaAgentHubConversationEntity
 
         entity = MagicMock()
         entity._ws = AsyncMock()
@@ -532,7 +532,7 @@ class TestHAConversationWSCloseError:
         user_input.device_id = None
 
         with pytest.raises(aiohttp.ClientError, match="closed mid-stream"):
-            await AgentAssistConversationEntity._process_via_ws(entity, user_input)
+            await HaAgentHubConversationEntity._process_via_ws(entity, user_input)
 
     async def test_process_via_ws_error_token_triggers_raise(self):
         """Error field in done token should raise aiohttp.ClientError."""
@@ -540,7 +540,7 @@ class TestHAConversationWSCloseError:
         import json as _json
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
-        from custom_components.agent_assist.conversation import AgentAssistConversationEntity
+        from custom_components.ha_agenthub.conversation import HaAgentHubConversationEntity
 
         entity = MagicMock()
         entity._ws = AsyncMock()
@@ -559,4 +559,4 @@ class TestHAConversationWSCloseError:
         user_input.device_id = None
 
         with pytest.raises(aiohttp.ClientError, match="Agent streaming error"):
-            await AgentAssistConversationEntity._process_via_ws(entity, user_input)
+            await HaAgentHubConversationEntity._process_via_ws(entity, user_input)

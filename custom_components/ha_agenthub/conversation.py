@@ -1,4 +1,4 @@
-"""Conversation entity for agent-assist (I/O bridge)."""
+"""Conversation entity for HA-AgentHub (I/O bridge)."""
 
 from __future__ import annotations
 
@@ -70,22 +70,33 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the conversation entity from a config entry."""
-    # Migrate legacy unique_id formats to entry.entry_id
+    # Migrate legacy unique_id formats (incl. pre-0.5 domain ``agent_assist``)
     entity_registry = er.async_get(hass)
-    for old_uid in (DOMAIN, f"{DOMAIN}_conversation"):
-        entity_id = entity_registry.async_get_entity_id("conversation", DOMAIN, old_uid)
+    _legacy_domain = "agent_assist"
+    migration_pairs = [
+        (_legacy_domain, "agent_assist"),
+        (_legacy_domain, "agent_assist_conversation"),
+        (_legacy_domain, _legacy_domain),
+        (DOMAIN, DOMAIN),
+        (DOMAIN, f"{DOMAIN}_conversation"),
+    ]
+    for int_domain, old_uid in migration_pairs:
+        entity_id = entity_registry.async_get_entity_id("conversation", int_domain, old_uid)
         if entity_id:
             entity_registry.async_update_entity(entity_id, new_unique_id=entry.entry_id)
-            logger.info("Migrated entity %s unique_id from '%s' to '%s'", entity_id, old_uid, entry.entry_id)
+            logger.info(
+                "Migrated entity %s unique_id from %s/%s to %s",
+                entity_id, int_domain, old_uid, entry.entry_id,
+            )
 
     data = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([AgentAssistConversationEntity(entry, data["url"], data["api_key"])])
+    async_add_entities([HaAgentHubConversationEntity(entry, data["url"], data["api_key"])])
 
 
-class AgentAssistConversationEntity(
+class HaAgentHubConversationEntity(
     conversation.ConversationEntity,
 ):
-    """Conversation entity that bridges HA voice to the agent-assist container."""
+    """Conversation entity that bridges HA voice to the HA-AgentHub container."""
 
     _attr_has_entity_name = True
     _attr_name = None
@@ -105,8 +116,8 @@ class AgentAssistConversationEntity(
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
-            manufacturer="Agent Assist",
-            model="Multi-Agent Assistant",
+            manufacturer="HA-AgentHub",
+            model="Conversation bridge",
             entry_type=dr.DeviceEntryType.SERVICE,
         )
 
@@ -127,7 +138,7 @@ class AgentAssistConversationEntity(
         self._reconnect_task = self._entry.async_create_background_task(
             self.hass,
             self._reconnect_loop(),
-            name="agent_assist_ws_reconnect",
+            name="ha_agenthub_ws_reconnect",
         )
 
     async def async_will_remove_from_hass(self) -> None:
@@ -159,7 +170,7 @@ class AgentAssistConversationEntity(
             )
             self._reconnect_delay = RECONNECT_BASE_DELAY
             self._ws_last_active = time.monotonic()
-            logger.info("Connected to agent-assist container at %s", self._url)
+            logger.info("Connected to HA-AgentHub container at %s", self._url)
             return True
         except (aiohttp.ClientError, TimeoutError):
             logger.warning("Failed to connect to container at %s", self._url)
@@ -237,7 +248,7 @@ class AgentAssistConversationEntity(
         self._entry.async_create_background_task(
             self.hass,
             self._connect_ws(),
-            name="agent_assist_ws_immediate_reconnect",
+            name="ha_agenthub_ws_immediate_reconnect",
         )
 
     async def _async_handle_message(

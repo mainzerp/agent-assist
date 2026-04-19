@@ -317,8 +317,8 @@ async def get_container_api_key_status():
 async def rotate_container_api_key():
     """Generate a new random key, replace the stored secret, return it once for the UI.
 
-    After rotation, update the **Agent Assist** integration in Home Assistant
-    with the new value (Settings - Devices - Agent Assist - Reconfigure).
+    After rotation, update the **HA-AgentHub** integration in Home Assistant
+    with the new value (Settings - Devices - HA-AgentHub - Reconfigure).
     """
     api_key = secrets.token_urlsafe(32)
     await store_secret(API_KEY_SECRET_NAME, api_key)

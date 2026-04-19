@@ -15,8 +15,8 @@
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/<owner>/agent-assist.git
-cd agent-assist/container
+git clone https://github.com/mainzerp/ha-agenthub.git
+cd ha-agenthub/container
 ```
 
 ### 2. Review `docker-compose.yml`
@@ -128,20 +128,20 @@ Review your configuration and complete the setup. The container initializes all 
 
 1. Install [HACS](https://hacs.xyz/) in your Home Assistant instance if not already installed.
 2. In HACS, go to Integrations > three-dot menu > Custom repositories.
-3. Add the repository URL: `https://github.com/<owner>/agent-assist`
+3. Add the repository URL: `https://github.com/mainzerp/ha-agenthub`
 4. Category: Integration
-5. Click "Add", then find "Agent Assist" in HACS and install it.
+5. Click "Add", then find "HA-AgentHub" in HACS and install it.
 6. Restart Home Assistant.
 
 ### Method 2: Manual Installation
 
-1. Copy the `custom_components/agent_assist/` directory to your Home Assistant `config/custom_components/` directory.
+1. Copy the `custom_components/ha_agenthub/` directory to your Home Assistant `config/custom_components/` directory.
 2. Restart Home Assistant.
 
 ### Configure the Integration
 
 1. In Home Assistant, go to Settings > Devices & Services > Add Integration.
-2. Search for "Agent Assist".
+2. Search for "HA-AgentHub".
 3. Enter the container URL (e.g., `http://<docker-host>:8080`) and the API key from setup step 3.
 4. The integration registers as a conversation agent. You can select it as the default assistant in Settings > Voice Assistants.
 
@@ -170,7 +170,7 @@ If placing the container behind a reverse proxy (e.g., Nginx, Caddy, Traefik):
 ## Updating
 
 ```bash
-cd agent-assist/container
+cd ha-agenthub/container
 git pull
 docker-compose up -d --build
 ```

@@ -1,8 +1,51 @@
 # Version
 
-**Current Version:** 0.18.8
+**Current Version:** 0.18.12
 
 ## Version History
+
+### 0.18.12 -- GitHub owner ``mainzerp``
+
+- Canonical repository: **https://github.com/mainzerp/ha-agenthub**.
+  README, deployment, HACS, ``manifest.json`` **documentation** /
+  **issue_tracker**, and **codeowners** updated to ``mainzerp``.
+- Custom component **manifest 0.5.2**.
+
+### 0.18.11 -- Git repository URL (documentation)
+
+- Public GitHub repository name is **ha-agenthub** (was ``agent-assist``).
+  README, deployment docs, HACS clone URL, and ``manifest.json``
+  **documentation** / **issue_tracker** now point to the ha-agenthub
+  repo (superseded by **0.18.12** for owner ``mainzerp``). Docker
+  service name, volume, and image labels stay **agent-assist**
+  (unchanged).
+- Custom component **manifest 0.5.1** (documentation URLs only).
+
+### 0.18.10 -- HA integration domain ``ha_agenthub`` (breaking for HA)
+
+- Home Assistant integration **folder** is now
+  ``custom_components/ha_agenthub/`` and ``manifest.json`` **domain**
+  is ``ha_agenthub`` (was ``agent_assist``). **Remove** the old
+  ``custom_components/agent_assist`` tree and any stale config entry,
+  then add **HA-AgentHub** again in HA.
+- Entity registry migration in ``conversation.py`` still rewrites
+  legacy ``agent_assist`` conversation entities to the new entry id
+  when possible.
+- Config flow classes renamed to ``HaAgentHubConfigFlow`` /
+  ``HaAgentHubOptionsFlow``; conversation entity class to
+  ``HaAgentHubConversationEntity``.
+- Custom component **manifest version 0.5.0**.
+
+### 0.18.9 -- HA-AgentHub naming (HA integration + UI copy)
+
+- Home Assistant custom component **display name** is now
+  **HA-AgentHub** (``manifest.json``, HACS, ``strings.json``,
+  ``en.json``, new ``de.json``, config flow entry title, device
+  registry manufacturer/model). **Superseded by 0.18.10** for domain
+  and folder rename.
+- Custom component manifest **0.4.2** (historical).
+- Dashboard settings copy, send-agent default notification title, and
+  docs/README troubleshooting strings updated to match.
 
 ### 0.18.8 -- Container API Key in Dashboard Settings
 
@@ -50,7 +93,7 @@
   lookup. The ``TracingMiddleware`` already derived ``source`` from
   the URL path; ``conversation.py`` and ``dashboard_api.py`` now
   forward that value into the ``TaskContext``.
-- The HA custom component (``custom_components/agent_assist/
+- The HA custom component (``custom_components/ha_agenthub/
   conversation.py``) resolves the originating satellite's
   ``device_name`` via the device registry and its ``area_name`` via
   the area registry. Both flow through WS and REST fallbacks via a

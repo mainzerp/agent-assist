@@ -3844,7 +3844,7 @@ class TestSendAgent:
         assert "Laura Handy" in result.speech
         ha_client.call_service.assert_called_once_with(
             "notify", "mobile_app_lauras_iphone", None,
-            {"message": "test content", "title": "Agent Assist"},
+            {"message": "test content", "title": "HA-AgentHub"},
         )
 
     @patch("app.agents.send.SendDeviceMappingRepository")

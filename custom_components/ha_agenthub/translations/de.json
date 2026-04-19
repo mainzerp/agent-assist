@@ -1,0 +1,34 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HA-AgentHub",
+        "description": "Verbindung zum HA-AgentHub-Container einrichten.",
+        "data": {
+          "url": "Container-URL",
+          "api_key": "API-Schlüssel"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Keine Verbindung zum Container. URL prüfen und ob der Container läuft.",
+      "invalid_auth": "Ungültiger API-Schlüssel. Bitte prüfen und erneut versuchen."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "HA-AgentHub Einstellungen",
+        "description": "Verbindungseinstellungen zum HA-AgentHub-Container aktualisieren.",
+        "data": {
+          "url": "Container-URL",
+          "api_key": "API-Schlüssel"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Keine Verbindung zum Container. URL prüfen und ob der Container läuft.",
+      "invalid_auth": "Ungültiger API-Schlüssel. Bitte prüfen und erneut versuchen."
+    }
+  }
+}

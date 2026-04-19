@@ -146,7 +146,7 @@ class SendAgent(BaseAgent):
         """Send via HA notify.* service (smartphone push)."""
         await self._ha_client.call_service(
             "notify", service_target, None,
-            {"message": content, "title": "Agent Assist"},
+            {"message": content, "title": "HA-AgentHub"},
         )
         logger.info("Notify sent to %s", service_target)
 

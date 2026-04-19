@@ -2,7 +2,7 @@
 
 The container's :func:`app.agents.sanitize.strip_markdown` is the
 canonical implementation. The HA custom_component's
-``_strip_markdown`` in ``custom_components/agent_assist/conversation.py``
+``_strip_markdown`` in ``custom_components/ha_agenthub/conversation.py``
 MUST produce identical output for every input in
 ``tests/data/sanitize_corpus.txt``. This test locks the container
 side; HA parity is verified manually from the PR description.

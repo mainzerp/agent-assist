@@ -117,14 +117,14 @@ docker-compose restart agent-assist
 
 **Manual installation:**
 
-1. Confirm the `custom_components/agent_assist/` directory exists in your HA config folder.
+1. Confirm the `custom_components/ha_agenthub/` directory exists in your HA config folder.
 2. Check that all files are present: `__init__.py`, `config_flow.py`, `const.py`, `conversation.py`, `manifest.json`, `strings.json`, and `translations/en.json`.
 3. Restart Home Assistant.
 
 **After installation:**
 
 1. Go to Settings > Devices & Services > Add Integration.
-2. Search for "Agent Assist".
+2. Search for "HA-AgentHub" (integration domain `ha_agenthub`).
 3. If it does not appear, check the HA logs for import errors: Settings > System > Logs.
 
 ## Slow Responses

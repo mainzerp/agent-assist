@@ -6,7 +6,7 @@ A multi-agent AI assistant for Home Assistant with a container-based architectur
 
 ## Project Overview
 
-**Project Name:** agent-assist
+**Project Name:** HA-AgentHub (Git repository: `ha-agenthub`)
 
 **Description:** A multi-agent AI system that processes natural language commands to control Home Assistant smart home devices. Runs as a separate Docker container with a thin HA custom integration acting as the input/output bridge. All inter-agent communication uses the A2A (Agent-to-Agent) Protocol based on JSON-RPC 2.0 from day 1, enabling in-process or distributed deployment without refactoring. Specialized agents are self-sufficient: they receive tasks, resolve entities via a pre-embedded entity index, execute actions by calling the HA REST API directly, and report results back through the orchestrator.
 
@@ -46,7 +46,7 @@ A multi-agent AI assistant for Home Assistant with a container-based architectur
 The system consists of two primary components connected by WebSocket streaming:
 
 1. **Docker Container** -- Runs the AI backend including FastAPI, the A2A-based agent orchestration layer (JSON-RPC 2.0), MCP tool integration, plugin system, two-tier vector embedding cache, pre-embedded entity index, hybrid entity matcher, presence detection, HA REST API client, rewrite agent, and admin UI. Specialized agents call the HA REST API directly from the container to execute actions (turn on lights, set temperature, etc.). The container is the sole executor of smart home commands.
-2. **Thin HA Custom Integration** (`custom_components/agent_assist/`) -- Registers as a conversation agent inside Home Assistant. Its ONLY role is to bridge user input to the Docker container via WebSocket streaming and stream responses back to the user. It does NOT execute actions, resolve entities, or make HA service calls on behalf of agents.
+2. **Thin HA Custom Integration** (`custom_components/ha_agenthub/`, domain `ha_agenthub`) -- Registers as a conversation agent inside Home Assistant. Its ONLY role is to bridge user input to the Docker container via WebSocket streaming and stream responses back to the user. It does NOT execute actions, resolve entities, or make HA service calls on behalf of agents.
 
 **Rationale:** Separation of concerns keeps the HA integration lightweight and focused on I/O bridging, while the container handles all AI/ML workloads AND all HA action execution. Agents are self-contained: they receive a task, resolve the target entity via the pre-embedded entity index, call the HA REST API to execute the action, verify the result, and return a natural language response. This makes the system easier to develop, test, and update independently. The container can be restarted or upgraded without affecting HA stability.
 
@@ -57,7 +57,7 @@ The system consists of two primary components connected by WebSocket streaming:
 |                     Home Assistant                         |
 |                                                            |
 |  +------------------------------------------------------+  |
-|  |  custom_components/agent_assist/                     |  |
+|  |  custom_components/ha_agenthub/                     |  |
 |  |                                                      |  |
 |  |  ConversationEntity (I/O Bridge ONLY)                |  |
 |  |    - Registers as conversation agent                 |  |
@@ -70,7 +70,7 @@ The system consists of two primary components connected by WebSocket streaming:
                                 | WebSocket (streaming)
                                 v
 +-----------------------------------------------------------+
-|               Docker Container (agent-assist)              |
+|               Docker Container (HA-AgentHub)              |
 |                                                            |
 |  +------------------------------------------------------+  |
 |  |  FastAPI Application                                 |  |
@@ -353,7 +353,7 @@ Room-level presence awareness using Home Assistant motion, occupancy, and mmWave
 #### File Structure
 
 ```
-custom_components/agent_assist/
+custom_components/ha_agenthub/
   __init__.py          # Integration setup (async_setup_entry)
   manifest.json        # Integration metadata (domain, dependencies, config_flow)
   config_flow.py       # UI-based configuration (container URL, auth token)
@@ -703,7 +703,7 @@ End-to-end flow for a user request (e.g., "turn off the kitchen lights"):
 ## Project Structure
 
 ```
-agent-assist/
+ha-agenthub/
   .github/
     instructions/
       project-definition.md       # This file
@@ -797,7 +797,7 @@ agent-assist/
     docker-compose.yml
 
   custom_components/               # HA custom integration (I/O bridge only)
-    agent_assist/
+    ha_agenthub/
       __init__.py                 # Integration setup
       manifest.json               # Integration metadata
       config_flow.py              # UI configuration flow

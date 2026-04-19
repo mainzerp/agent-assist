@@ -5,7 +5,7 @@
 agent-assist is a two-component system for natural language smart home control:
 
 1. **Docker Container** -- The AI backend running FastAPI with multi-agent orchestration, a two-tier vector cache, hybrid entity matching, MCP tool integration, and a plugin system.
-2. **HA Custom Integration** -- A thin I/O bridge (`custom_components/agent_assist/`) that forwards user input to the container and streams responses back to Home Assistant's conversation system.
+2. **HA Custom Integration** -- A thin I/O bridge (`custom_components/ha_agenthub/`) that forwards user input to the container and streams responses back to Home Assistant's conversation system.
 
 All configuration, secrets, and state are stored in SQLite. ChromaDB provides vector storage for entity embeddings and cache embeddings. No configuration files are used at runtime -- everything is managed through the setup wizard and admin dashboard.
 
@@ -15,7 +15,7 @@ All configuration, secrets, and state are stored in SQLite. ChromaDB provides ve
 +--------------------------------------------------+
 |  Home Assistant                                   |
 |  +--------------------------------------------+  |
-|  |  agent_assist custom integration           |  |
+|  |  ha_agenthub custom integration            |  |
 |  |  (conversation agent -- thin I/O bridge)   |  |
 |  +---------------------+----------------------+  |
 +-------------------------|-------------------------+

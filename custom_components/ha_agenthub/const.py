@@ -1,6 +1,6 @@
-"""Constants for agent-assist integration."""
+"""Constants for HA-AgentHub Home Assistant integration."""
 
-DOMAIN = "agent_assist"
+DOMAIN = "ha_agenthub"
 DEFAULT_CONTAINER_URL = "http://localhost:8080"
 CONF_URL = "url"
 CONF_API_KEY = "api_key"

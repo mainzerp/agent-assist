@@ -179,10 +179,10 @@
 
             <h4 class="section-header mt-md mb-sm" style="font-size: 0.875rem;">Home Assistant integration (HA to Agent Hub)</h4>
             <p class="text-muted mb-md" style="font-size: 0.8125rem;">
-                The Agent Assist component in Home Assistant calls this container with
+                The HA-AgentHub integration in Home Assistant calls this container with
                 <span class="text-mono" style="font-size: 0.75rem;">Authorization: Bearer &lt;this key&gt;</span>
                 on <span class="text-mono" style="font-size: 0.75rem;">/api/conversation</span> and the conversation WebSocket.
-                Paste the same key under Agent Assist integration settings (API Key).
+                Paste the same key under HA-AgentHub integration settings (API Key).
             </p>
             <div style="max-width:720px;">
                 <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.5rem;">
@@ -455,7 +455,7 @@ function settingsPage() {
                     this.containerApiKey.customInput = '';
                     this.containerApiKey.shownOnce = null;
                     await this.loadContainerApiKey();
-                    this.showContainerApiKeyMessage('API key saved. Update Agent Assist in HA if you changed it.', 'success');
+                    this.showContainerApiKeyMessage('API key saved. Update HA-AgentHub in HA if you changed it.', 'success');
                 } else {
                     var err = await resp.json().catch(function() { return {}; });
                     var d = err.detail;
@@ -472,7 +472,7 @@ function settingsPage() {
         async rotateContainerApiKey() {
             if (!window.confirm(
                 'Generate a new API key? The old key stops working immediately. '
-                + 'You must paste the new key into the Agent Assist integration in Home Assistant.'
+                + 'You must paste the new key into the HA-AgentHub integration in Home Assistant.'
             )) {
                 return;
             }

@@ -1,4 +1,4 @@
-"""agent-assist Home Assistant custom integration."""
+"""HA-AgentHub Home Assistant custom integration."""
 
 from __future__ import annotations
 
@@ -16,7 +16,10 @@ PLATFORMS: list[Platform] = [Platform.CONVERSATION]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up agent-assist from a config entry."""
+    """Set up HA-AgentHub from a config entry."""
+    if entry.title == "Agent Assist":
+        hass.config_entries.async_update_entry(entry, title="HA-AgentHub")
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         "url": entry.data[CONF_URL],
@@ -28,7 +31,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload agent-assist config entry."""
+    """Unload HA-AgentHub config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)

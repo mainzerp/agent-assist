@@ -1,11 +1,11 @@
-# agent-assist
+# HA-AgentHub
 
 A multi-agent AI assistant for Home Assistant with container-based A2A orchestration, two-tier vector caching, hybrid entity matching, MCP tool integration, and a plugin system.
 
-![Test](https://github.com/<owner>/agent-assist/actions/workflows/test.yml/badge.svg?branch=main)
-![Lint](https://github.com/<owner>/agent-assist/actions/workflows/lint.yml/badge.svg?branch=main)
-![Docker Build](https://github.com/<owner>/agent-assist/actions/workflows/docker-build.yml/badge.svg?branch=main)
-![HACS Validation](https://github.com/<owner>/agent-assist/actions/workflows/hacs-validation.yml/badge.svg?branch=main)
+![Test](https://github.com/mainzerp/ha-agenthub/actions/workflows/test.yml/badge.svg?branch=main)
+![Lint](https://github.com/mainzerp/ha-agenthub/actions/workflows/lint.yml/badge.svg?branch=main)
+![Docker Build](https://github.com/mainzerp/ha-agenthub/actions/workflows/docker-build.yml/badge.svg?branch=main)
+![HACS Validation](https://github.com/mainzerp/ha-agenthub/actions/workflows/hacs-validation.yml/badge.svg?branch=main)
 
 ## Features
 
@@ -24,7 +24,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 
 ## Architecture
 
-agent-assist runs as a Docker container with a FastAPI backend. A thin Home Assistant custom integration (`custom_components/agent_assist/`) acts as the I/O bridge, forwarding user commands to the container and streaming responses back.
+HA-AgentHub (repository: `ha-agenthub`) runs as a Docker container with a FastAPI backend. A thin Home Assistant custom integration (`custom_components/ha_agenthub/`) acts as the I/O bridge, forwarding user commands to the container and streaming responses back.
 
 All configuration, secrets, and state are stored in SQLite. ChromaDB provides vector storage for entity embeddings and cache embeddings. No configuration files are used at runtime.
 
@@ -41,8 +41,8 @@ See [docs/architecture.md](docs/architecture.md) for component diagrams, request
 ### 1. Clone and Start
 
 ```bash
-git clone https://github.com/<owner>/agent-assist.git
-cd agent-assist/container
+git clone https://github.com/mainzerp/ha-agenthub.git
+cd ha-agenthub/container
 docker-compose up -d
 ```
 
@@ -60,20 +60,20 @@ Open `http://<docker-host>:8080/setup/` in your browser and follow the 5-step wi
 
 **Via HACS (recommended):**
 
-1. In HACS, add `https://github.com/<owner>/agent-assist` as a custom repository (category: Integration).
-2. Install "Agent Assist" and restart Home Assistant.
+1. In HACS, add `https://github.com/mainzerp/ha-agenthub` as a custom repository (category: Integration).
+2. Install "HA-AgentHub" and restart Home Assistant.
 
 **Manual:**
 
-Copy `custom_components/agent_assist/` to your HA `config/custom_components/` directory and restart HA.
+Copy `custom_components/ha_agenthub/` to your HA `config/custom_components/` directory and restart HA.
 
 **Configure:**
 
-In HA, go to Settings > Devices & Services > Add Integration > "Agent Assist". Enter the container URL and API key.
+In HA, go to Settings > Devices & Services > Add Integration > "HA-AgentHub". Enter the container URL and API key.
 
 ## Configuration
 
-agent-assist uses three configuration tiers:
+HA-AgentHub uses three configuration tiers:
 
 1. **Environment variables** -- Infrastructure-only (`CONTAINER_PORT`, `LOG_LEVEL`, etc.), set in `docker-compose.yml`
 2. **Setup wizard** -- One-time secrets and connections, stored encrypted in SQLite
@@ -132,12 +132,12 @@ container/          Docker container (FastAPI backend)
   plugins/          User plugins directory
   tests/            Test suite
 custom_components/  HA custom integration
-  agent_assist/     Thin I/O bridge
+  ha_agenthub/      Thin I/O bridge
 ```
 
 ## Plugin Development
 
-Plugins extend agent-assist without modifying core code. Create a `.py` file in `container/plugins/`, subclass `BasePlugin`, and implement lifecycle hooks.
+Plugins extend HA-AgentHub without modifying core code. Create a `.py` file in `container/plugins/`, subclass `BasePlugin`, and implement lifecycle hooks.
 
 See [docs/plugin-development.md](docs/plugin-development.md) for the full guide.
 

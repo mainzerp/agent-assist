@@ -1,4 +1,4 @@
-"""Config flow for agent-assist integration."""
+"""Config flow for HA-AgentHub integration."""
 
 from __future__ import annotations
 
@@ -16,14 +16,14 @@ from .const import DOMAIN, DEFAULT_CONTAINER_URL, HEALTH_PATH
 logger = logging.getLogger(__name__)
 
 
-class AgentAssistConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Config flow for agent-assist."""
+class HaAgentHubConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Config flow for HA-AgentHub."""
 
     VERSION = 1
 
     @staticmethod
-    def async_get_options_flow(config_entry: ConfigEntry) -> AgentAssistOptionsFlow:
-        return AgentAssistOptionsFlow(config_entry)
+    def async_get_options_flow(config_entry: ConfigEntry) -> HaAgentHubOptionsFlow:
+        return HaAgentHubOptionsFlow(config_entry)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -43,7 +43,7 @@ class AgentAssistConfigFlow(ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(DOMAIN)
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title="Agent Assist",
+                    title="HA-AgentHub",
                     data={CONF_URL: url, CONF_API_KEY: api_key},
                 )
 
@@ -80,8 +80,8 @@ class AgentAssistConfigFlow(ConfigFlow, domain=DOMAIN):
         return None
 
 
-class AgentAssistOptionsFlow(OptionsFlow):
-    """Options flow for reconfiguring agent-assist."""
+class HaAgentHubOptionsFlow(OptionsFlow):
+    """Options flow for reconfiguring HA-AgentHub."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
         self._entry = config_entry
