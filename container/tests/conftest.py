@@ -42,6 +42,21 @@ def db_path(tmp_path: Path) -> Path:
     return tmp_path / "test_agent_assist.db"
 
 
+@pytest.fixture(autouse=True)
+def _clear_settings_cache():
+    """P3-6: drop the in-memory ``SettingsRepository`` value cache between tests.
+
+    Tests rotate through fresh temporary databases (``db_path``), so a
+    cached value keyed by name from one test must not leak into the
+    next. The cache is module-level on the repository class.
+    """
+    from app.db.repository import SettingsRepository
+
+    SettingsRepository._cache_invalidate()
+    yield
+    SettingsRepository._cache_invalidate()
+
+
 # ---------------------------------------------------------------------------
 # 2. db_repository -- schema + seed data on a temp DB
 # ---------------------------------------------------------------------------

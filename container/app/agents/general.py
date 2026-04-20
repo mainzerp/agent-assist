@@ -28,6 +28,11 @@ class GeneralAgent(BaseAgent):
             skills=["general_qa", "web_search", "current_events", "conversation", "fallback"],
             endpoint="local://general-agent",
             expected_latency="high",
+            # P2-2 (FLOW-TIMEOUT-1): general-agent invokes web search and
+            # MCP tools that routinely exceed the 5s deterministic-device
+            # default. 30s keeps the worst-case bounded without falling
+            # back on every legitimate tool call.
+            timeout_sec=30.0,
         )
 
     async def handle_task(self, task: AgentTask) -> TaskResult:

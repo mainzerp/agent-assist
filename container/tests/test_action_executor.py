@@ -163,6 +163,56 @@ class TestParseAction:
         assert result["entity"] == "kitchen light"
         assert result["parameters"]["note"] == "use {placeholder} value"
 
+    def test_parse_action_rejects_missing_entity(self):
+        """P2-6 (FLOW-PARSE-1): a state-changing action without an
+        entity / entity_id is treated as a parse miss so the caller can
+        fall through to the next regex path or fail loudly instead of
+        executing a bad service call."""
+        response = '```json\n{"action": "turn_on", "parameters": {}}\n```'
+        result = parse_action(response)
+        assert result is None
+
+    def test_parse_action_rejects_empty_action_string(self):
+        """P2-6 (FLOW-PARSE-1): the schema requires ``action`` to be a
+        non-empty string."""
+        response = '```json\n{"action": "", "entity": "kitchen"}\n```'
+        result = parse_action(response)
+        assert result is None
+
+    def test_parse_action_accepts_entity_id_as_synonym(self):
+        """P2-6 (FLOW-PARSE-1): ``entity_id`` is accepted as a synonym
+        for ``entity`` to keep callers that already speak HA-native
+        ids working without a schema-validation rejection."""
+        response = '```json\n{"action": "turn_on", "entity_id": "light.kitchen"}\n```'
+        result = parse_action(response)
+        assert result is not None
+        assert result["entity_id"] == "light.kitchen"
+
+    def test_parse_action_allows_entityless_list_actions(self):
+        """P2-6 (FLOW-PARSE-1): aggregation actions (``list_lights``,
+        ``list_timers`` etc.) legitimately omit an entity; they must
+        still parse."""
+        response = '```json\n{"action": "list_lights", "parameters": {}}\n```'
+        result = parse_action(response)
+        assert result is not None
+        assert result["action"] == "list_lights"
+
+    def test_parse_action_falls_through_when_first_fence_invalid(self):
+        """P2-6 (FLOW-PARSE-1): if a labelled ```json fence contains a
+        malformed-but-decodable action stub (no entity), the parser
+        must keep scanning subsequent fences instead of returning the
+        bad payload."""
+        response = (
+            "Skeleton:\n"
+            '```json\n{"action": "turn_on"}\n```\n'
+            "Real call:\n"
+            '```\n{"action": "turn_off", "entity": "bedroom lamp"}\n```\n'
+        )
+        result = parse_action(response)
+        assert result is not None
+        assert result["action"] == "turn_off"
+        assert result["entity"] == "bedroom lamp"
+
 
 # ---------------------------------------------------------------------------
 # execute_action tests

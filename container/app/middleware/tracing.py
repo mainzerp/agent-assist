@@ -23,6 +23,9 @@ class TracingMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "websocket":
+            await self._handle_websocket(scope, receive, send)
+            return
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -116,3 +119,67 @@ class TracingMiddleware:
                 status_code,
                 duration_ms,
             )
+
+    async def _handle_websocket(self, scope, receive, send) -> None:
+        """FLOW-WS-SPAN-1 (P1-6): populate a per-connection SpanCollector
+        so the WS endpoint no longer has to build one with a hardcoded
+        ``source="ha"``. Each message handled inside the connection
+        becomes a child span under the root connection span."""
+        trace_id = uuid.uuid4().hex[:16]
+        path = scope.get("path", "")
+        # WS is HA-facing today (``/ws/conversation``). Future WS routes
+        # (admin chat, plugin callbacks) fall back to ``"api"``.
+        if path.startswith("/ws/conversation"):
+            source: str = "ha"
+        elif path.startswith("/api/admin/chat"):
+            source = "chat"
+        else:
+            source = "api"
+        span_collector = SpanCollector(trace_id, source=source)
+
+        state = scope.setdefault("state", {})
+        state["trace_id"] = trace_id
+        state["span_collector"] = span_collector
+        state["source"] = source
+
+        root_span_id = uuid.uuid4().hex[:12]
+        state["root_span_id"] = root_span_id
+        parent_token = span_collector.push_parent(root_span_id)
+
+        t0 = time.perf_counter()
+        start_time = datetime.now(UTC).isoformat()
+        logger.info("[%s] WS %s connected", trace_id, path)
+
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            span_collector.pop_parent(parent_token)
+
+            duration_ms = (time.perf_counter() - t0) * 1000
+            span_collector._spans.append(
+                {
+                    "span_id": root_span_id,
+                    "trace_id": trace_id,
+                    "span_name": f"WS {path}",
+                    "agent_id": None,
+                    "parent_span": None,
+                    "start_time": start_time,
+                    "duration_ms": round(duration_ms, 2),
+                    "status": "ok",
+                    "metadata": {"status_code": 101},
+                }
+            )
+
+            try:
+                await span_collector.flush()
+            except Exception:
+                logger.warning("Failed to flush WS spans for trace %s", trace_id, exc_info=True)
+
+            try:
+                from app.db.repository import TraceSummaryRepository
+
+                await TraceSummaryRepository.update_duration(trace_id, round(duration_ms, 2))
+            except Exception:
+                pass
+
+            logger.info("[%s] WS %s closed (%.1fms)", trace_id, path, duration_ms)

@@ -1,17 +1,294 @@
 # Version
 
-**Current Version:** 0.18.28
+**Current Version:** 0.18.37
 
 ## Version History
 
-### 0.18.28 -- ActionableAgent: LLM failures return TaskResult, not exceptions
+### 0.18.37 (PATCH) -- entity-name translation fix
 
-- **ActionableAgent** wraps the domain LLM call in ``try``/``except`` and returns
-  ``LLM_ERROR`` speech instead of letting exceptions propagate (which triggered
-  the generic ``BaseAgent.handle_task_stream`` message and confused traces).
-- **handle_task** also catches any remaining uncaught errors and returns
-  ``INTERNAL`` ``TaskResult`` so streaming never surfaces a transport-style failure
-  for normal agent faults.
+Stops the LLM from translating localized room/device/scene/automation
+names into English (or any other language) when generating condensed
+tasks or domain actions. For example, a German user saying "schalte
+das Licht im Keller ein" no longer ends up addressing a non-existent
+"cellar light" entity; "Keller" is preserved verbatim and matches the
+real ``light.keller``.
+
+- ``container/app/prompts/orchestrator.txt`` and the eight actionable
+  domain prompts (``light``, ``climate``, ``scene``, ``security``,
+  ``timer``, ``media``, ``music``, ``automation``) now include a
+  uniform ``CRITICAL -- ENTITY NAMES MUST NEVER BE TRANSLATED`` block
+  inserted between the schema/format header and the few-shot examples.
+  The block is universally English so it does not bias the LLM toward
+  any particular target language.
+- ``container/app/agents/actionable.py`` now PREPENDS a multi-line
+  language directive to the loaded system prompt (instead of appending
+  a single line) for every non-English request. Time/location context
+  remains appended (it is data, not a constraint).
+- No code-level behaviour change; prompt-only patch validated by live
+  probes (German requests now resolve to the real entities) and by the
+  full test suite (1273 passed, 3 skipped).
+
+### 0.18.36 -- Phase 3 chunk 6 (P3-6, P3-9, P3-10, P3-11)
+
+Final Phase-3 plan items. Backwards compatible; no schema or wire
+changes. See ``docs/SubAgent/full_flow_plan.md`` Phase 3.
+
+- **P3-6 (settings TTL cache)**: ``SettingsRepository.get_value`` now
+  serves from an in-memory dict cache with a 60s TTL
+  (``_SETTINGS_VALUE_CACHE_TTL_SEC`` in
+  ``container/app/db/repository.py``). Cache hits skip the SQLite read
+  entirely; misses (including absent keys, stored as a sentinel) are
+  populated. ``SettingsRepository.set`` invalidates the affected key
+  so subsequent reads observe the write. A test-only autouse fixture
+  in ``container/tests/conftest.py`` clears the cache between tests
+  to keep the per-test temporary databases isolated. Public API and
+  return values are unchanged.
+- **P3-9 (dispatch-path consolidation)**: Re-evaluated after P1-1
+  iterations 1-3. The shared helpers (``_dispatch_single``,
+  ``_handle_sequential_send``, ``_do_cache_lookup``, ``_classify``,
+  ``_finalize_single_agent_response``, ``_create_trace``,
+  ``_store_response_cache``) already cover all non-streaming-specific
+  logic, and the streaming impl delegates multi-agent and
+  sequential-send back to ``handle_task``. The remaining differences
+  are the genuine streaming primitives (token relay and the
+  filler/queue race) that P1-1 documented as a real architectural
+  difference. P3-9 is therefore considered done by P1-1; this is
+  recorded in the docstring of ``Orchestrator._run_pipeline``.
+- **P3-10 (logging audit)**: Demoted 13 per-request hot-path
+  ``logger.info`` calls in ``container/app/agents/orchestrator.py``
+  to ``logger.debug`` (per-request "Routed to ...", "Stream routed
+  ...", "Routing cache hit", "Classification LLM response",
+  "Agent ... responded in ...", filler decision/timing/result/sent
+  logs, cached-action visibility note, cache-replay fall-through).
+  Real anomalies (timeouts, dispatch errors, mediation failures,
+  cache-write failures) are kept at ``warning``. No log assertions
+  in the test suite are affected.
+- **P3-11 (magic numbers)**: Extracted module-level constants for
+  the remaining timing literals: ``_FILLER_LLM_TIMEOUT_SEC = 3.0``
+  in ``container/app/agents/filler.py``,
+  ``_LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC = 1.0`` in
+  ``container/app/llm/client.py``,
+  ``_OWNER_TASK_DISCONNECT_TIMEOUT_SEC = 5.0`` in
+  ``container/app/mcp/client.py``,
+  ``_ENTITY_SYNC_DEFAULT_INTERVAL_MIN = 30`` /
+  ``_ENTITY_SYNC_DISABLED_RECHECK_SEC = 300`` in
+  ``container/app/main.py`` and ``container/app/runtime_setup.py``,
+  and ``_ENTITY_UPDATE_FLUSH_INTERVAL_SEC = 0.5`` in
+  ``container/app/runtime_setup.py``. Notification-dispatcher
+  delays were already extracted in earlier work.
+
+### 0.18.35 -- Phase 3 chunk 5 (P3-1, P3-2, P3-3, P3-4, P3-5, P3-7, P3-8)
+
+Seven low-risk Phase-3 plan items (all S effort, see
+``docs/SubAgent/full_flow_plan.md``). Backwards compatible; default
+behaviour for existing clients unchanged.
+
+- **P3-1 (sanitized response flag)**: ``ConversationResponse`` and
+  ``StreamToken`` (``container/app/models/conversation.py``) gained an
+  optional ``sanitized: bool`` field defaulting to ``True``. The HA
+  custom component (``custom_components/ha_agenthub/conversation.py``)
+  now trusts the flag: ``_build_result`` accepts a ``sanitized`` kwarg
+  and only re-runs ``_strip_markdown`` when the backend explicitly
+  reports unsanitised text. Both REST and WS paths propagate the value
+  (REST reads ``data.get("sanitized", False)``; WS tracks
+  ``stream_sanitized`` across chunks and reads the final ``done``
+  frame). The defensive ``_strip_markdown`` helper is preserved for
+  legacy / older backends but is now a no-op for sanitized payloads.
+- **P3-2 (auth handshake timeouts)**: introduced
+  ``AUTH_HANDSHAKE_TIMEOUT = 10.0`` in
+  ``container/app/ha_client/websocket.py`` and wrapped both
+  ``ws.receive_json()`` calls inside ``connect()`` (auth-required and
+  auth-result frames) in ``asyncio.wait_for``. Prevents an idle HA
+  server from leaving the connect coroutine blocked indefinitely
+  during the auth handshake.
+- **P3-3 (vector-store reinit lock)**: ``ChromaVectorStore`` now holds
+  a ``threading.Lock`` and ``_reinitialize_sync`` runs its full body
+  inside the lock with a double-checked guard
+  (``if self._client is not None and self._is_alive(): return``).
+  Concurrent threads that all observed a dead client now produce
+  exactly one new ``PersistentClient`` instead of racing.
+- **P3-4 (response-cache flush ordering)**: added
+  ``ResponseCache.prepare_for_flush()`` which delegates to
+  ``self._state.invalidate()`` (mirrors ``RoutingCache``).
+  ``ResponseCache.store()`` now snapshots
+  ``self._state.current_generation()`` BEFORE doing work and skips the
+  upsert via ``matches_generation`` after the flush gate, so a flush
+  that lands mid-store no longer resurrects the cleared entry.
+  ``CacheManager.flush()`` calls ``prepare_for_flush()`` for the
+  ``response`` tier (and both caches when no tier is given) before
+  the underlying delete.
+- **P3-5 (state-waiter cleanup on disconnect)**: added
+  ``WebSocketReset`` exception and ``_cancel_all_state_waiters(reason)``
+  on the HA WebSocket client; ``_close_session`` snapshots and clears
+  the waiter map and sets ``WebSocketReset`` on every pending future
+  (under ``contextlib.suppress(InvalidStateError)``). Pending
+  ``async_wait_for_state`` callers now wake immediately on reconnect
+  instead of hanging until their per-call timeout.
+- **P3-7 (known-agents memoisation)**: ``OrchestratorAgent`` now
+  caches the ``registry.list_agents()`` result with a 5 s TTL
+  (``_known_agents_cache``, ``_known_agents_ttl``).
+  ``_load_reliability_config`` invalidates the memo so deliberate
+  reconfigurations remain authoritative; setting the TTL to ``0``
+  disables the cache for tests / stress paths.
+- **P3-8 (notification dispatcher agent_id)**: the TTS
+  ``llm.complete`` call in
+  ``container/app/agents/notification_dispatcher.py`` now passes
+  ``agent_id="notification-dispatcher"`` instead of the (incorrect)
+  ``"orchestrator"``, restoring per-agent budgeting and metrics.
+
+Tests: 14 new tests in
+``container/tests/test_phase3_chunk5.py`` (``TestSanitizedFlagDefault``,
+``TestVectorStoreReinitLock``, ``TestResponseCachePrepareForFlush``,
+``TestKnownAgentsMemoization``, ``TestNotificationDispatcherAgentId``)
+plus 3 new tests in
+``container/tests/test_ha_websocket_waiters.py``
+(``TestStateWaiterReconnectCleanup``).
+Full suite: ``1268 passed, 3 skipped, 1 warning in 59.44s``
+(was ``1251 passed, 3 skipped`` -- +17 new tests, zero regressions).
+
+Deferred to chunk 6: P3-6 (settings in-memory cache, M),
+P3-9 (multi-agent / sequential-send consolidation, M),
+P3-10, P3-11.
+
+### 0.18.34 -- Fix pre-existing test failures (WS close-error contract + tzdata)
+
+- **Test fix (TestHAConversationWSCloseError)**: the four
+  ``test_ha_client.py::TestHAConversationWSCloseError`` tests were
+  drifting against the current ``_process_via_ws`` contract from
+  0.18.27 onward. CLOSED/ERROR mid-stream and a JSON-decode/timeout
+  failure are wrapped by the outer ``except`` clause as
+  ``_WsDroppedAfterSendError`` (with the original ``aiohttp.ClientError``
+  attached as ``__cause__``) so the conversation entity can suppress
+  the duplicate REST fallback. ``done``-chunks containing ``error``
+  are intentionally NOT raised -- they are logged and embedded in the
+  speech result. Tests now assert this exact behaviour
+  (``_WsDroppedAfterSendError`` with the cause message check for
+  the first three; ``_build_result`` invocation with the embedded
+  error string for the fourth).
+- **Dev dependency (tzdata)**: added ``tzdata>=2024.1`` to
+  ``container/requirements-dev.txt`` so
+  ``test_recorder_history.py::TestSummarizeHistory::test_numeric_min_max``
+  can resolve ``ZoneInfo("UTC")`` on Windows / Python 3.14 venvs that
+  lack the system tz database. Installed locally for the verification
+  run.
+- Full suite: ``1251 passed, 3 skipped, 1 warning`` -- previously
+  blocking 5 failures cleared.
+
+### 0.18.33 -- Orchestrator pipeline shared finalize / classify-span helpers (P1-1 iter 3)
+
+- **P1-1 iter 3 (FLOW-PIPE-1)**: extended the iter-2 dedup with two
+  more behaviour-preserving helpers on ``OrchestratorAgent``:
+  ``_pipeline_record_classify_span(...)`` populates the six base
+  ``classify`` span metadata keys both pipeline impls always set,
+  with an opt-in ``extended_metadata`` flag for the
+  ``all_classifications`` key that only the non-streaming pipeline
+  recorded; the streaming impl keeps the default ``False`` so its
+  span payload is byte-identical to before.
+  ``_finalize_single_agent_response(...)`` runs the shared
+  ``return``-span block (mediation, voice-followup merge, response
+  cache store, turn store, trace summary) for the single-agent and
+  sequential-send paths. The helper accepts ``routed_to``,
+  ``mediation_agent``, ``skip_mediation_on_error`` (NS=True for the
+  agent-error guard, streaming=False) and ``skip_response_cache``
+  (NS sequential-send=True to preserve the prior ``len==1``
+  cache-store guard) so both callers keep their exact previous
+  behaviour. Multi-agent NS finalization stays inline because the
+  ``_merge_responses`` step has no streaming counterpart and runs
+  before the mediation-skip check. Cancel-interaction handling was
+  not extracted -- NS uses inline guards while streaming has a full
+  early-return block, so a shared helper would not actually dedup.
+  ``ORCHESTRATOR_LEGACY_PIPELINE`` rollback flag still works (verified
+  with the full ``test_agents.py`` + ``test_orchestrator_pipeline.py``
+  suite passing under the flag).
+
+### 0.18.32 -- Orchestrator pipeline shared prelude helpers (P1-1 iter 2)
+
+- **P1-1 iter 2 (FLOW-PIPE-1)**: extracted two behaviour-preserving
+  helpers from ``OrchestratorAgent`` to remove the most drift-prone
+  copy-paste between ``_handle_task_impl`` and
+  ``_handle_task_stream_impl``:
+  ``_pipeline_resolve_conversation_and_language(task)`` resolves
+  ``conversation_id`` (with uuid fallback), the effective language
+  via ``_resolve_language``, and prefetches conversation turns;
+  ``_pipeline_try_response_cache_replay(...)`` performs the
+  response-hit replay, opens the ``cache_fallthrough`` span on
+  failure and emits the appropriate (stream / non-stream) info log.
+  Both pipeline impls now call these helpers; classify, dispatch,
+  filler, mediation and trace blocks were left intact because their
+  span-metadata and control-flow shapes diverge enough that
+  consolidating them would risk subtle behaviour changes. The
+  ``ORCHESTRATOR_LEGACY_PIPELINE`` rollback flag remains live and
+  the legacy impls remain reachable via that path.
+
+### 0.18.31 -- Per-agent dispatch timeouts and parse_action schema validation
+
+- **P2-2 (FLOW-TIMEOUT-1)**: orchestrator dispatch no longer applies a
+  single 5s timeout to every sub-agent. ``AgentCard`` now carries an
+  optional ``timeout_sec`` field; ``OrchestratorAgent`` resolves the
+  effective timeout per agent_id with priority
+  ``agent.dispatch_timeout.<agent_id>`` setting > AgentCard.timeout_sec
+  > ``a2a.default_timeout`` (still 5s). The resolved value is capped at
+  ``a2a.max_dispatch_timeout`` (default 60s) and cached per agent_id
+  for the lifetime of the orchestrator instance so SettingsRepository
+  is hit at most once per agent. ``general-agent`` and dynamic
+  (custom plugin) agents now declare ``timeout_sec=30.0`` so MCP /
+  web-search calls are no longer killed mid-call. New tests:
+  ``tests/test_per_agent_timeout.py``.
+- **P2-6 (FLOW-PARSE-1)**: ``action_executor.parse_action`` now
+  validates every candidate JSON object against a Pydantic
+  ``ActionPayload`` schema (``action`` non-empty string + an entity /
+  entity_id, except for explicit aggregation actions like
+  ``list_lights`` / ``list_timers``). When the JSON in a fence
+  decodes but fails schema validation, the parser falls through to
+  the next regex / inline scan instead of returning the bad payload.
+  Backwards compatible: the public function still returns ``dict |
+  None`` and accepts ``entity_id`` as a synonym for ``entity``. New
+  tests added under ``tests/test_action_executor.py::TestParseAction``.
+
+### 0.18.30 -- Orchestrator pipeline entry point and streaming mediation pass-through
+
+- **P1-1 (FLOW-PIPE-1)**: introduced ``OrchestratorAgent._run_pipeline(task, *,
+  streaming)`` as the unified pipeline entry point. The bodies of
+  ``handle_task`` and ``handle_task_stream`` were renamed to
+  ``_handle_task_impl`` and ``_handle_task_stream_impl``; the public
+  methods are now thin wrappers that route through ``_run_pipeline``.
+  The streaming token sequence, multi-agent merge, sequential-send
+  filler timing, cache-hit short-circuits, cancel-interaction shortcut
+  and every existing FLOW-XXX fix call site are preserved unchanged.
+  Setting ``ORCHESTRATOR_LEGACY_PIPELINE=1`` bypasses the wrapper and
+  calls the impls directly as an emergency rollback lever for any
+  follow-up deep-dedup refactor.
+- **P2-1 (FLOW-MED-8 update)**: streaming mediation no longer suppresses
+  sub-agent tokens when ``personality.prompt`` is set. The user now
+  sees the streamed tokens as they arrive; the terminal ``done`` chunk
+  still carries ``mediated_speech`` so clients can replace the streamed
+  text with the mediated rewrite at end-of-stream. Dispatch span
+  metadata key renamed from ``mediation_suppressed_interim_tokens`` to
+  ``mediation_streamed_interim_tokens``.
+
+### 0.18.29 -- Full-flow plan: setup dedupe, WS trace, coalescing, reconnect cap, cache telemetry
+
+- **P1-2 (FLOW-SETUP-1)**: extracted the setup-dependent init sequence shared by
+  ``main.lifespan`` and ``runtime_setup.ensure_setup_runtime_initialized`` into
+  a single idempotent helper ``_initialize_setup_dependent_services``.
+  Post-wizard reloads and lifespan startup now run exactly one HA client,
+  cache manager, presence detector, WS client, and alarm monitor instance.
+- **P1-6 (FLOW-WS-SPAN-1)**: ``TracingMiddleware`` now handles WebSocket
+  scopes. Every WS connection gets its own outer SpanCollector with the
+  source derived from the path (``/ws/conversation`` → ``ha``, fallback
+  ``api``), and per-message turn spans are nested as children. Removed the
+  hardcoded ``source="ha"`` fallback in ``/api/conversation``.
+- **P2-3 (FLOW-COALESCE-1)**: HA custom-component conversation entity now
+  coalesces repeat user turns arriving within a 250ms window onto the
+  existing in-flight bridge task instead of firing a duplicate bridge.
+- **P2-4 (FLOW-RECONN-1)**: HA WebSocket client reconnect loop hard-caps
+  attempts (``MAX_RECONNECT_ATTEMPTS = 10``) and pauses for
+  ``RECONNECT_PAUSE_DURATION = 300s`` before resetting the counter, so
+  sustained HA downtime no longer busy-loops exponential-backoff forever.
+- **P2-5 (FLOW-TELEM-1)**: ``CacheManager.process`` only emits a
+  ``cache.track_cache_event`` analytics row for real hits (``response_hit``,
+  ``response_partial``, ``routing_hit``); misses no longer churn the
+  analytics store. Similarity is propagated into the event payload.
 
 ### 0.18.27 -- Stream: handle_task exceptions vs transport error chunk
 

@@ -105,3 +105,51 @@ class TestStateWaiters:
         client._dispatch_state_waiters({})
         # The waiter is still pending, not crashed.
         assert "light.keller" in client._state_waiters
+
+
+class TestStateWaiterReconnectCleanup:
+    """P3-5: pending state waiters must fail with WebSocketReset on reconnect."""
+
+    @pytest.mark.asyncio
+    async def test_close_session_cancels_all_state_waiters(self):
+        from app.ha_client.websocket import WebSocketReset
+
+        client = HAWebSocketClient()
+        fut1 = client.register_state_waiter("light.keller", expected="off")
+        fut2 = client.register_state_waiter("switch.kitchen", expected=None)
+
+        await client._close_session()
+
+        # Both pending futures must now resolve so awaiters can fall back
+        # to REST polling instead of hanging forever.
+        with pytest.raises(WebSocketReset):
+            await asyncio.wait_for(fut1, timeout=0.1)
+        with pytest.raises(WebSocketReset):
+            await asyncio.wait_for(fut2, timeout=0.1)
+        # Waiter map is cleared so the reconnect starts fresh.
+        assert client._state_waiters == {}
+
+    @pytest.mark.asyncio
+    async def test_close_session_no_waiters_does_not_raise(self):
+        client = HAWebSocketClient()
+        # Calling on an empty waiter map must be a no-op (no exceptions).
+        await client._close_session()
+        assert client._state_waiters == {}
+
+    @pytest.mark.asyncio
+    async def test_close_session_skips_already_done_futures(self):
+        from app.ha_client.websocket import WebSocketReset
+
+        client = HAWebSocketClient()
+        fut = client.register_state_waiter("light.keller", expected="off")
+        # Pre-resolve the future before close_session runs.
+        fut.set_result("off")
+
+        await client._close_session()
+
+        # Result is preserved -- close did not clobber it with the exception.
+        assert fut.result() == "off"
+        # And the second close still works without raising WebSocketReset
+        # against a finished future.
+        assert client._state_waiters == {}
+        del WebSocketReset  # silence unused-import lint when assertion above hits

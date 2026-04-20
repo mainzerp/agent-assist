@@ -69,17 +69,25 @@ class ActionableAgent(BaseAgent):
         span_collector = task.span_collector
         system_prompt = self._load_prompt(self._prompt_name)
 
-        # Inject time/location context
-        time_location = self._build_time_location_context(task.context)
-        if time_location:
-            system_prompt += f"\n\n{time_location}"
-
-        # Inject language directive for non-English users
+        # Inject language directive for non-English users (PREPEND so it sits
+        # in front of the few-shot examples and is not overridden by them).
         language = None
         if task.context:
             language = task.context.language
         if language and language.lower() not in ("en", "english", ""):
-            system_prompt += f"\n\nIMPORTANT: Respond in {language}. The user's language is {language}. Keep entity names, device names, and room names exactly as the user wrote them -- do NOT translate those."
+            lang_directive = (
+                f"CRITICAL LANGUAGE INSTRUCTION: The user's language is {language}.\n"
+                f"Respond in {language}.\n"
+                f"Copy entity, device, room, and scene names verbatim from the user's message.\n"
+                f"NEVER translate entity names to English, regardless of what language the few-shot examples use.\n"
+                f"If a few-shot example uses a different language than the user, copy the example's STRUCTURE but keep the USER's original entity names unchanged.\n\n"
+            )
+            system_prompt = lang_directive + system_prompt
+
+        # Inject time/location context (append: data, not constraint rule)
+        time_location = self._build_time_location_context(task.context)
+        if time_location:
+            system_prompt += f"\n\n{time_location}"
 
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -160,6 +168,18 @@ class ActionableAgent(BaseAgent):
                         success=result.get("success", False),
                         new_state=result.get("new_state"),
                         cacheable=result.get("cacheable", True),
+                        # P1-5: forward the action's structured parameters
+                        # (brightness, color_temp, transition, ...) so the
+                        # orchestrator can persist them on the response
+                        # cache entry and replay the exact same call on
+                        # the next hit. Executors may optionally override
+                        # this by returning ``service_data`` on the result
+                        # dict.
+                        service_data=(
+                            result.get("service_data")
+                            if isinstance(result.get("service_data"), dict)
+                            else (action.get("parameters") or {})
+                        ),
                     ),
                 )
             except Exception:

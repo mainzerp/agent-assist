@@ -36,11 +36,12 @@ def _build_a2a_request(
     conv_request: ConversationRequest, method: str, span_collector=None
 ) -> tuple[JsonRpcRequest, AgentTask]:
     """Convert a ConversationRequest into an A2A JsonRpcRequest + AgentTask."""
-    # FLOW-CTX-1 (0.18.6): source comes from the SpanCollector that
-    # the TracingMiddleware already derived from the route path.
-    # Falling back to "ha" keeps behavior stable for anyone hitting
-    # this helper with a hand-crafted span_collector (tests).
-    source = getattr(span_collector, "source", "ha") if span_collector else "ha"
+    # FLOW-CTX-1 (0.18.6) / FLOW-WS-SPAN-1 (P1-6): source comes from the
+    # SpanCollector that the TracingMiddleware derived from the route
+    # path (WS or HTTP). Default when no collector was provided (pure
+    # unit-tests hand-crafting a request) is ``"api"`` so missing
+    # context does not silently masquerade as an HA voice call.
+    source = getattr(span_collector, "source", "api") if span_collector else "api"
     context = TaskContext(
         device_id=conv_request.device_id,
         area_id=conv_request.area_id,
@@ -141,6 +142,13 @@ async def ws_conversation(
 ):
     """WebSocket streaming endpoint."""
     await websocket.accept()
+    # FLOW-WS-SPAN-1 (P1-6): the TracingMiddleware sets up a single
+    # SpanCollector per connection with the correct ``source``. Each
+    # message becomes a child span under the connection root span
+    # instead of minting a brand-new top-level trace with a
+    # hardcoded ``source="ha"``.
+    connection_span = websocket.scope.get("state", {}).get("span_collector")
+    connection_root_span = websocket.scope.get("state", {}).get("root_span_id")
     try:
         while True:
             raw = await websocket.receive_text()
@@ -149,8 +157,19 @@ async def ws_conversation(
                 continue
             data = json.loads(raw)
             conv_request = ConversationRequest(**data)
-            trace_id = uuid.uuid4().hex[:16]
-            span_collector = SpanCollector(trace_id, source="ha")
+
+            if connection_span is not None:
+                span_collector = connection_span
+                parent_token = (
+                    span_collector.push_parent(connection_root_span) if connection_root_span else None
+                )
+            else:
+                # Fallback for call sites that bypass the middleware
+                # (unit tests instantiating the endpoint directly).
+                trace_id = uuid.uuid4().hex[:16]
+                span_collector = SpanCollector(trace_id, source="ha")
+                parent_token = None
+
             a2a_request, _ = _build_a2a_request(conv_request, "message/stream", span_collector)
 
             try:
@@ -166,6 +185,10 @@ async def ws_conversation(
                     )
                     await websocket.send_json(token.model_dump())
             finally:
-                await span_collector.flush()
+                if parent_token is not None:
+                    span_collector.pop_parent(parent_token)
+                if connection_span is None:
+                    # We created an ad-hoc collector for this message; flush it.
+                    await span_collector.flush()
     except WebSocketDisconnect:
         logger.debug("WebSocket client disconnected")

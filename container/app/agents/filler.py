@@ -11,6 +11,11 @@ from app.models.agent import AgentCard, AgentTask, TaskResult
 
 logger = logging.getLogger(__name__)
 
+# P3-11: hard upper bound on filler-LLM latency. Filler is only useful
+# while the real agent is still working; if Groq is itself slow, give
+# up rather than block the streaming path.
+_FILLER_LLM_TIMEOUT_SEC = 3.0
+
 # Common ISO-639-1 codes to full language names
 _LANGUAGE_NAMES: dict[str, str] = {
     "de": "German (Deutsch)",
@@ -86,11 +91,11 @@ class FillerAgent(BaseAgent):
                         {"role": "user", "content": user_content},
                     ]
                 ),
-                timeout=3.0,
+                timeout=_FILLER_LLM_TIMEOUT_SEC,
             )
             return TaskResult(speech=result.strip() if result else "")
         except TimeoutError:
-            logger.warning("Filler generation timed out (>3s)")
+            logger.warning("Filler generation timed out (>%.0fs)", _FILLER_LLM_TIMEOUT_SEC)
             return TaskResult(speech="")
         except Exception:
             logger.warning("Filler generation failed", exc_info=True)

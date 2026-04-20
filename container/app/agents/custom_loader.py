@@ -39,6 +39,11 @@ class DynamicAgent(BaseAgent):
             description=self._description,
             skills=self._skills,
             endpoint=f"local://custom-{self._name}",
+            # P2-2 (FLOW-TIMEOUT-1): custom plugin agents typically wrap
+            # MCP / reasoning calls. 30s default mirrors general-agent;
+            # operators can still narrow this per agent_id via the
+            # ``agent.dispatch_timeout.custom-<name>`` setting.
+            timeout_sec=30.0,
         )
 
     async def handle_task(self, task: AgentTask) -> TaskResult:

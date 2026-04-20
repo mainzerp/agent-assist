@@ -21,6 +21,27 @@ MAX_DELAY = 60.0
 MAX_JITTER = 1.0
 HEARTBEAT_INTERVAL = 15.0
 IDLE_TIMEOUT = 2 * HEARTBEAT_INTERVAL
+# P3-2: bound the auth handshake receives. Without this, a half-open
+# socket that accepted ``ws_connect`` but never sends the
+# ``auth_required`` / ``auth_ok`` frames blocks ``connect()`` (and
+# therefore the whole receive loop) forever.
+AUTH_HANDSHAKE_TIMEOUT = 10.0
+# FLOW-RECONN-1 (P2-4): cap the tight reconnect loop so a permanently
+# unreachable HA does not burn CPU and log noise forever. After the cap
+# we pause, then reset the attempt counter and resume. ``_use_rest_fallback``
+# stays ON during the pause so callers keep short-circuiting WS waits.
+MAX_RECONNECT_ATTEMPTS = 10
+RECONNECT_PAUSE_DURATION = 300.0
+
+
+class WebSocketReset(Exception):
+    """Raised on pending state waiters when the WebSocket is torn down.
+
+    P3-5: callers awaiting :meth:`HAWebSocketClient.register_state_waiter`
+    receive this exception instead of hanging forever once a reconnect
+    drops the underlying socket. Catchers should fall back to REST polling
+    or treat the action as unverified.
+    """
 
 
 class HAWebSocketClient:
@@ -68,14 +89,34 @@ class HAWebSocketClient:
                 self._ws = await self._session.ws_connect(ws_url, heartbeat=HEARTBEAT_INTERVAL)
             self._ws_last_active = time.monotonic()
 
-            msg = await self._ws.receive_json()
+            # P3-2: bound both handshake receives. A half-open HA that
+            # never replies must not block the receive loop forever.
+            try:
+                msg = await asyncio.wait_for(
+                    self._ws.receive_json(), timeout=AUTH_HANDSHAKE_TIMEOUT
+                )
+            except TimeoutError:
+                self._logger.error(
+                    "HA WebSocket handshake timed out waiting for auth_required"
+                )
+                await self._close_session()
+                return False
             if msg.get("type") != "auth_required":
                 self._logger.error("Unexpected initial message from HA WebSocket")
                 await self._close_session()
                 return False
 
             await self._ws.send_json({"type": "auth", "access_token": token})
-            auth_response = await self._ws.receive_json()
+            try:
+                auth_response = await asyncio.wait_for(
+                    self._ws.receive_json(), timeout=AUTH_HANDSHAKE_TIMEOUT
+                )
+            except TimeoutError:
+                self._logger.error(
+                    "HA WebSocket handshake timed out waiting for auth_ok"
+                )
+                await self._close_session()
+                return False
 
             if auth_response.get("type") != "auth_ok":
                 self._logger.error("HA WebSocket auth failed")
@@ -96,6 +137,11 @@ class HAWebSocketClient:
             return False
 
     async def _close_session(self) -> None:
+        # P3-5: fail any pending state waiters so callers in
+        # ``expect_state`` / verifier paths unblock immediately and
+        # can fall back to REST polling instead of hanging until the
+        # next reconnect.
+        self._cancel_all_state_waiters("websocket_closed")
         async with self._ws_lock:
             if self._ws and not self._ws.closed:
                 await self._ws.close()
@@ -103,6 +149,25 @@ class HAWebSocketClient:
             if self._session and not self._session.closed:
                 await self._session.close()
             self._session = None
+
+    def _cancel_all_state_waiters(self, reason: str) -> None:
+        """Resolve every pending state waiter with ``WebSocketReset``.
+
+        P3-5: invoked from ``_close_session`` so a reconnect (admin URL
+        change, idle timeout, transport error) does not leave verifier
+        callers waiting for an event that will never arrive on the new
+        connection.
+        """
+        if not self._state_waiters:
+            return
+        snapshot = self._state_waiters
+        self._state_waiters = {}
+        for waiters in snapshot.values():
+            for future, _expected in waiters:
+                if future.done():
+                    continue
+                with contextlib.suppress(asyncio.InvalidStateError):
+                    future.set_exception(WebSocketReset(reason))
 
     async def disconnect(self) -> None:
         self._running = False
@@ -163,6 +228,25 @@ class HAWebSocketClient:
                     "WebSocket reconnect failed after %d attempts, enabling REST fallback",
                     attempt,
                 )
+            # FLOW-RECONN-1 (P2-4): after MAX_RECONNECT_ATTEMPTS cap the
+            # loop with a long pause. This prevents an offline HA from
+            # spinning the loop at max_delay + jitter indefinitely. We
+            # then reset the attempt counter and resume the tight loop
+            # so recovery is still quick once HA comes back.
+            if attempt >= MAX_RECONNECT_ATTEMPTS:
+                self._logger.warning(
+                    "WebSocket reconnect capped at %d attempts; pausing for %.0fs",
+                    MAX_RECONNECT_ATTEMPTS,
+                    RECONNECT_PAUSE_DURATION,
+                )
+                try:
+                    await asyncio.sleep(RECONNECT_PAUSE_DURATION)
+                except asyncio.CancelledError:
+                    raise
+                if not self._running:
+                    return
+                self._logger.info("Resuming WebSocket reconnect attempts after pause")
+                attempt = 0
 
     async def _receive_loop(self) -> None:
         while self._running and self._ws and not self._ws.closed:

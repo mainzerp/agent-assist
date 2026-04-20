@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 # Suppress litellm's internal verbose logging unless user wants debug.
 litellm.suppress_debug_info = True
 
+# P3-11: backoff between the first LLM call and the single retry that
+# kicks in when the provider returns an empty completion (typically
+# transient rate limiting). Kept short because the call site is in
+# the request hot path.
+_LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC = 1.0
+
 
 async def complete(
     agent_id: str,
@@ -71,7 +77,7 @@ async def complete(
                 model,
                 response.choices[0].finish_reason,
             )
-            await asyncio.sleep(1)
+            await asyncio.sleep(_LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC)
             async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
                 response = await litellm.acompletion(**call_kwargs)
                 pspan["metadata"]["model"] = model

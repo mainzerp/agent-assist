@@ -144,31 +144,36 @@ class TestRoutingCache:
         """store() should flush pending hit-count updates via update_metadata."""
         cache, store = self._make_cache()
         store.count.return_value = 0
-        cache._pending_updates = {"old-id": ("old query", {"hit_count": "5"})}
-        cache._hit_since_flush = 1
+        # Seed the shared state with a pending update so store() must flush it.
+        cache._state.record_pending_update(
+            "old-id",
+            "old query",
+            {"hit_count": "5"},
+            flush_interval=1_000_000,  # way above hit_since_flush so only store() triggers
+        )
         cache.store("new query", "agent", 0.9)
         # Flush uses update_metadata, store uses upsert
         store.update_metadata.assert_called_once()
         store.upsert.assert_called_once()  # only the store() upsert
-        assert cache._hit_since_flush == 0
+        assert cache._state.hit_count() == 0
 
     def test_flush_pending_public_method(self):
         """flush_pending() should delegate to _flush_pending_updates via update_metadata."""
         cache, store = self._make_cache()
-        cache._pending_updates = {"id-1": ("q", {"hit_count": "3"})}
+        cache._state.record_pending_update("id-1", "q", {"hit_count": "3"}, flush_interval=1_000_000)
         cache.flush_pending()
         store.update_metadata.assert_called_once()
         store.upsert.assert_not_called()
-        assert len(cache._pending_updates) == 0
+        assert not cache._state.has_pending()
 
     def test_prepare_for_flush_clears_pending_and_bumps_generation(self):
         cache, _store = self._make_cache()
-        cache._pending_updates = {"id-1": ("q", {"hit_count": "3"})}
-        gen0 = cache._invalidation_generation
+        cache._state.record_pending_update("id-1", "q", {"hit_count": "3"}, flush_interval=1_000_000)
+        gen0 = cache._state.current_generation()
         cache.prepare_for_flush()
-        assert cache._invalidation_generation == gen0 + 1
-        assert len(cache._pending_updates) == 0
-        assert cache._hit_since_flush == 0
+        assert cache._state.current_generation() == gen0 + 1
+        assert not cache._state.has_pending()
+        assert cache._state.hit_count() == 0
 
     def test_store_skips_upsert_when_invalidated_mid_flight(self):
         """Admin flush can run while store() is on the worker thread; upsert must not run."""
@@ -357,11 +362,11 @@ class TestResponseCache:
     def test_flush_pending_public_method(self):
         """flush_pending() should delegate to _flush_pending_updates via update_metadata."""
         cache, store = self._make_cache()
-        cache._pending_updates = {"id-1": ("q", {"hit_count": "3"})}
+        cache._state.record_pending_update("id-1", "q", {"hit_count": "3"}, flush_interval=1_000_000)
         cache.flush_pending()
         store.update_metadata.assert_called_once()
         store.upsert.assert_not_called()
-        assert len(cache._pending_updates) == 0
+        assert not cache._state.has_pending()
 
 
 # ---------------------------------------------------------------------------
@@ -394,11 +399,38 @@ class TestCacheManager:
         manager, _store = self._make_manager()
         with (
             patch.object(manager, "_process_inner") as mock_inner,
-            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock),
+            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track,
         ):
             mock_inner.return_value = CacheResult(hit_type="miss")
             result = await manager.process("random query")
         assert result.hit_type == "miss"
+        # FLOW-TELEM-1 (P2-5): miss must not emit a cache analytics event.
+        track.assert_not_awaited()
+
+    async def test_process_emits_event_only_for_real_hits(self):
+        """Routing / response hits emit track_cache_event, miss does not."""
+        manager, _store = self._make_manager()
+        with (
+            patch.object(manager, "_process_inner") as mock_inner,
+            patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock) as track,
+        ):
+            mock_inner.return_value = CacheResult(
+                hit_type="routing_hit",
+                agent_id="light-agent",
+                similarity=0.94,
+            )
+            await manager.process("turn on light")
+            mock_inner.return_value = CacheResult(
+                hit_type="response_partial",
+                agent_id="light-agent",
+                response_text="partial",
+                similarity=0.9,
+            )
+            await manager.process("turn on light again")
+            mock_inner.return_value = CacheResult(hit_type="miss")
+            await manager.process("nothing matches")
+        # Two events (routing_hit, response_partial); miss does not log.
+        assert track.await_count == 2
 
     async def test_process_exception_returns_miss(self):
         manager, _store = self._make_manager()
@@ -532,12 +564,16 @@ class TestCacheManager:
     def test_flush_pending_delegates_to_both_caches(self):
         """flush_pending() should call flush_pending() on both caches."""
         manager, store = self._make_manager()
-        manager._routing_cache._pending_updates = {"r-1": ("q", {"hit_count": "2"})}
-        manager._response_cache._pending_updates = {"s-1": ("q", {"hit_count": "3"})}
+        manager._routing_cache._state.record_pending_update(
+            "r-1", "q", {"hit_count": "2"}, flush_interval=1_000_000
+        )
+        manager._response_cache._state.record_pending_update(
+            "s-1", "q", {"hit_count": "3"}, flush_interval=1_000_000
+        )
         manager.flush_pending()
         # Both should have been flushed via update_metadata
-        assert len(manager._routing_cache._pending_updates) == 0
-        assert len(manager._response_cache._pending_updates) == 0
+        assert not manager._routing_cache._state.has_pending()
+        assert not manager._response_cache._state.has_pending()
         assert store.update_metadata.call_count == 2
 
     def test_routing_cache_stores_condensed_task(self):
@@ -1298,14 +1334,14 @@ class TestRoutingCacheEviction:
         store.count.return_value = 5  # below max, so no actual eviction needed
 
         for i in range(4):
-            cache._store_count = i
+            cache._state._store_count = i
             store.count.reset_mock()
             cache.store(f"query-{i}", "light-agent", 0.95)
         # count() should NOT have been called for eviction check on stores 0-3
         # (store calls upsert + may call count for eviction)
 
         # On the 5th store, eviction interval is hit
-        cache._store_count = 4
+        cache._state._store_count = 4
         cache.store("query-final", "light-agent", 0.95)
         # The store method should have checked count for eviction
 
@@ -1313,11 +1349,11 @@ class TestRoutingCacheEviction:
         """LRU eviction should not check before the interval is reached."""
         cache, store = self._make_cache()
         cache._eviction_interval = 100
-        cache._store_count = 0
+        cache._state._store_count = 0
         store.count.return_value = 0
         cache.store("query-1", "light-agent", 0.95)
         # store_count should have incremented but no eviction check
-        assert cache._store_count == 1
+        assert cache._state._store_count == 1
 
     def test_hit_count_buffering_flushes_at_threshold(self):
         """Pending hit updates should flush when buffer reaches _flush_interval."""
@@ -1351,11 +1387,16 @@ class TestRoutingCacheEviction:
         """When evicting many entries, delete should be called in chunks of 500."""
         cache, store = self._make_cache()
         cache._max_entries = 10
-        # Simulate 1010 entries
+        # Simulate 1010 entries across two paginated get() pages. The
+        # cache paginates via store.get(limit=..., offset=...) and stops
+        # when it sees a short page.
         store.count.return_value = 1010
         ids = [f"id-{i}" for i in range(1010)]
         metadatas = [{"last_accessed": f"2025-01-{(i % 28) + 1:02d}T00:00:00"} for i in range(1010)]
-        store.get.return_value = {"ids": ids, "metadatas": metadatas}
+        store.get.side_effect = [
+            {"ids": ids[:1000], "metadatas": metadatas[:1000]},
+            {"ids": ids[1000:], "metadatas": metadatas[1000:]},
+        ]
         cache._enforce_lru()
         # Should delete in chunks - at least 2 calls (1000 excess / 500)
         assert store.delete.call_count >= 2
@@ -1380,11 +1421,11 @@ class TestResponseCacheEviction:
 
         entry = make_response_cache_entry()
         for i in range(4):
-            cache._store_count = i
+            cache._state._store_count = i
             store.count.reset_mock()
             cache.store(entry)
 
-        cache._store_count = 4
+        cache._state._store_count = 4
         cache.store(entry)
 
     def test_batch_delete_in_chunks(self):
@@ -1394,7 +1435,12 @@ class TestResponseCacheEviction:
         store.count.return_value = 600
         ids = [f"id-{i}" for i in range(600)]
         metadatas = [{"last_accessed": f"2025-01-{(i % 28) + 1:02d}T00:00:00"} for i in range(600)]
-        store.get.return_value = {"ids": ids, "metadatas": metadatas}
+        # Fits in a single page (< 1000). Second call must yield empty to
+        # halt pagination.
+        store.get.side_effect = [
+            {"ids": ids, "metadatas": metadatas},
+            {"ids": [], "metadatas": []},
+        ]
         cache._enforce_lru()
         # 590 excess / 500 = 2 chunks
         assert store.delete.call_count >= 2

@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -20,8 +21,49 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+# P3-6: in-memory TTL cache for ``SettingsRepository.get_value``.
+# Settings change rarely but ``get_value`` is called per-request from
+# many hot paths (orchestrator, filler thresholds, dispatch timeouts,
+# routing thresholds). One DB hit per call adds up; the TTL keeps the
+# cache from going stale across long-running processes / out-of-band
+# DB writes.
+_SETTINGS_VALUE_CACHE_TTL_SEC = 60.0
+# Sentinel used to cache "key absent" results so we don't re-hit the DB
+# for unset keys every call. Stored with the same TTL.
+_MISSING = object()
+
+
 class SettingsRepository:
     """CRUD for the settings key-value store."""
+
+    # ``{key: (value_or_MISSING, expires_at_monotonic)}``.
+    # Class-level on purpose: ``SettingsRepository`` is a stateless
+    # collection of staticmethods used as a namespace.
+    _value_cache: dict[str, tuple[Any, float]] = {}
+
+    @classmethod
+    def _cache_get(cls, key: str) -> tuple[bool, Any]:
+        """Return ``(hit, value)``. ``value`` may be ``_MISSING``."""
+        entry = cls._value_cache.get(key)
+        if entry is None:
+            return False, None
+        value, expires_at = entry
+        if expires_at <= time.monotonic():
+            cls._value_cache.pop(key, None)
+            return False, None
+        return True, value
+
+    @classmethod
+    def _cache_put(cls, key: str, value: Any) -> None:
+        cls._value_cache[key] = (value, time.monotonic() + _SETTINGS_VALUE_CACHE_TTL_SEC)
+
+    @classmethod
+    def _cache_invalidate(cls, key: str | None = None) -> None:
+        """Drop a single key (or the whole cache when ``key`` is ``None``)."""
+        if key is None:
+            cls._value_cache.clear()
+        else:
+            cls._value_cache.pop(key, None)
 
     @staticmethod
     async def get(key: str) -> dict[str, Any] | None:
@@ -37,10 +79,23 @@ class SettingsRepository:
 
     @staticmethod
     async def get_value(key: str, default: str | None = None) -> str | None:
+        # P3-6: serve from in-memory TTL cache when available. The
+        # cached entry stores either the actual DB value or ``_MISSING``
+        # (key absent in DB); ``default`` is applied to ``_MISSING``
+        # hits at call time so different callers can use different
+        # defaults.
+        hit, cached = SettingsRepository._cache_get(key)
+        if hit:
+            return default if cached is _MISSING else cached
         async with get_db_read() as db:
             cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (key,))
             row = await cursor.fetchone()
-            return row[0] if row else default
+        if row is None:
+            SettingsRepository._cache_put(key, _MISSING)
+            return default
+        value = row[0]
+        SettingsRepository._cache_put(key, value)
+        return value
 
     @staticmethod
     async def set(
@@ -54,6 +109,8 @@ class SettingsRepository:
                 (key, value, value_type, category, description, _now(), value, _now()),
             )
             await db.commit()
+        # P3-6: invalidate so subsequent ``get_value`` reflects the write.
+        SettingsRepository._cache_invalidate(key)
 
     @staticmethod
     async def get_by_category(category: str) -> list[dict[str, Any]]:

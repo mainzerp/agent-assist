@@ -47,6 +47,10 @@ _STOP = "STOP"
 _LIST_TOOLS = "list_tools"
 _CALL_TOOL = "call_tool"
 
+# P3-11: how long ``disconnect`` waits for the owner task to drain its
+# request queue and exit cleanly before forcing a cancel.
+_OWNER_TASK_DISCONNECT_TIMEOUT_SEC = 5.0
+
 
 class MCPClient:
     """Client for connecting to a single MCP server."""
@@ -250,11 +254,12 @@ class MCPClient:
                 assert self._req_q is not None
                 await self._req_q.put((fut, _STOP, ()))
                 try:
-                    await asyncio.wait_for(self._owner_task, timeout=5.0)
+                    await asyncio.wait_for(self._owner_task, timeout=_OWNER_TASK_DISCONNECT_TIMEOUT_SEC)
                 except TimeoutError:
                     logger.warning(
-                        "MCP owner for '%s' did not stop within 5s; cancelling",
+                        "MCP owner for '%s' did not stop within %.0fs; cancelling",
                         self._name,
+                        _OWNER_TASK_DISCONNECT_TIMEOUT_SEC,
                     )
                     assert self._owner_task is not None
                     self._owner_task.cancel()

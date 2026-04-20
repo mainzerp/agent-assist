@@ -58,7 +58,7 @@ ORCHESTRATOR: Confirm with user via ask_user tool UNTIL user confirms task compl
 ```
 Research [topic]. Analyze relevant files in the codebase.
 Think thoroughly and consider all edge cases, dependencies, and implications.
-Create a analysis doc at: docs/SubAgent/[NAME_ANALYSIS].md
+Create a analysis doc in english at: docs/SubAgent/[NAME_ANALYSIS].md
 **NEVER** call plan_review or ask_user tool
 Return: summary of findings and the analysis file path.
 ```
@@ -67,7 +67,7 @@ Return: summary of findings and the analysis file path.
 ```
 Read the analysis at: docs/SubAgent/[NAME_ANALYSIS].md
 Think deeply and comprehensively. Consider all edge cases, risks, and ordering constraints.
-Create a detailed step-by-step implementation plan in docs/SubAgent/[NAME_PLAN].md.
+Create a detailed step-by-step implementation plan in english at: docs/SubAgent/[NAME_PLAN].md.
 **NEVER** call plan_review or ask_user tool.
 Return: summary of the plan and the plan file path.
 ```

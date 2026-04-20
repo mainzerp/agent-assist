@@ -104,12 +104,18 @@ class CacheManager:
                 query_text,
                 language,
             )
-            # Track cache event
-            await track_cache_event(
-                tier="response" if result.hit_type.startswith("response") else "routing",
-                hit_type=result.hit_type,
-                agent_id=result.agent_id,
-            )
+            # FLOW-TELEM-1 (P2-5): only emit a cache event for real hits
+            # (routing_hit / response_hit / response_partial). Misses
+            # would just fill the analytics table with agent_id=None rows
+            # that dashboards ignore anyway; aggregate miss counting is
+            # handled via the hit-rate derivation in the dashboards.
+            if result.hit_type in {"response_hit", "response_partial", "routing_hit"}:
+                await track_cache_event(
+                    tier="response" if result.hit_type.startswith("response") else "routing",
+                    hit_type=result.hit_type,
+                    agent_id=result.agent_id,
+                    similarity=result.similarity,
+                )
             return result
         except Exception:
             logger.warning("Cache lookup failed, bypassing cache", exc_info=True)
@@ -280,6 +286,10 @@ class CacheManager:
                     self._vector_store.delete(COLLECTION_ROUTING_CACHE, ids=all_data["ids"])
             logger.info("Routing cache flushed")
         if tier is None or tier == "response":
+            # P3-4: invalidate in-flight stores BEFORE delete so a
+            # concurrent worker thread cannot upsert into the
+            # collection we are about to clear.
+            self._response_cache.prepare_for_flush()
             count = self._vector_store.count(COLLECTION_RESPONSE_CACHE)
             if count > 0:
                 all_data = self._vector_store.get(COLLECTION_RESPONSE_CACHE, include=[])

@@ -120,3 +120,73 @@ async def test_tracing_middleware_does_not_buffer(mock_summary):
         f"first body chunk arrived after {first_offset:.3f}s -- middleware is buffering"
     )
     assert b"first" in first_body
+
+
+@pytest.mark.asyncio
+@patch("app.middleware.tracing.TraceSummaryRepository", create=True)
+async def test_tracing_middleware_populates_websocket_span(mock_summary):
+    """FLOW-WS-SPAN-1 (P1-6): TracingMiddleware must create a per-connection
+    SpanCollector with source derived from the WS path, so the WS endpoint
+    does not have to hardcode ``source="ha"``."""
+    mock_summary.update_duration = AsyncMock()
+
+    captured_state: dict = {}
+
+    async def dummy_asgi(scope, receive, send):
+        captured_state["state"] = scope.get("state", {}).copy()
+
+    middleware = TracingMiddleware(dummy_asgi)
+
+    async def _receive():
+        return {"type": "websocket.disconnect"}
+
+    async def _send(_):
+        return None
+
+    ws_scope = {
+        "type": "websocket",
+        "path": "/ws/conversation",
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+    }
+
+    await middleware(ws_scope, _receive, _send)
+
+    sc = captured_state["state"]["span_collector"]
+    assert sc.source == "ha"
+    assert captured_state["state"]["source"] == "ha"
+    assert captured_state["state"]["trace_id"]
+    assert captured_state["state"]["root_span_id"]
+
+
+@pytest.mark.asyncio
+@patch("app.middleware.tracing.TraceSummaryRepository", create=True)
+async def test_tracing_middleware_ws_source_defaults_to_api(mock_summary):
+    """FLOW-WS-SPAN-1 (P1-6): WS routes that are not /ws/conversation fall
+    back to ``source="api"`` instead of silently inheriting ``"ha"``."""
+    mock_summary.update_duration = AsyncMock()
+
+    captured_state: dict = {}
+
+    async def dummy_asgi(scope, receive, send):
+        captured_state["state"] = scope.get("state", {}).copy()
+
+    middleware = TracingMiddleware(dummy_asgi)
+
+    async def _receive():
+        return {"type": "websocket.disconnect"}
+
+    async def _send(_):
+        return None
+
+    ws_scope = {
+        "type": "websocket",
+        "path": "/ws/some-future-route",
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+    }
+
+    await middleware(ws_scope, _receive, _send)
+
+    sc = captured_state["state"]["span_collector"]
+    assert sc.source == "api"

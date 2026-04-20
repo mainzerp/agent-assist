@@ -1,0 +1,278 @@
+"""Phase 3 chunk 5 regression tests (P3-1 / P3-3 / P3-4 / P3-7 / P3-8).
+
+Each block is intentionally small and isolated so a future drift in
+unrelated areas of the orchestrator / cache stack does not mask a
+real regression of the targeted behaviour.
+"""
+
+from __future__ import annotations
+
+import threading
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from app.cache.response_cache import ResponseCache
+from app.cache.vector_store import VectorStore
+from app.models.cache import ResponseCacheEntry
+from app.models.conversation import ConversationResponse, StreamToken
+
+
+# ---------------------------------------------------------------------------
+# P3-1: backend signals sanitized=True so HA can skip its strip pass.
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizedFlagDefault:
+    def test_conversation_response_defaults_to_sanitized(self):
+        resp = ConversationResponse(speech="**hi**", conversation_id="c1")
+        # Backend is the source of truth: default True.
+        assert resp.sanitized is True
+
+    def test_stream_token_defaults_to_sanitized(self):
+        tok = StreamToken(token="hello", done=True)
+        assert tok.sanitized is True
+
+    def test_sanitized_can_be_disabled_for_legacy_clients(self):
+        resp = ConversationResponse(speech="**hi**", sanitized=False)
+        assert resp.sanitized is False
+
+
+# ---------------------------------------------------------------------------
+# P3-3: VectorStore._reinitialize_sync must be atomic across threads.
+# ---------------------------------------------------------------------------
+
+
+class TestVectorStoreReinitLock:
+    def test_concurrent_reinit_only_creates_one_client(self):
+        store = VectorStore()
+        store._embedding_fn = MagicMock()
+        # First call must rebuild; later calls within the same critical
+        # section must be no-ops because _is_alive returns True after
+        # the first PersistentClient was assigned.
+        client_calls: list[object] = []
+
+        class _FakeClient:
+            def __init__(self, **_: object) -> None:
+                client_calls.append(self)
+
+            def heartbeat(self) -> int:
+                return 1
+
+            def get_or_create_collection(self, **_: object) -> object:
+                return MagicMock()
+
+        with patch("app.cache.vector_store.chromadb.PersistentClient", _FakeClient):
+            barrier = threading.Barrier(5)
+
+            def _reinit() -> None:
+                barrier.wait()
+                store._reinitialize_sync()
+
+            threads = [threading.Thread(target=_reinit) for _ in range(5)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        # Exactly one PersistentClient instance was created across 5
+        # threads; the lock + double-check guard collapsed the rest.
+        assert len(client_calls) == 1
+        assert store._client is client_calls[0]
+
+    def test_reinit_lock_skips_when_client_already_alive(self):
+        """If the client is already alive, reinit becomes a no-op."""
+        store = VectorStore()
+        store._embedding_fn = MagicMock()
+        existing = MagicMock()
+        existing.heartbeat.return_value = 1
+        store._client = existing
+
+        with patch("app.cache.vector_store.chromadb.PersistentClient") as _mk_client:
+            store._reinitialize_sync()
+
+        _mk_client.assert_not_called()
+        assert store._client is existing
+
+
+# ---------------------------------------------------------------------------
+# P3-4: ResponseCache.prepare_for_flush mirrors RoutingCache behaviour.
+# ---------------------------------------------------------------------------
+
+
+class TestResponseCachePrepareForFlush:
+    def _make_cache(self) -> tuple[ResponseCache, MagicMock]:
+        store = MagicMock(spec=VectorStore)
+        cache = ResponseCache(store)
+        cache._hit_threshold = 0.95
+        cache._partial_threshold = 0.80
+        cache._max_entries = 100
+        return cache, store
+
+    def test_prepare_for_flush_clears_pending_and_bumps_generation(self):
+        cache, _store = self._make_cache()
+        cache._state.record_pending_update(
+            "id-1", "q", {"hit_count": "3"}, flush_interval=1_000_000
+        )
+        gen0 = cache._state.current_generation()
+
+        cache.prepare_for_flush()
+
+        assert cache._state.current_generation() == gen0 + 1
+        assert not cache._state.has_pending()
+        assert cache._state.hit_count() == 0
+
+    def test_store_skips_upsert_when_invalidated_mid_flight(self):
+        """Admin flush during an in-flight async store must not resurrect entries."""
+        cache, store = self._make_cache()
+        store.count.return_value = 0
+        original_flush_pending = cache._flush_pending_updates
+
+        def flush_pending_then_invalidate() -> None:
+            original_flush_pending()
+            cache.prepare_for_flush()
+
+        cache._flush_pending_updates = flush_pending_then_invalidate
+        entry = ResponseCacheEntry(
+            query_text="turn on light",
+            response_text="done",
+            agent_id="light-agent",
+            cached_action=None,
+            confidence=0.99,
+            entity_ids=["light.kitchen"],
+            language="en",
+        )
+        cache.store(entry)
+        store.upsert.assert_not_called()
+
+    def test_cache_manager_flush_calls_response_prepare(self):
+        """flush('response') must call the response tier's prepare_for_flush."""
+        from app.cache.cache_manager import CacheManager
+
+        manager = CacheManager.__new__(CacheManager)
+        manager._vector_store = MagicMock()
+        manager._vector_store.count.return_value = 0
+        manager._routing_cache = MagicMock()
+        manager._response_cache = MagicMock()
+        manager._response_cache_enabled = True
+
+        manager.flush(tier="response")
+        manager._response_cache.prepare_for_flush.assert_called_once()
+
+    def test_cache_manager_flush_all_calls_both_prepares(self):
+        from app.cache.cache_manager import CacheManager
+
+        manager = CacheManager.__new__(CacheManager)
+        manager._vector_store = MagicMock()
+        manager._vector_store.count.return_value = 0
+        manager._routing_cache = MagicMock()
+        manager._response_cache = MagicMock()
+        manager._response_cache_enabled = True
+
+        manager.flush()  # tier=None -> both
+        manager._routing_cache.prepare_for_flush.assert_called_once()
+        manager._response_cache.prepare_for_flush.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# P3-7: _get_known_agents memoises within TTL.
+# ---------------------------------------------------------------------------
+
+
+class TestKnownAgentsMemoization:
+    def _make_orchestrator(self) -> tuple[object, MagicMock]:
+        from app.agents.orchestrator import OrchestratorAgent
+
+        registry = MagicMock()
+        card_a = MagicMock(agent_id="light-agent")
+        card_b = MagicMock(agent_id="music-agent")
+        registry.list_agents = AsyncMock(return_value=[card_a, card_b])
+        orch = OrchestratorAgent(
+            dispatcher=MagicMock(),
+            registry=registry,
+        )
+        return orch, registry
+
+    @pytest.mark.asyncio
+    async def test_repeat_calls_within_ttl_hit_cache(self):
+        orch, registry = self._make_orchestrator()
+        # Long TTL so the second call is a guaranteed cache hit.
+        orch._known_agents_ttl = 60.0
+
+        first = await orch._get_known_agents()
+        second = await orch._get_known_agents()
+
+        assert first == second
+        registry.list_agents.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_zero_ttl_disables_cache(self):
+        orch, registry = self._make_orchestrator()
+        orch._known_agents_ttl = 0.0  # always expired
+
+        await orch._get_known_agents()
+        await orch._get_known_agents()
+
+        assert registry.list_agents.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_initialize_invalidates_memo(self):
+        orch, registry = self._make_orchestrator()
+        orch._known_agents_ttl = 60.0
+        await orch._get_known_agents()
+        assert registry.list_agents.await_count == 1
+
+        # Reload reliability config (e.g. admin save) clears the memo.
+        with (
+            patch.object(orch, "_load_reliability_config", new=AsyncMock(side_effect=lambda: setattr(orch, "_known_agents_cache", None))),
+            patch.object(orch, "_load_mediation_config", new=AsyncMock()),
+        ):
+            await orch.initialize()
+
+        await orch._get_known_agents()
+        assert registry.list_agents.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_load_reliability_config_clears_known_agents_memo(self):
+        """The real _load_reliability_config must invalidate the memo."""
+        orch, registry = self._make_orchestrator()
+        orch._known_agents_ttl = 60.0
+        await orch._get_known_agents()
+        assert orch._known_agents_cache is not None
+
+        async def fake_get_value(key: str, default: object | None = None) -> object:
+            return default
+
+        with patch("app.agents.orchestrator.SettingsRepository.get_value", new=AsyncMock(side_effect=fake_get_value)):
+            await orch._load_reliability_config()
+
+        assert orch._known_agents_cache is None
+        # Next call now refetches.
+        await orch._get_known_agents()
+        assert registry.list_agents.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# P3-8: TTS LLM call must not borrow the orchestrator agent_id.
+# ---------------------------------------------------------------------------
+
+
+class TestNotificationDispatcherAgentId:
+    @pytest.mark.asyncio
+    async def test_generate_tts_message_uses_dispatcher_id(self):
+        from app.agents import notification_dispatcher as nd
+
+        with patch("app.llm.client.complete", new=AsyncMock(return_value="Timer ist fertig.")) as fake_complete:
+            result = await nd._generate_tts_message(
+                timer_name="Pasta",
+                duration="10 Minuten",
+                area="Kueche",
+                language="de",
+                has_meaningful_name=True,
+            )
+
+        assert result == "Timer ist fertig."
+        # P3-8: token tracking must attribute usage to the notification
+        # dispatcher, not the orchestrator agent.
+        kwargs = fake_complete.await_args.kwargs
+        assert kwargs["agent_id"] == "notification-dispatcher"

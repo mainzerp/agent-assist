@@ -1650,7 +1650,7 @@ class TestOrchestratorAgent:
         assert len(results) == 1
         assert results[0][0] == "light-agent"
         assert results[0][1] == "Turn on kitchen light"
-        assert results[0][2] == 0.8  # default when no confidence in format
+        assert results[0][2] is None  # None when no confidence in format
 
     async def test_parse_classification_no_colon_falls_back(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
@@ -4443,11 +4443,14 @@ class TestStreamMediatedSpeech:
     async def test_stream_yields_mediated_speech_when_changed(self, mock_complete, mock_track, mock_settings):
         """Final done chunk includes mediated_speech when mediation changes the text.
 
-        FLOW-MED-8: when personality mediation is on, the streaming
-        pipeline suppresses non-filler interim tokens to avoid
-        pre-mediation flicker, and delivers the final text once via
-        ``mediated_speech`` on the terminal chunk. Non-done chunks, if
-        any, must only be filler.
+        P2-1 (0.18.x): when personality mediation is on, the
+        streaming pipeline now FORWARDS sub-agent tokens to the
+        client so the streaming experience is preserved. The
+        terminal ``done`` chunk additionally carries
+        ``mediated_speech`` so clients that prefer the mediated text
+        can replace the streamed tokens at end-of-stream. Previous
+        behavior (FLOW-MED-8) suppressed all non-filler interim
+        tokens; this test now asserts the new pass-through.
         """
         orch, dispatcher, _ = self._make_orchestrator()
         # First call: classify. Second call: mediation.
@@ -4474,8 +4477,14 @@ class TestStreamMediatedSpeech:
         chunks = [c async for c in orch.handle_task_stream(task)]
 
         intermediate = [c for c in chunks if not c["done"]]
-        for chunk in intermediate:
-            assert chunk.get("is_filler"), "non-filler interim tokens must be suppressed when mediation is enabled"
+        # P2-1: at least one non-filler raw token chunk must be
+        # forwarded to the client when mediation is enabled.
+        non_filler_tokens = [
+            c for c in intermediate if not c.get("is_filler") and c.get("token")
+        ]
+        assert non_filler_tokens, "raw sub-agent tokens must be forwarded when mediation is enabled"
+        joined = "".join(c["token"] for c in non_filler_tokens)
+        assert "Light" in joined and "is on" in joined
 
         final = [c for c in chunks if c["done"]]
         assert len(final) == 1

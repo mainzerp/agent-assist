@@ -38,12 +38,15 @@ class _WsDroppedAfterSendError(Exception):
 def _strip_markdown(text: str) -> str:
     """Remove Markdown formatting for TTS-friendly output.
 
-    FLOW-MED-4: this implementation MUST stay in lock-step with
-    ``container/app/agents/sanitize.strip_markdown``; the container
-    side is the canonical authoritative reference. When adding a new
-    rule here, mirror it there and extend
-    ``container/tests/data/sanitize_corpus.txt`` so both copies are
-    regression-tested against the same inputs.
+    FLOW-MED-4 / P3-1: this function is now a *defensive fallback only*.
+    The container backend strips Markdown via
+    ``container/app/agents/sanitize.strip_markdown`` and advertises the
+    fact through the ``sanitized`` field on its REST/WebSocket responses
+    (see ``ConversationResponse`` / ``StreamToken``). When that flag is
+    True, ``_build_result`` skips this pass and treats the backend as
+    the single source of truth. The implementation is kept in lock-step
+    with the backend so legacy containers (< 0.18.35) and filler tokens
+    (which are emitted unsanitized) still produce TTS-friendly output.
     """
     if not text:
         return text
@@ -120,7 +123,13 @@ class HaAgentHubConversationEntity(
         # Coalesce parallel HA calls with the same conversation_id + text (duplicate
         # pipeline invocations or WS+REST overlap) into a single bridge request.
         self._coalesce_lock = asyncio.Lock()
-        self._inflight_bridge: dict[tuple[str, str], asyncio.Task] = {}
+        # FLOW-COALESCE-1 (P2-3): value is (started_monotonic, task). The
+        # started-timestamp guards a legitimate repeat of the same utterance
+        # that arrives after the original response was already rendered --
+        # without it we would short-circuit the second request onto the
+        # first completed task forever.
+        self._inflight_bridge: dict[tuple[str, str], tuple[float, asyncio.Task]] = {}
+        self._coalesce_window_sec: float = 0.25
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
@@ -283,14 +292,15 @@ class HaAgentHubConversationEntity(
         coalesced = False
         async with self._coalesce_lock:
             existing = self._inflight_bridge.get(key)
-            if existing is not None:
-                bridge_task = existing
+            now = time.monotonic()
+            if existing is not None and (now - existing[0]) < self._coalesce_window_sec:
+                bridge_task = existing[1]
                 coalesced = True
             else:
                 bridge_task = self.hass.async_create_task(
                     self._async_bridge_with_cleanup(user_input, key)
                 )
-                self._inflight_bridge[key] = bridge_task
+                self._inflight_bridge[key] = (now, bridge_task)
         if coalesced:
             logger.info(
                 "HA-AgentHub: coalescing duplicate request (same conversation + text) onto in-flight bridge"
@@ -307,7 +317,8 @@ class HaAgentHubConversationEntity(
             return await self._async_bridge_to_container(user_input)
         finally:
             async with self._coalesce_lock:
-                if task is not None and self._inflight_bridge.get(key) is task:
+                existing = self._inflight_bridge.get(key)
+                if task is not None and existing is not None and existing[1] is task:
                     self._inflight_bridge.pop(key, None)
 
     async def _async_bridge_to_container(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
@@ -394,6 +405,12 @@ class HaAgentHubConversationEntity(
             final_conversation_id = user_input.conversation_id
 
             received_done = False
+            # P3-1: track per-stream sanitization. The orchestrator emits
+            # token / mediated_speech chunks already stripped by
+            # ``app.agents.sanitize.strip_markdown``; the done frame
+            # carries the flag explicitly. Default False so legacy
+            # backends fall through the local strip pass.
+            stream_sanitized = False
 
             while True:
                 msg = await asyncio.wait_for(self._ws.receive(), timeout=30.0)
@@ -417,6 +434,11 @@ class HaAgentHubConversationEntity(
                         mediated = data.get("mediated_speech")
                         if mediated:
                             speech_parts = [mediated]
+                        # P3-1: backend signals sanitization on the done
+                        # frame. Honour it for both ``mediated_speech``
+                        # and accumulated tokens (the orchestrator
+                        # strips both before emitting).
+                        stream_sanitized = bool(data.get("sanitized", False))
                         if stream_err:
                             # Application-level error from the container (done chunk), not a
                             # transport failure — do not raise (would become _WsDroppedAfterSend).
@@ -441,7 +463,7 @@ class HaAgentHubConversationEntity(
 
             self._ws_last_active = time.monotonic()
             speech = "".join(speech_parts)
-            return self._build_result(speech, final_conversation_id, user_input.language)
+            return self._build_result(speech, final_conversation_id, user_input.language, sanitized=stream_sanitized)
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as err:
             raise _WsDroppedAfterSendError() from err
 
@@ -474,6 +496,7 @@ class HaAgentHubConversationEntity(
                     data.get("speech", ""),
                     data.get("conversation_id", user_input.conversation_id),
                     user_input.language,
+                    sanitized=bool(data.get("sanitized", False)),
                 )
         except (aiohttp.ClientError, TimeoutError):
             return self._build_result(
@@ -482,10 +505,17 @@ class HaAgentHubConversationEntity(
                 user_input.language,
             )
 
-    def _build_result(self, speech: str, conversation_id: str | None, language: str | None) -> conversation.ConversationResult:
-        """Assemble a ConversationResult from the response."""
+    def _build_result(self, speech: str, conversation_id: str | None, language: str | None, *, sanitized: bool = False) -> conversation.ConversationResult:
+        """Assemble a ConversationResult from the response.
+
+        P3-1: ``sanitized`` indicates that the backend already stripped
+        Markdown for TTS. When True we trust the backend (single source
+        of truth) and skip the local ``_strip_markdown`` pass. Older
+        backends that do not advertise the flag default to False so the
+        defensive fallback still runs.
+        """
         response = intent.IntentResponse(language=language or "en")
-        response.async_set_speech(_strip_markdown(speech))
+        response.async_set_speech(speech if sanitized else _strip_markdown(speech))
         return conversation.ConversationResult(response=response, conversation_id=conversation_id)
 
     async def _speak_filler(self, text: str, user_input) -> None:

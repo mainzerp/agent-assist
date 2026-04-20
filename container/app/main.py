@@ -49,6 +49,13 @@ from app.setup.routes import router as setup_router
 logger = logging.getLogger(__name__)
 
 
+# P3-11: entity-sync loop tunables. The interval can be overridden at
+# runtime via the ``entity_sync.interval_minutes`` setting; these are
+# the defaults / fallbacks used when the setting is missing or 0.
+_ENTITY_SYNC_DEFAULT_INTERVAL_MIN = 30
+_ENTITY_SYNC_DISABLED_RECHECK_SEC = 300
+
+
 def _configure_logging() -> None:
     """Configure structured logging based on settings."""
     log_format = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
@@ -68,14 +75,16 @@ async def _periodic_entity_sync(app: FastAPI) -> None:
     """Periodically sync entity index with Home Assistant state."""
     while True:
         try:
-            raw = await SettingsRepository.get_value("entity_sync.interval_minutes", "30")
+            raw = await SettingsRepository.get_value(
+                "entity_sync.interval_minutes", str(_ENTITY_SYNC_DEFAULT_INTERVAL_MIN)
+            )
             interval_minutes = int(raw)
         except (TypeError, ValueError):
-            interval_minutes = 30
+            interval_minutes = _ENTITY_SYNC_DEFAULT_INTERVAL_MIN
 
         if interval_minutes <= 0:
-            # Disabled -- check again in 5 minutes in case setting changes
-            await asyncio.sleep(300)
+            # Disabled -- check again later in case the setting changes.
+            await asyncio.sleep(_ENTITY_SYNC_DISABLED_RECHECK_SEC)
             continue
 
         await asyncio.sleep(interval_minutes * 60)
@@ -198,281 +207,68 @@ async def lifespan(app: FastAPI):
     app.state.setup_runtime_init_lock = asyncio.Lock()
     app.state.setup_runtime_initialized = False
 
-    ha_client = None
-    entity_index = None
-    cache_manager = None
-    entity_matcher = None
-    alias_resolver = None
-    rewrite_agent = None
-
-    if setup_complete:
-        from app.cache.cache_manager import CacheManager
-        from app.cache.embedding import get_embedding_engine
-        from app.cache.vector_store import get_vector_store
-        from app.entity.aliases import AliasResolver
-        from app.entity.index import EntityIndex
-        from app.entity.matcher import EntityMatcher
-        from app.ha_client.rest import HARestClient
-
-        # Initialize embedding engine + vector store
-        await get_embedding_engine()
-        vector_store = await get_vector_store()
-
-        # Initialize HA REST client
-        ha_client = HARestClient()
-        await ha_client.initialize()
-
-        # Initialize entity index and prime it in the background.
-        entity_index = EntityIndex(vector_store)
-        await schedule_entity_index_prime(app, ha_client, entity_index, vector_store)
-
-        # Pre-warm home context cache (location/timezone)
-        from app.ha_client.home_context import home_context_provider
-
-        try:
-            await home_context_provider.refresh(ha_client)
-        except Exception:
-            logger.warning("Failed to pre-warm HomeContext cache", exc_info=True)
-
-        # Initialize alias resolver
-        alias_resolver = AliasResolver()
-        await alias_resolver.load()
-
-        # Initialize entity matcher
-        entity_matcher = EntityMatcher(entity_index, alias_resolver)
-        await entity_matcher.load_config()
-
-        # Initialize rewrite agent and cache manager
-        rewrite_agent = RewriteAgent(ha_client=ha_client, entity_index=entity_index)
-        cache_manager = CacheManager(vector_store, rewrite_agent=rewrite_agent)
-        await cache_manager.initialize()
-
-    # One-time startup: purge stale read-only response cache entries
-    purge_task = None
-    if setup_complete and cache_manager:
-        purge_task = asyncio.create_task(_purge_stale_response_cache(cache_manager))
-        app.state.purge_task = purge_task
-
-    # Initialize A2A layer
+    # FLOW-SETUP-1 (P1-2): core A2A + MCP primitives must exist regardless
+    # of setup-completion so setup-wizard requests can still be dispatched.
+    # These also back the shared ``_initialize_setup_dependent_services``
+    # helper used by both this lifespan and the post-wizard re-init path.
     transport = InProcessTransport(registry)
     dispatcher = Dispatcher(registry, transport)
-
-    # Inject dispatcher and registry into route modules
     conversation_routes.set_dispatcher(dispatcher)
     dashboard_api_routes.set_chat_dispatcher(dispatcher)
     admin_routes.set_registry(registry)
 
-    # Initialize presence detector (will be fully initialized after WS setup)
-    presence_detector = None
-    if setup_complete and ha_client:
-        presence_detector = PresenceDetector(ha_client)
-        await presence_detector.initialize()
-
-    # Initialize MCP server registry and tool manager (moved before agent registration)
     from app.mcp.registry import MCPServerRegistry
     from app.mcp.tools import MCPToolManager
 
     mcp_registry = MCPServerRegistry()
     mcp_tool_manager = MCPToolManager(mcp_registry)
+
+    app.state.registry = registry
+    app.state.dispatcher = dispatcher
+    app.state.mcp_registry = mcp_registry
+    app.state.mcp_tool_manager = mcp_tool_manager
+
     if setup_complete:
-        try:
-            await mcp_registry.load_from_db()
-        except Exception:
-            logger.warning("Failed to load MCP servers from DB", exc_info=True)
+        # Delegate to the shared helper -- populates ha_client,
+        # entity_index, cache_manager, registers all agents, wires
+        # the HA WebSocket client, and starts background tasks.
+        from app.runtime_setup import _initialize_setup_dependent_services
 
-        # Auto-register built-in DuckDuckGo MCP server
-        from app.db.repository import AgentMcpToolsRepository, McpServerRepository
+        await _initialize_setup_dependent_services(app, source="lifespan")
+        app.state.setup_runtime_initialized = True
+    else:
+        # Setup wizard path: register the core agents with None HA deps
+        # so the A2A surface is usable enough to serve the wizard.
+        filler_agent = FillerAgent(ha_client=None, entity_index=None)
+        orchestrator_agent = OrchestratorAgent(
+            dispatcher=dispatcher,
+            registry=registry,
+            cache_manager=None,
+            presence_detector=None,
+            ha_client=None,
+            entity_index=None,
+            filler_agent=filler_agent,
+        )
+        await registry.register(orchestrator_agent)
 
-        ddg_server = await McpServerRepository.get("duckduckgo-search")
-        if ddg_server is None:
-            logger.info("Registering built-in DuckDuckGo MCP server")
-            ddg_command = "python -m app.mcp.servers.duckduckgo_server"
-            connected = await mcp_registry.add_server(
-                name="duckduckgo-search",
-                transport="stdio",
-                command_or_url=ddg_command,
-            )
-            if connected:
-                try:
-                    client = mcp_registry.get_client("duckduckgo-search")
-                    if client:
-                        tools = await client.list_tools()
-                        for tool in tools:
-                            await AgentMcpToolsRepository.assign_tool(
-                                "general-agent", "duckduckgo-search", tool["name"]
-                            )
-                        logger.info("Assigned %d DuckDuckGo tools to general-agent", len(tools))
-                except Exception:
-                    logger.warning("Failed to auto-assign DuckDuckGo tools", exc_info=True)
-            else:
-                logger.warning("DuckDuckGo MCP server registered but failed to connect")
+        general_agent = GeneralAgent(
+            ha_client=None, entity_index=None, mcp_tool_manager=mcp_tool_manager
+        )
+        await registry.register(general_agent)
 
-    # Register agents with HA client and entity index
-    filler_agent = FillerAgent(ha_client=ha_client, entity_index=entity_index)
+        light_agent = LightAgent(ha_client=None, entity_index=None, entity_matcher=None)
+        await registry.register(light_agent)
 
-    orchestrator_agent = OrchestratorAgent(
-        dispatcher=dispatcher,
-        registry=registry,
-        cache_manager=cache_manager,
-        presence_detector=presence_detector,
-        ha_client=ha_client,
-        entity_index=entity_index,
-        filler_agent=filler_agent,
-    )
-    await registry.register(orchestrator_agent)
+        music_agent = MusicAgent(ha_client=None, entity_index=None, entity_matcher=None)
+        await registry.register(music_agent)
 
-    general_agent = GeneralAgent(ha_client=ha_client, entity_index=entity_index, mcp_tool_manager=mcp_tool_manager)
-    await registry.register(general_agent)
+        await registry.register(filler_agent)
 
-    light_agent = LightAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
-    await registry.register(light_agent)
+        custom_loader = CustomAgentLoader(registry, ha_client=None, entity_index=None)
+        await custom_loader.load_all()
+        app.state.custom_loader = custom_loader
 
-    music_agent = MusicAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
-    await registry.register(music_agent)
-
-    await registry.register(filler_agent)
-
-    # Register Phase 2 agents (only if enabled in agent_configs)
-    if setup_complete:
-        phase2_agents = [
-            ("timer-agent", TimerAgent),
-            ("climate-agent", ClimateAgent),
-            ("media-agent", MediaAgent),
-            ("scene-agent", SceneAgent),
-            ("automation-agent", AutomationAgent),
-            ("security-agent", SecurityAgent),
-            ("send-agent", SendAgent),
-        ]
-        phase2_agents_with_matcher = {
-            "climate-agent",
-            "security-agent",
-            "timer-agent",
-            "scene-agent",
-            "automation-agent",
-            "media-agent",
-        }
-        for agent_id, agent_cls in phase2_agents:
-            config = await AgentConfigRepository.get(agent_id)
-            if config and config.get("enabled"):
-                if agent_id in phase2_agents_with_matcher:
-                    agent = agent_cls(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
-                else:
-                    agent = agent_cls(ha_client=ha_client, entity_index=entity_index)
-                await registry.register(agent)
-
-        # Register rewrite agent (internal use, not routable by orchestrator)
-        await registry.register(rewrite_agent)
-
-    # Load custom agents from DB (Batch 4)
-    custom_loader = CustomAgentLoader(registry, ha_client=ha_client, entity_index=entity_index)
-    await custom_loader.load_all()
-
-    # Load orchestrator reliability config
-    await orchestrator_agent.initialize()
-
-    logger.info("Registered %d agents", len(await registry.list_agents()))
-
-    # Start WebSocket client for real-time entity index refresh (Batch 5B)
-    ws_client = None
-    ws_task = None
-    flush_task = None
-    if setup_complete and entity_index is not None:
-        from app.ha_client.websocket import HAWebSocketClient
-
-        ws_client = HAWebSocketClient()
-
-        _entity_update_queue: asyncio.Queue[EntityIndexEntry] = asyncio.Queue()
-
-        async def _flush_entity_updates() -> None:
-            """Background task: drain queued entity updates and batch-upsert."""
-            while True:
-                await asyncio.sleep(0.5)
-                batch: list[EntityIndexEntry] = []
-                while not _entity_update_queue.empty():
-                    try:
-                        batch.append(_entity_update_queue.get_nowait())
-                    except asyncio.QueueEmpty:
-                        break
-                if batch:
-                    try:
-                        loop = asyncio.get_running_loop()
-                        await loop.run_in_executor(None, entity_index.batch_add, batch)
-                    except Exception:
-                        logger.warning("Batch entity index update failed", exc_info=True)
-
-        async def on_state_changed(event: dict) -> None:
-            """Handle state_changed events for entity index refresh."""
-            data = event.get("data", {})
-            new_state = data.get("new_state")
-            old_state = data.get("old_state")
-            entity_id = data.get("entity_id", "")
-
-            if new_state is None and old_state is not None:
-                await entity_index.remove_async(entity_id)
-            elif new_state is not None:
-                entry = state_to_entity_index_entry(new_state, entity_id=entity_id)
-                _entity_update_queue.put_nowait(entry)
-
-        ws_client.on_event("state_changed", on_state_changed)
-
-        # Wire presence sensor updates into WebSocket event handler
-        if presence_detector:
-
-            def on_state_changed_presence(event: dict) -> None:
-                """Handle state_changed events for presence sensor updates."""
-                data = event.get("data", {})
-                entity_id = data.get("entity_id", "")
-                new_state = data.get("new_state")
-                if new_state and entity_id.startswith("binary_sensor."):
-                    area = new_state.get("attributes", {}).get("area_id")
-                    presence_detector.on_sensor_state_change(entity_id, new_state.get("state", "off"), area)
-
-            ws_client.on_event("state_changed", on_state_changed_presence)
-
-        # Wire timer finished/cancelled events for notification dispatch
-        from app.agents.timer_executor import _timer_pool, on_timer_finished
-
-        async def _on_timer_finished_event(event: dict) -> None:
-            data = event.get("data", {})
-            eid = data.get("entity_id", "")
-            if eid:
-                await on_timer_finished(
-                    eid,
-                    ha_client,
-                    entity_index=getattr(app.state, "entity_index", None),
-                )
-
-        async def _on_timer_cancelled_event(event: dict) -> None:
-            data = event.get("data", {})
-            eid = data.get("entity_id", "")
-            if eid:
-                _timer_pool.release(eid)
-
-        ws_client.on_event("timer.finished", _on_timer_finished_event)
-        ws_client.on_event("timer.cancelled", _on_timer_cancelled_event)
-
-        ws_task = asyncio.create_task(ws_client.run())
-        flush_task = asyncio.create_task(_flush_entity_updates())
-        app.state.ws_task = ws_task
-        app.state.flush_task = flush_task
-
-        # FLOW-VERIFY-1: let the REST client use the live WS stream for
-        # post-action state verification (see ``HARestClient.expect_state``).
-        if ha_client is not None:
-            ha_client.set_state_observer(ws_client)
-
-    # Start periodic entity sync task
-    sync_task = None
-    if setup_complete and entity_index is not None:
-        sync_task = asyncio.create_task(_periodic_entity_sync(app))
-
-    # Start alarm monitor
-    alarm_monitor = None
-    if setup_complete and ha_client:
-        from app.agents.alarm_monitor import AlarmMonitor
-
-        alarm_monitor = AlarmMonitor(ha_client)
-        await alarm_monitor.start()
+        await orchestrator_agent.initialize()
 
     # Register default notification profile if not set
     existing_notif = await SettingsRepository.get_value("notification.profile")
@@ -499,24 +295,28 @@ async def lifespan(app: FastAPI):
             description="Timer/alarm notification profile: channels and targets",
         )
 
-    # Store on app.state for access elsewhere if needed
+    # Store on app.state for access elsewhere if needed. The
+    # ``_initialize_setup_dependent_services`` helper already wrote
+    # ``ha_client``/``entity_index``/``cache_manager``/``entity_matcher``/
+    # ``alias_resolver``/``custom_loader``/``ws_client``/``presence_detector``/
+    # ``sync_task``/``alarm_monitor`` when setup was complete. For the
+    # non-setup path those stay ``None``/absent which downstream routes
+    # already tolerate.
     app.state.startup_time = time.time()
-    app.state.registry = registry
-    app.state.dispatcher = dispatcher
-    app.state.ha_client = ha_client
-    app.state.entity_index = entity_index
-    app.state.cache_manager = cache_manager
-    app.state.entity_matcher = entity_matcher
-    app.state.alias_resolver = alias_resolver
-    app.state.custom_loader = custom_loader
-    app.state.mcp_registry = mcp_registry
-    app.state.mcp_tool_manager = mcp_tool_manager
-    app.state.ws_client = ws_client
-    app.state.presence_detector = presence_detector
-    app.state.sync_task = sync_task
-    app.state.alarm_monitor = alarm_monitor
     app.state.entity_index_init_task = getattr(app.state, "entity_index_init_task", None)
-    app.state.setup_runtime_initialized = bool(setup_complete)
+    for _attr in (
+        "ha_client",
+        "entity_index",
+        "cache_manager",
+        "entity_matcher",
+        "alias_resolver",
+        "ws_client",
+        "presence_detector",
+        "sync_task",
+        "alarm_monitor",
+    ):
+        if not hasattr(app.state, _attr):
+            setattr(app.state, _attr, None)
 
     # --- Plugin System (Batch F) ---
     from app.plugins.base import PluginContext
@@ -549,11 +349,14 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("Plugin shutdown error (continuing cleanup)", exc_info=True)
 
-    purge_task = getattr(app.state, "purge_task", purge_task)
-    flush_task = getattr(app.state, "flush_task", flush_task)
-    ws_task = getattr(app.state, "ws_task", ws_task)
-    sync_task = getattr(app.state, "sync_task", sync_task)
-    alarm_monitor = getattr(app.state, "alarm_monitor", alarm_monitor)
+    purge_task = getattr(app.state, "purge_task", None)
+    flush_task = getattr(app.state, "flush_task", None)
+    ws_task = getattr(app.state, "ws_task", None)
+    sync_task = getattr(app.state, "sync_task", None)
+    alarm_monitor = getattr(app.state, "alarm_monitor", None)
+    ws_client = getattr(app.state, "ws_client", None)
+    ha_client = getattr(app.state, "ha_client", None)
+    cache_manager = getattr(app.state, "cache_manager", None)
     entity_index_init_task = getattr(app.state, "entity_index_init_task", None)
 
     if alarm_monitor:

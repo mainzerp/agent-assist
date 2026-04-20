@@ -21,6 +21,16 @@ class AgentCard(BaseModel):
     output_types: list[str] = Field(default_factory=lambda: ["text/plain", "application/json"])
     endpoint: str = Field("", description="Agent endpoint URL (local:// for in-process)")
     expected_latency: str = Field("low", description="Expected response latency: low, medium, high")
+    # P2-2 (FLOW-TIMEOUT-1): per-agent dispatch timeout override. ``None``
+    # falls back to the orchestrator's ``a2a.default_timeout`` setting.
+    # Long-running agents (general/web search, MCP-tool reasoning) should
+    # set this to 20-60s; deterministic device agents leave it ``None`` so
+    # the 5s default applies. Operators can further override per agent_id
+    # via the ``agent.dispatch_timeout.<agent_id>`` settings key.
+    timeout_sec: float | None = Field(
+        None,
+        description="Per-agent dispatch timeout in seconds (None = use orchestrator default).",
+    )
 
 
 class AgentConfig(BaseModel):
@@ -86,6 +96,15 @@ class ActionExecuted(BaseModel):
     success: bool = Field(True, description="Whether the action succeeded")
     new_state: str | None = Field(None, description="Entity state after action")
     cacheable: bool = Field(True, description="Whether response may be stored in the response cache")
+    # P1-5: non-entity service payload parameters (brightness, color_temp,
+    # rgb_color, transition, volume_level, ...). The orchestrator
+    # replays a whitelisted subset of this on a response-cache hit so
+    # that "turn on bedroom light at 30 percent" no longer falls back
+    # to a plain ``turn_on`` on the next hit.
+    service_data: dict = Field(
+        default_factory=dict,
+        description="Structured service_data parameters passed to the HA call",
+    )
 
 
 class AgentErrorCode(StrEnum):

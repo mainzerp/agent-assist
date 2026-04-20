@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import logging
-import threading
 from datetime import UTC, datetime
 
+from app.cache._state import _CacheState
 from app.cache.vector_store import COLLECTION_ROUTING_CACHE, VectorStore
 from app.db.repository import SettingsRepository
 from app.models.cache import RoutingCacheEntry
 
 logger = logging.getLogger(__name__)
+
+# P1-3: pagination batch for ``_enforce_lru``. Large enough to amortise
+# Chroma-side overhead, small enough that the transient memory footprint
+# stays bounded even on very large collections (50k+ entries).
+_LRU_PAGE_SIZE = 1000
+# Only actually run the LRU sweep when the collection is past this
+# fraction of the configured max; below that the eviction work is
+# pure overhead since no entry would be dropped.
+_LRU_TRIGGER_FRACTION = 0.95
 
 
 class RoutingCache:
@@ -21,19 +31,12 @@ class RoutingCache:
         self._store = vector_store
         self._threshold: float = 0.92
         self._max_entries: int = 50000
-        self._store_count: int = 0
         self._eviction_interval: int = 100
-        self._pending_updates: dict[str, tuple[str, dict]] = {}
         self._flush_interval: int = 5
-        self._hit_since_flush: int = 0
-        # Incremented when admin flush clears Chroma; in-flight store() calls
-        # must not upsert after invalidation (PERF-4 async thread race).
-        self._invalidation_generation: int = 0
-        # FLOW-MED-1: both lookup() and the flush path run via
-        # asyncio.to_thread on worker threads; the in-memory counters
-        # and pending map must be mutated under a lock. I/O against
-        # the underlying vector store happens OUTSIDE the lock.
-        self._mutation_lock = threading.Lock()
+        # FLOW-MED-1 / P1-3: counters, pending map, and invalidation
+        # generation all live in ``_state``; every mutation happens
+        # under its lock. ChromaDB I/O itself stays outside the lock.
+        self._state = _CacheState()
 
     def prepare_for_flush(self) -> None:
         """Invalidate in-flight routing writes before vector store delete.
@@ -42,10 +45,7 @@ class RoutingCache:
         running :meth:`store` could ``upsert`` after delete and repopulate
         the routing tier so the next request immediately hits ``routing_hit``.
         """
-        with self._mutation_lock:
-            self._invalidation_generation += 1
-            self._pending_updates.clear()
-            self._hit_since_flush = 0
+        self._state.invalidate()
 
     async def load_config(self) -> None:
         """Load thresholds from settings table."""
@@ -91,13 +91,12 @@ class RoutingCache:
         entry_id = result["ids"][0][0]
         now = datetime.now(UTC).isoformat()
         hit_count = int(meta.get("hit_count", 0)) + 1
-        with self._mutation_lock:
-            self._pending_updates[entry_id] = (
-                result["documents"][0][0],
-                {**meta, "last_accessed": now, "hit_count": str(hit_count)},
-            )
-            self._hit_since_flush += 1
-            should_flush = self._hit_since_flush >= self._flush_interval
+        should_flush = self._state.record_pending_update(
+            entry_id,
+            result["documents"][0][0],
+            {**meta, "last_accessed": now, "hit_count": str(hit_count)},
+            self._flush_interval,
+        )
         if should_flush:
             self._flush_pending_updates()
 
@@ -125,11 +124,8 @@ class RoutingCache:
         language: str = "en",
     ) -> None:
         """Store a new routing decision in the cache."""
-        with self._mutation_lock:
-            gen_at_start = self._invalidation_generation
-        self._store_count += 1
-        if self._store_count >= self._eviction_interval:
-            self._store_count = 0
+        gen_at_start = self._state.current_generation()
+        if self._state.record_store(self._eviction_interval):
             self._enforce_lru()
         now = datetime.now(UTC).isoformat()
         lang = (language or "en").lower()
@@ -137,10 +133,9 @@ class RoutingCache:
         # in different languages produces distinct entries.
         entry_id = hashlib.sha256(f"{lang}\n{query_text}".encode()).hexdigest()[:16]
         self._flush_pending_updates()
-        with self._mutation_lock:
-            if gen_at_start != self._invalidation_generation:
-                logger.info("Skipping routing store — cache was flushed during write")
-                return
+        if not self._state.matches_generation(gen_at_start):
+            logger.info("Skipping routing store -- cache was flushed during write")
+            return
         self._store.upsert(
             COLLECTION_ROUTING_CACHE,
             ids=[entry_id],
@@ -159,21 +154,44 @@ class RoutingCache:
         )
 
     def _enforce_lru(self) -> None:
-        """Evict oldest entries if collection exceeds max_entries."""
+        """Evict oldest entries if collection exceeds max_entries.
+
+        P1-3: paginate through Chroma instead of loading the entire
+        collection in one ``get()`` call, and only keep
+        ``(last_accessed, id)`` pairs. ``heapq.nsmallest`` caps memory
+        at roughly ``overage`` tuples plus one page of metadata at a
+        time, so the sweep stays bounded even on very large
+        collections.
+        """
         self._flush_pending_updates()
         count = self._store.count(COLLECTION_ROUTING_CACHE)
+        if count <= int(self._max_entries * _LRU_TRIGGER_FRACTION):
+            return
         if count <= self._max_entries:
             return
         overage = count - self._max_entries + int(self._max_entries * 0.1)
-        all_data = self._store.get(
-            COLLECTION_ROUTING_CACHE,
-            include=["metadatas"],
-        )
-        if not all_data["ids"]:
-            return
-        paired = list(zip(all_data["ids"], all_data["metadatas"], strict=False))
-        paired.sort(key=lambda p: p[1].get("last_accessed", ""))
-        to_delete = [p[0] for p in paired[:overage]]
+
+        def _iter_all():
+            offset = 0
+            while True:
+                page = self._store.get(
+                    COLLECTION_ROUTING_CACHE,
+                    include=["metadatas"],
+                    limit=_LRU_PAGE_SIZE,
+                    offset=offset,
+                )
+                ids = page.get("ids") or []
+                if not ids:
+                    return
+                metas = page.get("metadatas") or []
+                for entry_id, meta in zip(ids, metas, strict=False):
+                    yield ((meta or {}).get("last_accessed", ""), entry_id)
+                if len(ids) < _LRU_PAGE_SIZE:
+                    return
+                offset += _LRU_PAGE_SIZE
+
+        oldest = heapq.nsmallest(overage, _iter_all(), key=lambda pair: pair[0])
+        to_delete = [pair[1] for pair in oldest]
         if to_delete:
             for i in range(0, len(to_delete), 500):
                 self._store.delete(COLLECTION_ROUTING_CACHE, ids=to_delete[i : i + 500])
@@ -181,18 +199,19 @@ class RoutingCache:
 
     def _flush_pending_updates(self) -> None:
         """Batch-flush pending hit count updates to ChromaDB (metadata only)."""
-        with self._mutation_lock:
-            if not self._pending_updates:
-                return
-            pending = self._pending_updates
-            self._pending_updates = {}
-            self._hit_since_flush = 0
+        pending = self._state.swap_pending()
+        if not pending:
+            return
         ids = list(pending.keys())
         metas = [pending[i][1] for i in ids]
         try:
             self._store.update_metadata(COLLECTION_ROUTING_CACHE, ids=ids, metadatas=metas)
         except Exception:
-            logger.warning("Failed to flush routing cache hit updates", exc_info=True)
+            # P1-3: do not drop updates on Chroma failure; re-queue so
+            # the next flush retries. Newer updates for the same id
+            # that arrived in the meantime take precedence.
+            self._state.requeue_failed(pending)
+            logger.warning("Failed to flush routing cache hit updates; re-queued", exc_info=True)
 
     def flush_pending(self) -> None:
         """Public flush for shutdown hook."""

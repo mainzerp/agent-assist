@@ -195,7 +195,7 @@ async def create_trace_summary(
     user_input: str,
     final_response: str,
     routing_agent: str,
-    routing_confidence: float,
+    routing_confidence: float | None,
     routing_duration_ms: float | None,
     condensed_task: str,
     agents: list[str],

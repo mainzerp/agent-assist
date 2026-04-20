@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 
 import chromadb
 from chromadb.api.models.Collection import Collection
@@ -25,6 +26,11 @@ class VectorStore:
         self._client: chromadb.ClientAPI | None = None
         self._embedding_fn: ChromaEmbeddingFunction | None = None
         self._collections: dict[str, Collection] = {}
+        # P3-3: serialise reinitialisation across worker threads so
+        # concurrent callers (cache writes detecting a closed client at
+        # the same moment) do not stomp on each other and create
+        # multiple PersistentClient instances against the same path.
+        self._reinit_lock: threading.Lock = threading.Lock()
 
     async def initialize(self) -> None:
         """Create PersistentClient and get/create all collections."""
@@ -52,16 +58,25 @@ class VectorStore:
             return False
 
     def _reinitialize_sync(self) -> None:
-        """Re-create the PersistentClient and re-fetch all collections."""
-        logger.warning("ChromaDB client dead, reinitializing VectorStore")
-        self._client = chromadb.PersistentClient(path=settings.chromadb_persist_dir)
-        for name in (COLLECTION_ENTITY_INDEX, COLLECTION_ROUTING_CACHE, COLLECTION_RESPONSE_CACHE):
-            self._collections[name] = self._client.get_or_create_collection(
-                name=name,
-                embedding_function=self._embedding_fn,
-                metadata={"hnsw:space": "cosine"},
-            )
-        logger.info("VectorStore reinitialized successfully")
+        """Re-create the PersistentClient and re-fetch all collections.
+
+        P3-3: guarded by ``_reinit_lock`` so parallel ``add`` / ``upsert``
+        retries cannot both rebuild the client. The double-checked
+        ``_is_alive`` guard inside the lock makes the second waiter a
+        no-op when the first reinit already restored a working client.
+        """
+        with self._reinit_lock:
+            if self._client is not None and self._is_alive():
+                return
+            logger.warning("ChromaDB client dead, reinitializing VectorStore")
+            self._client = chromadb.PersistentClient(path=settings.chromadb_persist_dir)
+            for name in (COLLECTION_ENTITY_INDEX, COLLECTION_ROUTING_CACHE, COLLECTION_RESPONSE_CACHE):
+                self._collections[name] = self._client.get_or_create_collection(
+                    name=name,
+                    embedding_function=self._embedding_fn,
+                    metadata={"hnsw:space": "cosine"},
+                )
+            logger.info("VectorStore reinitialized successfully")
 
     def get_collection(self, name: str) -> Collection:
         """Return a named collection. Must call initialize() first."""

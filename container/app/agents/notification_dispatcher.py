@@ -279,7 +279,7 @@ async def _generate_tts_message(
         from app.llm.client import complete
 
         result = await complete(
-            agent_id="orchestrator",
+            agent_id="notification-dispatcher",
             messages=messages,
             max_tokens=50,
             temperature=0.7,

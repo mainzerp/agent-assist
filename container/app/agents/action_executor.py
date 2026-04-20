@@ -8,6 +8,8 @@ import re
 import unicodedata
 from typing import Any
 
+from pydantic import BaseModel, Field, ValidationError
+
 from app.analytics.tracer import _optional_span
 from app.ha_client.history_query import execute_recorder_history_query
 from app.models.agent import TaskContext
@@ -41,6 +43,77 @@ _TRAILING_DEVICE_NOUNS: frozenset[str] = frozenset(
 )
 
 
+# P2-6 (FLOW-PARSE-1): unified action schema.
+# ``parse_action`` accepts an LLM payload only when it conforms to this
+# minimal contract: a non-empty ``action`` string, plus *either* a
+# device target (``entity`` / ``entity_id``) *or* an explicit read-only
+# action that does not require one (``list_lights``). Anything else is
+# treated as a parse miss and the caller falls through to the next
+# regex / fallback path so a malformed JSON block in one fence cannot
+# poison parsing of a valid block in a later fence.
+_ACTIONS_WITHOUT_ENTITY: frozenset[str] = frozenset(
+    {
+        # Light / switch / sensor read paths
+        "list_lights",
+        # Climate / scene / security / media / music / automation list paths
+        "list_automations",
+        "list_security",
+        "list_media_players",
+        "list_music_players",
+        "list_scenes",
+        # Timer agent list/query paths that aggregate across entities
+        "list_timers",
+        "list_alarms",
+    }
+)
+
+
+class ActionPayload(BaseModel):
+    """Validated structured action emitted by domain LLM prompts.
+
+    Backwards compatibility:
+      * ``entity`` is the historical key (free-text device label that the
+        entity matcher resolves). ``entity_id`` is accepted as a synonym
+        for the few callers that already speak HA-native ids.
+      * Extra keys are preserved (``model_config["extra"] = "allow"``)
+        so legacy fields like ``parameters`` flow through to the
+        downstream service-data builder unchanged.
+    """
+
+    model_config = {"extra": "allow"}
+
+    action: str = Field(..., min_length=1)
+    entity: str | None = None
+    entity_id: str | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+def _validate_action_dict(candidate: Any) -> dict | None:
+    """Return ``candidate`` iff it satisfies :class:`ActionPayload`.
+
+    The original, untouched dict is returned (not the pydantic model)
+    so existing callers that index with ``action.get("entity")`` /
+    ``action.get("parameters")`` keep working unchanged. ``None``
+    means "not a usable action -- try the next parse path".
+    """
+    if not isinstance(candidate, dict):
+        return None
+    try:
+        validated = ActionPayload.model_validate(candidate)
+    except ValidationError:
+        return None
+
+    action_name = validated.action.strip().lower()
+    if not action_name:
+        return None
+
+    has_entity = bool((validated.entity or "").strip()) or bool((validated.entity_id or "").strip())
+    if not has_entity and action_name not in _ACTIONS_WITHOUT_ENTITY:
+        return None
+
+    return candidate
+
+
 def _try_parse_json_with_action(text: str) -> dict | None:
     """Try to parse a JSON object containing an 'action' key from text.
 
@@ -48,6 +121,12 @@ def _try_parse_json_with_action(text: str) -> dict | None:
     string literals (e.g. ``"description": "use {placeholder}"``) do not
     trip up a hand-rolled brace counter. We scan from each ``{`` position
     and let the decoder report where the object ends.
+
+    P2-6: every candidate object that decodes successfully is validated
+    against :class:`ActionPayload` before being returned. Decoded
+    objects that contain ``"action"`` but fail schema validation are
+    skipped -- the scanner keeps walking so a later, well-formed
+    object in the same blob can still win.
     """
     decoder = json.JSONDecoder()
     idx = 0
@@ -61,7 +140,9 @@ def _try_parse_json_with_action(text: str) -> dict | None:
             idx = start + 1
             continue
         if isinstance(obj, dict) and "action" in obj:
-            return obj
+            validated = _validate_action_dict(obj)
+            if validated is not None:
+                return validated
         idx = end
 
 
@@ -81,9 +162,15 @@ def parse_action(llm_response: str) -> dict | None:
     # scanner. Ordering matters: a labelled fence MUST win over a plain
     # fence when both are present so we do not silently parse a prose
     # example block.
+    #
+    # P2-6 (FLOW-PARSE-1): each path runs the candidate JSON through
+    # ``_validate_action_dict`` (via ``_try_parse_json_with_action``).
+    # If a fence's contents fail validation we fall through to the
+    # next regex instead of returning a malformed action -- a labelled
+    # ```json fence containing a stub example no longer overrides a
+    # well-formed plain-fence or inline action below it.
     for regex in (_JSON_FENCE_RE, _PLAIN_FENCE_RE):
-        match = regex.search(llm_response)
-        if match:
+        for match in regex.finditer(llm_response):
             result = _try_parse_json_with_action(match.group(1))
             if result:
                 return result

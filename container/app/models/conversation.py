@@ -36,6 +36,16 @@ class ConversationResponse(BaseModel):
         False,
         description="True when the container will re-open Assist listening on the satellite (HA voice)",
     )
+    # P3-1: backend already strips Markdown for TTS output via
+    # ``app.agents.sanitize.strip_markdown`` before populating ``speech``.
+    # Older container versions (< 0.18.35) did not advertise this, so the
+    # HA integration kept its own ``_strip_markdown`` copy as a fallback.
+    # When this flag is True, the integration may skip that re-sanitize
+    # step and trust the backend as the single source of truth.
+    sanitized: bool = Field(
+        True,
+        description="True when speech has already been sanitized for TTS by the backend",
+    )
 
 
 class ActionResult(BaseModel):
@@ -57,3 +67,10 @@ class StreamToken(BaseModel):
     is_filler: bool = False
     error: str | None = None
     voice_followup: bool = False
+    # P3-1: True when ``token`` / ``mediated_speech`` has already been
+    # sanitized by the backend. The orchestrator strips Markdown before
+    # emitting accumulated/mediated speech, so the HA integration can
+    # skip its defensive ``_strip_markdown`` re-pass when this flag is set.
+    # Filler tokens are NOT sanitized backend-side; the HA integration
+    # still strips them in ``_speak_filler``.
+    sanitized: bool = True
