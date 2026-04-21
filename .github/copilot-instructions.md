@@ -83,8 +83,8 @@ Return: Summary of changes made and any relevant details.
 
 ## Important Rules
 
-1. **ALWAYS use `ask_user` tool** before completing any implementation task or question to confirm with the user
-2. **ALWAYS present plans with `plan_review` tool** before implementation starts - the ORCHESTRATOR calls this after SUBAGENT #2 returns, not the subagent itself
+1. **ORCHESTRATOR ALWAYS confirms tasks with `ask_user` tool** before completion - the ORCHESTRATOR is responsible for all user communication and confirmation, not the subagents
+2. **ORCHESTRATOR ALWAYS presents plans with `plan_review` tool** before implementation starts - the ORCHESTRATOR calls this after SUBAGENT #2 returns, not the subagent itself
 3. **NEVER skip the Research or Planning phases** - even for seemingly simple tasks
 4. **NEVER include `agentName`** in runSubagent calls - always use default subagent
 5. **runSubagent requires BOTH** `description` (3-5 words) and `prompt` (detailed instructions)
