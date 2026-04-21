@@ -18,10 +18,17 @@ logger = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [Platform.CONVERSATION]
 
 
+async def _async_reload_entry_on_update(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the integration when config entry data changes."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up HA-AgentHub from a config entry."""
     if entry.title in _LEGACY_ENTRY_TITLES:
         hass.config_entries.async_update_entry(entry, title=INTEGRATION_TITLE)
+
+    entry.async_on_unload(entry.add_update_listener(_async_reload_entry_on_update))
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {

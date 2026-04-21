@@ -215,6 +215,210 @@ class TestHaConnectionUtility:
         assert result is False
 
 
+class TestHAConfigFlow:
+    @pytest.fixture(autouse=True)
+    def _mock_homeassistant(self):
+        import sys
+
+        mocks = {}
+        ha_modules = [
+            "homeassistant",
+            "homeassistant.config_entries",
+            "homeassistant.const",
+            "homeassistant.core",
+            "homeassistant.helpers",
+            "homeassistant.helpers.selector",
+            "voluptuous",
+        ]
+        for mod in ha_modules:
+            if mod not in sys.modules:
+                mocks[mod] = MagicMock()
+                sys.modules[mod] = mocks[mod]
+
+        class _FakeConfigFlow:
+            def __init_subclass__(cls, **kwargs):
+                return super().__init_subclass__()
+
+            async def async_set_unique_id(self, unique_id):
+                self._unique_id = unique_id
+
+            def _abort_if_unique_id_configured(self):
+                return None
+
+            def async_show_form(self, step_id, data_schema, errors):
+                return {"type": "form", "step_id": step_id, "data_schema": data_schema, "errors": errors}
+
+            def async_create_entry(self, title, data):
+                return {"type": "create_entry", "title": title, "data": data}
+
+        class _FakeOptionsFlow:
+            def async_show_form(self, step_id, data_schema, errors):
+                return {"type": "form", "step_id": step_id, "data_schema": data_schema, "errors": errors}
+
+            def async_create_entry(self, data):
+                return {"type": "create_entry", "data": data}
+
+        class _FakeTextSelectorType:
+            PASSWORD = "password"
+
+        class _FakeTextSelectorConfig:
+            def __init__(self, *, type=None):
+                self.type = type
+
+        class _FakeTextSelector:
+            def __init__(self, config=None):
+                self.config = config
+
+            def __call__(self, value):
+                return value
+
+        class _FakeMarker:
+            def __init__(self, schema, default=None):
+                self.schema = schema
+                self.default = lambda: default
+
+        class _FakeSchema:
+            def __init__(self, schema):
+                self.schema = schema
+
+        sys.modules["homeassistant.config_entries"].ConfigEntry = type("ConfigEntry", (), {})
+        sys.modules["homeassistant.config_entries"].ConfigFlow = _FakeConfigFlow
+        sys.modules["homeassistant.config_entries"].ConfigFlowResult = dict
+        sys.modules["homeassistant.config_entries"].OptionsFlow = _FakeOptionsFlow
+        sys.modules["homeassistant.const"].CONF_URL = "url"
+        sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
+        sys.modules["homeassistant.const"].Platform = type("Platform", (), {"CONVERSATION": "conversation"})
+        sys.modules["homeassistant.core"].HomeAssistant = type("HomeAssistant", (), {})
+        sys.modules["homeassistant.helpers.selector"].TextSelector = _FakeTextSelector
+        sys.modules["homeassistant.helpers.selector"].TextSelectorConfig = _FakeTextSelectorConfig
+        sys.modules["homeassistant.helpers.selector"].TextSelectorType = _FakeTextSelectorType
+        sys.modules["homeassistant.helpers"].selector = sys.modules["homeassistant.helpers.selector"]
+        sys.modules["voluptuous"].Schema = _FakeSchema
+        sys.modules["voluptuous"].Required = lambda schema, default=None: _FakeMarker(schema, default)
+        sys.modules["voluptuous"].Optional = lambda schema, default=None: _FakeMarker(schema, default)
+
+        yield
+
+        for mod in mocks:
+            sys.modules.pop(mod, None)
+        for key in list(sys.modules):
+            if key.startswith("custom_components"):
+                del sys.modules[key]
+
+    def _import_config_flow_module(self):
+        import sys
+
+        workspace_root = str(Path(__file__).resolve().parents[1].parent)
+        if workspace_root not in sys.path:
+            sys.path.insert(0, workspace_root)
+
+        from custom_components.ha_agenthub import config_flow
+
+        return config_flow
+
+    @staticmethod
+    def _schema_entry(schema, field_name):
+        for marker, validator in schema.schema.items():
+            if getattr(marker, "schema", None) == field_name:
+                return marker, validator
+        raise AssertionError(f"Field {field_name} not found in schema")
+
+    @respx.mock(assert_all_called=False)
+    async def test_validate_connection_returns_invalid_auth_on_401(self):
+        config_flow = self._import_config_flow_module()
+
+        class _FakeResponse:
+            status = 401
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def json(self):
+                return {}
+
+        class _FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, *args, **kwargs):
+                return _FakeResponse()
+
+        with patch("custom_components.ha_agenthub.config_flow.aiohttp.ClientSession", return_value=_FakeSession()):
+            result = await config_flow._validate_connection("http://ha.local", "bad-token")
+
+        assert result == "invalid_auth"
+
+    async def test_validate_connection_rejects_non_healthy_payload(self):
+        config_flow = self._import_config_flow_module()
+
+        class _FakeResponse:
+            status = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def json(self):
+                return {"status": "degraded"}
+
+        class _FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, *args, **kwargs):
+                return _FakeResponse()
+
+        with patch("custom_components.ha_agenthub.config_flow.aiohttp.ClientSession", return_value=_FakeSession()):
+            result = await config_flow._validate_connection("http://ha.local", "token")
+
+        assert result == "cannot_connect"
+
+    async def test_options_flow_blank_api_key_keeps_existing_secret(self):
+        config_flow = self._import_config_flow_module()
+
+        entry = MagicMock()
+        entry.data = {"url": "http://old.local", "api_key": "stored-token"}
+
+        flow = config_flow.HaAgentHubOptionsFlow(entry)
+        flow.hass = MagicMock()
+        flow.hass.config_entries = MagicMock()
+
+        with patch(
+            "custom_components.ha_agenthub.config_flow._validate_connection",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as mock_validate:
+            result = await flow.async_step_init({"url": "http://ha.local/", "api_key": ""})
+
+        assert result == {"type": "create_entry", "data": {}}
+        mock_validate.assert_awaited_once_with("http://ha.local", "stored-token")
+        flow.hass.config_entries.async_update_entry.assert_called_once_with(
+            entry,
+            data={"url": "http://ha.local", "api_key": "stored-token"},
+        )
+
+    async def test_options_flow_schema_uses_blank_password_field(self):
+        config_flow = self._import_config_flow_module()
+
+        schema = config_flow._build_options_schema({"url": "http://old.local", "api_key": "stored-token"})
+        marker, validator = self._schema_entry(schema, "api_key")
+        default_value = marker.default() if callable(marker.default) else marker.default
+
+        assert default_value == ""
+        assert validator.config.type == "password"
+
+
 # ---------------------------------------------------------------------------
 # Auth module
 # ---------------------------------------------------------------------------
@@ -636,6 +840,222 @@ class TestHAConversationWSCloseError:
         # Speech must include the error description rather than be empty.
         speech_arg = entity._build_result.call_args.args[0]
         assert "Agent error: test" in speech_arg
+
+
+class TestHAConfigEntryLifecycle:
+    @pytest.fixture(autouse=True)
+    def _mock_homeassistant(self):
+        """Mock Home Assistant modules so the custom integration can be imported."""
+        import sys
+
+        mocks = {}
+        ha_modules = [
+            "homeassistant",
+            "homeassistant.config_entries",
+            "homeassistant.const",
+            "homeassistant.core",
+        ]
+        for mod in ha_modules:
+            if mod not in sys.modules:
+                mocks[mod] = MagicMock()
+                sys.modules[mod] = mocks[mod]
+
+        sys.modules["homeassistant.config_entries"].ConfigEntry = type("ConfigEntry", (), {})
+        sys.modules["homeassistant.core"].HomeAssistant = type("HomeAssistant", (), {})
+        sys.modules["homeassistant.const"].CONF_URL = "url"
+        sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
+        sys.modules["homeassistant.const"].Platform = type("Platform", (), {"CONVERSATION": "conversation"})
+
+        yield
+
+        for mod in mocks:
+            sys.modules.pop(mod, None)
+        for key in list(sys.modules):
+            if key.startswith("custom_components"):
+                del sys.modules[key]
+
+    async def test_async_setup_entry_update_listener_triggers_reload(self):
+        import sys
+
+        workspace_root = str(Path(__file__).resolve().parents[1].parent)
+        if workspace_root not in sys.path:
+            sys.path.insert(0, workspace_root)
+
+        from custom_components.ha_agenthub import async_setup_entry
+
+        hass = MagicMock()
+        hass.data = {}
+        hass.config_entries = MagicMock()
+        hass.config_entries.async_forward_entry_setups = AsyncMock()
+        hass.config_entries.async_reload = AsyncMock()
+
+        registered_listener = None
+
+        def _add_update_listener(callback):
+            nonlocal registered_listener
+            registered_listener = callback
+            return "listener-unsub"
+
+        entry = MagicMock()
+        entry.entry_id = "entry-1"
+        entry.title = "HA-AgentHub"
+        entry.data = {"url": "http://ha.local", "api_key": "token"}
+        entry.add_update_listener = MagicMock(side_effect=_add_update_listener)
+        entry.async_on_unload = MagicMock()
+
+        result = await async_setup_entry(hass, entry)
+
+        assert result is True
+        entry.add_update_listener.assert_called_once()
+        entry.async_on_unload.assert_called_once_with("listener-unsub")
+        assert registered_listener is not None
+
+        await registered_listener(hass, entry)
+
+        hass.config_entries.async_reload.assert_awaited_once_with(entry.entry_id)
+
+
+class TestHAConversationRestFallbackMessages:
+    @pytest.fixture(autouse=True)
+    def _mock_homeassistant(self):
+        import sys
+
+        mocks = {}
+        ha_modules = [
+            "homeassistant",
+            "homeassistant.components",
+            "homeassistant.components.assist_pipeline",
+            "homeassistant.components.conversation",
+            "homeassistant.config_entries",
+            "homeassistant.const",
+            "homeassistant.core",
+            "homeassistant.helpers",
+            "homeassistant.helpers.device_registry",
+            "homeassistant.helpers.entity_registry",
+            "homeassistant.helpers.intent",
+            "homeassistant.helpers.entity_platform",
+        ]
+        for mod in ha_modules:
+            if mod not in sys.modules:
+                mocks[mod] = MagicMock()
+                sys.modules[mod] = mocks[mod]
+
+        sys.modules["homeassistant.const"].CONF_URL = "url"
+        sys.modules["homeassistant.const"].CONF_API_KEY = "api_key"
+        sys.modules["homeassistant.const"].MATCH_ALL = "*"
+        conv_mod = sys.modules["homeassistant.components.conversation"]
+        conv_mod.ConversationEntityFeature = MagicMock()
+        conv_mod.ConversationEntity = type(
+            "ConversationEntity",
+            (),
+            {
+                "__init__": lambda self, *a, **kw: None,
+            },
+        )
+        sys.modules["homeassistant.components"].conversation = conv_mod
+        sys.modules["homeassistant.components"].assist_pipeline = sys.modules[
+            "homeassistant.components.assist_pipeline"
+        ]
+
+        yield
+
+        for mod in mocks:
+            sys.modules.pop(mod, None)
+        for key in list(sys.modules):
+            if key.startswith("custom_components"):
+                del sys.modules[key]
+
+    def _import_conversation_module(self):
+        import sys
+
+        workspace_root = str(Path(__file__).resolve().parents[1].parent)
+        if workspace_root not in sys.path:
+            sys.path.insert(0, workspace_root)
+
+        from custom_components.ha_agenthub.conversation import HaAgentHubConversationEntity
+
+        return HaAgentHubConversationEntity
+
+    @staticmethod
+    def _build_rest_entity(response=None, error=None):
+        class _FakeResponse:
+            def __init__(self, status_code, payload=None):
+                self.status = status_code
+                self._payload = payload or {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def json(self):
+                return self._payload
+
+        class _FakeSession:
+            def __init__(self, response_obj, raised_error):
+                self._response_obj = response_obj
+                self._raised_error = raised_error
+
+            def post(self, *args, **kwargs):
+                if self._raised_error is not None:
+                    raise self._raised_error
+                return self._response_obj
+
+        entity = MagicMock()
+        entity._session = _FakeSession(response, error)
+        entity._api_key = "token"
+        entity._url = "http://ha.local"
+        entity._resolve_origin_context = MagicMock(return_value={})
+        entity._build_result = MagicMock(
+            side_effect=lambda speech, conversation_id, language, sanitized=False: {
+                "speech": speech,
+                "conversation_id": conversation_id,
+                "language": language,
+                "sanitized": sanitized,
+            }
+        )
+        return entity, _FakeResponse
+
+    @staticmethod
+    def _build_user_input():
+        user_input = MagicMock()
+        user_input.text = "hello"
+        user_input.conversation_id = "conv-1"
+        user_input.language = "en"
+        return user_input
+
+    @pytest.mark.parametrize("status_code", [401, 403])
+    async def test_rest_fallback_reports_auth_failures(self, status_code):
+        conversation_entity = self._import_conversation_module()
+        entity, response_type = self._build_rest_entity(response=None)
+        entity._session = type("_FakeSession", (), {"post": lambda self, *args, **kwargs: response_type(status_code)})()
+
+        result = await conversation_entity._process_via_rest(entity, self._build_user_input())
+
+        assert "API key was rejected" in result["speech"]
+        assert "integration settings" in result["speech"]
+
+    async def test_rest_fallback_reports_backend_errors(self):
+        conversation_entity = self._import_conversation_module()
+        entity, response_type = self._build_rest_entity(response=None)
+        entity._session = type("_FakeSession", (), {"post": lambda self, *args, **kwargs: response_type(503)})()
+
+        result = await conversation_entity._process_via_rest(entity, self._build_user_input())
+
+        assert "returned an error" in result["speech"]
+        assert "container logs" in result["speech"]
+
+    async def test_rest_fallback_reports_container_unavailability(self):
+        import aiohttp
+
+        conversation_entity = self._import_conversation_module()
+        entity, _ = self._build_rest_entity(error=aiohttp.ClientError("connection refused"))
+
+        result = await conversation_entity._process_via_rest(entity, self._build_user_input())
+
+        assert "container is unavailable" in result["speech"]
+        assert "reachable from Home Assistant" in result["speech"]
 
 
 # ---------------------------------------------------------------------------

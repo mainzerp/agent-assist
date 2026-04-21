@@ -200,6 +200,7 @@ class TestLLMComplete:
         with pytest.raises(Exception, match="API Error"):
             await complete("test-agent", [{"role": "user", "content": "test"}])
 
+    @patch("app.llm.client._LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC", 0.05)
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
@@ -233,6 +234,7 @@ class TestLLMComplete:
         assert result == "Light is on!"
         assert mock_acompletion.await_count == 2
 
+    @patch("app.llm.client._LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC", 0.05)
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
@@ -266,6 +268,7 @@ class TestLLMComplete:
         assert result == "Light is on!"
         assert mock_acompletion.await_count == 2
 
+    @patch("app.llm.client._LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC", 0.05)
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")
@@ -603,6 +606,7 @@ class TestLLMProviderSpans:
         result = await complete("light-agent", [{"role": "user", "content": "test"}])
         assert result == "Done!"
 
+    @patch("app.llm.client._LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC", 0.05)
     @patch("litellm.acompletion", new_callable=AsyncMock)
     @patch("app.llm.client.resolve_provider_params", new_callable=AsyncMock, return_value={})
     @patch("app.llm.client.AgentConfigRepository")

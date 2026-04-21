@@ -1,8 +1,81 @@
 # Version
 
-**Current Version:** 0.18.37
+**Current Version:** 0.18.39
 
 ## Version History
+
+### 0.18.39 (PATCH) -- dashboard auth expiry and HA integration UX fixes
+
+Fixes a small cluster of reviewed dashboard and Home Assistant integration
+defects without widening the scope into deferred hardening work.
+
+- Added a shared dashboard-side fetch helper in
+  `container/app/dashboard/templates/dashboard_base.html` and moved the
+  reviewed long-lived dashboard pages onto it so `401` and `HX-Redirect`
+  auth-expiry responses now force a full redirect back to
+  `/dashboard/login` instead of leaving stale pages running.
+- Made the dashboard agent editor in
+  `container/app/dashboard/templates/agents.html` acknowledgment-driven:
+  toggles, config saves, prompt writes, and MCP assignment changes now wait
+  for backend success before treating the UI as saved, surface visible
+  per-agent failures, and reload backend truth after rejected writes.
+- Tightened agent editor backend write responses in
+  `container/app/api/routes/dashboard_api.py` so failed config and prompt
+  writes return structured JSON error details the dashboard can display.
+- Refactored `custom_components/ha_agenthub/config_flow.py` so setup and
+  options share the same health-payload validation, the API key field uses
+  password-style selector semantics, and leaving the options API key blank
+  now keeps the stored secret instead of re-exposing it in the form.
+- Improved HA REST fallback messaging in
+  `custom_components/ha_agenthub/conversation.py` to distinguish rejected
+  API keys, backend/container errors, and unreachable-container failures
+  with more actionable user-facing guidance.
+- Applied small accessibility fixes across the touched dashboard pages:
+  the mobile sidebar toggle now exposes `aria-expanded` and
+  `aria-controls`, the send-devices add form uses explicit label/input
+  associations and real form submission, and async feedback regions on the
+  touched pages are marked as live regions.
+
+Validation:
+
+- Focused dashboard coverage: `39 passed, 1 warning in 6.77s`
+  via `python -m pytest tests/test_dashboard.py -q`.
+- Focused HA integration coverage: `47 passed in 3.95s`
+  via `python -m pytest tests/test_ha_client.py -q`.
+
+### 0.18.38 (PATCH) -- test suite runtime optimizations
+
+Low-risk test-runtime improvements focused on keeping behaviour and coverage
+unchanged while removing avoidable waits and setup overhead in the local and
+CI pytest workflows.
+
+- Deferred the local `litellm` import in
+  `container/app/api/routes/admin.py::test_llm_provider` and
+  `container/app/setup/routes.py::test_llm_endpoint` so unknown-provider and
+  missing-key fast-fail paths return before paying the cold import cost.
+- Shortened real timeout and retry waits in targeted tests by patching the
+  existing timeout and retry-delay boundaries inside
+  `container/tests/test_agents.py`, `container/tests/test_llm.py`, and
+  `container/tests/test_mcp.py` instead of mocking away the timeout/retry
+  mechanisms themselves.
+- Stubbed `app.setup.routes.hash_password` only in setup/auth/CSRF route tests
+  that validate form flow and repository invocation, while keeping the direct
+  bcrypt coverage in `container/tests/test_security.py::TestHashing` fully real.
+- Added a shared integration-app builder in `container/tests/conftest.py` and
+  reused it across the API, setup, dashboard, CSRF, MCP, and security
+  integration-style test modules without widening fixture scope, then reran the
+  touched modules twice to confirm no order dependence.
+- Expanded the README test section with the canonical serial command, a fast
+  `-m "not integration"` inner-loop command, and the local `-n auto` command,
+  while clarifying that `pytest-xdist` requires the dev dependencies to be
+  installed in the current environment.
+
+Validation:
+
+- Full serial suite: `1273 passed, 3 skipped, 1 warning in 43.08s`
+  (baseline before changes: `48.88s`, improvement: `5.80s`, about `11.9%`).
+- Local `pytest-xdist` validation was not run in this environment because
+  `python -m pip show pytest-xdist` reported `Package(s) not found: pytest-xdist`.
 
 ### 0.18.37 (PATCH) -- entity-name translation fix
 

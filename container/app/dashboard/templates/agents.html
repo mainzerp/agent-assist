@@ -40,6 +40,8 @@
                     </div>
                 </div>
 
+                <div x-show="agent._actionError" class="alert alert-error mt-sm" x-text="agent._actionError"></div>
+
                 <!-- Entity visibility badges -->
                 <div class="form-row gap-sm mt-sm" style="display:flex; flex-wrap:wrap; gap:0.25rem;">
                     <template x-if="visibilitySummary[agent.agent_id] && visibilitySummary[agent.agent_id].has_rules && visibilitySummary[agent.agent_id].domains.length > 0">
@@ -203,26 +205,8 @@ function agentsPage() {
         async loadAgents() {
             try {
                 await this.loadConfiguredProviders();
-                var resp = await fetch("/api/admin/agents", { credentials: "same-origin" });
-                var data = await resp.json();
-                this.agents = (data.agents || []).map(function(a) {
-                    a._editing = false;
-                    a._editingPrompt = false;
-                    a._promptContent = "";
-                    a._promptLoading = false;
-                    a._promptSaved = false;
-                    a._saved = false;
-                    a._saveError = '';
-                    a._provider = '';
-                    a._modelName = '';
-                    if (a.model && a.model.indexOf('/') !== -1) {
-                        a._provider = a.model.split('/')[0];
-                        a._modelName = a.model.substring(a._provider.length + 1);
-                    } else if (a.model) {
-                        a._modelName = a.model;
-                    }
-                    return a;
-                });
+                var data = await window.dashboardApi.json('/api/admin/agents');
+                this.agents = (data.agents || []).map((a) => this.prepareAgent(a));
                 await this.loadVisibilitySummary();
                 await this.loadMcpServers();
                 await this.loadAllMcpAssignments();
@@ -233,86 +217,201 @@ function agentsPage() {
         },
         async loadConfiguredProviders() {
             try {
-                var resp = await fetch('/api/admin/llm-providers/configured', { credentials: 'same-origin' });
-                var data = await resp.json();
+                var data = await window.dashboardApi.json('/api/admin/llm-providers/configured');
                 this.allProviders = data.providers || [];
                 this.configuredProviders = data.configured || [];
             } catch (e) {
+                if (e.code === 'auth_expired') {
+                    return;
+                }
                 console.error('Failed to load configured providers', e);
             }
         },
         async loadVisibilitySummary() {
             try {
-                var resp = await fetch('/api/admin/agents/visibility-summary', { credentials: 'same-origin' });
-                var data = await resp.json();
+                var data = await window.dashboardApi.json('/api/admin/agents/visibility-summary');
                 this.visibilitySummary = data.summary || {};
             } catch (e) {
+                if (e.code === 'auth_expired') {
+                    return;
+                }
                 console.error('Failed to load visibility summary', e);
             }
         },
         async loadMcpServers() {
             try {
-                var resp = await fetch('/api/admin/mcp-servers', { credentials: 'same-origin' });
-                if (resp.ok) this.mcpServers = await resp.json();
+                this.mcpServers = await window.dashboardApi.json('/api/admin/mcp-servers');
             } catch (e) {
+                if (e.code === 'auth_expired') {
+                    return;
+                }
                 console.error('Failed to load MCP servers', e);
             }
         },
         async loadMcpServerTools(serverName) {
             if (this.mcpServerTools[serverName]) return;
             try {
-                var resp = await fetch('/api/admin/mcp-servers/' + encodeURIComponent(serverName) + '/tools', { credentials: 'same-origin' });
-                if (resp.ok) this.mcpServerTools = {...this.mcpServerTools, [serverName]: await resp.json()};
+                var tools = await window.dashboardApi.json('/api/admin/mcp-servers/' + encodeURIComponent(serverName) + '/tools');
+                this.mcpServerTools = {...this.mcpServerTools, [serverName]: tools};
             } catch (e) {
+                if (e.code === 'auth_expired') {
+                    return;
+                }
                 console.error('Failed to load tools for ' + serverName, e);
             }
         },
         async loadAgentMcpTools(agentId) {
             this.mcpToolsLoading = true;
             try {
-                var resp = await fetch('/api/admin/mcp-servers/agent-tools/' + encodeURIComponent(agentId), { credentials: 'same-origin' });
-                if (resp.ok) this.agentMcpTools = {...this.agentMcpTools, [agentId]: await resp.json()};
+                var tools = await window.dashboardApi.json('/api/admin/mcp-servers/agent-tools/' + encodeURIComponent(agentId));
+                this.agentMcpTools = {...this.agentMcpTools, [agentId]: tools};
             } catch (e) {
+                if (e.code === 'auth_expired') {
+                    return;
+                }
                 console.error('Failed to load agent MCP tools', e);
             }
             this.mcpToolsLoading = false;
+        },
+        prepareAgent(agent) {
+            agent._editing = false;
+            agent._editingPrompt = false;
+            agent._promptContent = '';
+            agent._promptLoading = false;
+            agent._promptSaved = false;
+            agent._saved = false;
+            agent._actionError = '';
+            agent._feedbackTimer = null;
+            this.applyAgentConfig(agent, agent);
+            return agent;
+        },
+        applyAgentConfig(agent, data) {
+            var configKeys = [
+                'enabled',
+                'model',
+                'timeout',
+                'temperature',
+                'max_tokens',
+                'max_iterations',
+                'description',
+                'reasoning_effort'
+            ];
+            for (var key of configKeys) {
+                if (Object.prototype.hasOwnProperty.call(data, key)) {
+                    agent[key] = data[key];
+                }
+            }
+            agent._provider = '';
+            agent._modelName = '';
+            if (agent.model && agent.model.indexOf('/') !== -1) {
+                agent._provider = agent.model.split('/')[0];
+                agent._modelName = agent.model.substring(agent._provider.length + 1);
+            } else if (agent.model) {
+                agent._modelName = agent.model;
+            }
+        },
+        findAgent(agentId) {
+            return this.agents.find(function(agent) {
+                return agent.agent_id === agentId;
+            }) || null;
+        },
+        clearAgentFeedback(agent) {
+            if (!agent) {
+                return;
+            }
+            if (agent._feedbackTimer) {
+                clearTimeout(agent._feedbackTimer);
+                agent._feedbackTimer = null;
+            }
+            agent._saved = false;
+            agent._promptSaved = false;
+            agent._actionError = '';
+        },
+        showAgentSaved(agent, kind) {
+            if (!agent) {
+                return;
+            }
+            this.clearAgentFeedback(agent);
+            if (kind === 'prompt') {
+                agent._promptSaved = true;
+            } else {
+                agent._saved = true;
+            }
+            agent._feedbackTimer = setTimeout(function() {
+                agent._saved = false;
+                agent._promptSaved = false;
+                agent._feedbackTimer = null;
+            }, 2000);
+        },
+        showAgentError(agent, message) {
+            if (!agent) {
+                return;
+            }
+            this.clearAgentFeedback(agent);
+            agent._actionError = message || 'Request failed';
+            agent._feedbackTimer = setTimeout(function() {
+                agent._actionError = '';
+                agent._feedbackTimer = null;
+            }, 5000);
+        },
+        async reloadAgent(agentId) {
+            var agent = this.findAgent(agentId);
+            if (!agent) {
+                return;
+            }
+            var data = await window.dashboardApi.json('/api/admin/agents/' + encodeURIComponent(agentId));
+            this.applyAgentConfig(agent, data);
         },
         isServerAssigned(agentId, serverName) {
             var assigned = this.agentMcpTools[agentId] || [];
             return assigned.some(t => t.server_name === serverName);
         },
         async toggleServerAssignment(agentId, serverName) {
+            var agent = this.findAgent(agentId);
+            this.clearAgentFeedback(agent);
             var wasAssigned = this.isServerAssigned(agentId, serverName);
-            if (wasAssigned) {
-                // Unassign all tools from this server
-                var assigned = (this.agentMcpTools[agentId] || []).filter(t => t.server_name === serverName);
-                for (var t of assigned) {
-                    await fetch('/api/admin/mcp-servers/agent-tools/' + encodeURIComponent(agentId) + '/' + encodeURIComponent(t.server_name) + '/' + encodeURIComponent(t.tool_name), { method: 'DELETE', credentials: 'same-origin' });
+            try {
+                if (wasAssigned) {
+                    var assigned = (this.agentMcpTools[agentId] || []).filter(t => t.server_name === serverName);
+                    for (var t of assigned) {
+                        await window.dashboardApi.request('/api/admin/mcp-servers/agent-tools/' + encodeURIComponent(agentId) + '/' + encodeURIComponent(t.server_name) + '/' + encodeURIComponent(t.tool_name), {
+                            method: 'DELETE'
+                        });
+                    }
+                } else {
+                    await this.loadMcpServerTools(serverName);
+                    var tools = this.mcpServerTools[serverName] || [];
+                    for (var tool of tools) {
+                        await window.dashboardApi.request('/api/admin/mcp-servers/agent-tools/' + encodeURIComponent(agentId), {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ server_name: serverName, tool_name: tool.name })
+                        });
+                    }
                 }
-            } else {
-                // Load server tools and assign all
-                await this.loadMcpServerTools(serverName);
-                var tools = this.mcpServerTools[serverName] || [];
-                for (var tool of tools) {
-                    await fetch('/api/admin/mcp-servers/agent-tools/' + encodeURIComponent(agentId), {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        credentials: 'same-origin',
-                        body: JSON.stringify({ server_name: serverName, tool_name: tool.name })
-                    });
+                await this.loadAgentMcpTools(agentId);
+                await this.loadAllMcpAssignments();
+                this.showAgentSaved(agent, 'config');
+            } catch (e) {
+                if (e.code === 'auth_expired') {
+                    return;
                 }
+                try {
+                    await this.loadAgentMcpTools(agentId);
+                    await this.loadAllMcpAssignments();
+                } catch (_) {
+                    // Preserve the original write error.
+                }
+                this.showAgentError(agent, e.detail || 'Failed to update MCP tool assignments');
             }
-            await this.loadAgentMcpTools(agentId);
-            await this.loadAllMcpAssignments();
         },
         async loadAllMcpAssignments() {
             try {
-                var resp = await fetch('/api/admin/mcp-servers/agent-tools-summary', { credentials: 'same-origin' });
-                if (resp.ok) {
-                    var data = await resp.json();
-                    this.allMcpAssignments = data;
-                }
+                this.allMcpAssignments = await window.dashboardApi.json('/api/admin/mcp-servers/agent-tools-summary');
             } catch (e) {
+                if (e.code === 'auth_expired') {
+                    return;
+                }
                 console.error('Failed to load MCP assignments summary', e);
             }
         },
@@ -348,25 +447,32 @@ function agentsPage() {
         },
         async toggleAgent(agent) {
             var newEnabled = agent.enabled == 1 ? false : true;
+            this.clearAgentFeedback(agent);
             try {
-                await fetch("/api/admin/agents/" + agent.agent_id, {
+                await window.dashboardApi.request('/api/admin/agents/' + encodeURIComponent(agent.agent_id), {
                     method: "PUT",
                     headers: { "Content-Type": "application/json" },
-                    credentials: "same-origin",
                     body: JSON.stringify({ enabled: newEnabled })
                 });
-                agent.enabled = newEnabled ? 1 : 0;
+                await this.reloadAgent(agent.agent_id);
             } catch(e) {
-                console.error("Failed to toggle agent", e);
+                if (e.code === 'auth_expired') {
+                    return;
+                }
+                try {
+                    await this.reloadAgent(agent.agent_id);
+                } catch (_) {
+                    // Preserve the original write error.
+                }
+                this.showAgentError(agent, e.detail || 'Failed to update agent');
             }
         },
         async saveAgent(agent) {
-            agent._saveError = '';
+            this.clearAgentFeedback(agent);
             try {
-                var resp = await fetch("/api/admin/agents/" + agent.agent_id, {
+                await window.dashboardApi.request('/api/admin/agents/' + encodeURIComponent(agent.agent_id), {
                     method: "PUT",
                     headers: { "Content-Type": "application/json" },
-                    credentials: "same-origin",
                     body: JSON.stringify({
                         model: agent.model || null,
                         timeout: agent.timeout,
@@ -377,48 +483,49 @@ function agentsPage() {
                         reasoning_effort: agent.reasoning_effort || ""
                     })
                 });
-                if (!resp.ok) {
-                    var errData = null;
-                    try { errData = await resp.json(); } catch(_) {}
-                    agent._saveError = (errData && errData.detail) || ('Error ' + resp.status);
-                    setTimeout(function() { agent._saveError = ''; }, 5000);
+                await this.reloadAgent(agent.agent_id);
+                this.showAgentSaved(agent, 'config');
+            } catch(e) {
+                if (e.code === 'auth_expired') {
                     return;
                 }
-                agent._saved = true;
-                setTimeout(function() { agent._saved = false; }, 2000);
-            } catch(e) {
+                try {
+                    await this.reloadAgent(agent.agent_id);
+                } catch (_) {
+                    // Preserve the original write error.
+                }
                 console.error("Failed to save agent config", e);
-                agent._saveError = 'Network error';
-                setTimeout(function() { agent._saveError = ''; }, 5000);
+                this.showAgentError(agent, e.detail || 'Failed to save agent configuration');
             }
         },
         async loadPrompt(agent) {
             agent._promptLoading = true;
             try {
-                var resp = await fetch("/api/admin/agents/" + agent.agent_id + "/prompt", { credentials: "same-origin" });
-                if (resp.ok) {
-                    var data = await resp.json();
-                    agent._promptContent = data.content || "";
-                } else {
-                    agent._promptContent = "";
-                }
+                var data = await window.dashboardApi.json('/api/admin/agents/' + agent.agent_id + '/prompt');
+                agent._promptContent = data.content || '';
             } catch(e) {
+                if (e.code === 'auth_expired') {
+                    return;
+                }
                 agent._promptContent = "";
             }
             agent._promptLoading = false;
         },
         async savePrompt(agent) {
+            this.clearAgentFeedback(agent);
             try {
-                await fetch("/api/admin/agents/" + agent.agent_id + "/prompt", {
+                await window.dashboardApi.request('/api/admin/agents/' + encodeURIComponent(agent.agent_id) + '/prompt', {
                     method: "PUT",
                     headers: { "Content-Type": "application/json" },
-                    credentials: "same-origin",
                     body: JSON.stringify({ content: agent._promptContent })
                 });
-                agent._promptSaved = true;
-                setTimeout(function() { agent._promptSaved = false; }, 2000);
+                this.showAgentSaved(agent, 'prompt');
             } catch(e) {
+                if (e.code === 'auth_expired') {
+                    return;
+                }
                 console.error("Failed to save prompt", e);
+                this.showAgentError(agent, e.detail || 'Failed to save prompt');
             }
         }
     };

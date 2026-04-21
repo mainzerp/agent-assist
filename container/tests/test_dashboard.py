@@ -6,18 +6,13 @@ template rendering.
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 import pytest_asyncio
 
-from app.security.auth import (
-    require_admin_session,
-    require_admin_session_redirect,
-    require_api_key,
-)
+from tests.conftest import build_integration_test_app
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -26,41 +21,14 @@ from app.security.auth import (
 
 def _build_dashboard_app(*, override_session: bool = True):
     """Build a FastAPI app for dashboard integration tests."""
-    from app.main import create_app
-
-    app = create_app()
-
-    if override_session:
-        app.dependency_overrides[require_admin_session] = lambda: {"username": "admin"}
-        app.dependency_overrides[require_admin_session_redirect] = lambda: {"username": "admin"}
-        app.dependency_overrides[require_api_key] = lambda: "test-api-key"
-
-    @asynccontextmanager
-    async def _noop_lifespan(a):
-        yield
-
-    app.router.lifespan_context = _noop_lifespan
-
-    # Set state directly
-    app.state.startup_time = 0
-    app.state.registry = MagicMock()
-    app.state.registry.list_agents = AsyncMock(return_value=[])
-    app.state.dispatcher = MagicMock()
-    app.state.ha_client = MagicMock()
-    app.state.entity_index = None
-    app.state.cache_manager = None
-    app.state.entity_matcher = None
-    app.state.alias_resolver = None
-    app.state.custom_loader = None
-    app.state.mcp_registry = MagicMock()
-    app.state.mcp_registry.list_servers.return_value = []
-    app.state.mcp_tool_manager = MagicMock()
-    app.state.ws_client = None
-    app.state.presence_detector = None
-    app.state.plugin_loader = MagicMock()
-    app.state.plugin_loader.loaded_plugins = {}
-    app.state.setup_runtime_initialized = True
-    return app
+    registry = MagicMock()
+    registry.list_agents = AsyncMock(return_value=[])
+    return build_integration_test_app(
+        setup_complete=True,
+        override_api_key=override_session,
+        override_admin_session=override_session,
+        registry=registry,
+    )
 
 
 @pytest_asyncio.fixture()
@@ -123,6 +91,11 @@ class TestDashboardLoginRequired:
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
 
+    async def test_admin_api_returns_session_expired_without_session(self, no_session_client: httpx.AsyncClient):
+        resp = await no_session_client.get("/api/admin/health/extended")
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "Session expired"
+
 
 # ===================================================================
 # Page accessibility with session
@@ -176,6 +149,11 @@ class TestDashboardPageAccessibility:
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
 
+    async def test_settings_page(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/settings")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers.get("content-type", "")
+
 
 # ===================================================================
 # Template rendering content checks
@@ -193,6 +171,52 @@ class TestDashboardTemplateRendering:
         resp = await dashboard_client.get("/dashboard/logout")
         assert resp.status_code == 303
         assert "/dashboard/login" in resp.headers.get("location", "")
+
+    async def test_system_health_page_includes_dashboard_helper(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/system-health")
+        html = resp.text
+        assert "window.dashboardApi" in html
+        assert "dashboardApi.json('/api/admin/health/extended')" in html
+
+    async def test_presence_page_includes_dashboard_helper(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/presence")
+        html = resp.text
+        assert "window.dashboardApi" in html
+        assert "dashboardApi.json('/api/admin/presence/status')" in html
+
+    async def test_agents_page_includes_dashboard_helper(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/agents")
+        html = resp.text
+        assert "window.dashboardApi" in html
+        assert "dashboardApi.json('/api/admin/agents')" in html
+        assert "agent._actionError" in html
+        assert "agent._promptSaved" in html
+
+    async def test_dashboard_sidebar_toggle_has_accessibility_attributes(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/agents")
+        html = resp.text
+        assert 'aria-controls="dashboard-sidebar"' in html
+        assert 'x-bind:aria-expanded="sidebarOpen ? \'true\' : \'false\'"' in html
+        assert 'id="dashboard-sidebar"' in html
+
+    async def test_send_devices_page_has_labels_and_live_region(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/send-devices")
+        html = resp.text
+        assert 'for="send-device-display-name"' in html
+        assert 'id="send-device-display-name"' in html
+        assert 'for="send-device-type"' in html
+        assert 'id="send-device-type"' in html
+        assert 'for="send-device-target-select"' in html
+        assert 'id="send-device-target-manual"' in html
+        assert '@submit.prevent="createMapping()"' in html
+        assert ':aria-live="messageType === \'error\' ? \'assertive\' : \'polite\'"' in html
+        assert ':role="messageType === \'error\' ? \'alert\' : \'status\'"' in html
+
+    async def test_settings_page_has_live_regions(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/settings")
+        html = resp.text
+        assert html.count('role="status"') >= 4
+        assert html.count('aria-live="polite"') >= 4
 
 
 # ===================================================================
@@ -241,6 +265,32 @@ class TestPersonalityPage:
         assert resp.status_code == 200
         resp2 = await dashboard_client.get("/api/admin/personality/config")
         assert resp2.json()["prompt"] == ""
+
+
+@pytest.mark.integration
+class TestAgentEditorFailures:
+    async def test_update_agent_config_returns_json_error_on_repository_failure(self, dashboard_client: httpx.AsyncClient):
+        with patch(
+            "app.api.routes.dashboard_api.AgentConfigRepository.upsert",
+            new_callable=AsyncMock,
+        ) as mock_upsert:
+            mock_upsert.side_effect = RuntimeError("save failed")
+            resp = await dashboard_client.put(
+                "/api/admin/agents/light-agent",
+                json={"description": "Updated description"},
+            )
+
+        assert resp.status_code == 500
+        assert resp.json()["detail"] == "save failed"
+
+    async def test_update_agent_prompt_rejects_invalid_agent_id(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.put(
+            "/api/admin/agents/bad$id/prompt",
+            json={"content": "Prompt text"},
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid agent ID"
 
 
 # ===================================================================

@@ -422,23 +422,27 @@ async def update_agent_config(agent_id: str, payload: AgentConfigUpdate, request
         updates["reasoning_effort"] = payload.reasoning_effort or None
     if not updates:
         return {"status": "no changes"}
-    await AgentConfigRepository.upsert(agent_id, **updates)
+    try:
+        await AgentConfigRepository.upsert(agent_id, **updates)
 
-    # Hot-register/unregister agent in live registry
-    if payload.enabled is not None:
-        _registry = request.app.state.registry
-        if payload.enabled:
-            existing = await _registry.discover(agent_id)
-            if existing is None:
-                agent_instance = _create_phase2_agent(agent_id, request.app)
-                if agent_instance:
-                    await _registry.register(agent_instance)
-                    logger.info("Hot-registered agent: %s", agent_id)
-        else:
-            core_agents = {"orchestrator", "general-agent", "light-agent", "music-agent", "rewrite-agent"}
-            if agent_id not in core_agents:
-                await _registry.unregister(agent_id)
-                logger.info("Hot-unregistered agent: %s", agent_id)
+        # Hot-register/unregister agent in live registry
+        if payload.enabled is not None:
+            _registry = request.app.state.registry
+            if payload.enabled:
+                existing = await _registry.discover(agent_id)
+                if existing is None:
+                    agent_instance = _create_phase2_agent(agent_id, request.app)
+                    if agent_instance:
+                        await _registry.register(agent_instance)
+                        logger.info("Hot-registered agent: %s", agent_id)
+            else:
+                core_agents = {"orchestrator", "general-agent", "light-agent", "music-agent", "rewrite-agent"}
+                if agent_id not in core_agents:
+                    await _registry.unregister(agent_id)
+                    logger.info("Hot-unregistered agent: %s", agent_id)
+    except Exception as exc:
+        logger.exception("Failed to update agent config for %s", agent_id)
+        return JSONResponse(status_code=500, content={"detail": str(exc) or "Failed to update agent"})
 
     return {"status": "ok", "agent_id": agent_id}
 
@@ -467,8 +471,12 @@ async def update_agent_prompt(agent_id: str, payload: PromptUpdate):
         prompt_path = _validate_agent_path(agent_id)
     except ValueError:
         return JSONResponse(status_code=400, content={"detail": "Invalid agent ID"})
-    await asyncio.to_thread(prompt_path.parent.mkdir, parents=True, exist_ok=True)
-    await asyncio.to_thread(prompt_path.write_text, payload.content, encoding="utf-8")
+    try:
+        await asyncio.to_thread(prompt_path.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(prompt_path.write_text, payload.content, encoding="utf-8")
+    except Exception as exc:
+        logger.exception("Failed to update prompt for %s", agent_id)
+        return JSONResponse(status_code=500, content={"detail": str(exc) or "Failed to update prompt"})
     filename = prompt_path.name
     return {"status": "ok", "agent_id": agent_id, "filename": filename}
 

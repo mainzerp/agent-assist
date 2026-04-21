@@ -56,12 +56,12 @@ function healthPage() {
             var self = this;
             async function doFetch() {
                 try {
-                    var resp = await fetch("/api/admin/health/extended", { credentials: "same-origin" });
-                    if (resp.ok) {
-                        self.health = await resp.json();
-                        self.error = '';
-                    }
+                    self.health = await window.dashboardApi.json('/api/admin/health/extended');
+                    self.error = '';
                 } catch(e) {
+                    if (e.code === 'auth_expired') {
+                        return;
+                    }
                     self.error = 'Failed to load health data';
                     console.error("Failed to parse health data", e);
                 }

@@ -35,6 +35,24 @@ class _WsDroppedAfterSendError(Exception):
     """Request was written to the WebSocket; REST fallback would duplicate server work."""
 
 
+def _rest_fallback_error_message(status_code: int | None) -> str:
+    """Return an actionable fallback message for REST error responses."""
+    if status_code in {401, 403}:
+        return (
+            "Sorry, the HA-AgentHub integration API key was rejected. "
+            "Update the API key in the HA-AgentHub integration settings."
+        )
+    if status_code is not None and status_code >= 500:
+        return (
+            "Sorry, the assistant container returned an error. "
+            "Check the configured container URL and the container logs."
+        )
+    return (
+        "Sorry, the assistant container returned an unexpected response. "
+        "Check the configured container URL and the container logs."
+    )
+
+
 def _strip_markdown(text: str) -> str:
     """Remove Markdown formatting for TTS-friendly output.
 
@@ -487,7 +505,7 @@ class HaAgentHubConversationEntity(
             ) as resp:
                 if resp.status != 200:
                     return self._build_result(
-                        "Sorry, I could not reach the assistant container.",
+                        _rest_fallback_error_message(resp.status),
                         user_input.conversation_id,
                         user_input.language,
                     )
@@ -500,7 +518,7 @@ class HaAgentHubConversationEntity(
                 )
         except (aiohttp.ClientError, TimeoutError):
             return self._build_result(
-                "Sorry, the assistant container is unavailable.",
+                "Sorry, the assistant container is unavailable. Check that the container is running and reachable from Home Assistant.",
                 user_input.conversation_id,
                 user_input.language,
             )

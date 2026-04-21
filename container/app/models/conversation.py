@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ConversationRequest(BaseModel):
@@ -74,3 +74,10 @@ class StreamToken(BaseModel):
     # Filler tokens are NOT sanitized backend-side; the HA integration
     # still strips them in ``_speak_filler``.
     sanitized: bool = True
+
+    @model_validator(mode="after")
+    def _force_unsanitized_filler(self) -> StreamToken:
+        """Keep filler chunks marked as unsanitized for downstream stripping."""
+        if self.is_filler:
+            self.sanitized = False
+        return self

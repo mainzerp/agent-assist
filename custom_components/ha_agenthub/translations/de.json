@@ -20,7 +20,7 @@
     "step": {
       "init": {
         "title": "HA-AgentHub Einstellungen",
-        "description": "Verbindungseinstellungen zum HA-AgentHub-Container aktualisieren.",
+        "description": "Verbindungseinstellungen zum HA-AgentHub-Container aktualisieren. API-Schlüssel leer lassen, um den gespeicherten Schlüssel zu behalten.",
         "data": {
           "url": "Container-URL",
           "api_key": "API-Schlüssel"

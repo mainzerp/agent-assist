@@ -12,7 +12,7 @@
     </div>
 
     <!-- Global save feedback -->
-    <div x-show="message" x-transition class="alert mb-md"
+    <div x-show="message" x-transition class="alert mb-md" role="status" aria-live="polite" aria-atomic="true"
          :class="messageType === 'error' ? 'alert-error' : 'alert-success'"
          x-text="message"></div>
 
@@ -41,7 +41,7 @@
                     </div>
                 </template>
             </div>
-            <div x-show="providerMessage" x-transition class="alert mt-sm"
+              <div x-show="providerMessage" x-transition class="alert mt-sm" role="status" aria-live="polite" aria-atomic="true"
                  :class="providerMessageType === 'error' ? 'alert-error' : 'alert-success'"
                  x-text="providerMessage"></div>
         </div>
@@ -173,7 +173,7 @@
                     <button type="button" class="btn btn-secondary btn-sm" @click="testHaConnection()">Test connection</button>
                 </div>
             </div>
-            <div x-show="haConnMessage" x-transition class="alert mt-sm"
+              <div x-show="haConnMessage" x-transition class="alert mt-sm" role="status" aria-live="polite" aria-atomic="true"
                  :class="haConnMessageType === 'error' ? 'alert-error' : 'alert-success'"
                  x-text="haConnMessage"></div>
 
@@ -214,7 +214,7 @@
                     </div>
                 </template>
             </div>
-            <div x-show="containerApiKeyMessage" x-transition class="alert mt-sm"
+              <div x-show="containerApiKeyMessage" x-transition class="alert mt-sm" role="status" aria-live="polite" aria-atomic="true"
                  :class="containerApiKeyMessageType === 'error' ? 'alert-error' : 'alert-success'"
                  x-text="containerApiKeyMessage"></div>
 

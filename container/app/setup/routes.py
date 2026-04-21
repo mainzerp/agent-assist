@@ -191,8 +191,6 @@ async def test_ha_endpoint(ha_url: str = Form(...), ha_token: str = Form(...)):
 async def test_llm_endpoint(provider: str = Form(...), api_key: str = Form(...)):
     """Test LLM provider with a small completion request."""
     try:
-        import litellm
-
         if provider == "groq":
             model = "groq/llama-3.1-8b-instant"
         elif provider == "openrouter":
@@ -201,6 +199,8 @@ async def test_llm_endpoint(provider: str = Form(...), api_key: str = Form(...))
             model = "ollama/llama3"
         else:
             return HTMLResponse(f'<div class="test-result test-error">Unknown provider: {html.escape(provider)}</div>')
+
+        import litellm
 
         await litellm.acompletion(
             model=model,

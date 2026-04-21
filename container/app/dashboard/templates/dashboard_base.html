@@ -15,7 +15,8 @@
 <body x-data="{ sidebarOpen: true }" class="dashboard-body">
 
     <!-- Mobile hamburger -->
-    <button class="sidebar-toggle" @click="sidebarOpen = !sidebarOpen" aria-label="Toggle sidebar">
+    <button class="sidebar-toggle" @click="sidebarOpen = !sidebarOpen" aria-label="Toggle sidebar"
+            aria-controls="dashboard-sidebar" x-bind:aria-expanded="sidebarOpen ? 'true' : 'false'">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="3" y1="6" x2="21" y2="6"/>
             <line x1="3" y1="12" x2="21" y2="12"/>
@@ -24,7 +25,7 @@
     </button>
 
     <!-- Sidebar -->
-    <aside class="sidebar" :class="{ 'sidebar-open': sidebarOpen }">
+    <aside id="dashboard-sidebar" class="sidebar" :class="{ 'sidebar-open': sidebarOpen }">
         <div class="sidebar-header">
             <a href="/dashboard/" class="sidebar-brand">
                 <svg class="sidebar-brand-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -129,6 +130,88 @@
             <span class="app-footer-text">HA-AgentHub <span class="app-footer-version">{{ app_version }}</span></span>
         </footer>
     </div>
+
+    <script>
+    (function() {
+        function getErrorDetail(payload, fallback) {
+            if (!payload) {
+                return fallback;
+            }
+            if (typeof payload.detail === 'string' && payload.detail) {
+                return payload.detail;
+            }
+            if (Array.isArray(payload.detail) && payload.detail.length && payload.detail[0] && payload.detail[0].msg) {
+                return payload.detail[0].msg;
+            }
+            if (typeof payload.message === 'string' && payload.message) {
+                return payload.message;
+            }
+            return fallback;
+        }
+
+        function buildError(message, response, payload) {
+            var error = new Error(message);
+            error.status = response ? response.status : null;
+            error.detail = message;
+            error.payload = payload || null;
+            return error;
+        }
+
+        window.dashboardApi = {
+            loginUrl: '/dashboard/login',
+
+            redirectToLogin: function(redirectUrl) {
+                window.location.assign(redirectUrl || this.loginUrl);
+            },
+
+            async request(url, options) {
+                var response = await fetch(url, Object.assign({ credentials: 'same-origin' }, options || {}));
+                var redirectUrl = response.headers.get('HX-Redirect');
+
+                if (response.status === 401 || redirectUrl) {
+                    var authError = buildError('Session expired', response, null);
+                    authError.code = 'auth_expired';
+                    authError.redirectTo = redirectUrl || this.loginUrl;
+                    this.redirectToLogin(authError.redirectTo);
+                    throw authError;
+                }
+
+                if (!response.ok) {
+                    var payload = null;
+                    var fallback = response.statusText || ('Request failed (' + response.status + ')');
+
+                    try {
+                        payload = await response.clone().json();
+                    } catch (_) {
+                        payload = null;
+                    }
+
+                    if (payload) {
+                        throw buildError(getErrorDetail(payload, fallback), response, payload);
+                    }
+
+                    try {
+                        var text = await response.text();
+                        if (text) {
+                            fallback = text;
+                        }
+                    } catch (_) {
+                        // Keep the original fallback.
+                    }
+
+                    throw buildError(fallback, response, null);
+                }
+
+                return response;
+            },
+
+            async json(url, options) {
+                var response = await this.request(url, options);
+                return await response.json();
+            }
+        };
+    })();
+    </script>
 
 </body>
 </html>

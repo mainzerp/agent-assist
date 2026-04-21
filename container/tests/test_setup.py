@@ -7,7 +7,6 @@ and completion behavior.
 from __future__ import annotations
 
 import sys
-from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -18,6 +17,7 @@ from app.security.auth import (
     require_admin_session,
     require_admin_session_redirect,
 )
+from tests.conftest import build_integration_test_app
 from tests.helpers import csrf_post
 
 # ---------------------------------------------------------------------------
@@ -31,35 +31,7 @@ def _build_setup_app(*, setup_complete: bool = False):
     By default setup is *not* complete so the middleware allows /setup/ routes
     but redirects everything else.
     """
-    from app.main import create_app
-
-    app = create_app()
-
-    @asynccontextmanager
-    async def _noop_lifespan(a):
-        yield
-
-    app.router.lifespan_context = _noop_lifespan
-
-    # Set state directly
-    app.state.startup_time = 0
-    app.state.registry = MagicMock()
-    app.state.dispatcher = MagicMock()
-    app.state.ha_client = MagicMock()
-    app.state.entity_index = None
-    app.state.cache_manager = None
-    app.state.entity_matcher = None
-    app.state.alias_resolver = None
-    app.state.custom_loader = None
-    app.state.mcp_registry = MagicMock()
-    app.state.mcp_registry.list_servers.return_value = []
-    app.state.mcp_tool_manager = MagicMock()
-    app.state.ws_client = None
-    app.state.presence_detector = None
-    app.state.plugin_loader = MagicMock()
-    app.state.plugin_loader.loaded_plugins = {}
-    app.state.setup_runtime_initialized = setup_complete
-    return app
+    return build_integration_test_app(setup_complete=setup_complete)
 
 
 @pytest_asyncio.fixture()
@@ -162,6 +134,10 @@ class TestSetupAlreadyComplete:
 class TestSetupStepSubmissions:
     async def test_step1_admin_password(self, setup_client: httpx.AsyncClient):
         with (
+            patch(
+                "app.setup.routes.hash_password",
+                return_value="hashed-password",
+            ),
             patch(
                 "app.setup.routes.AdminAccountRepository.create",
                 new_callable=AsyncMock,
@@ -483,6 +459,10 @@ class TestSetupDuplicateAdmin:
     async def test_duplicate_admin_submission_succeeds(self, setup_client: httpx.AsyncClient):
         """Submitting admin credentials a second time should use INSERT OR REPLACE."""
         with (
+            patch(
+                "app.setup.routes.hash_password",
+                return_value="hashed-password",
+            ),
             patch(
                 "app.setup.routes.AdminAccountRepository.create",
                 new_callable=AsyncMock,

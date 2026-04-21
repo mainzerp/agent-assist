@@ -18,6 +18,7 @@ from app.security.sanitization import (
     sanitize_input,
     wrap_user_input,
 )
+from tests.conftest import build_integration_test_app
 
 # ---------------------------------------------------------------------------
 # Encryption
@@ -359,36 +360,11 @@ class TestAdminSession:
 class TestSettingsAllowlist:
     async def test_update_unknown_key_rejected(self, db_repository):
         """Updating a non-existent settings key should return 400."""
-        from contextlib import asynccontextmanager
-
-        from app.main import create_app
-        from app.security.auth import require_admin_session, require_api_key
-
-        app = create_app()
-
-        @asynccontextmanager
-        async def _noop_lifespan(a):
-            yield
-
-        app.router.lifespan_context = _noop_lifespan
-        app.state.startup_time = 0
-        app.state.registry = MagicMock()
-        app.state.dispatcher = MagicMock()
-        app.state.ha_client = MagicMock()
-        app.state.entity_index = None
-        app.state.cache_manager = None
-        app.state.entity_matcher = None
-        app.state.alias_resolver = None
-        app.state.custom_loader = None
-        app.state.mcp_registry = MagicMock()
-        app.state.mcp_registry.list_servers.return_value = []
-        app.state.mcp_tool_manager = MagicMock()
-        app.state.ws_client = None
-        app.state.presence_detector = None
-        app.state.plugin_loader = MagicMock()
-        app.state.plugin_loader.loaded_plugins = {}
-        app.dependency_overrides[require_admin_session] = lambda: {"username": "admin"}
-        app.dependency_overrides[require_api_key] = lambda: "test-key"
+        app = build_integration_test_app(
+            setup_complete=True,
+            override_admin_session=True,
+            override_api_key=True,
+        )
 
         import httpx
 
@@ -408,36 +384,11 @@ class TestSettingsAllowlist:
 
     async def test_single_setting_unknown_key_rejected(self, db_repository):
         """PUT /settings/{key} should reject non-existent keys."""
-        from contextlib import asynccontextmanager
-
-        from app.main import create_app
-        from app.security.auth import require_admin_session, require_api_key
-
-        app = create_app()
-
-        @asynccontextmanager
-        async def _noop_lifespan(a):
-            yield
-
-        app.router.lifespan_context = _noop_lifespan
-        app.state.startup_time = 0
-        app.state.registry = MagicMock()
-        app.state.dispatcher = MagicMock()
-        app.state.ha_client = MagicMock()
-        app.state.entity_index = None
-        app.state.cache_manager = None
-        app.state.entity_matcher = None
-        app.state.alias_resolver = None
-        app.state.custom_loader = None
-        app.state.mcp_registry = MagicMock()
-        app.state.mcp_registry.list_servers.return_value = []
-        app.state.mcp_tool_manager = MagicMock()
-        app.state.ws_client = None
-        app.state.presence_detector = None
-        app.state.plugin_loader = MagicMock()
-        app.state.plugin_loader.loaded_plugins = {}
-        app.dependency_overrides[require_admin_session] = lambda: {"username": "admin"}
-        app.dependency_overrides[require_api_key] = lambda: "test-key"
+        app = build_integration_test_app(
+            setup_complete=True,
+            override_admin_session=True,
+            override_api_key=True,
+        )
 
         import httpx
 

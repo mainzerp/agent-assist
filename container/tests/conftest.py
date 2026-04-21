@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+import pytest_asyncio
+
+from tests.helpers import make_entity_state
 
 # Writable paths before any ``app.*`` import (CI runners have no ``/data``).
 _test_root = Path(__file__).resolve().parent / ".pytest_runtime"
@@ -19,13 +27,78 @@ else:
     os.environ.setdefault("FERNET_KEY_PATH", str(_test_root / ".fernet_key"))
     os.environ.setdefault("CHROMADB_PERSIST_DIR", str(_test_root / "chromadb"))
 
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-import pytest_asyncio
+def build_integration_test_app(
+    *,
+    setup_complete: bool = True,
+    override_api_key: bool = False,
+    override_admin_session: bool = False,
+    registry: Any | None = None,
+    dispatcher: Any | None = None,
+    ha_client: Any | None = None,
+    mcp_registry: Any | None = None,
+    mcp_tool_manager: Any | None = None,
+    plugin_loader: Any | None = None,
+    state_overrides: dict[str, Any] | None = None,
+):
+    """Build a FastAPI app for integration tests with lightweight defaults."""
+    from app.main import create_app
+    from app.security.auth import require_admin_session, require_admin_session_redirect, require_api_key
 
-from tests.helpers import make_entity_state
+    app = create_app()
+
+    if override_api_key:
+        app.dependency_overrides[require_api_key] = lambda: "test-api-key"
+    if override_admin_session:
+        app.dependency_overrides[require_admin_session] = lambda: {"username": "admin"}
+        app.dependency_overrides[require_admin_session_redirect] = lambda: {"username": "admin"}
+
+    @asynccontextmanager
+    async def _noop_lifespan(_app):
+        yield
+
+    app.router.lifespan_context = _noop_lifespan
+
+    if registry is None:
+        registry = MagicMock()
+        registry.list_agents = AsyncMock(return_value=[])
+    if dispatcher is None:
+        dispatcher = MagicMock()
+    if ha_client is None:
+        ha_client = MagicMock()
+    if mcp_registry is None:
+        mcp_registry = MagicMock()
+        mcp_registry.list_servers.return_value = []
+    if mcp_tool_manager is None:
+        mcp_tool_manager = MagicMock()
+    if plugin_loader is None:
+        plugin_loader = MagicMock()
+        plugin_loader.loaded_plugins = {}
+
+    state = {
+        "startup_time": 0,
+        "registry": registry,
+        "dispatcher": dispatcher,
+        "ha_client": ha_client,
+        "entity_index": None,
+        "cache_manager": None,
+        "entity_matcher": None,
+        "alias_resolver": None,
+        "custom_loader": None,
+        "mcp_registry": mcp_registry,
+        "mcp_tool_manager": mcp_tool_manager,
+        "ws_client": None,
+        "presence_detector": None,
+        "plugin_loader": plugin_loader,
+        "setup_runtime_initialized": setup_complete,
+    }
+    if state_overrides:
+        state.update(state_overrides)
+
+    for key, value in state.items():
+        setattr(app.state, key, value)
+
+    return app
 
 # ---------------------------------------------------------------------------
 # 1. db_path -- temporary SQLite file per test

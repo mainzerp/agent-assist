@@ -97,8 +97,24 @@ See [docs/configuration.md](docs/configuration.md) for the full reference.
 ```bash
 cd container
 pip install -r requirements-dev.txt
-python -m pytest tests/ -v
+python -m pytest tests/ -q
 ```
+
+Fast inner loop without integration-marked tests:
+
+```bash
+cd container
+python -m pytest tests/ -q -m "not integration"
+```
+
+Local parallel run when dev dependencies are installed:
+
+```bash
+cd container
+python -m pytest tests/ -n auto -q --tb=short
+```
+
+`pytest-xdist` is declared in `container/requirements-dev.txt`, but `-n auto` only works in environments where the dev requirements have actually been installed.
 
 ### Lint
 
@@ -110,7 +126,7 @@ ruff format --check .
 
 ### Project Structure
 
-```
+```text
 container/          Docker container (FastAPI backend)
   app/              Application code
     agents/         Specialized agents + orchestrator

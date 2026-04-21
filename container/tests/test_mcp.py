@@ -10,6 +10,7 @@ import pytest
 from app.mcp.client import MCPClient
 from app.mcp.registry import MCPServerRegistry
 from app.mcp.tools import MCPToolManager
+from tests.conftest import build_integration_test_app
 
 # ---------------------------------------------------------------------------
 # MCPClient
@@ -102,11 +103,11 @@ class TestMCPClient:
         """If connection takes longer than timeout, connect() returns False."""
 
         async def slow_connect():
-            await asyncio.sleep(10)
+            await asyncio.sleep(0.1)
             return True
 
         mock_stdio.side_effect = slow_connect
-        client = MCPClient(name="test", transport="stdio", command_or_url="echo", timeout=1)
+        client = MCPClient(name="test", transport="stdio", command_or_url="echo", timeout=0.05)
         result = await client.connect()
         assert result is False
         assert client.connected is False
@@ -219,10 +220,10 @@ class TestMCPToolManager:
         registry = MagicMock(spec=MCPServerRegistry)
         client = MagicMock()
         client.connected = True
-        client.timeout = 1
+        client.timeout = 0.05
 
         async def slow_tool(*args, **kwargs):
-            await asyncio.sleep(10)
+            await asyncio.sleep(0.1)
             return {}
 
         client.call_tool = AsyncMock(side_effect=slow_tool)
@@ -316,35 +317,9 @@ class TestMcpServerAdminApiAuth:
     ``POST /api/admin/mcp-servers`` must be rejected with 401."""
 
     async def test_add_mcp_server_requires_session(self, db_repository):
-        from contextlib import asynccontextmanager
-
         import httpx
 
-        from app.main import create_app
-
-        app = create_app()
-
-        @asynccontextmanager
-        async def _noop_lifespan(a):
-            yield
-
-        app.router.lifespan_context = _noop_lifespan
-        app.state.startup_time = 0
-        app.state.registry = MagicMock()
-        app.state.dispatcher = MagicMock()
-        app.state.ha_client = MagicMock()
-        app.state.entity_index = None
-        app.state.cache_manager = None
-        app.state.entity_matcher = None
-        app.state.alias_resolver = None
-        app.state.custom_loader = None
-        app.state.mcp_registry = MagicMock()
-        app.state.mcp_registry.list_servers.return_value = []
-        app.state.mcp_tool_manager = MagicMock()
-        app.state.ws_client = None
-        app.state.presence_detector = None
-        app.state.plugin_loader = MagicMock()
-        app.state.plugin_loader.loaded_plugins = {}
+        app = build_integration_test_app(setup_complete=True)
 
         with patch(
             "app.db.repository.SetupStateRepository.is_complete",

@@ -10,10 +10,64 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_URL, CONF_API_KEY
+from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType
 
 from .const import DOMAIN, DEFAULT_CONTAINER_URL, HEALTH_PATH, INTEGRATION_TITLE
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_url(url: str) -> str:
+    return (url or "").strip().rstrip("/")
+
+
+def _password_selector() -> TextSelector:
+    return TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
+
+
+def _build_user_schema() -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(CONF_URL, default=DEFAULT_CONTAINER_URL): str,
+            vol.Required(CONF_API_KEY): _password_selector(),
+        }
+    )
+
+
+def _build_options_schema(current: dict[str, Any]) -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(CONF_URL, default=current.get(CONF_URL, DEFAULT_CONTAINER_URL)): str,
+            vol.Optional(CONF_API_KEY, default=""): _password_selector(),
+        }
+    )
+
+
+async def _validate_connection(url: str, api_key: str) -> str | None:
+    """Test connection to the container. Returns error key or None."""
+    normalized_url = _normalize_url(url)
+    trimmed_key = (api_key or "").strip()
+    if not normalized_url or not trimmed_key:
+        return "invalid_auth"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            headers = {"Authorization": f"Bearer {trimmed_key}"}
+            async with session.get(
+                f"{normalized_url}{HEALTH_PATH}",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status in {401, 403}:
+                    return "invalid_auth"
+                if resp.status != 200:
+                    return "cannot_connect"
+                data = await resp.json()
+                if data.get("status") != "ok":
+                    return "cannot_connect"
+    except (aiohttp.ClientError, TimeoutError, ValueError):
+        return "cannot_connect"
+    return None
 
 
 class HaAgentHubConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -32,11 +86,10 @@ class HaAgentHubConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            url = user_input[CONF_URL].rstrip("/")
-            api_key = user_input[CONF_API_KEY]
+            url = _normalize_url(user_input[CONF_URL])
+            api_key = (user_input[CONF_API_KEY] or "").strip()
 
-            # Test connection to container
-            error = await self._test_connection(url, api_key)
+            error = await _validate_connection(url, api_key)
             if error:
                 errors["base"] = error
             else:
@@ -49,35 +102,9 @@ class HaAgentHubConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_URL, default=DEFAULT_CONTAINER_URL): str,
-                    vol.Required(CONF_API_KEY): str,
-                }
-            ),
+            data_schema=_build_user_schema(),
             errors=errors,
         )
-
-    async def _test_connection(self, url: str, api_key: str) -> str | None:
-        """Test connection to the container. Returns error key or None."""
-        try:
-            async with aiohttp.ClientSession() as session:
-                headers = {"Authorization": f"Bearer {api_key}"}
-                async with session.get(
-                    f"{url}{HEALTH_PATH}",
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status == 401:
-                        return "invalid_auth"
-                    if resp.status != 200:
-                        return "cannot_connect"
-                    data = await resp.json()
-                    if data.get("status") != "ok":
-                        return "cannot_connect"
-        except (aiohttp.ClientError, TimeoutError):
-            return "cannot_connect"
-        return None
 
 
 class HaAgentHubOptionsFlow(OptionsFlow):
@@ -91,13 +118,14 @@ class HaAgentHubOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Handle options flow."""
         errors: dict[str, str] = {}
+        current = self._entry.data
 
         if user_input is not None:
-            url = user_input[CONF_URL].rstrip("/")
-            api_key = user_input[CONF_API_KEY]
+            url = _normalize_url(user_input[CONF_URL])
+            new_api_key = (user_input.get(CONF_API_KEY) or "").strip()
+            api_key = new_api_key or current.get(CONF_API_KEY, "")
 
-            # Test connection
-            error = await self._test_connection(url, api_key)
+            error = await _validate_connection(url, api_key)
             if error:
                 errors["base"] = error
             else:
@@ -107,32 +135,8 @@ class HaAgentHubOptionsFlow(OptionsFlow):
                 )
                 return self.async_create_entry(data={})
 
-        current = self._entry.data
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_URL, default=current.get(CONF_URL, DEFAULT_CONTAINER_URL)): str,
-                    vol.Required(CONF_API_KEY, default=current.get(CONF_API_KEY, "")): str,
-                }
-            ),
+            data_schema=_build_options_schema(current),
             errors=errors,
         )
-
-    async def _test_connection(self, url: str, api_key: str) -> str | None:
-        """Test connection to the container."""
-        try:
-            async with aiohttp.ClientSession() as session:
-                headers = {"Authorization": f"Bearer {api_key}"}
-                async with session.get(
-                    f"{url}{HEALTH_PATH}",
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status == 401:
-                        return "invalid_auth"
-                    if resp.status != 200:
-                        return "cannot_connect"
-        except (aiohttp.ClientError, TimeoutError):
-            return "cannot_connect"
-        return None

@@ -2900,6 +2900,7 @@ class TestOrchestratorFiller:
         assert result == "One moment, let me check that for you."
         mock_complete.assert_awaited_once()
 
+    @patch("app.agents.filler._FILLER_LLM_TIMEOUT_SEC", 0.05)
     @patch("app.agents.filler.SettingsRepository")
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_invoke_filler_agent_returns_none_on_timeout(self, mock_complete, mock_settings):
@@ -2909,7 +2910,7 @@ class TestOrchestratorFiller:
         mock_settings.get_value = AsyncMock(return_value="")
 
         async def _slow(*args, **kwargs):
-            await asyncio.sleep(10)
+            await asyncio.sleep(0.1)
             return "too late"
 
         mock_complete.side_effect = _slow
@@ -3256,13 +3257,14 @@ class TestFillerAgent:
         assert result.speech == "One moment, let me check."
         mock_complete.assert_awaited_once()
 
+    @patch("app.agents.filler._FILLER_LLM_TIMEOUT_SEC", 0.05)
     @patch("app.agents.filler.SettingsRepository")
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_returns_empty_on_timeout(self, mock_complete, mock_settings):
         mock_settings.get_value = AsyncMock(return_value="")
 
         async def _slow(*args, **kwargs):
-            await asyncio.sleep(10)
+            await asyncio.sleep(0.1)
             return "too late"
 
         mock_complete.side_effect = _slow

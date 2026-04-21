@@ -433,8 +433,6 @@ async def delete_llm_provider_key(provider: str):
 @router.post("/llm-providers/test")
 async def test_llm_provider(payload: ProviderTestRequest):
     """Test connectivity for an LLM provider."""
-    import litellm
-
     provider = payload.provider
     api_key = payload.api_key
 
@@ -459,6 +457,8 @@ async def test_llm_provider(payload: ProviderTestRequest):
             return {"status": "error", "detail": "No API key configured for " + provider}
 
     try:
+        import litellm
+
         kwargs: dict = {
             "model": test_models[provider],
             "messages": [{"role": "user", "content": "Say hello"}],

@@ -99,8 +99,10 @@ class TestStreamToken:
         st = StreamToken(token="One moment...", is_filler=True)
         data = st.model_dump()
         assert data["is_filler"] is True
+        assert data["sanitized"] is False
         restored = StreamToken.model_validate(data)
         assert restored.is_filler is True
+        assert restored.sanitized is False
 
 
 # ---- Agent models ----

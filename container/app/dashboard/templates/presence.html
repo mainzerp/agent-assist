@@ -126,31 +126,34 @@ function presencePage() {
         },
         async loadStatus() {
             try {
-                const resp = await fetch('/api/admin/presence/status');
-                if (resp.ok) {
-                    const data = await resp.json();
-                    this.config.enabled = data.enabled;
-                    this.config.decay_timeout = data.decay_timeout;
-                    this.roomConfidence = data.room_confidence || {};
-                    this.sensors = data.sensors || [];
+                const data = await window.dashboardApi.json('/api/admin/presence/status');
+                this.config.enabled = data.enabled;
+                this.config.decay_timeout = data.decay_timeout;
+                this.roomConfidence = data.room_confidence || {};
+                this.sensors = data.sensors || [];
+            } catch (e) {
+                if (e.code === 'auth_expired') {
+                    return;
                 }
-            } catch (e) { console.error('Failed to load presence status', e); }
+                console.error('Failed to load presence status', e);
+            }
         },
         async saveConfig() {
             try {
-                const resp = await fetch('/api/admin/presence/config', {
+                await window.dashboardApi.request('/api/admin/presence/config', {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(this.config),
                 });
-                if (resp.ok) {
-                    this.message = 'Configuration saved';
-                    this.messageType = 'success';
-                } else {
-                    this.message = 'Failed to save configuration';
-                    this.messageType = 'error';
+                this.message = 'Configuration saved';
+                this.messageType = 'success';
+            } catch (e) {
+                if (e.code === 'auth_expired') {
+                    return;
                 }
-            } catch (e) { this.message = 'Network error'; this.messageType = 'error'; }
+                this.message = e.detail || 'Failed to save configuration';
+                this.messageType = 'error';
+            }
         },
     };
 }

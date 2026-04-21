@@ -7,48 +7,23 @@ progress those endpoints remain anonymous so the bootstrap flow can run.
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 import pytest_asyncio
 
+from tests.conftest import build_integration_test_app
 from tests.helpers import csrf_post
 
 
-def _build_app():
-    from app.main import create_app
-
-    app = create_app()
-
-    @asynccontextmanager
-    async def _noop_lifespan(a):
-        yield
-
-    app.router.lifespan_context = _noop_lifespan
-    app.state.startup_time = 0
-    app.state.registry = MagicMock()
-    app.state.dispatcher = MagicMock()
-    app.state.ha_client = MagicMock()
-    app.state.entity_index = None
-    app.state.cache_manager = None
-    app.state.entity_matcher = None
-    app.state.alias_resolver = None
-    app.state.custom_loader = None
-    app.state.mcp_registry = MagicMock()
-    app.state.mcp_registry.list_servers.return_value = []
-    app.state.mcp_tool_manager = MagicMock()
-    app.state.ws_client = None
-    app.state.presence_detector = None
-    app.state.plugin_loader = MagicMock()
-    app.state.plugin_loader.loaded_plugins = {}
-    return app
+def _build_app(*, setup_complete: bool = False):
+    return build_integration_test_app(setup_complete=setup_complete)
 
 
 @pytest_asyncio.fixture()
 async def incomplete_client(db_repository):
-    app = _build_app()
+    app = _build_app(setup_complete=False)
     with patch(
         "app.db.repository.SetupStateRepository.is_complete",
         new_callable=AsyncMock,
@@ -65,7 +40,7 @@ async def incomplete_client(db_repository):
 
 @pytest_asyncio.fixture()
 async def complete_client(db_repository):
-    app = _build_app()
+    app = _build_app(setup_complete=True)
     with patch(
         "app.db.repository.SetupStateRepository.is_complete",
         new_callable=AsyncMock,
@@ -84,6 +59,10 @@ async def complete_client(db_repository):
 class TestSetupRoutesOpenWhileIncomplete:
     async def test_step1_open_during_setup(self, incomplete_client):
         with (
+            patch(
+                "app.setup.routes.hash_password",
+                return_value="hashed-password",
+            ),
             patch(
                 "app.setup.routes.AdminAccountRepository.create",
                 new_callable=AsyncMock,

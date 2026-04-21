@@ -6,7 +6,6 @@ real FastAPI app with mocked dependencies.
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -19,6 +18,7 @@ from app.security.auth import (
     require_admin_session_redirect,
     require_api_key,
 )
+from tests.conftest import build_integration_test_app
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -72,34 +72,14 @@ def _build_test_app(
     mock_dispatcher.dispatch_stream = _stream
     conversation_routes.set_dispatcher(mock_dispatcher)
 
-    # ---- no-op lifespan (ASGITransport does not trigger lifespan events,
-    #      but override it just in case to prevent the real one from running) ----
-    @asynccontextmanager
-    async def _noop_lifespan(a):
-        yield
-
-    app.router.lifespan_context = _noop_lifespan
-
-    # ---- set state directly on the app object ----
-    app.state.startup_time = 0
-    app.state.registry = mock_registry
-    app.state.dispatcher = mock_dispatcher
-    app.state.ha_client = mock_ha_rest_client or MagicMock()
-    app.state.entity_index = None
-    app.state.cache_manager = None
-    app.state.entity_matcher = None
-    app.state.alias_resolver = None
-    app.state.custom_loader = None
-    mcp_reg = MagicMock()
-    mcp_reg.list_servers.return_value = []
-    app.state.mcp_registry = mcp_reg
-    app.state.mcp_tool_manager = MagicMock()
-    app.state.ws_client = None
-    app.state.presence_detector = None
-    plugin_ldr = MagicMock()
-    plugin_ldr.loaded_plugins = {}
-    app.state.plugin_loader = plugin_ldr
-    app.state.setup_runtime_initialized = True
+    app = build_integration_test_app(
+        setup_complete=True,
+        override_api_key=override_api_key,
+        override_admin_session=override_admin_session,
+        registry=mock_registry,
+        dispatcher=mock_dispatcher,
+        ha_client=mock_ha_rest_client,
+    )
     return app
 
 
@@ -231,6 +211,7 @@ class TestConversationEndpoints:
             assert len(lines) >= 2
             first_data = _json.loads(lines[0].removeprefix("data:").strip())
             assert first_data.get("is_filler") is True
+            assert first_data.get("sanitized") is False
         finally:
             conv_routes._dispatcher = old_dispatcher
 
