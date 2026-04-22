@@ -27,14 +27,14 @@ User Request
     ↓
 ORCHESTRATOR: Receive request, spawn subagent
     ↓
-SUBAGENT #1: Research & Analysis
+SUBAGENT #1: Research & Analysis  (model: GPT-5.4)
     - Reads files, analyzes codebase
     - Creates analysis doc in docs/SubAgent/[NAME_ANALYSIS].md
     - Returns summary and analysis file path
     ↓
-ORCHESTRATOR: Receive results, spawn next subagent
+    ORCHESTRATOR: Receive results, spawn next subagent
     ↓
-SUBAGENT #2: Planning
+    SUBAGENT #2: Planning  (model: Claude Opus 4.7)
     - Reads analysis from Research subagent in docs/SubAgent/[NAME_ANALYSIS].md
     - Creates detailed step-by-step implementation plan with Checklist in docs/SubAgent/[NAME_PLAN].md
     - Returns summary and plan file path
@@ -44,7 +44,7 @@ ORCHESTRATOR: Calls only plan_review tool to render the plan.
     - If approved: YOU MUST spawn SUBAGENT #3. DO NOT implement yourself.
     - The orchestrator NEVER writes code, edits files, or runs implementation commands.
     ↓
-SUBAGENT #3: Implementation (FRESH context)
+    SUBAGENT #3: Implementation (FRESH context)  (model: Claude Opus 4.7)
     - Reads the approved plan in docs/SubAgent/[NAME_PLAN].md
     - Implements/codes based on plan
     - Returns completion summary
@@ -55,6 +55,7 @@ ORCHESTRATOR: Confirm with user via ask_user tool UNTIL user confirms task compl
 ## Subagent Prompts
 
 ### Research Subagent Template
+Call `runSubagent` with `model: "GPT-5.4 (copilot)"`.
 ```
 Research [topic]. Analyze relevant files in the codebase.
 Think thoroughly and consider all edge cases, dependencies, and implications.
@@ -64,6 +65,7 @@ Return: summary of findings and the analysis file path.
 ```
 
 ### Planning Subagent Template
+Call `runSubagent` with `model: "Claude Opus 4.7 (copilot)"`.
 ```
 Read the analysis at: docs/SubAgent/[NAME_ANALYSIS].md
 Think deeply and comprehensively. Consider all edge cases, risks, and ordering constraints.
@@ -73,6 +75,7 @@ Return: summary of the plan and the plan file path.
 ```
 
 ### Implementation Subagent Template
+Call `runSubagent` with `model: "Claude Opus 4.7 (copilot)"`.
 ```
 Read the approved plan at: docs/SubAgent/[NAME_PLAN].md
 Be efficient and direct. Follow the plan precisely without re-analyzing decisions already made.
@@ -88,10 +91,11 @@ Return: Summary of changes made and any relevant details.
 3. **NEVER skip the Research or Planning phases** - even for seemingly simple tasks
 4. **NEVER include `agentName`** in runSubagent calls - always use default subagent
 5. **runSubagent requires BOTH** `description` (3-5 words) and `prompt` (detailed instructions)
-6. **Gather context first** - don't make assumptions about the codebase
-7. **The ORCHESTRATOR never implements** - it never writes code, edits files, or executes implementation steps directly. ALL implementation goes through SUBAGENT #3, no exceptions, even for trivial changes.
-8. **Update VERSION.md** when implementing new features - track feature additions in the changelog
-9. **Do not use emojis** anywhere (messages, docs, comments, commit messages, generated output, or source code including string literals/UI text) unless explicitly requested.
+6. **ALWAYS pass the `model` parameter** to `runSubagent`: `"gpt 5.4 xhigh (copilot)"` for Research, `"Claude Opus 4.7 (copilot)"` for Planning and Implementation
+7. **Gather context first** - don't make assumptions about the codebase
+8. **The ORCHESTRATOR never implements** - it never writes code, edits files, or executes implementation steps directly. ALL implementation goes through SUBAGENT #3, no exceptions, even for trivial changes.
+9. **Update VERSION.md** when implementing new features - track feature additions in the changelog
+10. **Do not use emojis** anywhere (messages, docs, comments, commit messages, generated output, or source code including string literals/UI text) unless explicitly requested.
 
 ## Version Tracking
 

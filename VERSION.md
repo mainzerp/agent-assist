@@ -1,8 +1,30 @@
 # Version
 
-**Current Version:** 0.21.2
+**Current Version:** 0.22.0
 
 ## Version History
+
+### 0.22.0 (MINOR) -- Area-aware entity matching and lower default threshold
+
+Two coordinated improvements to the entity matcher:
+
+- Area-aware bonus: when the normalized query equals or is contained
+  in the entity's normalized `area` field, the match score receives an
+  additive +0.30 bonus (capped at 1.0). The bonus stacks with the
+  existing friendly_name containment bonus, improving recall for
+  area/room based queries (e.g. "wohnzimmer" matching
+  `climate.wohnzimmer` with area "wohnzimmer").
+- Lower default `entity_matching.confidence_threshold` from 0.75 to
+  0.60. The two changes work together: the lower threshold widens the
+  candidate set, while the area bonus keeps area-relevant matches at
+  the top.
+- Schema migration v17 updates existing databases only when the
+  setting still equals the old default ("0.75"), preserving any
+  administrator-customized value.
+
+Compatibility: no API changes. Existing DBs with admin-customized
+thresholds are untouched. Tests, conftest mock settings, and schema
+seed all updated to 0.60.
 
 ### 0.21.2 (PATCH) -- Orchestrator condensed-task hardening
 

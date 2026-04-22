@@ -70,7 +70,7 @@ class EntityMatcher:
         self._entity_index = entity_index
         self._alias_resolver = alias_resolver
         self._weights: dict[str, float] = {}
-        self._confidence_threshold: float = 0.75
+        self._confidence_threshold: float = 0.60
         self._top_n: int = 3
 
     async def load_config(self) -> None:
@@ -104,7 +104,7 @@ class EntityMatcher:
             }
 
         self._confidence_threshold = float(
-            await SettingsRepository.get_value("entity_matching.confidence_threshold", "0.75")
+            await SettingsRepository.get_value("entity_matching.confidence_threshold", "0.60")
         )
         self._top_n = int(await SettingsRepository.get_value("entity_matching.top_n_candidates", "3"))
         logger.info("Entity matcher config: weights=%s threshold=%s", self._weights, self._confidence_threshold)
@@ -209,6 +209,14 @@ class EntityMatcher:
             fn_containment = _normalize_for_containment(result.friendly_name or "")
             if query_containment and fn_containment and query_containment in fn_containment:
                 result.score = min(1.0, result.score + 0.3)
+
+            # Area bonus: query matches or is contained in normalized area name
+            entry = self._entity_index.get_by_id(result.entity_id)
+            if entry and entry.area:
+                area_containment = _normalize_for_containment(entry.area)
+                if query_containment and area_containment:
+                    if query_containment == area_containment or query_containment in area_containment:
+                        result.score = min(1.0, result.score + 0.30)
 
         # Filter by confidence and sort
         filtered = [r for r in results.values() if r.score >= self._confidence_threshold]

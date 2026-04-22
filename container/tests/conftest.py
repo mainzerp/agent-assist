@@ -404,7 +404,7 @@ def mock_settings() -> dict[str, str]:
         "embedding.local_model": "all-MiniLM-L6-v2",
         "embedding.external_model": "",
         "embedding.dimension": "384",
-        "entity_matching.confidence_threshold": "0.75",
+        "entity_matching.confidence_threshold": "0.60",
         "entity_matching.top_n_candidates": "3",
         "presence.enabled": "true",
         "presence.decay_timeout": "300",

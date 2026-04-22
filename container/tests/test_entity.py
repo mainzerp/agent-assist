@@ -174,6 +174,7 @@ class TestAliasSignal:
 class TestEntityMatcher:
     def _make_matcher(self) -> tuple[EntityMatcher, MagicMock, AsyncMock]:
         mock_index = MagicMock(spec=EntityIndex)
+        mock_index.get_by_id = MagicMock(return_value=None)
         mock_alias_resolver = AsyncMock(spec=AliasResolver)
         matcher = EntityMatcher(mock_index, mock_alias_resolver)
         matcher._weights = {
@@ -369,6 +370,114 @@ class TestEntityMatcher:
 
         assert len(results) == 1
         assert results[0].signal_scores["embedding"] == pytest.approx(0.9, abs=0.01)
+
+    async def test_match_area_bonus_exact_match(self):
+        """Query equal to entry.area receives +0.30 bonus and crosses threshold."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.5
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        entry = make_entity_index_entry(
+            "climate.thermostat",
+            "Thermostat",
+            domain="climate",
+            area="wohnzimmer",
+        )
+        # Embedding similarity 0.4 -> base weighted score well below 0.5
+        mock_index.search_async = AsyncMock(return_value=[(entry, 0.6)])
+        mock_index.get_by_id = MagicMock(return_value=entry)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("wohnzimmer")
+
+        assert len(results) >= 1
+        assert results[0].entity_id == "climate.thermostat"
+        # Embedding contributes 0.4 * 0.3 = 0.12, then +0.30 area bonus = 0.42
+        # so threshold 0.5 would not pass without containment-or-area logic.
+        # Friendly name "Thermostat" does not contain "wohnzimmer", only area does.
+        assert results[0].score >= 0.5
+
+    async def test_match_area_bonus_stacks_with_containment(self):
+        """Both friendly_name containment and area bonuses apply, capped at 1.0."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.0
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        entry = make_entity_index_entry(
+            "climate.heizung_wohnzimmer",
+            "Heizung Wohnzimmer",
+            domain="climate",
+            area="wohnzimmer",
+        )
+        mock_index.search_async = AsyncMock(return_value=[(entry, 0.1)])  # sim = 0.9
+        mock_index.get_by_id = MagicMock(return_value=entry)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("wohnzimmer")
+
+        assert len(results) >= 1
+        # Both bonuses apply -> base + 0.3 + 0.3, then capped at 1.0
+        assert results[0].score == pytest.approx(1.0)
+
+    async def test_match_no_area_bonus_when_area_empty(self):
+        """Entry with area=None receives no area bonus."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.0
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        entry = make_entity_index_entry(
+            "climate.thermostat",
+            "Thermostat",
+            domain="climate",
+            area=None,
+        )
+        mock_index.search_async = AsyncMock(return_value=[(entry, 0.6)])  # sim = 0.4
+        mock_index.get_by_id = MagicMock(return_value=entry)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("wohnzimmer")
+
+        assert len(results) >= 1
+        # No area bonus added: score stays well below what +0.30 would give.
+        assert results[0].score < 0.30
+
+    async def test_match_climate_scenario_area_bonus_enables(self):
+        """Climate-style scenario: entity passes new 0.60 default and is top hit."""
+        matcher, mock_index, mock_alias = self._make_matcher()
+        matcher._confidence_threshold = 0.60  # New default
+        mock_alias.resolve = AsyncMock(return_value=None)
+
+        target = make_entity_index_entry(
+            "climate.wohnzimmer",
+            "Klima Wohnzimmer",
+            domain="climate",
+            area="wohnzimmer",
+        )
+        other = make_entity_index_entry(
+            "climate.kueche",
+            "Klima Kueche",
+            domain="climate",
+            area="kueche",
+        )
+        mock_index.search_async = AsyncMock(
+            return_value=[(target, 0.5), (other, 0.5)]  # both sim = 0.5
+        )
+
+        def get_by_id(eid):
+            if eid == target.entity_id:
+                return target
+            if eid == other.entity_id:
+                return other
+            return None
+
+        mock_index.get_by_id = MagicMock(side_effect=get_by_id)
+
+        with patch("app.entity.matcher.EntityVisibilityRepository"):
+            results = await matcher.match("wohnzimmer")
+
+        assert len(results) >= 1
+        assert results[0].entity_id == "climate.wohnzimmer"
+        assert results[0].score >= 0.60
 
 
 # ---------------------------------------------------------------------------

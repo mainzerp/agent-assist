@@ -352,7 +352,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         # Entity matching settings
         (
             "entity_matching.confidence_threshold",
-            "0.75",
+            "0.60",
             "float",
             "entity_matching",
             "Minimum confidence for entity match",
@@ -760,3 +760,17 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             with suppress(Exception):
                 await db.execute(f"ALTER TABLE trace_summary ADD COLUMN {column} TEXT")
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (16)")
+
+    if current_version < 17:
+        # Migration 17 (0.22.0): lower default entity_matching.confidence_threshold
+        # from 0.75 to 0.60. Idempotent: only updates rows still on the old default,
+        # preserving any admin customizations.
+        await db.execute(
+            """
+            UPDATE settings
+            SET value = '0.60'
+            WHERE key = 'entity_matching.confidence_threshold'
+              AND value = '0.75'
+            """
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (17)")
