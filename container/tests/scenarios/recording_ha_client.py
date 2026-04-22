@@ -33,9 +33,7 @@ class RecordingHaClient:
         config: dict[str, Any] | None = None,
     ) -> None:
         # Deep-copy so test mutations don't leak across scenarios.
-        self._states: dict[str, dict[str, Any]] = {
-            s["entity_id"]: copy.deepcopy(s) for s in states
-        }
+        self._states: dict[str, dict[str, Any]] = {s["entity_id"]: copy.deepcopy(s) for s in states}
         self._config: dict[str, Any] = copy.deepcopy(config or {})
         self.calls: list[CallRecord] = []
         # WS observer compatibility: production code may call
@@ -149,7 +147,17 @@ class RecordingHaClient:
         elif domain == "light":
             # Brightness/color; ensure on.
             ent["state"] = "on"
-            for key in ("brightness", "color_temp", "color_temp_kelvin", "rgb_color", "hs_color", "xy_color", "color_name", "transition", "effect"):
+            for key in (
+                "brightness",
+                "color_temp",
+                "color_temp_kelvin",
+                "rgb_color",
+                "hs_color",
+                "xy_color",
+                "color_name",
+                "transition",
+                "effect",
+            ):
                 if key in sd:
                     attrs[key] = sd[key]
         elif domain == "climate":

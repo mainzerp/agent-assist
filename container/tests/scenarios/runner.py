@@ -76,9 +76,7 @@ class StubVectorStore:
             doc = documents[i] if documents else ""
             coll.docs[eid] = doc
             coll.metas[eid] = (metadatas[i] if metadatas else {}) or {}
-            coll.embeds[eid] = (
-                embeddings[i] if embeddings else deterministic_embedding(doc)
-            )
+            coll.embeds[eid] = embeddings[i] if embeddings else deterministic_embedding(doc)
 
     def add(self, *args, **kwargs) -> None:  # pragma: no cover - parity stub
         return self.upsert(*args, **kwargs)
@@ -429,7 +427,9 @@ async def run_scenario(scenario: Scenario, db_path) -> None:
 
         with (
             patch("app.llm.client.complete", new=_complete_router),
-            patch("app.agents.base.complete", new=_complete_router) if _has_attr("app.agents.base", "complete") else contextlib.nullcontext(),
+            patch("app.agents.base.complete", new=_complete_router)
+            if _has_attr("app.agents.base", "complete")
+            else contextlib.nullcontext(),
         ):
             conversation_id = scenario.context.conversation_id or f"scenario-{scenario.id}"
 
@@ -501,7 +501,7 @@ def _assert_outcome(
     new_calls = handles.ha_client.calls[new_call_offset:]
     if expected.service_calls:
         if not expected.allow_extra_calls and len(new_calls) > len(expected.service_calls):
-            extra = [(c.domain, c.service, c.entity_id) for c in new_calls[len(expected.service_calls):]]
+            extra = [(c.domain, c.service, c.entity_id) for c in new_calls[len(expected.service_calls) :]]
             raise AssertionError(
                 f"[{sid}] unexpected extra service calls: {extra}\n"
                 f"all calls: {[(c.domain, c.service, c.entity_id) for c in new_calls]}"
@@ -527,14 +527,12 @@ def _assert_outcome(
             for key in exp.service_data_keys:
                 if key not in actual.service_data:
                     raise AssertionError(
-                        f"[{sid}] service call #{i} missing expected key {key!r} "
-                        f"in service_data={actual.service_data}"
+                        f"[{sid}] service call #{i} missing expected key {key!r} in service_data={actual.service_data}"
                     )
             for key, val in exp.service_data.items():
                 if actual.service_data.get(key) != val:
                     raise AssertionError(
-                        f"[{sid}] service call #{i} {key}={actual.service_data.get(key)!r} "
-                        f"expected {val!r}"
+                        f"[{sid}] service call #{i} {key}={actual.service_data.get(key)!r} expected {val!r}"
                     )
     elif new_calls and not expected.allow_extra_calls:
         unexpected = [(c.domain, c.service, c.entity_id) for c in new_calls]
@@ -544,14 +542,10 @@ def _assert_outcome(
     speech_lc = speech.lower()
     for needle in expected.speech_contains:
         if needle.lower() not in speech_lc:
-            raise AssertionError(
-                f"[{sid}] expected speech to contain {needle!r}; got {speech!r}"
-            )
+            raise AssertionError(f"[{sid}] expected speech to contain {needle!r}; got {speech!r}")
     for needle in expected.speech_excludes:
         if needle.lower() in speech_lc:
-            raise AssertionError(
-                f"[{sid}] expected speech to NOT contain {needle!r}; got {speech!r}"
-            )
+            raise AssertionError(f"[{sid}] expected speech to NOT contain {needle!r}; got {speech!r}")
 
     # 4. action_executed subset
     if expected.action_executed is not None:
@@ -559,8 +553,7 @@ def _assert_outcome(
         for key, val in expected.action_executed.items():
             if actual_action.get(key) != val:
                 raise AssertionError(
-                    f"[{sid}] action_executed.{key} mismatch: "
-                    f"got {actual_action.get(key)!r} expected {val!r}"
+                    f"[{sid}] action_executed.{key} mismatch: got {actual_action.get(key)!r} expected {val!r}"
                 )
 
     # 5. Error
@@ -569,6 +562,5 @@ def _assert_outcome(
         actual_code = err.get("code") if isinstance(err, dict) else getattr(err, "code", None)
         if actual_code != expected.error.code:
             raise AssertionError(
-                f"[{sid}] expected error code {expected.error.code!r} got {actual_code!r}; "
-                f"response={response!r}"
+                f"[{sid}] expected error code {expected.error.code!r} got {actual_code!r}; response={response!r}"
             )

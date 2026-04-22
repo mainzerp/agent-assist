@@ -1282,6 +1282,7 @@ class TestClimateExecutorWeatherActions:
         assert result["success"] is False
         assert "not available" in result["speech"]
 
+
 # ---------------------------------------------------------------------------
 # filter_matches_by_domain helper tests (FLOW-DOMAIN-1)
 # ---------------------------------------------------------------------------
