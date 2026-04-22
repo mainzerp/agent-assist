@@ -9,6 +9,7 @@ backend or HTTP layer.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from collections.abc import Iterator
@@ -118,9 +119,7 @@ def _detect_embedding_dim(vector_store, collection_name: str) -> int | None:
             limit=1,
         )
     except Exception:
-        logger.warning(
-            "Failed to detect embedding dim for %s", collection_name, exc_info=True
-        )
+        logger.warning("Failed to detect embedding dim for %s", collection_name, exc_info=True)
         return None
     embeddings = page.get("embeddings") if page else None
     if not embeddings:
@@ -160,10 +159,8 @@ def _export_tier_pages(vector_store, collection_name: str) -> Iterator[dict]:
             if embeddings is not None and i < len(embeddings):
                 emb = embeddings[i]
                 if emb is not None:
-                    try:
+                    with contextlib.suppress(TypeError):
                         entry["embedding"] = list(emb)
-                    except TypeError:
-                        pass
             yield entry
         if len(ids) < EXPORT_PAGE_SIZE:
             return
@@ -189,7 +186,7 @@ def _embedding_model_name() -> str | None:
 
 
 def iter_export_chunks(
-    cache_manager: "CacheManager",
+    cache_manager: CacheManager,
     tiers: list[str],
     *,
     app_version: str,
@@ -242,10 +239,7 @@ def iter_export_chunks(
         prefix = ""
         if tier_index > 0:
             prefix = ","
-        yield (
-            f'{prefix}"{tier}":{{"schema_version":{_TIER_SCHEMA_VERSION[tier]},'
-            f'"count":{count},"entries":['
-        ).encode("utf-8")
+        yield (f'{prefix}"{tier}":{{"schema_version":{_TIER_SCHEMA_VERSION[tier]},"count":{count},"entries":[').encode()
 
         first = True
         for entry in _export_tier_pages(vector_store, collection):
@@ -281,16 +275,12 @@ def parse_envelope(raw: bytes) -> dict:
         raise ImportValidationError("envelope must be a JSON object")
 
     if envelope.get("export_format") != EXPORT_FORMAT_TAG:
-        raise ImportValidationError(
-            f"unsupported export_format; expected {EXPORT_FORMAT_TAG!r}"
-        )
+        raise ImportValidationError(f"unsupported export_format; expected {EXPORT_FORMAT_TAG!r}")
     fmt_version = envelope.get("format_version")
     if not isinstance(fmt_version, int):
         raise ImportValidationError("format_version must be an integer")
     if fmt_version not in (_LEGACY_FORMAT_VERSION, SUPPORTED_FORMAT_VERSION):
-        raise ImportValidationError(
-            f"unsupported format_version {fmt_version}"
-        )
+        raise ImportValidationError(f"unsupported format_version {fmt_version}")
 
     tiers_block = envelope.get("tiers")
     if not isinstance(tiers_block, dict) or not tiers_block:
@@ -302,9 +292,7 @@ def parse_envelope(raw: bytes) -> dict:
     for tier_name, tier_data in tiers_block.items():
         canonical_name = _canonical_tier(tier_name)
         if canonical_name in canonical_tiers:
-            raise ImportValidationError(
-                f"duplicate tier {canonical_name!r} after canonicalisation"
-            )
+            raise ImportValidationError(f"duplicate tier {canonical_name!r} after canonicalisation")
         canonical_tiers[canonical_name] = tier_data
     envelope["tiers"] = canonical_tiers
     tiers_block = canonical_tiers
@@ -318,18 +306,12 @@ def parse_envelope(raw: bytes) -> dict:
             raise ImportValidationError(f"tier {tier_name!r} must be an object")
         schema = tier_data.get("schema_version")
         if not isinstance(schema, int):
-            raise ImportValidationError(
-                f"tier {tier_name!r} schema_version must be an integer"
-            )
+            raise ImportValidationError(f"tier {tier_name!r} schema_version must be an integer")
         if schema > _TIER_SCHEMA_VERSION[tier_name]:
-            raise ImportValidationError(
-                f"tier {tier_name!r} schema_version {schema} is newer than supported"
-            )
+            raise ImportValidationError(f"tier {tier_name!r} schema_version {schema} is newer than supported")
         entries = tier_data.get("entries")
         if not isinstance(entries, list):
-            raise ImportValidationError(
-                f"tier {tier_name!r} entries must be a list"
-            )
+            raise ImportValidationError(f"tier {tier_name!r} entries must be a list")
 
     return envelope
 
@@ -404,9 +386,7 @@ def _validate_entry(
     warnings: list[str] = []
     if not metadata.get("language"):
         metadata = {**metadata, "language": "en"}
-        warnings.append(
-            f"{tier} entry {entry_id}: missing language; defaulted to en"
-        )
+        warnings.append(f"{tier} entry {entry_id}: missing language; defaulted to en")
 
     if tier == "action":
         cached_action = metadata.get("cached_action")
@@ -431,9 +411,7 @@ def _validate_entry(
     force_re_embed = False
     if embedding is not None:
         if not isinstance(embedding, list):
-            warnings.append(
-                f"{tier} entry {entry_id}: embedding not a list; re-embedded"
-            )
+            warnings.append(f"{tier} entry {entry_id}: embedding not a list; re-embedded")
             force_re_embed = True
         elif expected_dim is not None and len(embedding) != expected_dim:
             warnings.append(
@@ -449,7 +427,7 @@ def _validate_entry(
 
 
 def _apply_tier_import(
-    cache_manager: "CacheManager",
+    cache_manager: CacheManager,
     tier: str,
     entries: list[dict],
     *,
@@ -460,9 +438,7 @@ def _apply_tier_import(
     result = TierImportResult()
     vector_store = cache_manager._vector_store
     collection = _TIER_TO_COLLECTION[tier]
-    tier_cache = (
-        cache_manager._routing_cache if tier == "routing" else cache_manager._response_cache
-    )
+    tier_cache = cache_manager._routing_cache if tier == "routing" else cache_manager._response_cache
 
     if mode == "replace":
         cache_manager.flush(tier)
@@ -523,15 +499,13 @@ def _apply_tier_import(
     try:
         tier_cache._enforce_lru()
     except Exception:
-        logger.warning(
-            "LRU enforcement after import failed for %s", tier, exc_info=True
-        )
+        logger.warning("LRU enforcement after import failed for %s", tier, exc_info=True)
 
     return result
 
 
 async def import_envelope(
-    cache_manager: "CacheManager",
+    cache_manager: CacheManager,
     envelope: dict,
     *,
     mode: str,

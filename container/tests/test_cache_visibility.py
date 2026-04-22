@@ -387,9 +387,7 @@ class TestSequentialSendContentFailure:
 class TestActionCacheTraceDualWrite:
     async def test_orchestrator_writes_both_action_and_legacy_metadata_keys(self):
         orch, _dispatcher, _cache_manager, ha_client = _make_orchestrator()
-        ha_client.call_service.return_value = [
-            {"entity_id": "light.kitchen", "state": "on"}
-        ]
+        ha_client.call_service.return_value = [{"entity_id": "light.kitchen", "state": "on"}]
         cached = make_cached_action(service="light/turn_on", entity_id="light.kitchen")
         cache_result = _make_cache_result(cached_action=cached)
 

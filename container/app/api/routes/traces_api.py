@@ -262,9 +262,7 @@ async def get_trace_detail(trace_id: str):
     action_cache_hit = False
     if return_span and not classify_span:
         ret_meta = return_span.get("metadata") or {}
-        action_cache_hit = bool(
-            ret_meta.get("action_cache_hit") or ret_meta.get("response_cache_hit")
-        )
+        action_cache_hit = bool(ret_meta.get("action_cache_hit") or ret_meta.get("response_cache_hit"))
 
     if action_cache_hit:
         # Action cache hit short-circuit

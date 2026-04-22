@@ -10,7 +10,6 @@ import pytest
 
 from app.cache.cache_manager import CacheManager
 from app.cache.export_import import (
-    ALLOWED_TIERS,
     EXPORT_FORMAT_TAG,
     EXPORT_PAGE_SIZE,
     SUPPORTED_FORMAT_VERSION,
@@ -27,7 +26,6 @@ from app.cache.vector_store import (
     COLLECTION_ROUTING_CACHE,
     VectorStore,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -209,6 +207,7 @@ def test_iter_export_chunks_emits_valid_envelope():
     assert envelope["tiers"]["routing"]["entries"][0]["id"] == "r1"
     assert envelope["tiers"]["action"]["entries"][0]["id"] == "s1"
 
+
 def test_iter_export_chunks_skips_unrequested_tier():
     routing_pages = [
         {
@@ -256,7 +255,9 @@ def test_iter_export_chunks_paginates():
 
 
 def test_parse_envelope_rejects_wrong_format():
-    raw = json.dumps({"export_format": "other", "format_version": 1, "tiers": {"routing": {"schema_version": 1, "entries": []}}}).encode()
+    raw = json.dumps(
+        {"export_format": "other", "format_version": 1, "tiers": {"routing": {"schema_version": 1, "entries": []}}}
+    ).encode()
     with pytest.raises(ImportValidationError):
         parse_envelope(raw)
 
@@ -317,9 +318,7 @@ async def test_import_envelope_merge_calls_prepare_for_flush_then_upsert():
     cm = _make_cache_manager(store)
 
     envelope = _make_envelope(routing_entries=[_make_routing_entry()])
-    summary = await import_envelope(
-        cm, envelope, mode="merge", tiers=["routing"], re_embed=False
-    )
+    summary = await import_envelope(cm, envelope, mode="merge", tiers=["routing"], re_embed=False)
 
     cm._routing_cache.prepare_for_flush.assert_called_once()
     cm.flush.assert_not_called()
@@ -335,9 +334,7 @@ async def test_import_envelope_replace_calls_flush_first():
     cm = _make_cache_manager(store)
 
     envelope = _make_envelope(routing_entries=[_make_routing_entry()])
-    await import_envelope(
-        cm, envelope, mode="replace", tiers=["routing"], re_embed=False
-    )
+    await import_envelope(cm, envelope, mode="replace", tiers=["routing"], re_embed=False)
 
     cm.flush.assert_called_once_with("routing")
     store.upsert.assert_called()
@@ -350,9 +347,7 @@ async def test_import_envelope_re_embed_drops_embeddings():
     cm = _make_cache_manager(store)
 
     envelope = _make_envelope(routing_entries=[_make_routing_entry()])
-    summary = await import_envelope(
-        cm, envelope, mode="merge", tiers=["routing"], re_embed=True
-    )
+    summary = await import_envelope(cm, envelope, mode="merge", tiers=["routing"], re_embed=True)
 
     upsert_calls = store.upsert.call_args_list
     assert any(c.kwargs.get("embeddings") is None for c in upsert_calls)
@@ -372,9 +367,7 @@ async def test_import_envelope_dim_mismatch_forces_re_embed_with_warning():
     entry = _make_routing_entry()
     entry["embedding"] = [0.1, 0.2, 0.3]  # only 3 dims
     envelope = _make_envelope(routing_entries=[entry])
-    summary = await import_envelope(
-        cm, envelope, mode="merge", tiers=["routing"], re_embed=False
-    )
+    summary = await import_envelope(cm, envelope, mode="merge", tiers=["routing"], re_embed=False)
 
     assert summary.tiers["routing"].re_embedded == 1
     assert any("dim mismatch" in w for w in summary.tiers["routing"].warnings)
@@ -392,9 +385,7 @@ async def test_import_envelope_skips_missing_agent_id():
     good1 = _make_routing_entry("good1")
     good2 = _make_routing_entry("good2")
     envelope = _make_envelope(routing_entries=[bad, good1, good2])
-    summary = await import_envelope(
-        cm, envelope, mode="merge", tiers=["routing"], re_embed=False
-    )
+    summary = await import_envelope(cm, envelope, mode="merge", tiers=["routing"], re_embed=False)
 
     assert summary.tiers["routing"].imported == 2
     assert summary.tiers["routing"].skipped == 1
@@ -411,9 +402,7 @@ async def test_import_envelope_defaults_missing_language_to_en():
     entry["metadata"] = dict(entry["metadata"])
     entry["metadata"].pop("language", None)
     envelope = _make_envelope(routing_entries=[entry])
-    summary = await import_envelope(
-        cm, envelope, mode="merge", tiers=["routing"], re_embed=False
-    )
+    summary = await import_envelope(cm, envelope, mode="merge", tiers=["routing"], re_embed=False)
 
     assert summary.tiers["routing"].imported == 1
     assert any("language" in w for w in summary.tiers["routing"].warnings)
@@ -432,9 +421,7 @@ async def test_import_envelope_drops_invalid_cached_action():
     bad["metadata"]["cached_action"] = "{not-json"
     good = _make_response_entry("good-resp")
     envelope = _make_envelope(response_entries=[bad, good])
-    summary = await import_envelope(
-        cm, envelope, mode="merge", tiers=["response"], re_embed=False
-    )
+    summary = await import_envelope(cm, envelope, mode="merge", tiers=["response"], re_embed=False)
 
     assert summary.tiers["action"].imported == 1
     assert summary.tiers["action"].skipped == 1
@@ -451,9 +438,7 @@ async def test_import_envelope_runs_enforce_lru_once_per_tier():
         routing_entries=[_make_routing_entry("r1")],
         response_entries=[_make_response_entry("s1")],
     )
-    await import_envelope(
-        cm, envelope, mode="merge", tiers=["routing", "response"], re_embed=False
-    )
+    await import_envelope(cm, envelope, mode="merge", tiers=["routing", "response"], re_embed=False)
 
     cm._routing_cache._enforce_lru.assert_called_once()
     cm._response_cache._enforce_lru.assert_called_once()
@@ -705,7 +690,7 @@ def test_import_passes_re_embed_flag():
 
 def test_export_envelope_emits_format_version_2_and_action_tier():
     cm = _make_export_cache_manager_with_action()
-    payload = b''.join(iter_export_chunks(cm, ["routing", "response"], app_version="0.21.0"))
+    payload = b"".join(iter_export_chunks(cm, ["routing", "response"], app_version="0.21.0"))
     envelope = json.loads(payload)
     assert envelope["format_version"] == 2
     assert SUPPORTED_FORMAT_VERSION == 2
@@ -725,9 +710,7 @@ async def test_parse_envelope_v1_response_alias_round_trips_to_action():
     parsed = parse_envelope(raw)
     assert "action" in parsed["tiers"]
     assert "response" not in parsed["tiers"]
-    summary = await import_envelope(
-        cm, parsed, mode="merge", tiers=["action"], re_embed=False
-    )
+    summary = await import_envelope(cm, parsed, mode="merge", tiers=["action"], re_embed=False)
     assert summary.tiers["action"].imported == 1
     cm._response_cache.prepare_for_flush.assert_called()
 

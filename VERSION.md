@@ -1,8 +1,36 @@
 # Version
 
-**Current Version:** 0.21.0
+**Current Version:** 0.21.1
 
 ## Version History
+
+### 0.21.1 (PATCH) -- Lint cleanup
+
+Pure lint cleanup pass to make the `Lint` workflow pass. No behaviour
+changes.
+
+- `ruff check --fix` auto-fixes: RUF100 (unused noqa) in
+  `app/api/routes/conversation.py`, UP037 (quoted type annotations) x3
+  in `app/cache/export_import.py`, UP012 (redundant byte-string call)
+  in `app/cache/export_import.py`, I001 (import sorting) and F401
+  (unused `ALLOWED_TIERS` import) in
+  `tests/test_cache_export_import.py`.
+- SIM108: converted `if`/`else` block to ternary in
+  `app/api/routes/cache_api.py` (`tiers = ...` assignment).
+- SIM105: replaced `try`/`except TypeError`/`pass` with
+  `contextlib.suppress(TypeError)` in `app/cache/export_import.py`;
+  added `import contextlib` to the stdlib import block.
+- `ruff format` pass over 8 files:
+  `app/api/routes/cache_api.py`, `app/api/routes/conversation.py`,
+  `app/api/routes/traces_api.py`, `app/cache/cache_manager.py`,
+  `app/cache/export_import.py`,
+  `tests/test_cache_export_import.py`,
+  `tests/test_cache_visibility.py`,
+  `tests/test_streaming_middleware.py`.
+
+Compatibility: no behaviour changes.
+
+Commits: see `git log v0.21.0..v0.21.1`.
 
 ### 0.21.0 (MINOR) -- action-cache rename and v2 cache export envelope
 

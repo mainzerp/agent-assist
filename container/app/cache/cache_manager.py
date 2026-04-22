@@ -129,8 +129,7 @@ class CacheManager:
             }:
                 tier = (
                     "action"
-                    if result.hit_type.startswith("action")
-                    or result.hit_type.startswith("response")
+                    if result.hit_type.startswith("action") or result.hit_type.startswith("response")
                     else "routing"
                 )
                 await track_cache_event(

@@ -164,7 +164,7 @@ async def ws_conversation(
             try:
                 data = json.loads(raw)
                 conv_request = ConversationRequest(**data)
-            except Exception as exc:  # noqa: BLE001 - parse errors are user input
+            except Exception as exc:
                 await websocket.send_json({"error": f"Invalid request: {exc}"})
                 continue
 
@@ -222,9 +222,7 @@ async def ws_conversation(
                 try:
                     await span_collector.flush()
                 except Exception:
-                    logger.warning(
-                        "Failed to flush per-turn spans for trace %s", trace_id, exc_info=True
-                    )
+                    logger.warning("Failed to flush per-turn spans for trace %s", trace_id, exc_info=True)
                 # Clear scope state so the next iteration cannot
                 # accidentally read stale values before the next mint.
                 state.pop("trace_id", None)

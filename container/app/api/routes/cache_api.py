@@ -164,7 +164,10 @@ async def flush_cache(request: Request, payload: FlushRequest):
 
     tier = _normalize_tier(payload.tier)
     if tier and tier not in ("routing", "action"):
-        return {"status": "error", "detail": "Invalid tier. Use 'routing', 'action' (or legacy 'response'), or omit for all."}
+        return {
+            "status": "error",
+            "detail": "Invalid tier. Use 'routing', 'action' (or legacy 'response'), or omit for all.",
+        }
 
     try:
         cache_manager.flush(tier)
@@ -189,10 +192,7 @@ async def export_cache(
         )
 
     canonical_tier = _normalize_tier(tier)
-    if canonical_tier == "all":
-        tiers = [t for t in ALLOWED_TIERS if t != "response"]
-    else:
-        tiers = [canonical_tier]
+    tiers = [t for t in ALLOWED_TIERS if t != "response"] if canonical_tier == "all" else [canonical_tier]
     raw_version = getattr(settings, "app_version", None)
     app_version = raw_version if isinstance(raw_version, str) else "unknown"
     filename = build_export_filename(tiers, datetime.now(UTC))

@@ -290,5 +290,3 @@ async def test_ws_conversation_mints_per_turn_trace(mock_summary):
     assert "trace_id" not in ws.scope["state"]
     assert "span_collector" not in ws.scope["state"]
     assert "root_span_id" not in ws.scope["state"]
-
-
