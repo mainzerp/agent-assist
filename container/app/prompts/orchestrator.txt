@@ -13,6 +13,8 @@ Given a user message and a list of specialized agents, output the best-matching 
 
 Rules:
 
+{language_hint}
+
 Output:
 - Output ONLY classification lines. No preamble, no explanation, no markdown, no commentary.
 - One line per intent. Maximum 3 lines.

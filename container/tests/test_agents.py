@@ -1721,6 +1721,90 @@ class TestOrchestratorAgent:
         assert "task one" in results[0][1]
         assert "task two" in results[0][1]
 
+    async def test_parse_classification_strips_embedded_duplicates(self):
+        orch = OrchestratorAgent(dispatcher=AsyncMock())
+        orch._registry = AsyncMock()
+        orch._registry.list_agents = AsyncMock(
+            return_value=[
+                AgentCard(agent_id="climate-agent", name="", description="", skills=[]),
+            ]
+        )
+        response = (
+            "climate-agent (96%): living room temperature"
+            "climate-agent (96%): living room temperature"
+            "climate-agent (96%): living room temperature"
+        )
+        results = await orch._parse_classification(response, "original")
+        assert len(results) == 1
+        assert results[0][0] == "climate-agent"
+        assert abs(results[0][2] - 0.96) < 1e-6
+        assert "climate-agent (" not in results[0][1]
+        assert results[0][1].count("living room temperature") == 1
+
+    async def test_parse_classification_preserves_non_english_entities(self):
+        orch = OrchestratorAgent(dispatcher=AsyncMock())
+        orch._registry = AsyncMock()
+        orch._registry.list_agents = AsyncMock(
+            return_value=[
+                AgentCard(agent_id="climate-agent", name="", description="", skills=[]),
+            ]
+        )
+        results = await orch._parse_classification(
+            "climate-agent (95%): wohnzimmer temperature", "original"
+        )
+        assert len(results) == 1
+        assert "wohnzimmer" in results[0][1].lower()
+        assert "living room" not in results[0][1].lower()
+
+    async def test_parse_classification_multi_line_unaffected(self):
+        orch = OrchestratorAgent(dispatcher=AsyncMock())
+        orch._registry = AsyncMock()
+        orch._registry.list_agents = AsyncMock(
+            return_value=[
+                AgentCard(agent_id="light-agent", name="", description="", skills=[]),
+                AgentCard(agent_id="music-agent", name="", description="", skills=[]),
+            ]
+        )
+        response = "light-agent (95%): turn on the shelf\nmusic-agent (90%): play jazz"
+        results = await orch._parse_classification(response, "original")
+        assert len(results) == 2
+        # Sort by agent_id so the assertion order is deterministic.
+        by_agent = {r[0]: r for r in results}
+        assert by_agent["light-agent"][1] == "turn on the shelf"
+        assert by_agent["music-agent"][1] == "play jazz"
+
+    async def test_classify_injects_language_hint_into_prompt(self):
+        orch = OrchestratorAgent(dispatcher=AsyncMock())
+        orch._registry = AsyncMock()
+        orch._registry.list_agents = AsyncMock(
+            return_value=[
+                AgentCard(agent_id="general-agent", name="", description="", skills=[]),
+            ]
+        )
+        orch._load_prompt = MagicMock(
+            return_value=(
+                "Agents:\n{agent_descriptions}\nRules:\n\n{language_hint}\n\nOutput: x"
+            )
+        )
+        orch._build_agent_descriptions = AsyncMock(return_value="general-agent: handles anything")
+        orch._get_turns = AsyncMock(return_value=[])
+        orch._call_llm = AsyncMock(return_value="general-agent (90%): hallo welt")
+
+        await orch._classify("hallo welt", language="de")
+        assert orch._call_llm.await_count == 1
+        messages = orch._call_llm.await_args.args[0]
+        assert messages[0]["role"] == "system"
+        sys_de = messages[0]["content"]
+        assert "'de'" in sys_de
+        assert "verbatim" in sys_de.lower() or "Entity" in sys_de
+
+        orch._call_llm.reset_mock()
+        orch._call_llm = AsyncMock(return_value="general-agent (90%): hello world")
+        await orch._classify("hello world", language="en")
+        messages_en = orch._call_llm.await_args.args[0]
+        sys_en = messages_en[0]["content"]
+        assert "User language hint" not in sys_en
+
     @patch("app.agents.orchestrator.SettingsRepository")
     async def test_mediate_response_disabled_by_default(self, mock_settings):
         """When personality.prompt is empty, mediation returns speech unchanged."""

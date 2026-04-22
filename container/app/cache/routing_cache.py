@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import heapq
 import logging
+import re
 from datetime import UTC, datetime
 
 from app.cache._state import _CacheState
@@ -22,6 +23,21 @@ _LRU_PAGE_SIZE = 1000
 # fraction of the configured max; below that the eviction work is
 # pure overhead since no entry would be dropped.
 _LRU_TRIGGER_FRACTION = 0.95
+
+# Defensive: pre-fix entries written by an older parser may still carry
+# an embedded classification fragment in their condensed_task (e.g.
+# ``"climate-agent (96%): living room temperature"``). Reject those on
+# lookup so corrupted entries self-heal as the LLM is asked to
+# re-classify.
+_CORRUPTED_CONDENSED_RE = re.compile(
+    r"\b[\w-]+\s*\(\s*\d+\s*%?\s*\)\s*:\s*",
+)
+
+
+def _condensed_task_is_corrupted(text: str | None) -> bool:
+    if not text:
+        return False
+    return _CORRUPTED_CONDENSED_RE.search(text) is not None
 
 
 class RoutingCache:
@@ -89,6 +105,14 @@ class RoutingCache:
 
         meta = result["metadatas"][0][0]
         entry_id = result["ids"][0][0]
+        condensed_task = meta.get("condensed_task")
+        if _condensed_task_is_corrupted(condensed_task):
+            logger.warning(
+                "Routing cache entry %s rejected: corrupted condensed_task=%s",
+                entry_id,
+                repr((condensed_task or "")[:200]),
+            )
+            return (None, similarity)
         now = datetime.now(UTC).isoformat()
         hit_count = int(meta.get("hit_count", 0)) + 1
         should_flush = self._state.record_pending_update(

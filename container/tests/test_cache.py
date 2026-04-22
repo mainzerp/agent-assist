@@ -129,8 +129,35 @@ class TestRoutingCache:
         assert cache._threshold == 0.90
         assert cache._max_entries == 1000
 
+    def test_routing_cache_rejects_corrupted_condensed_task(self, caplog):
+        import logging
+
+        cache, store = self._make_cache()
+        store.query.return_value = {
+            "ids": [["entry-corrupt"]],
+            "distances": [[0.05]],  # similarity = 0.95, well above threshold
+            "documents": [["warm im wohnzimmer"]],
+            "metadatas": [
+                [
+                    {
+                        "agent_id": "climate-agent",
+                        "confidence": "0.96",
+                        "hit_count": "1",
+                        "condensed_task": "climate-agent (96%): living room temperature",
+                        "created_at": "",
+                        "last_accessed": "",
+                        "language": "de",
+                    }
+                ]
+            ],
+        }
+        with caplog.at_level(logging.WARNING, logger="app.cache.routing_cache"):
+            entry, similarity = cache.lookup("warm im wohnzimmer", language="de")
+        assert entry is None
+        assert similarity == pytest.approx(0.95)
+        assert any("corrupted condensed_task" in rec.message for rec in caplog.records)
+
     def test_store_uses_deterministic_id(self):
-        """Calling store() twice with the same query should upsert the same ID."""
         cache, store = self._make_cache()
         store.count.return_value = 0
         cache.store("turn on kitchen light", "light-agent", 0.95)

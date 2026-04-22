@@ -40,6 +40,57 @@ _FALLBACK_AGENT = "general-agent"
 # Virtual agent: classification LLM routes here when the user only dismisses the chat/voice turn.
 _CANCEL_INTERACTION_AGENT = "cancel-interaction"
 
+
+def _sanitize_condensed(
+    condensed: str,
+    fragment_re: re.Pattern[str] | None,
+    original_line: str,
+) -> str:
+    """Strip embedded ``<known-agent> (NN%):`` fragments from a condensed task.
+
+    The classification LLM occasionally repeats its own header inside the
+    condensed task body (e.g. ``"climate-agent (96%): living room
+    temperatureclimate-agent (96%): living room temperature"``). Reject
+    those fragments and collapse verbatim back-to-back repetitions so the
+    routed agent sees a clean, single-statement task.
+    """
+    if not condensed or fragment_re is None:
+        return condensed
+    original = condensed
+
+    parts = fragment_re.split(condensed)
+    # ``parts`` shape with one capture group:
+    # [text0, agent1, text1, agent2, text2, ...]
+    text_segments = [parts[0]] + parts[2::2]
+    text_segments = [seg.strip(" ;|,-") for seg in text_segments if seg and seg.strip()]
+
+    seen: list[str] = []
+    for seg in text_segments:
+        if seg not in seen:
+            seen.append(seg)
+
+    if seen:
+        cleaned = seen[0]
+        # Collapse "ABC ABC ABC..." literal repetitions of the same prefix.
+        half = len(cleaned) // 2
+        while (
+            half > 0
+            and cleaned[:half] == cleaned[half : 2 * half]
+            and cleaned[half:].startswith(cleaned[:half])
+        ):
+            cleaned = cleaned[:half].rstrip()
+            half = len(cleaned) // 2
+    else:
+        cleaned = condensed
+
+    if cleaned != original:
+        logger.warning(
+            "Sanitized embedded classification fragments from condensed task: %s -> %s",
+            repr(original_line[:200]),
+            repr(cleaned[:200]),
+        )
+    return cleaned
+
 # Canned fallback strings emitted by _dispatch_single when an agent
 # times out or the general-agent itself errors. Multi-agent merge
 # must treat these as failures, not as real content, even though they
@@ -2438,7 +2489,21 @@ class OrchestratorAgent(BaseAgent):
 
         system_prompt_template = self._load_prompt("orchestrator")
         agent_descriptions = await self._build_agent_descriptions()
-        system_prompt = system_prompt_template.replace("{agent_descriptions}", agent_descriptions)
+        lang = (language or "").strip().lower()
+        if lang and lang != "en":
+            language_hint = (
+                f"User language hint: the user message is in '{lang}'. "
+                "Entity, room, device, and location names in the user input are "
+                "ALREADY in the user's language and MUST be copied verbatim into "
+                "the condensed task. Do not translate them to English."
+            )
+        else:
+            language_hint = ""
+        system_prompt = (
+            system_prompt_template
+            .replace("{agent_descriptions}", agent_descriptions)
+            .replace("{language_hint}", language_hint)
+        )
         if "send-agent" not in agent_descriptions:
             system_prompt = self._strip_seq_rule(system_prompt)
         messages = [
@@ -2519,6 +2584,23 @@ class OrchestratorAgent(BaseAgent):
         known_agents = await self._get_known_agents()
         results: list[tuple[str, str, float | None]] = []
 
+        # Build the embedded-fragment matcher once per call. Sorting by
+        # length first prevents shorter agent ids from matching inside
+        # longer ones (``agent`` vs ``agent-light``).
+        if known_agents:
+            agent_alt = "|".join(re.escape(a) for a in sorted(known_agents, key=len, reverse=True))
+            # No ``\b`` anchor: the malformed LLM output we target glues the
+            # next agent id directly onto the previous task text without any
+            # separator (``"...temperatureclimate-agent (96%): ..."``), so a
+            # leading word boundary would never fire. Sorting by length
+            # already prevents shorter ids from matching inside longer ones.
+            fragment_re: re.Pattern[str] | None = re.compile(
+                rf"({agent_alt})\s*(?:\(\s*\d+\s*%?\s*\))?\s*:\s*",
+                re.IGNORECASE,
+            )
+        else:
+            fragment_re = None
+
         lines = [line.strip() for line in response.split("\n") if line.strip()]
         for line in lines:
             # FLOW-LOW-3: tolerate ``[SEQ]`` prefixes that carry leading
@@ -2536,6 +2618,7 @@ class OrchestratorAgent(BaseAgent):
                 agent_id = match.group(1).strip().lower()
                 confidence = min(float(match.group(2)) / 100.0, 1.0)
                 condensed = match.group(3).strip()
+                condensed = _sanitize_condensed(condensed, fragment_re, line)
             else:
                 # Fallback to old format: "agent-id: task text"
                 if ":" not in line:
@@ -2544,6 +2627,7 @@ class OrchestratorAgent(BaseAgent):
                 agent_id, _, condensed = line.partition(":")
                 agent_id = agent_id.strip().lower()
                 condensed = condensed.strip()
+                condensed = _sanitize_condensed(condensed, fragment_re, line)
                 # P1-4: leave confidence unset so callers can decide
                 # whether to persist this routing decision.
                 confidence = None

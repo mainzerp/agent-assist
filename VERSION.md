@@ -1,8 +1,26 @@
 # Version
 
-**Current Version:** 0.21.1
+**Current Version:** 0.21.2
 
 ## Version History
+
+### 0.21.2 (PATCH) -- Orchestrator condensed-task hardening
+
+Fixes a routing regression where the condensed task forwarded to a
+specialized agent could contain duplicated classification fragments
+(e.g. "climate-agent (96%): living room temperatureclimate-agent
+(96%): ...") and where non-English entity names such as "Wohnzimmer"
+were translated to English. The orchestrator parser now strips
+embedded `<known-agent> (NN%):` fragments and collapses verbatim
+repetitions; the classification prompt receives a per-request language
+hint that instructs the LLM to copy localized entity names verbatim
+(few-shot examples remain English-only to keep the prompt universal);
+the routing cache defensively rejects pre-existing entries whose
+condensed_task still contains an embedded fragment so legacy
+corruption self-heals.
+
+Compatibility: no API or schema changes; existing routing-cache
+entries that pass the new validation continue to be served.
 
 ### 0.21.1 (PATCH) -- Lint cleanup
 
@@ -1399,4 +1417,18 @@ New send-agent enables content delivery to smartphones (via HA notify) and satel
 - Project scaffolding and directory structure
 - Project definition document
 
-## Recent Changes (since 0.21.0)
+## Recent Changes (since 0.21.1)
+
+### 0.21.2 -- Orchestrator condensed-task hardening
+
+- `_parse_classification` strips embedded `<known-agent> (NN%):`
+  fragments and collapses verbatim repetitions, so malformed LLM
+  output no longer poisons the task forwarded to specialized agents
+  or the routing cache.
+- `_classify` injects a per-request `{language_hint}` into the
+  orchestrator prompt; for non-English requests the LLM is explicitly
+  told to copy entity/room names verbatim. Few-shot examples remain
+  English-only.
+- `RoutingCache.lookup` rejects pre-existing entries whose
+  `condensed_task` still contains an embedded classification
+  fragment, so legacy corruption self-heals on next access.
