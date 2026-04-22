@@ -1,0 +1,25 @@
+id: security.de_lock_haustuer
+agent: security-agent
+description: German request to lock the front door
+snapshot: home_default
+language: de
+context: {source: ha, area_id: hallway, area_name: "Flur", device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: lock.front_door, state: "unlocked"}
+llm:
+  classify: |
+    security-agent (95%): Sperre die Haustuer
+  agents:
+    security-agent: |
+      Sperre die Haustuer.
+      ```json
+      {"action": "lock", "entity": "front door lock", "parameters": {}}
+      ```
+request:
+  text: "sperre die Haustuer"
+expected:
+  routed_agent: security-agent
+  service_calls:
+    - {domain: lock, service: lock, target_entity: lock.front_door}
+  speech_contains: ["front"]

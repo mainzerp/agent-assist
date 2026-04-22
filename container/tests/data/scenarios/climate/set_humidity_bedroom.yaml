@@ -1,0 +1,25 @@
+id: climate.set_humidity_bedroom
+agent: climate-agent
+description: Set the bedroom thermostat humidity target to 45 percent
+snapshot: home_default
+language: en
+context: {source: ha, area_id: bedroom, device_id: satellite_bedroom}
+llm:
+  classify: |
+    climate-agent (95%): Set bedroom thermostat humidity to 45 percent
+  agents:
+    climate-agent: |
+      Setting humidity to 45 percent on the bedroom thermostat.
+      ```json
+      {"action": "set_humidity", "entity": "bedroom thermostat", "parameters": {"humidity": 45}}
+      ```
+request:
+  text: "set the bedroom humidity to 45"
+expected:
+  routed_agent: climate-agent
+  service_calls:
+    - domain: climate
+      service: set_humidity
+      target_entity: climate.bedroom_thermostat
+      service_data: {humidity: 45}
+  speech_contains: ["humidity"]

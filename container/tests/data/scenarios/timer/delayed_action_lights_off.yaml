@@ -1,0 +1,21 @@
+id: timer.delayed_action_lights_off
+agent: timer-agent
+description: Schedule a delayed action to turn off the kitchen light
+snapshot: home_default
+language: en
+context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
+xfail: "delayed_action requires DelayedTaskManager initialised against a real loop"
+llm:
+  classify: |
+    timer-agent (95%): Delay turning off the kitchen light by 5 minutes
+  agents:
+    timer-agent: |
+      Scheduling the kitchen light off in 5 minutes.
+      ```json
+      {"action": "delayed_action", "entity": "kitchen 5 minute", "parameters": {"duration": "00:05:00", "target_entity": "light.kitchen_ceiling", "target_action": "turn_off"}}
+      ```
+request:
+  text: "turn off the kitchen light in five minutes"
+expected:
+  routed_agent: timer-agent
+  speech_contains: ["minutes"]

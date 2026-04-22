@@ -1,0 +1,33 @@
+id: media.turn_off_bedroom_tv
+agent: media-agent
+description: "Turn off the bedroom TV"
+snapshot: home_default
+language: en
+
+context:
+  source: ha
+  area_id: bedroom
+  device_id: satellite_bedroom
+
+preconditions:
+  entity_overrides:
+    - entity_id: media_player.bedroom_tv
+      state: "playing"
+
+llm:
+  classify: |
+    media-agent (95%): Turn off the bedroom TV
+  agents:
+    media-agent: |
+      Turning off the bedroom TV.
+      ```json
+      {"action": "turn_off", "entity": "bedroom tv", "parameters": {}}
+      ```
+
+expected:
+  routed_agent: media-agent
+  service_calls:
+    - domain: media_player
+      service: turn_off
+      target_entity: media_player.bedroom_tv
+  speech_contains: ["bedroom"]

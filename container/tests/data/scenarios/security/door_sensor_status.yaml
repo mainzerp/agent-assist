@@ -1,0 +1,24 @@
+id: security.door_sensor_status
+agent: security-agent
+description: Check the front door sensor status
+snapshot: home_default
+language: en
+context: {source: ha, area_id: hallway, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: binary_sensor.front_door, state: "off"}
+llm:
+  classify: |
+    security-agent (95%): Query the front door sensor
+  agents:
+    security-agent: |
+      Checking the front door.
+      ```json
+      {"action": "query_security_state", "entity": "front door", "parameters": {}}
+      ```
+request:
+  text: "is the front door closed?"
+expected:
+  routed_agent: security-agent
+  service_calls: []
+  speech_contains: ["front"]

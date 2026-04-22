@@ -1,0 +1,5 @@
+{
+  "satellite_living_room": {"area_id": "living_room", "name": "Living Room Satellite"},
+  "satellite_kitchen": {"area_id": "kitchen", "name": "Kitchen Satellite"},
+  "satellite_bedroom": {"area_id": "bedroom", "name": "Bedroom Satellite"}
+}

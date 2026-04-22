@@ -487,6 +487,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("timer-agent", "domain_include", "calendar"),
         ("security-agent", "domain_include", "alarm_control_panel"),
         ("security-agent", "domain_include", "lock"),
+        ("security-agent", "domain_include", "camera"),
         # Sensor device_class rules for specialist agents
         ("climate-agent", "domain_include", "sensor"),
         ("climate-agent", "device_class_include", "temperature"),

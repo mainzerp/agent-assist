@@ -1,0 +1,22 @@
+id: scene.de_activate_gute_nacht
+agent: scene-agent
+description: German request to activate the goodnight scene
+snapshot: home_default
+language: de
+context: {source: ha, area_id: bedroom, area_name: "Schlafzimmer", device_id: satellite_bedroom}
+llm:
+  classify: |
+    scene-agent (95%): Aktiviere die Gute-Nacht-Szene
+  agents:
+    scene-agent: |
+      Aktiviere die Gute-Nacht-Szene.
+      ```json
+      {"action": "activate_scene", "entity": "goodnight", "parameters": {}}
+      ```
+request:
+  text: "aktiviere Gute Nacht"
+expected:
+  routed_agent: scene-agent
+  service_calls:
+    - {domain: scene, service: turn_on, target_entity: scene.goodnight}
+  speech_contains: ["goodnight"]

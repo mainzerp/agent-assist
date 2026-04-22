@@ -1,0 +1,22 @@
+id: light.de_turn_on_kueche
+agent: light-agent
+description: German request to turn on the kitchen ceiling light
+snapshot: home_default
+language: de
+context: {source: ha, area_id: kitchen, area_name: "Kueche", device_id: satellite_kitchen}
+llm:
+  classify: |
+    light-agent (95%): Schalte die Kuechendecke ein
+  agents:
+    light-agent: |
+      Schalte die Kuechendecke ein.
+      ```json
+      {"action": "turn_on", "entity": "kitchen ceiling", "parameters": {}}
+      ```
+request:
+  text: "schalte die Kuechendeckenleuchte ein"
+expected:
+  routed_agent: light-agent
+  service_calls:
+    - {domain: light, service: turn_on, target_entity: light.kitchen_ceiling}
+  speech_contains: ["kitchen"]

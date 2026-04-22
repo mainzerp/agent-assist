@@ -1,0 +1,26 @@
+id: scene.activate_with_transition
+agent: scene-agent
+description: Activate the dinner scene with a transition
+snapshot: home_default
+language: en
+context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
+llm:
+  classify: |
+    scene-agent (95%): Activate the dinner scene with transition
+  agents:
+    scene-agent: |
+      Activating dinner with a smooth transition.
+      ```json
+      {"action": "activate_scene", "entity": "dinner", "parameters": {"transition": 5}}
+      ```
+request:
+  text: "activate the dinner scene slowly"
+expected:
+  routed_agent: scene-agent
+  service_calls:
+    - domain: scene
+      service: turn_on
+      target_entity: scene.dinner
+      service_data_keys: ["transition"]
+      service_data: {transition: 5.0}
+  speech_contains: ["dinner"]

@@ -1,0 +1,25 @@
+id: media.tv_turn_on_living_room
+agent: media-agent
+description: Turn on the living room TV
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: media_player.living_room_tv, state: "off"}
+llm:
+  classify: |
+    media-agent (95%): Turn on the living room TV
+  agents:
+    media-agent: |
+      Turning on the living room TV.
+      ```json
+      {"action": "turn_on", "entity": "living room tv", "parameters": {}}
+      ```
+request:
+  text: "turn on the living room tv"
+expected:
+  routed_agent: media-agent
+  service_calls:
+    - {domain: media_player, service: turn_on, target_entity: media_player.living_room_tv}
+  speech_contains: ["living"]

@@ -1,0 +1,26 @@
+id: orchestrator.sequential_send_general_then_send
+agent: orchestrator
+description: General agent produces content, send agent delivers it
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+preconditions:
+  send_device_mappings:
+    - {display_name: "Laura Phone", device_type: notify, ha_service_target: mobile_app_laura}
+llm:
+  classify: |
+    general-agent (90%): Compose a short reminder about the appointment
+    send-agent (95%): Laura Phone
+  agents:
+    general-agent: |
+      Reminder: dental appointment tomorrow at 9am.
+    send-agent: |
+      Reminder: dental appointment tomorrow at 9am.
+request:
+  text: "send Laura a reminder about the dental appointment"
+expected:
+  routed_agent: "general-agent, send-agent"
+  allow_extra_calls: true
+  service_calls:
+    - {domain: notify, service: mobile_app_laura}
+  speech_contains: ["sent"]

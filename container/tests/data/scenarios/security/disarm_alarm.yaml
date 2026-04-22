@@ -1,0 +1,25 @@
+id: security.disarm_alarm
+agent: security-agent
+description: Disarm the home alarm
+snapshot: home_default
+language: en
+context: {source: ha, area_id: hallway, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: alarm_control_panel.home_alarm, state: "armed_away"}
+llm:
+  classify: |
+    security-agent (95%): Disarm the alarm
+  agents:
+    security-agent: |
+      Disarming the alarm.
+      ```json
+      {"action": "alarm_disarm", "entity": "home alarm", "parameters": {}}
+      ```
+request:
+  text: "disarm the alarm"
+expected:
+  routed_agent: security-agent
+  service_calls:
+    - {domain: alarm_control_panel, service: alarm_disarm, target_entity: alarm_control_panel.home_alarm}
+  speech_contains: ["disarm"]

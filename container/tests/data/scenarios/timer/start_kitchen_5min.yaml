@@ -1,0 +1,33 @@
+id: timer.start_kitchen_5min
+agent: timer-agent
+description: "Start the kitchen 5 minute timer"
+snapshot: home_default
+language: en
+
+context:
+  source: ha
+  area_id: kitchen
+  device_id: satellite_kitchen
+
+preconditions:
+  entity_overrides:
+    - entity_id: timer.kitchen_5min
+      state: "idle"
+
+llm:
+  classify: |
+    timer-agent (95%): Start kitchen 5 minute timer
+  agents:
+    timer-agent: |
+      Starting the kitchen timer.
+      ```json
+      {"action": "start_timer", "entity": "kitchen 5 minute", "parameters": {"duration": "00:05:00"}}
+      ```
+
+expected:
+  routed_agent: timer-agent
+  service_calls:
+    - domain: timer
+      service: start
+      target_entity: timer.kitchen_5min
+  speech_contains: ["timer"]

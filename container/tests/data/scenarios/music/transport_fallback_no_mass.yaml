@@ -1,0 +1,25 @@
+id: music.transport_fallback_no_mass
+agent: music-agent
+description: Use media_play transport on a non-MASS player
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: media_player.living_room_chromecast, state: "paused"}
+llm:
+  classify: |
+    music-agent (95%): Resume the chromecast playback
+  agents:
+    music-agent: |
+      Resuming playback on the chromecast.
+      ```json
+      {"action": "media_play", "entity": "living room chromecast", "parameters": {}}
+      ```
+request:
+  text: "play music on the chromecast"
+expected:
+  routed_agent: music-agent
+  service_calls:
+    - {domain: media_player, service: media_play, target_entity: media_player.living_room_chromecast}
+  speech_contains: ["chromecast"]

@@ -1,0 +1,10 @@
+{
+  "location_name": "Test Home",
+  "latitude": 47.3769,
+  "longitude": 8.5417,
+  "elevation": 408,
+  "unit_system": {"length": "km", "mass": "kg", "temperature": "\u00b0C", "volume": "L", "pressure": "Pa", "wind_speed": "m/s", "accumulated_precipitation": "mm"},
+  "time_zone": "Europe/Zurich",
+  "components": ["api", "frontend", "history", "recorder"],
+  "version": "2026.4.0"
+}

@@ -1,0 +1,28 @@
+id: scene.activate_movie_night
+agent: scene-agent
+description: "Activate the movie night scene"
+snapshot: home_default
+language: en
+
+context:
+  source: ha
+  area_id: living_room
+  device_id: satellite_living_room
+
+llm:
+  classify: |
+    scene-agent (95%): Activate the movie night scene
+  agents:
+    scene-agent: |
+      Activating movie night.
+      ```json
+      {"action": "activate_scene", "entity": "movie night", "parameters": {}}
+      ```
+
+expected:
+  routed_agent: scene-agent
+  service_calls:
+    - domain: scene
+      service: turn_on
+      target_entity: scene.movie_night
+  speech_contains: ["movie"]

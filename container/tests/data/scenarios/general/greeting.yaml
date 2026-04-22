@@ -1,0 +1,22 @@
+id: general.greeting
+agent: general-agent
+description: "General agent answers a casual greeting"
+snapshot: home_default
+language: en
+
+context:
+  source: ha
+  area_id: living_room
+  device_id: satellite_living_room
+
+llm:
+  classify: |
+    general-agent (95%): Respond to greeting
+  agents:
+    general-agent: |
+      Hello! How can I help with your smart home today?
+
+expected:
+  routed_agent: general-agent
+  service_calls: []
+  speech_contains: ["hello"]

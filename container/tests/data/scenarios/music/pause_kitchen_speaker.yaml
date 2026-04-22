@@ -1,0 +1,33 @@
+id: music.pause_kitchen_speaker
+agent: music-agent
+description: "Pause music on the kitchen speaker"
+snapshot: home_default
+language: en
+
+context:
+  source: ha
+  area_id: kitchen
+  device_id: satellite_kitchen
+
+preconditions:
+  entity_overrides:
+    - entity_id: media_player.kitchen_speaker
+      state: "playing"
+
+llm:
+  classify: |
+    music-agent (95%): Pause music on the kitchen speaker
+  agents:
+    music-agent: |
+      Pausing music on the kitchen speaker.
+      ```json
+      {"action": "media_pause", "entity": "kitchen speaker", "parameters": {}}
+      ```
+
+expected:
+  routed_agent: music-agent
+  service_calls:
+    - domain: media_player
+      service: media_pause
+      target_entity: media_player.kitchen_speaker
+  speech_contains: ["kitchen"]

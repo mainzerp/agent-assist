@@ -1,0 +1,24 @@
+id: timer.sleep_timer_30_minutes
+agent: timer-agent
+description: Start a 30 minute sleep timer for the bedroom speaker
+snapshot: home_default
+language: en
+context: {source: ha, area_id: bedroom, device_id: satellite_bedroom}
+xfail: "sleep_timer needs media_player presence + DelayedTaskManager hookup"
+preconditions:
+  entity_overrides:
+    - {entity_id: timer.bedroom_sleep, state: "idle"}
+llm:
+  classify: |
+    timer-agent (95%): Sleep timer 30 minutes
+  agents:
+    timer-agent: |
+      Starting a 30 minute sleep timer.
+      ```json
+      {"action": "sleep_timer", "entity": "bedroom sleep", "parameters": {"duration": "00:30:00"}}
+      ```
+request:
+  text: "sleep timer 30 minutes"
+expected:
+  routed_agent: timer-agent
+  speech_contains: ["sleep"]

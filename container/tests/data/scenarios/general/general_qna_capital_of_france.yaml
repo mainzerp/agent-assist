@@ -1,0 +1,18 @@
+id: general.general_qna_capital_of_france
+agent: general-agent
+description: "General Q and A: capital of France"
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    general-agent (95%): What is the capital of France
+  agents:
+    general-agent: |
+      The capital of France is Paris.
+request:
+  text: "what is the capital of France?"
+expected:
+  routed_agent: general-agent
+  service_calls: []
+  speech_contains: ["paris"]

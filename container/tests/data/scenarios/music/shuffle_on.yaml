@@ -1,0 +1,25 @@
+id: music.shuffle_on
+agent: music-agent
+description: Enable shuffle on the MASS player
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    music-agent (95%): Enable shuffle on the MASS player
+  agents:
+    music-agent: |
+      Turning shuffle on.
+      ```json
+      {"action": "shuffle_set", "entity": "MASS Living Room", "parameters": {"shuffle": true}}
+      ```
+request:
+  text: "shuffle the music"
+expected:
+  routed_agent: music-agent
+  service_calls:
+    - domain: media_player
+      service: shuffle_set
+      target_entity: media_player.mass_living_room
+      service_data: {shuffle: true}
+  speech_contains: ["shuffle"]

@@ -1,0 +1,24 @@
+id: light.status_query_kitchen
+agent: light-agent
+description: Read-only status query for the kitchen ceiling light
+snapshot: home_default
+language: en
+context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
+preconditions:
+  entity_overrides:
+    - {entity_id: light.kitchen_ceiling, state: "on", attributes: {brightness: 200}}
+llm:
+  classify: |
+    light-agent (95%): Query state of the kitchen ceiling light
+  agents:
+    light-agent: |
+      Checking the kitchen ceiling light.
+      ```json
+      {"action": "query_light_state", "entity": "kitchen ceiling", "parameters": {}}
+      ```
+request:
+  text: "is the kitchen light on?"
+expected:
+  routed_agent: light-agent
+  service_calls: []
+  speech_contains: ["kitchen", "on"]

@@ -1,0 +1,21 @@
+id: scene.list_scenes
+agent: scene-agent
+description: List all scenes available in the home
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    scene-agent (95%): List all scenes
+  agents:
+    scene-agent: |
+      Listing all scenes.
+      ```json
+      {"action": "list_scenes", "entity": "", "parameters": {}}
+      ```
+request:
+  text: "what scenes do I have?"
+expected:
+  routed_agent: scene-agent
+  service_calls: []
+  speech_contains: ["movie"]

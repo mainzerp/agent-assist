@@ -1,0 +1,25 @@
+id: timer.pause_timer
+agent: timer-agent
+description: Pause the kitchen timer
+snapshot: home_default
+language: en
+context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
+preconditions:
+  entity_overrides:
+    - {entity_id: timer.kitchen_5min, state: "active"}
+llm:
+  classify: |
+    timer-agent (95%): Pause the kitchen timer
+  agents:
+    timer-agent: |
+      Pausing the kitchen timer.
+      ```json
+      {"action": "pause_timer", "entity": "kitchen 5 minute", "parameters": {}}
+      ```
+request:
+  text: "pause the timer"
+expected:
+  routed_agent: timer-agent
+  service_calls:
+    - {domain: timer, service: pause, target_entity: timer.kitchen_5min}
+  speech_contains: ["pause"]

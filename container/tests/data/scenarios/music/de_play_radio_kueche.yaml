@@ -1,0 +1,25 @@
+id: music.de_play_radio_kueche
+agent: music-agent
+description: German request to start music in the kitchen
+snapshot: home_default
+language: de
+context: {source: ha, area_id: kitchen, area_name: "Kueche", device_id: satellite_kitchen}
+preconditions:
+  entity_overrides:
+    - {entity_id: media_player.kitchen_speaker, state: "paused"}
+llm:
+  classify: |
+    music-agent (95%): Spiele Musik auf dem Kuechenlautsprecher
+  agents:
+    music-agent: |
+      Starte die Wiedergabe auf dem Kuechenlautsprecher.
+      ```json
+      {"action": "media_play", "entity": "kitchen speaker", "parameters": {}}
+      ```
+request:
+  text: "spiele Musik in der Kueche"
+expected:
+  routed_agent: music-agent
+  service_calls:
+    - {domain: media_player, service: media_play, target_entity: media_player.kitchen_speaker}
+  speech_contains: ["kitchen"]

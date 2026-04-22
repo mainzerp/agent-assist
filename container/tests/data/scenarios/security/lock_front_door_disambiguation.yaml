@@ -1,0 +1,36 @@
+id: security.lock_front_door_disambiguation
+agent: security-agent
+description: "Lock 'front door' query routes to lock domain (positive control for FLOW-DOMAIN-1)"
+snapshot: home_default
+language: en
+
+context:
+  source: ha
+  area_id: hallway
+  device_id: satellite_living_room
+
+preconditions:
+  entity_overrides:
+    - entity_id: lock.front_door
+      state: "unlocked"
+
+llm:
+  classify: |
+    security-agent (95%): Lock the front door
+  agents:
+    security-agent: |
+      Locking the front door.
+      ```json
+      {"action": "lock", "entity": "front door", "parameters": {}}
+      ```
+
+request:
+  text: "lock the front door"
+
+expected:
+  routed_agent: security-agent
+  service_calls:
+    - domain: lock
+      service: lock
+      target_entity: lock.front_door
+  speech_contains: ["front door"]

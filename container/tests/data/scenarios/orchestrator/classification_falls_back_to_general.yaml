@@ -1,0 +1,18 @@
+id: orchestrator.classification_falls_back_to_general
+agent: orchestrator
+description: Empty/unparseable classification reply falls back to general-agent
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    nonexistent-agent: garbage
+  agents:
+    general-agent: |
+      I am here to help.
+request:
+  text: "do something undefined"
+expected:
+  routed_agent: general-agent
+  service_calls: []
+  speech_contains: ["help"]

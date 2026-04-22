@@ -190,6 +190,23 @@ _ACTION_SERVICE_MAP: dict[str, str] = {
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"light", "switch", "sensor"})
 
+# FLOW-DOMAIN-1 (0.19.2): per-action HA-domain allow-set used to filter
+# both the deterministic entity_index sweep and the hybrid matcher's
+# top candidates before tie-breaking. Read paths intentionally include
+# ``sensor`` because illuminance/light-level sensors can answer
+# query_light_state when no light entity matches.
+_ACTION_DOMAINS_LIGHT: dict[str, frozenset[str]] = {
+    "turn_on": frozenset({"light", "switch"}),
+    "turn_off": frozenset({"light", "switch"}),
+    "toggle": frozenset({"light", "switch"}),
+    "set_brightness": frozenset({"light"}),
+    "set_color": frozenset({"light"}),
+    "set_color_temp": frozenset({"light"}),
+    "query_light_state": frozenset({"light", "switch", "sensor"}),
+    "query_entity_history": frozenset({"light", "switch", "sensor"}),
+    "list_lights": frozenset({"light", "switch"}),
+}
+
 # FLOW-VERIFY-1: map each action to the state we expect HA to end up in.
 # ``toggle`` has no deterministic target, so it is intentionally absent and
 # the caller must treat ``expected`` as ``None`` (= "any next change").
@@ -529,6 +546,67 @@ def rerank_matches_by_area(matches: list[Any], preferred_area_id: str | None) ->
     return matches
 
 
+def filter_matches_by_domain(
+    matches: list[Any],
+    allowed_domains: frozenset[str] | set[str],
+    *,
+    fallback_to_unfiltered: bool = False,
+) -> list[Any]:
+    """Drop matcher candidates whose entity_id domain is not in the per-action allow set.
+
+    FLOW-DOMAIN-1 (0.19.2): security/climate/media/music/timer
+    executors all take ``matches[0]`` from a domain-blind hybrid
+    matcher. When two same-named entities span the agent's
+    ``_ALLOWED_DOMAINS`` (e.g. ``lock.front_door`` and
+    ``camera.front_door``), the wrong domain can be actuated by a
+    camera_turn_on action. This helper restricts the candidate pool
+    to the *action verb's* implied HA domain(s) before the executor
+    picks the top candidate.
+
+    Composition order at every call site is:
+    ``filter (domain) -> rerank (area) -> pick [0]``.
+
+    Args:
+        matches: Hybrid matcher result list (preserved order). Not mutated.
+        allowed_domains: HA domains the action verb implies. Single
+            element for unambiguous actions (camera_turn_on -> {"camera"});
+            multiple for read paths that legitimately span domains
+            (query_security_state -> {"lock","alarm_control_panel",
+            "camera","binary_sensor","sensor"}).
+        fallback_to_unfiltered: If True and the in-domain pool is empty,
+            return a copy of the original list (degrade gracefully). Default
+            False: return ``[]`` so the caller surfaces a clean "entity not
+            found" via its existing not-found branch instead of actuating
+            a wrong-domain top hit.
+
+    Returns:
+        New list (never mutates input). Original ordering preserved.
+    """
+    if not matches:
+        return []
+    filtered: list[Any] = []
+    for m in matches:
+        eid = getattr(m, "entity_id", "") or ""
+        if "." not in eid:
+            continue
+        if eid.split(".", 1)[0] in allowed_domains:
+            filtered.append(m)
+    if not filtered:
+        if fallback_to_unfiltered:
+            return list(matches)
+        return []
+    if len(filtered) != len(matches):
+        kept_top = getattr(filtered[0], "entity_id", "")
+        logger.debug(
+            "filter_matches_by_domain dropped %d/%d candidates for allowed=%s; kept top=%s",
+            len(matches) - len(filtered),
+            len(matches),
+            sorted(allowed_domains),
+            kept_top,
+        )
+    return filtered
+
+
 def _select_deterministic_candidate(
     entries: list[Any],
     entity_query: str,
@@ -588,6 +666,7 @@ async def _resolve_light_entity(
     agent_id: str | None,
     *,
     preferred_area_id: str | None = None,
+    allowed_domains: frozenset[str] = _ALLOWED_DOMAINS,
 ) -> dict[str, Any]:
     """Resolve light-agent entities via deterministic checks before hybrid matching.
 
@@ -627,7 +706,7 @@ async def _resolve_light_entity(
                         friendly_name=visible_entry[0].friendly_name or visible_entry[0].entity_id,
                     )
 
-        indexed_entries = await _list_index_entries(entity_index, domains=_ALLOWED_DOMAINS)
+        indexed_entries = await _list_index_entries(entity_index, domains=allowed_domains)
         visible_entries = await _filter_visible_entries(indexed_entries, entity_matcher, agent_id)
 
         if visible_entries:
@@ -749,10 +828,16 @@ async def _resolve_light_entity(
 
     if entity_matcher:
         matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-        metadata.update({"match_count": len(matches), "resolution_path": "hybrid_matcher"})
-        if matches:
-            original_top = matches[0]
-            reranked = rerank_matches_by_area(matches, preferred_area_id)
+        # FLOW-DOMAIN-1 (0.19.2): drop wrong-domain candidates before
+        # area rerank so a same-area wrong-domain entity cannot win.
+        filtered_matches = filter_matches_by_domain(matches, allowed_domains)
+        if len(filtered_matches) != len(matches):
+            metadata["domain_filter_dropped"] = len(matches) - len(filtered_matches)
+            metadata["domain_filter_allowed"] = sorted(allowed_domains)
+        metadata.update({"match_count": len(filtered_matches), "resolution_path": "hybrid_matcher"})
+        if filtered_matches:
+            original_top = filtered_matches[0]
+            reranked = rerank_matches_by_area(filtered_matches, preferred_area_id)
             chosen = reranked[0]
             if chosen is not original_top:
                 metadata["area_rerank_from"] = original_top.entity_id
@@ -904,6 +989,7 @@ async def execute_action(
                     entity_matcher,
                     agent_id,
                     preferred_area_id=preferred_area_id,
+                    allowed_domains=_ACTION_DOMAINS_LIGHT.get(action_name, _ALLOWED_DOMAINS),
                 )
                 em_span["metadata"] = resolution["metadata"]
     except Exception:

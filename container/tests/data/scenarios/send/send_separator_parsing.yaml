@@ -1,0 +1,22 @@
+id: send.send_separator_parsing
+agent: send-agent
+description: Verify the |||CONTENT||| separator is parsed correctly
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+preconditions:
+  send_device_mappings:
+    - {display_name: "Laura Phone", device_type: notify, ha_service_target: mobile_app_laura}
+llm:
+  classify: |
+    send-agent (95%): send to Laura Phone|||CONTENT|||This message contains the special separator.
+  agents:
+    send-agent: |
+      This message contains the special separator.
+request:
+  text: "send a message to Laura phone"
+expected:
+  routed_agent: send-agent
+  service_calls:
+    - {domain: notify, service: mobile_app_laura}
+  speech_contains: ["sent"]

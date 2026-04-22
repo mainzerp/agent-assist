@@ -57,9 +57,9 @@ class _AuthenticationError(Exception):
 _litellm_mock.exceptions.AuthenticationError = _AuthenticationError
 sys.modules.setdefault("litellm", _litellm_mock)
 
-from app.agents.action_executor import execute_action, parse_action  # noqa: E402
+from app.agents.action_executor import execute_action, filter_matches_by_domain, parse_action  # noqa: E402
 from app.entity.index import EntityIndex  # noqa: E402
-from app.entity.matcher import EntityMatcher  # noqa: E402
+from app.entity.matcher import EntityMatcher, MatchResult  # noqa: E402
 from tests.helpers import make_entity_index_entry  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -1281,3 +1281,36 @@ class TestClimateExecutorWeatherActions:
         )
         assert result["success"] is False
         assert "not available" in result["speech"]
+
+# ---------------------------------------------------------------------------
+# filter_matches_by_domain helper tests (FLOW-DOMAIN-1)
+# ---------------------------------------------------------------------------
+
+
+class TestFilterMatchesByDomain:
+    def test_drops_wrong_domain(self):
+        matches = [
+            MatchResult(entity_id="lock.front_door", friendly_name="Front Door Lock", score=0.9),
+            MatchResult(entity_id="camera.front_door", friendly_name="Front Door Camera", score=0.85),
+        ]
+        out = filter_matches_by_domain(matches, frozenset({"camera"}))
+        assert [m.entity_id for m in out] == ["camera.front_door"]
+
+    def test_empty_when_no_match_no_fallback(self):
+        matches = [MatchResult(entity_id="lock.front_door", friendly_name="x", score=0.9)]
+        assert filter_matches_by_domain(matches, frozenset({"camera"})) == []
+
+    def test_fallback_returns_copy_of_original(self):
+        matches = [MatchResult(entity_id="lock.front_door", friendly_name="x", score=0.9)]
+        out = filter_matches_by_domain(matches, frozenset({"camera"}), fallback_to_unfiltered=True)
+        assert out is not matches
+        assert [m.entity_id for m in out] == ["lock.front_door"]
+
+    def test_preserves_order(self):
+        matches = [
+            MatchResult(entity_id="switch.a", friendly_name="A", score=0.9),
+            MatchResult(entity_id="light.a", friendly_name="A", score=0.85),
+            MatchResult(entity_id="light.b", friendly_name="B", score=0.8),
+        ]
+        out = filter_matches_by_domain(matches, frozenset({"light"}))
+        assert [m.entity_id for m in out] == ["light.a", "light.b"]

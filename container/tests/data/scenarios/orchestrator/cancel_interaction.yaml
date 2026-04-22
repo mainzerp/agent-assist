@@ -1,0 +1,15 @@
+id: orchestrator.cancel_interaction
+agent: orchestrator
+description: Cancel-interaction classification short-circuits dispatch
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    cancel-interaction (99%): cancel
+request:
+  text: "never mind"
+expected:
+  routed_agent: cancel-interaction
+  service_calls: []
+  speech_contains: ["okay"]

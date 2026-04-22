@@ -8,6 +8,7 @@ from typing import Any
 from app.agents.action_executor import (
     build_verified_speech,
     call_service_with_verification,
+    filter_matches_by_domain,
 )
 from app.analytics.tracer import _optional_span
 
@@ -42,6 +43,10 @@ _ACTION_PHRASES: dict[str, str] = {
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"media_player"})
+
+# FLOW-DOMAIN-1 (0.19.2): mass.* services still target a media_player.*
+# entity_id, so all music actions resolve into the media_player domain.
+_ACTION_DOMAINS: frozenset[str] = frozenset({"media_player"})
 
 
 def _validate_domain(entity_id: str) -> bool:
@@ -169,13 +174,18 @@ async def execute_music_action(
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
+                # FLOW-DOMAIN-1 (0.19.2): drop wrong-domain candidates.
+                filtered = filter_matches_by_domain(matches, _ACTION_DOMAINS)
+                if len(filtered) != len(matches):
+                    em_span["metadata"]["domain_filter_dropped"] = len(matches) - len(filtered)
+                    em_span["metadata"]["domain_filter_allowed"] = sorted(_ACTION_DOMAINS)
+                if filtered:
+                    entity_id = filtered[0].entity_id
+                    friendly_name = filtered[0].friendly_name or entity_id
                     em_span["metadata"]["top_entity_id"] = entity_id
                     em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = matches[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                    em_span["metadata"]["top_score"] = filtered[0].score
+                    em_span["metadata"]["signal_scores"] = getattr(filtered[0], "signal_scores", {})
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
@@ -295,13 +305,14 @@ async def _query_music_state(
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
+                filtered = filter_matches_by_domain(matches, _ACTION_DOMAINS)
+                if filtered:
+                    entity_id = filtered[0].entity_id
+                    friendly_name = filtered[0].friendly_name or entity_id
                     em_span["metadata"]["top_entity_id"] = entity_id
                     em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = matches[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                    em_span["metadata"]["top_score"] = filtered[0].score
+                    em_span["metadata"]["signal_scores"] = getattr(filtered[0], "signal_scores", {})
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 

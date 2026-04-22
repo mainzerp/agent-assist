@@ -1,0 +1,22 @@
+id: send.send_persistent_notification
+agent: send-agent
+description: Send a persistent notification via the notify channel
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+preconditions:
+  send_device_mappings:
+    - {display_name: "Persistent Banner", device_type: notify, ha_service_target: persistent_notification}
+llm:
+  classify: |
+    send-agent (95%): Persistent Banner|||CONTENT|||Reminder: take out the trash.
+  agents:
+    send-agent: |
+      Reminder: take out the trash.
+request:
+  text: "post a reminder to take out the trash"
+expected:
+  routed_agent: send-agent
+  service_calls:
+    - {domain: notify, service: persistent_notification}
+  speech_contains: ["sent"]

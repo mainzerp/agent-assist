@@ -1,0 +1,27 @@
+﻿id: security.camera_turn_on_camera
+agent: security-agent
+description: Turn on the front door camera
+snapshot: home_default
+language: en
+context: {source: ha, area_id: hallway, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: camera.front_door, state: "idle"}
+llm:
+  classify: |
+    security-agent (95%): Turn on the front door camera
+  agents:
+    security-agent: |
+      Turning on the front door camera.
+      ```json
+      {"action": "camera_turn_on", "entity": "front door camera", "parameters": {}}
+      ```
+request:
+  text: "turn on the front door camera"
+expected:
+  routed_agent: security-agent
+  service_calls:
+    - {domain: camera, service: turn_on, target_entity: camera.front_door}
+  speech_contains: ["front"]
+
+

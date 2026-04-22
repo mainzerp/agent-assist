@@ -1,0 +1,40 @@
+id: scene.activate_scene_disambiguation
+agent: scene-agent
+description: "Activate 'movie night' query routes to scene domain even when a similarly-named switch exists (positive control for FLOW-DOMAIN-1)"
+snapshot: home_default
+language: en
+
+context:
+  source: ha
+  area_id: living_room
+  device_id: satellite_living_room
+
+preconditions:
+  entity_overrides:
+    # Inject a wrong-domain look-alike that would beat scene.movie_night
+    # on a domain-blind matcher run because of the verbatim name match.
+    - entity_id: switch.movie_night_scene_control
+      state: "off"
+      attributes:
+        friendly_name: "Movie Night Scene Control"
+
+llm:
+  classify: |
+    scene-agent (95%): Activate the movie night scene
+  agents:
+    scene-agent: |
+      Activating movie night.
+      ```json
+      {"action": "activate_scene", "entity": "movie night", "parameters": {}}
+      ```
+
+request:
+  text: "activate movie night"
+
+expected:
+  routed_agent: scene-agent
+  service_calls:
+    - domain: scene
+      service: turn_on
+      target_entity: scene.movie_night
+  speech_contains: ["movie"]

@@ -1,0 +1,25 @@
+id: media.ambiguous_tv_area_tiebreak
+agent: media-agent
+description: Area context picks bedroom_tv when "TV" is ambiguous
+snapshot: home_default
+language: en
+context: {source: ha, area_id: bedroom, area_name: "Bedroom", device_id: satellite_bedroom}
+preconditions:
+  entity_overrides:
+    - {entity_id: media_player.bedroom_tv, state: "playing"}
+llm:
+  classify: |
+    media-agent (95%): Pause the TV
+  agents:
+    media-agent: |
+      Pausing the TV.
+      ```json
+      {"action": "pause", "entity": "bedroom tv", "parameters": {}}
+      ```
+request:
+  text: "pause the TV"
+expected:
+  routed_agent: media-agent
+  service_calls:
+    - {domain: media_player, service: media_pause, target_entity: media_player.bedroom_tv}
+  speech_contains: ["bedroom"]

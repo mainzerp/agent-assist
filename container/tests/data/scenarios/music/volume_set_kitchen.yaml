@@ -1,0 +1,25 @@
+id: music.volume_set_kitchen
+agent: music-agent
+description: Set the kitchen speaker volume via the music agent
+snapshot: home_default
+language: en
+context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
+llm:
+  classify: |
+    music-agent (95%): Set kitchen speaker volume to 50 percent
+  agents:
+    music-agent: |
+      Setting the volume to 50 percent.
+      ```json
+      {"action": "volume_set", "entity": "kitchen speaker", "parameters": {"volume_level": 0.5}}
+      ```
+request:
+  text: "set the music volume to 50"
+expected:
+  routed_agent: music-agent
+  service_calls:
+    - domain: media_player
+      service: volume_set
+      target_entity: media_player.kitchen_speaker
+      service_data: {volume_level: 0.5}
+  speech_contains: ["volume"]

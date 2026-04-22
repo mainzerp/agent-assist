@@ -1,0 +1,21 @@
+id: security.recorder_history_front_door
+agent: security-agent
+description: Recorder history for the front door sensor
+snapshot: home_default
+language: en
+context: {source: ha, area_id: hallway, device_id: satellite_living_room}
+llm:
+  classify: |
+    security-agent (95%): Recorder history for the front door sensor
+  agents:
+    security-agent: |
+      Looking up door history.
+      ```json
+      {"action": "query_entity_history", "entity": "front door", "parameters": {"period": "yesterday"}}
+      ```
+request:
+  text: "when was the front door opened yesterday?"
+expected:
+  routed_agent: security-agent
+  service_calls: []
+  speech_contains: ["front"]

@@ -1,0 +1,25 @@
+id: climate.de_set_temperature_schlafzimmer
+agent: climate-agent
+description: German request to set the bedroom thermostat to 21 degrees
+snapshot: home_default
+language: de
+context: {source: ha, area_id: bedroom, area_name: "Schlafzimmer", device_id: satellite_bedroom}
+llm:
+  classify: |
+    climate-agent (95%): Schlafzimmer Thermostat auf 21 Grad
+  agents:
+    climate-agent: |
+      Stelle das Schlafzimmer-Thermostat auf 21 Grad.
+      ```json
+      {"action": "set_temperature", "entity": "bedroom thermostat", "parameters": {"temperature": 21}}
+      ```
+request:
+  text: "stelle das Schlafzimmer auf 21 Grad"
+expected:
+  routed_agent: climate-agent
+  service_calls:
+    - domain: climate
+      service: set_temperature
+      target_entity: climate.bedroom_thermostat
+      service_data: {temperature: 21.0}
+  speech_contains: ["temperature"]

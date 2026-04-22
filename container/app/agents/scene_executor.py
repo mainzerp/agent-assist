@@ -7,6 +7,7 @@ from typing import Any
 
 from app.agents.action_executor import (
     call_service_with_verification,
+    filter_matches_by_domain,
     rerank_matches_by_area,
 )
 from app.analytics.tracer import _optional_span
@@ -94,14 +95,21 @@ async def execute_scene_action(
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
+                # FLOW-DOMAIN-1 (0.19.3): drop wrong-domain candidates so
+                # an activate_scene cannot land on a switch.* entity that
+                # happens to share a name with a scene.
+                filtered = filter_matches_by_domain(matches, _ALLOWED_DOMAINS)
+                if len(filtered) != len(matches):
+                    em_span["metadata"]["domain_filter_dropped"] = len(matches) - len(filtered)
+                    em_span["metadata"]["domain_filter_allowed"] = sorted(_ALLOWED_DOMAINS)
+                if filtered:
                     # FLOW-CTX-1 (0.18.6): prefer same-area scene on
                     # near-tie (e.g. "gemuetlich" can exist per room;
                     # the one in the satellite area wins).
-                    reranked = rerank_matches_by_area(matches, preferred_area_id)
+                    reranked = rerank_matches_by_area(filtered, preferred_area_id)
                     chosen = reranked[0]
-                    if chosen is not matches[0]:
-                        em_span["metadata"]["area_rerank_from"] = matches[0].entity_id
+                    if chosen is not filtered[0]:
+                        em_span["metadata"]["area_rerank_from"] = filtered[0].entity_id
                     entity_id = chosen.entity_id
                     friendly_name = chosen.friendly_name or entity_id
                     em_span["metadata"]["top_entity_id"] = entity_id
@@ -173,13 +181,19 @@ async def _query_scene(
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
+                # FLOW-DOMAIN-1 (0.19.3): drop wrong-domain candidates
+                # before picking the top hit (mirrors execute_scene_action).
+                filtered = filter_matches_by_domain(matches, _ALLOWED_DOMAINS)
+                if len(filtered) != len(matches):
+                    em_span["metadata"]["domain_filter_dropped"] = len(matches) - len(filtered)
+                    em_span["metadata"]["domain_filter_allowed"] = sorted(_ALLOWED_DOMAINS)
+                if filtered:
+                    entity_id = filtered[0].entity_id
+                    friendly_name = filtered[0].friendly_name or entity_id
                     em_span["metadata"]["top_entity_id"] = entity_id
                     em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = matches[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                    em_span["metadata"]["top_score"] = filtered[0].score
+                    em_span["metadata"]["signal_scores"] = getattr(filtered[0], "signal_scores", {})
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 

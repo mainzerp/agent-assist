@@ -1,0 +1,21 @@
+id: climate.read_temperature_sensor
+agent: climate-agent
+description: Read the outdoor temperature sensor via the climate agent
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    climate-agent (95%): Query the outdoor temperature sensor
+  agents:
+    climate-agent: |
+      Checking the outdoor temperature.
+      ```json
+      {"action": "query_climate_state", "entity": "outdoor temperature", "parameters": {}}
+      ```
+request:
+  text: "what's the outdoor temperature?"
+expected:
+  routed_agent: climate-agent
+  service_calls: []
+  speech_contains: ["outdoor"]

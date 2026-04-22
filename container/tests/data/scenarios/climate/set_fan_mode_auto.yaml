@@ -1,0 +1,25 @@
+id: climate.set_fan_mode_auto
+agent: climate-agent
+description: Set the living room thermostat fan mode to auto
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    climate-agent (95%): Set living room thermostat fan mode to auto
+  agents:
+    climate-agent: |
+      Setting the fan mode to auto on the living room thermostat.
+      ```json
+      {"action": "set_fan_mode", "entity": "living room thermostat", "parameters": {"fan_mode": "auto"}}
+      ```
+request:
+  text: "set the fan to auto"
+expected:
+  routed_agent: climate-agent
+  service_calls:
+    - domain: climate
+      service: set_fan_mode
+      target_entity: climate.living_room_thermostat
+      service_data: {fan_mode: auto}
+  speech_contains: ["fan"]

@@ -1,0 +1,25 @@
+id: music.next_track
+agent: music-agent
+description: Skip to the next track on the kitchen speaker
+snapshot: home_default
+language: en
+context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
+preconditions:
+  entity_overrides:
+    - {entity_id: media_player.kitchen_speaker, state: "playing"}
+llm:
+  classify: |
+    music-agent (95%): Skip to the next track on the kitchen speaker
+  agents:
+    music-agent: |
+      Skipping to the next track.
+      ```json
+      {"action": "media_next_track", "entity": "kitchen speaker", "parameters": {}}
+      ```
+request:
+  text: "next song"
+expected:
+  routed_agent: music-agent
+  service_calls:
+    - {domain: media_player, service: media_next_track, target_entity: media_player.kitchen_speaker}
+  speech_contains: ["next"]

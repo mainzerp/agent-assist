@@ -1,0 +1,29 @@
+id: light.set_color_kitchen
+agent: light-agent
+description: Set the kitchen ceiling light to red
+snapshot: home_default
+language: en
+context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
+preconditions:
+  entity_overrides:
+    - {entity_id: light.kitchen_ceiling, state: "on"}
+llm:
+  classify: |
+    light-agent (95%): Set the kitchen ceiling light to red
+  agents:
+    light-agent: |
+      Setting the kitchen ceiling light to red.
+      ```json
+      {"action": "set_color", "entity": "kitchen ceiling", "parameters": {"color_name": "red"}}
+      ```
+request:
+  text: "make the kitchen light red"
+expected:
+  routed_agent: light-agent
+  service_calls:
+    - domain: light
+      service: turn_on
+      target_entity: light.kitchen_ceiling
+      service_data_keys: ["color_name"]
+      service_data: {color_name: red}
+  speech_contains: ["kitchen"]

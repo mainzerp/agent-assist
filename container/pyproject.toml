@@ -4,6 +4,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+    "real_scenarios: marks YAML-driven real-pipeline end-to-end scenarios (deselect with '-m \"not real_scenarios\"')",
 ]
 
 [tool.pytest-cov]

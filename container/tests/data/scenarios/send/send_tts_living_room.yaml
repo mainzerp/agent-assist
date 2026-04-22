@@ -1,0 +1,22 @@
+id: send.send_tts_living_room
+agent: send-agent
+description: Send TTS to the living room satellite
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+preconditions:
+  send_device_mappings:
+    - {display_name: "Living Room Satellite", device_type: tts, ha_service_target: media_player.living_room_tv}
+llm:
+  classify: |
+    send-agent (95%): Living Room Satellite|||CONTENT|||Welcome home.
+  agents:
+    send-agent: |
+      Welcome home.
+request:
+  text: "say welcome home in the living room"
+expected:
+  routed_agent: send-agent
+  service_calls:
+    - {domain: tts, service: speak}
+  speech_contains: ["sent"]

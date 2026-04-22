@@ -1,0 +1,22 @@
+id: orchestrator.routes_to_general
+agent: orchestrator
+description: "Orchestrator routes a non-device question to the general agent"
+snapshot: home_default
+language: en
+
+context:
+  source: ha
+  area_id: living_room
+  device_id: satellite_living_room
+
+llm:
+  classify: |
+    general-agent (90%): Answer a general knowledge question
+  agents:
+    general-agent: |
+      Switzerland's capital is Bern.
+
+expected:
+  routed_agent: general-agent
+  service_calls: []
+  speech_contains: ["bern"]

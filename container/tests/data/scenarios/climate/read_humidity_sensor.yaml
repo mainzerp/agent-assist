@@ -1,0 +1,21 @@
+id: climate.read_humidity_sensor
+agent: climate-agent
+description: Read the bedroom humidity sensor
+snapshot: home_default
+language: en
+context: {source: ha, area_id: bedroom, device_id: satellite_bedroom}
+llm:
+  classify: |
+    climate-agent (95%): Query the bedroom humidity sensor
+  agents:
+    climate-agent: |
+      Checking the bedroom humidity.
+      ```json
+      {"action": "query_climate_state", "entity": "bedroom humidity", "parameters": {}}
+      ```
+request:
+  text: "what is the bedroom humidity?"
+expected:
+  routed_agent: climate-agent
+  service_calls: []
+  speech_contains: ["bedroom"]

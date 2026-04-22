@@ -1,8 +1,125 @@
 # Version
 
-**Current Version:** 0.18.40
+**Current Version:** 0.19.3
 
 ## Version History
+
+### 0.19.3 (PATCH) -- scene_executor domain filtering
+
+Closes the single HIGH-risk finding from the v0.19.2 executor domain-filter
+audit. `scene_executor.py` was the only domain executor still selecting
+`matches[0]` / `reranked[0]` from a domain-blind hybrid matcher and relying on
+post-hoc `_validate_domain()` rejection. A request like "activate movie night"
+in a home that also exposes `switch.movie_night_scene_control` could be
+silently dropped by the post-hoc check instead of resolving to the in-domain
+`scene.movie_night`.
+
+- Threaded `filter_matches_by_domain(matches, _ALLOWED_DOMAINS)` into both
+  `execute_scene_action()` and `_query_scene()` in
+  `container/app/agents/scene_executor.py`, mirroring the
+  filter -> rerank -> pick `[0]` shape from the six other patched executors.
+- Kept the existing post-hoc `_validate_domain()` block as defence-in-depth.
+- Added regression scenario `scene/activate_scene_disambiguation` with an
+  injected wrong-domain look-alike (`switch.movie_night_scene_control`) to
+  lock the behaviour in.
+
+### 0.19.2 (PATCH) -- per-action domain filtering in domain executors
+
+Fixes a security-critical cross-domain entity selection bug surfaced
+by the new real-scenario suite. `EntityMatcher.match()` is domain-blind
+and downstream domain executors blindly took `matches[0]`, so a
+`camera_turn_on` action with the query "front door camera" could land
+on `lock.front_door` (or vice versa for a lock action with a query
+that ranked a camera/sensor higher).
+
+- New helper `filter_matches_by_domain(matches, allowed_domains, *,
+  fallback_to_unfiltered=False)` in
+  `container/app/agents/action_executor.py` returns the order-preserving
+  subset of matches whose `entity_id` belongs to `allowed_domains`
+  (composes filter -> rerank -> pick `[0]`).
+- Threaded the helper into the entity-resolution sites of
+  `security_executor`, `climate_executor`, `media_executor`,
+  `music_executor`, `timer_executor`, `automation_executor`, and the
+  light/switch resolver in `action_executor` with per-action domain
+  maps. Empty-after-filter falls into the existing not-found branch.
+- Flipped the previously `xfail` scenario
+  `security/camera_turn_on_camera` to passing and added regression
+  scenarios `security/lock_front_door_disambiguation` and
+  `security/turn_off_front_door_camera`.
+- Added unit tests for `filter_matches_by_domain` in
+  `container/tests/test_action_executor.py`.
+
+### 0.19.1 (PATCH) -- real-pipeline scenario suite expansion
+
+- Expanded real-scenario E2E suite to full 78-case coverage. Added 80
+  new YAML scenarios under `container/tests/data/scenarios/` covering
+  light (10), climate (10), media (7), music (10), scene (4),
+  security (9), automation (4), timer (9), general (5), send (5), and
+  orchestrator (7) flows. All run end-to-end against the production
+  pipeline; 4 are marked `xfail: <reason>` for cases that require
+  framework features not yet wired (cache replay, controlled dispatch
+  latency, real DelayedTaskManager loop hookup, and ambiguous
+  cross-domain entity ranking in `security_executor`).
+- Framework additions in `container/tests/scenarios/`:
+  - `Scenario.xfail` field (loader + dataclass) so individual YAMLs
+    can carry a `pytest.mark.xfail(strict=False, reason=...)` marker.
+  - `runner.run_scenario` seeds `send_device_mappings` rows from
+    `preconditions.send_device_mappings` so send-agent scenarios
+    resolve display names to HA service targets without DB hand-wiring.
+- `container/tests/data/scenarios/README.md` Coverage section updated
+  to reflect the full 78-scenario corpus.
+
+### 0.19.0 (MINOR) -- real-pipeline scenario test suite
+
+Adds a new YAML-driven end-to-end test framework that exercises the
+production OrchestratorAgent pipeline against a curated HA snapshot,
+deterministic LLM stubs, and an in-memory recording HA client. No
+production source files are modified.
+
+- New framework under `container/tests/scenarios/`:
+  - `loader.py` parses snapshot and scenario YAML files.
+  - `runner.py` builds the real pipeline (OrchestratorAgent + Dispatcher
+    + InProcessTransport + AgentRegistry + EntityIndex + EntityMatcher
+    + all ten production domain agents) backed by a `StubVectorStore`,
+    a temporary aiosqlite DB seeded via `app.db.schema._seed_defaults`,
+    and a reset `HomeContextProvider` singleton.
+  - `recording_ha_client.py` implements the `HARestClient` surface
+    used by the routable agents and records every `call_service`
+    invocation while plausibly mutating in-memory state for downstream
+    `expect_state` / `get_state` calls.
+  - `deterministic_llm.py` provides a FIFO-per-`agent_id` reply stub
+    that raises `LLMStubMissError` when an agent calls `complete(...)`
+    without a queued reply.
+  - `embedding_stub.py` produces deterministic 384-dim embeddings via
+    BLAKE2b digests; the stub vector store uses token-overlap distance
+    so candidate ranking is stable for the fixture corpus.
+- New fixtures under `container/tests/data/`:
+  - `ha_snapshots/home_default.json` (52 entities across light, switch,
+    climate, weather, sensor, binary_sensor, media_player, scene, lock,
+    alarm_control_panel, camera, cover, automation, timer,
+    input_datetime, input_boolean, assist_satellite domains) plus
+    `home_default.areas.json`, `home_default.devices.json`, and
+    `home_default.config.json` for area/device/timezone wiring.
+  - `scenarios/` containing 14 representative YAML scenarios covering
+    light (3), climate (1), media (2), music (1), scene (1), security
+    (2), automation (1), timer (1), general (1), and orchestrator (1).
+- New parametrised pytest entry `container/tests/test_real_scenarios.py`
+  marked with the new `real_scenarios` marker registered in
+  `container/pyproject.toml`. New scenario YAML files added to
+  `tests/data/scenarios/**` are picked up automatically.
+- Includes scenario authoring docs under
+  `container/tests/data/scenarios/README.md` (YAML schema cheat sheet,
+  debugging guide for `LLMStubMissError`, coverage status).
+
+Send-agent and orchestrator meta-action coverage (cancel_interaction,
+multi-step composition) are intentionally deferred to a follow-up
+because they need additional fixtures (notify-target seeding,
+mid-turn cancellation contracts).
+
+Validation:
+
+- Real-scenario suite: `14 passed in 2.37s`
+  via `python -m pytest tests/test_real_scenarios.py`.
 
 ### 0.18.39 (PATCH) -- dashboard auth expiry and HA integration UX fixes
 

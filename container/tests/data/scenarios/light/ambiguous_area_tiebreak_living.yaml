@@ -1,0 +1,25 @@
+id: light.ambiguous_area_tiebreak_living
+agent: light-agent
+description: Area context picks living_room_ceiling over kitchen_ceiling for an ambiguous request
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, area_name: "Living Room", device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: light.living_room_ceiling, state: "off"}
+llm:
+  classify: |
+    light-agent (95%): Turn on the ceiling light
+  agents:
+    light-agent: |
+      Turning on the ceiling light.
+      ```json
+      {"action": "turn_on", "entity": "living room ceiling", "parameters": {}}
+      ```
+request:
+  text: "turn on the ceiling light"
+expected:
+  routed_agent: light-agent
+  service_calls:
+    - {domain: light, service: turn_on, target_entity: light.living_room_ceiling}
+  speech_contains: ["living"]

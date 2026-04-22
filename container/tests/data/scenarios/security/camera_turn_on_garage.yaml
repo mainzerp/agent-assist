@@ -1,0 +1,25 @@
+id: security.camera_turn_on_garage
+agent: security-agent
+description: Turn on the garage camera
+snapshot: home_default
+language: en
+context: {source: ha, area_id: garage, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: camera.garage, state: "idle"}
+llm:
+  classify: |
+    security-agent (95%): Turn on the garage camera
+  agents:
+    security-agent: |
+      Turning on the garage camera.
+      ```json
+      {"action": "camera_turn_on", "entity": "Garage Camera", "parameters": {}}
+      ```
+request:
+  text: "turn on the garage camera"
+expected:
+  routed_agent: security-agent
+  service_calls:
+    - {domain: camera, service: turn_on, target_entity: camera.garage}
+  speech_contains: ["garage"]

@@ -8,6 +8,7 @@ from typing import Any
 from app.agents.action_executor import (
     build_verified_speech,
     call_service_with_verification,
+    filter_matches_by_domain,
     rerank_matches_by_area,
 )
 from app.analytics.tracer import _optional_span
@@ -42,6 +43,17 @@ _ACTION_PHRASES: dict[str, str] = {
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "weather"})
+
+# FLOW-DOMAIN-1 (0.19.2): per-action HA-domain allow-set used to filter
+# the hybrid matcher before picking matches[0]. All write actions target
+# climate.* entities; weather and read paths get their own constants.
+_CLIMATE_WRITE_DOMAINS: frozenset[str] = frozenset({"climate"})
+# Read path explicitly spans climate + sensor: "what's the temperature
+# in the living room?" should resolve to a sensor.* entity even when a
+# climate.* exists in the same area. Do NOT tighten this to {"climate"}.
+_CLIMATE_READ_DOMAINS: frozenset[str] = frozenset({"climate", "sensor"})
+_WEATHER_DOMAINS: frozenset[str] = frozenset({"weather"})
+_HISTORY_DOMAINS: frozenset[str] = frozenset({"climate", "sensor", "weather"})
 
 
 def _validate_domain(entity_id: str) -> bool:
@@ -138,16 +150,21 @@ async def execute_climate_action(
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
+                # FLOW-DOMAIN-1 (0.19.2): drop wrong-domain candidates.
+                filtered = filter_matches_by_domain(matches, _CLIMATE_WRITE_DOMAINS)
+                if len(filtered) != len(matches):
+                    em_span["metadata"]["domain_filter_dropped"] = len(matches) - len(filtered)
+                    em_span["metadata"]["domain_filter_allowed"] = sorted(_CLIMATE_WRITE_DOMAINS)
+                if filtered:
                     # FLOW-CTX-1 (0.18.6): prefer same-area climate
                     # entity on near-tie so a thermostat request from
                     # the kitchen satellite pins to the kitchen
                     # thermostat even if the living-room one scored
                     # marginally higher.
-                    reranked = rerank_matches_by_area(matches, preferred_area_id)
+                    reranked = rerank_matches_by_area(filtered, preferred_area_id)
                     chosen = reranked[0]
-                    if chosen is not matches[0]:
-                        em_span["metadata"]["area_rerank_from"] = matches[0].entity_id
+                    if chosen is not filtered[0]:
+                        em_span["metadata"]["area_rerank_from"] = filtered[0].entity_id
                     entity_id = chosen.entity_id
                     friendly_name = chosen.friendly_name or entity_id
                     em_span["metadata"]["top_entity_id"] = entity_id
@@ -262,13 +279,19 @@ async def _query_climate_state(
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
+                # FLOW-DOMAIN-1: read path spans climate.* and sensor.*
+                # so room temperature/humidity sensors are reachable.
+                filtered = filter_matches_by_domain(matches, _CLIMATE_READ_DOMAINS)
+                if len(filtered) != len(matches):
+                    em_span["metadata"]["domain_filter_dropped"] = len(matches) - len(filtered)
+                    em_span["metadata"]["domain_filter_allowed"] = sorted(_CLIMATE_READ_DOMAINS)
+                if filtered:
+                    entity_id = filtered[0].entity_id
+                    friendly_name = filtered[0].friendly_name or entity_id
                     em_span["metadata"]["top_entity_id"] = entity_id
                     em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = matches[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                    em_span["metadata"]["top_score"] = filtered[0].score
+                    em_span["metadata"]["signal_scores"] = getattr(filtered[0], "signal_scores", {})
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
@@ -448,9 +471,11 @@ async def _resolve_weather_entity(
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
+                # FLOW-DOMAIN-1: weather paths must target weather.*
+                filtered = filter_matches_by_domain(matches, _WEATHER_DOMAINS)
+                if filtered:
+                    entity_id = filtered[0].entity_id
+                    friendly_name = filtered[0].friendly_name or entity_id
                     em_span["metadata"]["top_entity_id"] = entity_id
         except Exception:
             logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
@@ -614,8 +639,10 @@ async def _query_entity_history(
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
-                    reranked = rerank_matches_by_area(matches, preferred_area_id)
+                # FLOW-DOMAIN-1: history can target climate, sensor, or weather.
+                filtered = filter_matches_by_domain(matches, _HISTORY_DOMAINS)
+                if filtered:
+                    reranked = rerank_matches_by_area(filtered, preferred_area_id)
                     chosen = reranked[0]
                     entity_id = chosen.entity_id
                     friendly_name = chosen.friendly_name or entity_id

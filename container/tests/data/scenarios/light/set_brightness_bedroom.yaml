@@ -1,0 +1,36 @@
+id: light.set_brightness_bedroom
+agent: light-agent
+description: "Dim the bedroom ceiling light to 30 percent"
+snapshot: home_default
+language: en
+
+context:
+  source: ha
+  area_id: bedroom
+  device_id: satellite_bedroom
+
+preconditions:
+  entity_overrides:
+    - entity_id: light.bedroom_ceiling
+      state: "on"
+
+llm:
+  classify: |
+    light-agent (95%): Set bedroom ceiling brightness to 30 percent
+  agents:
+    light-agent: |
+      Dimming the bedroom ceiling light.
+      ```json
+      {"action": "set_brightness", "entity": "bedroom ceiling", "parameters": {"brightness": 77}}
+      ```
+
+expected:
+  routed_agent: light-agent
+  service_calls:
+    - domain: light
+      service: turn_on
+      target_entity: light.bedroom_ceiling
+      service_data_keys: ["brightness"]
+      service_data:
+        brightness: 77
+  speech_contains: ["bedroom"]

@@ -1,0 +1,25 @@
+id: music.repeat_one
+agent: music-agent
+description: Set repeat to one on the MASS player
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    music-agent (95%): Set repeat to one on the MASS player
+  agents:
+    music-agent: |
+      Setting repeat to one.
+      ```json
+      {"action": "repeat_set", "entity": "MASS Living Room", "parameters": {"repeat": "one"}}
+      ```
+request:
+  text: "repeat this track"
+expected:
+  routed_agent: music-agent
+  service_calls:
+    - domain: media_player
+      service: repeat_set
+      target_entity: media_player.mass_living_room
+      service_data: {repeat: one}
+  speech_contains: ["repeat"]

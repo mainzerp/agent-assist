@@ -1,0 +1,25 @@
+id: security.unlock_back_door
+agent: security-agent
+description: Unlock the back door
+snapshot: home_default
+language: en
+context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
+preconditions:
+  entity_overrides:
+    - {entity_id: lock.back_door, state: "locked"}
+llm:
+  classify: |
+    security-agent (95%): Unlock the back door
+  agents:
+    security-agent: |
+      Unlocking the back door.
+      ```json
+      {"action": "unlock", "entity": "back door lock", "parameters": {}}
+      ```
+request:
+  text: "unlock the back door"
+expected:
+  routed_agent: security-agent
+  service_calls:
+    - {domain: lock, service: unlock, target_entity: lock.back_door}
+  speech_contains: ["back"]

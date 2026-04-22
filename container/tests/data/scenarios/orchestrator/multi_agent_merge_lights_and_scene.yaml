@@ -1,0 +1,33 @@
+id: orchestrator.multi_agent_merge_lights_and_scene
+agent: orchestrator
+description: Two-agent classification triggers parallel dispatch and a merge LLM call
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: light.living_room_lamp, state: "off"}
+llm:
+  classify: |
+    light-agent (90%): turn on the living room lamp
+    scene-agent (88%): activate the movie night scene
+  agents:
+    orchestrator:
+      - "Turned on the lamp and activated the movie night scene."
+    light-agent: |
+      Turning on the lamp.
+      ```json
+      {"action": "turn_on", "entity": "living room lamp", "parameters": {}}
+      ```
+    scene-agent: |
+      Activating movie night.
+      ```json
+      {"action": "activate_scene", "entity": "movie night", "parameters": {}}
+      ```
+request:
+  text: "turn on the living room lamp and start movie night"
+expected:
+  routed_agent: "light-agent, scene-agent"
+  allow_extra_calls: true
+  service_calls: []
+  speech_contains: ["movie"]

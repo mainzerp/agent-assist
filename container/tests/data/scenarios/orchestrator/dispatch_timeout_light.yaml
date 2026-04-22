@@ -1,0 +1,15 @@
+id: orchestrator.dispatch_timeout_light
+agent: orchestrator
+description: Per-agent dispatch timeout (skipped; framework cannot inject controlled latency)
+snapshot: home_default
+language: en
+xfail: "real timeout requires injected sleep into dispatcher; not expressible without framework patch"
+context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
+llm:
+  classify: |
+    light-agent (95%): turn on kitchen light
+request:
+  text: "turn on the kitchen light"
+expected:
+  routed_agent: light-agent
+  speech_contains: ["timeout"]

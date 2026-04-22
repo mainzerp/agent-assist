@@ -1,0 +1,28 @@
+id: media.mute_kitchen
+agent: media-agent
+description: Mute the kitchen speaker
+snapshot: home_default
+language: en
+context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
+preconditions:
+  entity_overrides:
+    - {entity_id: media_player.kitchen_speaker, state: "playing"}
+llm:
+  classify: |
+    media-agent (95%): Mute the kitchen speaker
+  agents:
+    media-agent: |
+      Muting the kitchen speaker.
+      ```json
+      {"action": "mute", "entity": "kitchen speaker", "parameters": {"is_volume_muted": true}}
+      ```
+request:
+  text: "mute the kitchen speaker"
+expected:
+  routed_agent: media-agent
+  service_calls:
+    - domain: media_player
+      service: volume_mute
+      target_entity: media_player.kitchen_speaker
+      service_data: {is_volume_muted: true}
+  speech_contains: ["mute"]

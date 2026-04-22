@@ -1,0 +1,24 @@
+id: timer.snooze_alarm
+agent: timer-agent
+description: Snooze the morning alarm by 9 minutes
+snapshot: home_default
+language: en
+context: {source: ha, area_id: bedroom, device_id: satellite_bedroom}
+xfail: "snooze_timer requires recently expired timer state in module-level cache"
+preconditions:
+  entity_overrides:
+    - {entity_id: timer.bedroom_sleep, state: "idle"}
+llm:
+  classify: |
+    timer-agent (95%): Snooze the alarm
+  agents:
+    timer-agent: |
+      Snoozing for 9 minutes.
+      ```json
+      {"action": "snooze_timer", "entity": "bedroom sleep", "parameters": {"duration": "00:09:00"}}
+      ```
+request:
+  text: "snooze the alarm"
+expected:
+  routed_agent: timer-agent
+  speech_contains: ["snooze"]

@@ -1,0 +1,21 @@
+id: climate.weather_current
+agent: climate-agent
+description: Read current weather from the home weather entity
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    climate-agent (95%): Query current weather
+  agents:
+    climate-agent: |
+      Checking the current weather.
+      ```json
+      {"action": "query_weather", "entity": "home weather", "parameters": {}}
+      ```
+request:
+  text: "how is the weather right now?"
+expected:
+  routed_agent: climate-agent
+  service_calls: []
+  speech_contains: ["weather"]

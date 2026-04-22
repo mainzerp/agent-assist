@@ -1,0 +1,26 @@
+id: music.search_via_mass
+agent: music-agent
+description: Search for music via the MASS player
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    music-agent (95%): Search MASS for jazz
+  agents:
+    music-agent: |
+      Searching for jazz.
+      ```json
+      {"action": "search", "entity": "MASS Living Room", "parameters": {"name": "jazz", "media_type": "track", "limit": 5}}
+      ```
+request:
+  text: "search for jazz songs"
+expected:
+  routed_agent: music-agent
+  service_calls:
+    - domain: mass
+      service: search
+      target_entity: media_player.mass_living_room
+      service_data: {name: jazz, media_type: track, limit: 5}
+  allow_extra_calls: true
+  speech_contains: ["found"]

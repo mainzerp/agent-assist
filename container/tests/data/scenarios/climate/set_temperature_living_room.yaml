@@ -1,0 +1,30 @@
+id: climate.set_temperature_living_room
+agent: climate-agent
+description: "Set the living room thermostat to 22 degrees"
+snapshot: home_default
+language: en
+
+context:
+  source: ha
+  area_id: living_room
+  device_id: satellite_living_room
+
+llm:
+  classify: |
+    climate-agent (95%): Set living room thermostat to 22 degrees
+  agents:
+    climate-agent: |
+      Setting the living room thermostat to 22 degrees.
+      ```json
+      {"action": "set_temperature", "entity": "living room thermostat", "parameters": {"temperature": 22}}
+      ```
+
+expected:
+  routed_agent: climate-agent
+  service_calls:
+    - domain: climate
+      service: set_temperature
+      target_entity: climate.living_room_thermostat
+      service_data:
+        temperature: 22.0
+  speech_contains: ["temperature"]

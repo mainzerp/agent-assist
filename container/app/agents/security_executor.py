@@ -8,6 +8,7 @@ from typing import Any
 from app.agents.action_executor import (
     build_verified_speech,
     call_service_with_verification,
+    filter_matches_by_domain,
     rerank_matches_by_area,
 )
 from app.analytics.tracer import _optional_span
@@ -28,6 +29,21 @@ _SECURITY_ACTION_MAP: dict[str, tuple[str, str]] = {
     # Cameras
     "camera_turn_on": ("camera", "turn_on"),
     "camera_turn_off": ("camera", "turn_off"),
+}
+
+# FLOW-DOMAIN-1 (0.19.2): per-action HA-domain allow-set used to filter
+# the hybrid matcher's candidate list before picking matches[0]. Without
+# this, a camera_turn_on request for "front door" can resolve to
+# lock.front_door because the matcher is domain-blind.
+_ACTION_DOMAINS: dict[str, frozenset[str]] = {
+    "lock": frozenset({"lock"}),
+    "unlock": frozenset({"lock"}),
+    "alarm_arm_home": frozenset({"alarm_control_panel"}),
+    "alarm_arm_away": frozenset({"alarm_control_panel"}),
+    "alarm_arm_night": frozenset({"alarm_control_panel"}),
+    "alarm_disarm": frozenset({"alarm_control_panel"}),
+    "camera_turn_on": frozenset({"camera"}),
+    "camera_turn_off": frozenset({"camera"}),
 }
 
 # FLOW-VERIFY-SHARED (0.18.5): security actions have strong deterministic
@@ -55,6 +71,11 @@ _ACTION_PHRASES: dict[str, str] = {
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"alarm_control_panel", "lock", "camera", "binary_sensor", "sensor"})
+
+# FLOW-DOMAIN-1 (0.19.2): read paths legitimately span every security
+# domain (e.g. query_security_state for "front door" may resolve to a
+# lock, alarm panel, camera, or binary_sensor depending on the snapshot).
+_READ_DOMAINS: frozenset[str] = _ALLOWED_DOMAINS
 
 
 def _validate_domain(entity_id: str) -> bool:
@@ -130,18 +151,25 @@ async def execute_security_action(
     # Resolve entity via matcher first, then entity_index fallback
     entity_id = None
     friendly_name = entity_query
+    required_domains = _ACTION_DOMAINS.get(action_name, _READ_DOMAINS)
     try:
         if entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
+                # FLOW-DOMAIN-1 (0.19.2): drop wrong-domain candidates so a
+                # camera_turn_on cannot land on lock.front_door.
+                filtered = filter_matches_by_domain(matches, required_domains)
+                if len(filtered) != len(matches):
+                    em_span["metadata"]["domain_filter_dropped"] = len(matches) - len(filtered)
+                    em_span["metadata"]["domain_filter_allowed"] = sorted(required_domains)
+                if filtered:
+                    entity_id = filtered[0].entity_id
+                    friendly_name = filtered[0].friendly_name or entity_id
                     em_span["metadata"]["top_entity_id"] = entity_id
                     em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = matches[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                    em_span["metadata"]["top_score"] = filtered[0].score
+                    em_span["metadata"]["signal_scores"] = getattr(filtered[0], "signal_scores", {})
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
@@ -258,8 +286,13 @@ async def _query_security_state(
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
-                    reranked = rerank_matches_by_area(matches, preferred_area_id)
+                # FLOW-DOMAIN-1: read path spans every security domain.
+                filtered = filter_matches_by_domain(matches, _READ_DOMAINS)
+                if len(filtered) != len(matches):
+                    em_span["metadata"]["domain_filter_dropped"] = len(matches) - len(filtered)
+                    em_span["metadata"]["domain_filter_allowed"] = sorted(_READ_DOMAINS)
+                if filtered:
+                    reranked = rerank_matches_by_area(filtered, preferred_area_id)
                     chosen = reranked[0]
                     entity_id = chosen.entity_id
                     friendly_name = chosen.friendly_name or entity_id
@@ -331,8 +364,10 @@ async def _query_security_entity_history(
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
-                    reranked = rerank_matches_by_area(matches, preferred_area_id)
+                # FLOW-DOMAIN-1: history read spans every security domain.
+                filtered = filter_matches_by_domain(matches, _READ_DOMAINS)
+                if filtered:
+                    reranked = rerank_matches_by_area(filtered, preferred_area_id)
                     chosen = reranked[0]
                     entity_id = chosen.entity_id
                     friendly_name = chosen.friendly_name or entity_id

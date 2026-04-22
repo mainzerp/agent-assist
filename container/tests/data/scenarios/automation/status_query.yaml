@@ -1,0 +1,21 @@
+id: automation.status_query
+agent: automation-agent
+description: Query the state of the bedtime automation
+snapshot: home_default
+language: en
+context: {source: ha, area_id: bedroom, device_id: satellite_bedroom}
+llm:
+  classify: |
+    automation-agent (95%): Query bedtime automation state
+  agents:
+    automation-agent: |
+      Checking the bedtime automation.
+      ```json
+      {"action": "query_automation_state", "entity": "bedtime", "parameters": {}}
+      ```
+request:
+  text: "is the bedtime automation enabled?"
+expected:
+  routed_agent: automation-agent
+  service_calls: []
+  speech_contains: ["bedtime"]

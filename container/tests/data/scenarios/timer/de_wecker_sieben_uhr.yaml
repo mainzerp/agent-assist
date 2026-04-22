@@ -1,0 +1,25 @@
+id: timer.de_wecker_sieben_uhr
+agent: timer-agent
+description: German request to set the alarm to 07:00
+snapshot: home_default
+language: de
+context: {source: ha, area_id: bedroom, area_name: "Schlafzimmer", device_id: satellite_bedroom}
+llm:
+  classify: |
+    timer-agent (95%): Wecker auf sieben Uhr stellen
+  agents:
+    timer-agent: |
+      Stelle den Wecker auf 7 Uhr.
+      ```json
+      {"action": "set_datetime", "entity": "morning alarm", "parameters": {"time": "07:00:00"}}
+      ```
+request:
+  text: "stelle den Wecker auf sieben Uhr"
+expected:
+  routed_agent: timer-agent
+  service_calls:
+    - domain: input_datetime
+      service: set_datetime
+      target_entity: input_datetime.morning_alarm
+      service_data: {time: "07:00:00"}
+  speech_contains: ["alarm"]

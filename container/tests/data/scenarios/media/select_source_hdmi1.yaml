@@ -1,0 +1,28 @@
+id: media.select_source_hdmi1
+agent: media-agent
+description: Switch the living room TV to HDMI1 source
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: media_player.living_room_tv, state: "on"}
+llm:
+  classify: |
+    media-agent (95%): Switch living room TV to HDMI1
+  agents:
+    media-agent: |
+      Switching to HDMI1.
+      ```json
+      {"action": "select_source", "entity": "living room tv", "parameters": {"source": "HDMI1"}}
+      ```
+request:
+  text: "switch the TV to HDMI1"
+expected:
+  routed_agent: media-agent
+  service_calls:
+    - domain: media_player
+      service: select_source
+      target_entity: media_player.living_room_tv
+      service_data: {source: HDMI1}
+  speech_contains: ["source"]

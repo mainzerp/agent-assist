@@ -1,0 +1,18 @@
+id: general.fallback_when_no_agent_matches
+agent: general-agent
+description: Orchestrator falls back to general-agent when classification yields an unknown agent
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    nonexistent-agent (90%): Some task we cannot handle
+  agents:
+    general-agent: |
+      I'm not sure how to handle that, but I'm here to help with your smart home.
+request:
+  text: "do the impossible thing"
+expected:
+  routed_agent: general-agent
+  service_calls: []
+  speech_contains: ["help"]

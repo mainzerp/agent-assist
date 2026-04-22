@@ -1,0 +1,25 @@
+id: security.arm_alarm_home
+agent: security-agent
+description: Arm the home alarm in home mode
+snapshot: home_default
+language: en
+context: {source: ha, area_id: hallway, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: alarm_control_panel.home_alarm, state: "disarmed"}
+llm:
+  classify: |
+    security-agent (95%): Arm the alarm in home mode
+  agents:
+    security-agent: |
+      Arming in home mode.
+      ```json
+      {"action": "alarm_arm_home", "entity": "home alarm", "parameters": {}}
+      ```
+request:
+  text: "arm the alarm at home"
+expected:
+  routed_agent: security-agent
+  service_calls:
+    - {domain: alarm_control_panel, service: alarm_arm_home, target_entity: alarm_control_panel.home_alarm}
+  speech_contains: ["alarm"]

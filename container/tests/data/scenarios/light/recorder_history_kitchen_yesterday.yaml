@@ -1,0 +1,21 @@
+id: light.recorder_history_kitchen_yesterday
+agent: light-agent
+description: Recorder history for the kitchen ceiling light yesterday
+snapshot: home_default
+language: en
+context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
+llm:
+  classify: |
+    light-agent (95%): Recorder history for the kitchen ceiling light yesterday
+  agents:
+    light-agent: |
+      Looking up yesterday history.
+      ```json
+      {"action": "query_entity_history", "entity": "kitchen ceiling", "parameters": {"period": "yesterday"}}
+      ```
+request:
+  text: "when was the kitchen light on yesterday?"
+expected:
+  routed_agent: light-agent
+  service_calls: []
+  speech_contains: ["kitchen"]

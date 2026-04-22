@@ -1,0 +1,21 @@
+id: orchestrator.routing_cache_hit_skip_classify
+agent: orchestrator
+description: Routing cache hit skips classify (skipped; pipeline runs without cache_manager)
+snapshot: home_default
+language: en
+xfail: "runner constructs orchestrator with cache_manager=None; routing cache needs a wired CacheManager"
+context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
+llm:
+  classify: |
+    light-agent (95%): turn on kitchen light
+  agents:
+    light-agent: |
+      ```json
+      {"action": "turn_on", "entity": "kitchen ceiling", "parameters": {}}
+      ```
+request:
+  text: "turn on the kitchen light"
+expected:
+  routed_agent: light-agent
+  service_calls:
+    - {domain: light, service: turn_on, target_entity: light.kitchen_ceiling}

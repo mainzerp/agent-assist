@@ -1,0 +1,10 @@
+{
+  "living_room": {"name": "Living Room", "name_de": "Wohnzimmer"},
+  "kitchen": {"name": "Kitchen", "name_de": "Kueche"},
+  "bedroom": {"name": "Bedroom", "name_de": "Schlafzimmer"},
+  "bathroom": {"name": "Bathroom", "name_de": "Badezimmer"},
+  "office": {"name": "Office", "name_de": "Buero"},
+  "hallway": {"name": "Hallway", "name_de": "Flur"},
+  "garage": {"name": "Garage", "name_de": "Garage"},
+  "garden": {"name": "Garden", "name_de": "Garten"}
+}

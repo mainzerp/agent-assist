@@ -1,0 +1,29 @@
+id: light.set_color_temperature_office
+agent: light-agent
+description: Set the office desk light to a warm 3000K color temperature
+snapshot: home_default
+language: en
+context: {source: ha, area_id: office, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: light.office_desk, state: "on"}
+llm:
+  classify: |
+    light-agent (95%): Set the office desk light color temperature to 3000K
+  agents:
+    light-agent: |
+      Setting the office desk light to a warm color temperature.
+      ```json
+      {"action": "set_color_temp", "entity": "office desk", "parameters": {"color_temp_kelvin": 3000}}
+      ```
+request:
+  text: "set the office desk light to a warm color"
+expected:
+  routed_agent: light-agent
+  service_calls:
+    - domain: light
+      service: turn_on
+      target_entity: light.office_desk
+      service_data_keys: ["color_temp_kelvin"]
+      service_data: {color_temp_kelvin: 3000}
+  speech_contains: ["office"]

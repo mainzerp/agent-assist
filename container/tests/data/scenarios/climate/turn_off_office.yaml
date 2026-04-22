@@ -1,0 +1,25 @@
+id: climate.turn_off_office
+agent: climate-agent
+description: Turn off the office thermostat
+snapshot: home_default
+language: en
+context: {source: ha, area_id: office, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: climate.office_thermostat, state: "heat"}
+llm:
+  classify: |
+    climate-agent (95%): Turn off the office thermostat
+  agents:
+    climate-agent: |
+      Turning off the office thermostat.
+      ```json
+      {"action": "turn_off", "entity": "office thermostat", "parameters": {}}
+      ```
+request:
+  text: "turn off the office heater"
+expected:
+  routed_agent: climate-agent
+  service_calls:
+    - {domain: climate, service: turn_off, target_entity: climate.office_thermostat}
+  speech_contains: ["office"]

@@ -1,0 +1,28 @@
+id: climate.set_hvac_mode_heat
+agent: climate-agent
+description: Set the office thermostat to heat mode
+snapshot: home_default
+language: en
+context: {source: ha, area_id: office, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: climate.office_thermostat, state: "off"}
+llm:
+  classify: |
+    climate-agent (95%): Set office thermostat to heat
+  agents:
+    climate-agent: |
+      Switching the office thermostat to heat mode.
+      ```json
+      {"action": "set_hvac_mode", "entity": "office thermostat", "parameters": {"hvac_mode": "heat"}}
+      ```
+request:
+  text: "switch the office heater on"
+expected:
+  routed_agent: climate-agent
+  service_calls:
+    - domain: climate
+      service: set_hvac_mode
+      target_entity: climate.office_thermostat
+      service_data: {hvac_mode: heat}
+  speech_contains: ["office"]

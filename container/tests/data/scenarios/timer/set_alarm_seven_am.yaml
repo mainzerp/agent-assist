@@ -1,0 +1,25 @@
+id: timer.set_alarm_seven_am
+agent: timer-agent
+description: Set the morning alarm input_datetime to 07:00
+snapshot: home_default
+language: en
+context: {source: ha, area_id: bedroom, device_id: satellite_bedroom}
+llm:
+  classify: |
+    timer-agent (95%): Set morning alarm to 07:00
+  agents:
+    timer-agent: |
+      Setting the morning alarm to 7 AM.
+      ```json
+      {"action": "set_datetime", "entity": "morning alarm", "parameters": {"time": "07:00:00"}}
+      ```
+request:
+  text: "set the morning alarm to seven"
+expected:
+  routed_agent: timer-agent
+  service_calls:
+    - domain: input_datetime
+      service: set_datetime
+      target_entity: input_datetime.morning_alarm
+      service_data: {time: "07:00:00"}
+  speech_contains: ["alarm"]

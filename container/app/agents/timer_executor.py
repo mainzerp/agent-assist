@@ -11,6 +11,7 @@ from typing import Any
 from app.agents.action_executor import (
     build_verified_speech,
     call_service_with_verification,
+    filter_matches_by_domain,
 )
 from app.agents.delayed_tasks import delayed_task_manager
 from app.analytics.tracer import _optional_span
@@ -47,6 +48,24 @@ _ACTION_PHRASES: dict[str, str] = {
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"timer", "input_datetime"})
+
+# FLOW-DOMAIN-1 (0.19.2): per-action HA-domain allow-set used to filter
+# the hybrid matcher before picking matches[0]. Reminder paths target
+# calendar.* which is intentionally outside _ALLOWED_DOMAINS (those
+# paths bypass _validate_domain entirely).
+_ACTION_DOMAINS: dict[str, frozenset[str]] = {
+    "start_timer": frozenset({"timer"}),
+    "cancel_timer": frozenset({"timer"}),
+    "pause_timer": frozenset({"timer"}),
+    "resume_timer": frozenset({"timer"}),
+    "finish_timer": frozenset({"timer"}),
+    "snooze_timer": frozenset({"timer"}),
+    "start_timer_with_notification": frozenset({"timer"}),
+    "sleep_timer": frozenset({"timer"}),
+    "set_datetime": frozenset({"input_datetime"}),
+}
+_TIMER_QUERY_DOMAINS: frozenset[str] = frozenset({"timer", "input_datetime"})
+_CALENDAR_DOMAINS: frozenset[str] = frozenset({"calendar"})
 
 
 def _validate_domain(entity_id: str) -> bool:
@@ -392,11 +411,13 @@ async def _query_timer(
                 async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                     matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                     em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                    if matches:
-                        entity_id = matches[0].entity_id
+                    # FLOW-DOMAIN-1 (0.19.2): query spans timer + input_datetime.
+                    filtered = filter_matches_by_domain(matches, _TIMER_QUERY_DOMAINS)
+                    if filtered:
+                        entity_id = filtered[0].entity_id
                         em_span["metadata"]["top_entity_id"] = entity_id
-                        em_span["metadata"]["top_score"] = matches[0].score
-                        em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                        em_span["metadata"]["top_score"] = filtered[0].score
+                        em_span["metadata"]["signal_scores"] = getattr(filtered[0], "signal_scores", {})
         except Exception:
             logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
@@ -561,13 +582,15 @@ async def _snooze_timer(
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
+                # FLOW-DOMAIN-1 (0.19.2): snooze targets timer.* only.
+                filtered = filter_matches_by_domain(matches, _ACTION_DOMAINS["snooze_timer"])
+                if filtered:
+                    entity_id = filtered[0].entity_id
+                    friendly_name = filtered[0].friendly_name or entity_id
                     em_span["metadata"]["top_entity_id"] = entity_id
                     em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = matches[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                    em_span["metadata"]["top_score"] = filtered[0].score
+                    em_span["metadata"]["signal_scores"] = getattr(filtered[0], "signal_scores", {})
     except Exception:
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
@@ -905,13 +928,15 @@ async def _create_reminder(
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
+                # FLOW-DOMAIN-1 (0.19.2): reminders target calendar.* only.
+                filtered = filter_matches_by_domain(matches, _CALENDAR_DOMAINS)
+                if filtered:
+                    entity_id = filtered[0].entity_id
+                    friendly_name = filtered[0].friendly_name or entity_id
                     em_span["metadata"]["top_entity_id"] = entity_id
                     em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = matches[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                    em_span["metadata"]["top_score"] = filtered[0].score
+                    em_span["metadata"]["signal_scores"] = getattr(filtered[0], "signal_scores", {})
         if not entity_id and entity_index:
             results = await entity_index.search_async(entity_query, n_results=1)
             if results:
@@ -1001,13 +1026,15 @@ async def _create_recurring_reminder(
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                 matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                 em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                if matches:
-                    entity_id = matches[0].entity_id
-                    friendly_name = matches[0].friendly_name or entity_id
+                # FLOW-DOMAIN-1 (0.19.2): recurring reminders target calendar.* only.
+                filtered = filter_matches_by_domain(matches, _CALENDAR_DOMAINS)
+                if filtered:
+                    entity_id = filtered[0].entity_id
+                    friendly_name = filtered[0].friendly_name or entity_id
                     em_span["metadata"]["top_entity_id"] = entity_id
                     em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = matches[0].score
-                    em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                    em_span["metadata"]["top_score"] = filtered[0].score
+                    em_span["metadata"]["signal_scores"] = getattr(filtered[0], "signal_scores", {})
         if not entity_id and entity_index:
             results = await entity_index.search_async(entity_query, n_results=1)
             if results:
@@ -1149,13 +1176,20 @@ async def execute_timer_action(
                 async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
                     matches = await entity_matcher.match(entity_query, agent_id=agent_id)
                     em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                    if matches:
-                        entity_id = matches[0].entity_id
-                        friendly_name = matches[0].friendly_name or entity_id
+                    # FLOW-DOMAIN-1 (0.19.2): per-action allow-set; falls back
+                    # to the broad timer/input_datetime pool for unmapped actions.
+                    required_domains = _ACTION_DOMAINS.get(action_name, _TIMER_QUERY_DOMAINS)
+                    filtered = filter_matches_by_domain(matches, required_domains)
+                    if len(filtered) != len(matches):
+                        em_span["metadata"]["domain_filter_dropped"] = len(matches) - len(filtered)
+                        em_span["metadata"]["domain_filter_allowed"] = sorted(required_domains)
+                    if filtered:
+                        entity_id = filtered[0].entity_id
+                        friendly_name = filtered[0].friendly_name or entity_id
                         em_span["metadata"]["top_entity_id"] = entity_id
                         em_span["metadata"]["top_friendly_name"] = friendly_name
-                        em_span["metadata"]["top_score"] = matches[0].score
-                        em_span["metadata"]["signal_scores"] = getattr(matches[0], "signal_scores", {})
+                        em_span["metadata"]["top_score"] = filtered[0].score
+                        em_span["metadata"]["signal_scores"] = getattr(filtered[0], "signal_scores", {})
         except Exception:
             logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 

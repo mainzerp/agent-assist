@@ -1,0 +1,25 @@
+id: media.chromecast_play
+agent: media-agent
+description: Resume playback on the living room Chromecast
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - {entity_id: media_player.living_room_chromecast, state: "paused"}
+llm:
+  classify: |
+    media-agent (95%): Resume the living room chromecast
+  agents:
+    media-agent: |
+      Resuming the chromecast.
+      ```json
+      {"action": "play", "entity": "living room chromecast", "parameters": {}}
+      ```
+request:
+  text: "resume the chromecast"
+expected:
+  routed_agent: media-agent
+  service_calls:
+    - {domain: media_player, service: media_play, target_entity: media_player.living_room_chromecast}
+  speech_contains: ["chromecast"]

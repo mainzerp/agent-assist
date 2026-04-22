@@ -1,0 +1,25 @@
+id: music.play_artist_via_mass
+agent: music-agent
+description: Play an artist on the MASS living room player
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    music-agent (95%): Play The Beatles on the MASS living room player
+  agents:
+    music-agent: |
+      Playing The Beatles.
+      ```json
+      {"action": "play_media", "entity": "MASS Living Room", "parameters": {"media_id": "The Beatles", "media_type": "artist"}}
+      ```
+request:
+  text: "play the Beatles in the living room"
+expected:
+  routed_agent: music-agent
+  service_calls:
+    - domain: mass
+      service: play_media
+      target_entity: media_player.mass_living_room
+      service_data: {media_id: "The Beatles", media_type: artist}
+  speech_contains: ["mass"]

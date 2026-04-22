@@ -1,0 +1,33 @@
+id: light.turn_off_living_room
+agent: light-agent
+description: "Turn off the living room ceiling light"
+snapshot: home_default
+language: en
+
+context:
+  source: ha
+  area_id: living_room
+  device_id: satellite_living_room
+
+preconditions:
+  entity_overrides:
+    - entity_id: light.living_room_ceiling
+      state: "on"
+
+llm:
+  classify: |
+    light-agent (95%): Turn off the living room ceiling light
+  agents:
+    light-agent: |
+      Turning off the living room ceiling light.
+      ```json
+      {"action": "turn_off", "entity": "living room ceiling", "parameters": {}}
+      ```
+
+expected:
+  routed_agent: light-agent
+  service_calls:
+    - domain: light
+      service: turn_off
+      target_entity: light.living_room_ceiling
+  speech_contains: ["living"]

@@ -1,0 +1,36 @@
+id: security.turn_off_front_door_camera
+agent: security-agent
+description: "Turn off the front door camera (camera action with bare 'front door' query)"
+snapshot: home_default
+language: en
+
+context:
+  source: ha
+  area_id: hallway
+  device_id: satellite_living_room
+
+preconditions:
+  entity_overrides:
+    - entity_id: camera.front_door
+      state: "recording"
+
+llm:
+  classify: |
+    security-agent (95%): Turn off the front door camera
+  agents:
+    security-agent: |
+      Turning off the front door camera.
+      ```json
+      {"action": "camera_turn_off", "entity": "front door", "parameters": {}}
+      ```
+
+request:
+  text: "turn off the front door camera"
+
+expected:
+  routed_agent: security-agent
+  service_calls:
+    - domain: camera
+      service: turn_off
+      target_entity: camera.front_door
+  speech_contains: ["camera"]

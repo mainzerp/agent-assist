@@ -1,0 +1,30 @@
+id: general.conversation_followup
+agent: general-agent
+description: A two-turn conversation where the second turn references the first
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room, conversation_id: scenario-followup}
+llm:
+  classify: |
+    general-agent (95%): Tell the user a short fact about Mars
+  agents:
+    general-agent: |
+      Mars has two small moons named Phobos and Deimos.
+request:
+  text: "tell me a fact about Mars"
+expected:
+  routed_agent: general-agent
+  service_calls: []
+  speech_contains: ["mars"]
+follow_up:
+  - request: {text: "and which is bigger?"}
+    llm:
+      classify: |
+        general-agent (95%): Follow up on Mars moons
+      agents:
+        general-agent: |
+          Phobos is the larger of the two moons.
+    expected:
+      routed_agent: general-agent
+      service_calls: []
+      speech_contains: ["phobos"]

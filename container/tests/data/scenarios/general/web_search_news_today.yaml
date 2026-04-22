@@ -1,0 +1,18 @@
+id: general.web_search_news_today
+agent: general-agent
+description: General agent answers a current-events question via free-form text
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    general-agent (90%): Summarize the latest news headlines
+  agents:
+    general-agent: |
+      Today's headlines: a summit on climate cooperation opened in Geneva, and a major tech vendor unveiled new home energy hardware. No local alerts are active.
+request:
+  text: "what's the news today?"
+expected:
+  routed_agent: general-agent
+  service_calls: []
+  speech_contains: ["headlines"]

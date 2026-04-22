@@ -1,0 +1,21 @@
+id: light.entity_not_found
+agent: light-agent
+description: Request for a non-existent light entity returns a failure speech without service calls
+snapshot: home_default
+language: en
+context: {source: ha, area_id: garden, device_id: satellite_living_room}
+llm:
+  classify: |
+    light-agent (95%): Turn on the garden gnome lamp
+  agents:
+    light-agent: |
+      Turning on the garden gnome lamp.
+      ```json
+      {"action": "turn_on", "entity": "garden gnome lamp 999", "parameters": {}}
+      ```
+request:
+  text: "turn on the garden gnome lamp"
+expected:
+  routed_agent: light-agent
+  service_calls: []
+  speech_contains: ["could not find"]

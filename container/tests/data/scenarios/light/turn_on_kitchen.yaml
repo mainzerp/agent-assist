@@ -1,0 +1,29 @@
+id: light.turn_on_kitchen
+agent: light-agent
+description: "Turn on the kitchen ceiling light"
+snapshot: home_default
+language: en
+
+context:
+  source: ha
+  area_id: kitchen
+  area_name: "Kitchen"
+  device_id: satellite_kitchen
+
+llm:
+  classify: |
+    light-agent (95%): Turn on the kitchen ceiling light
+  agents:
+    light-agent: |
+      Turning on the kitchen ceiling light.
+      ```json
+      {"action": "turn_on", "entity": "kitchen ceiling", "parameters": {}}
+      ```
+
+expected:
+  routed_agent: light-agent
+  service_calls:
+    - domain: light
+      service: turn_on
+      target_entity: light.kitchen_ceiling
+  speech_contains: ["kitchen"]

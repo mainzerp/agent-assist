@@ -1,0 +1,26 @@
+id: media.status_query_what_is_playing
+agent: media-agent
+description: Query what is playing on the living room TV
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - entity_id: media_player.living_room_tv
+      state: "playing"
+      attributes: {media_title: "Documentary", media_artist: "BBC"}
+llm:
+  classify: |
+    media-agent (95%): Query the living room TV state
+  agents:
+    media-agent: |
+      Checking the living room TV.
+      ```json
+      {"action": "query_media_state", "entity": "living room tv", "parameters": {}}
+      ```
+request:
+  text: "what's playing on the TV?"
+expected:
+  routed_agent: media-agent
+  service_calls: []
+  speech_contains: ["living"]

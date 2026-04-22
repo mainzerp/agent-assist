@@ -1,0 +1,18 @@
+id: general.current_events_weather_summary
+agent: general-agent
+description: General agent composes a weather summary from local context
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    general-agent (90%): Compose a short weather summary
+  agents:
+    general-agent: |
+      The weather is sunny, around 18 degrees, with a light breeze.
+request:
+  text: "give me a weather summary"
+expected:
+  routed_agent: general-agent
+  service_calls: []
+  speech_contains: ["weather", "sunny"]

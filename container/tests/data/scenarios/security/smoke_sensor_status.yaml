@@ -1,0 +1,21 @@
+id: security.smoke_sensor_status
+agent: security-agent
+description: Check the kitchen smoke sensor status
+snapshot: home_default
+language: en
+context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
+llm:
+  classify: |
+    security-agent (95%): Query the kitchen smoke sensor
+  agents:
+    security-agent: |
+      Checking the kitchen smoke detector.
+      ```json
+      {"action": "query_security_state", "entity": "kitchen smoke", "parameters": {}}
+      ```
+request:
+  text: "any smoke alarm?"
+expected:
+  routed_agent: security-agent
+  service_calls: []
+  speech_contains: ["kitchen"]

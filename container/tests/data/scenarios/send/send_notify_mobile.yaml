@@ -1,0 +1,22 @@
+id: send.send_notify_mobile
+agent: send-agent
+description: Send a message to a mobile notify target via the send agent
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+preconditions:
+  send_device_mappings:
+    - {display_name: "Laura Phone", device_type: notify, ha_service_target: mobile_app_laura}
+llm:
+  classify: |
+    send-agent (95%): Laura Phone|||CONTENT|||The dinner reservation is at 7pm.
+  agents:
+    send-agent: |
+      The dinner reservation is at 7pm.
+request:
+  text: "send the dinner reservation to Laura phone"
+expected:
+  routed_agent: send-agent
+  service_calls:
+    - {domain: notify, service: mobile_app_laura}
+  speech_contains: ["sent"]

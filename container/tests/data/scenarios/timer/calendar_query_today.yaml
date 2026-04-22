@@ -1,0 +1,21 @@
+id: timer.calendar_query_today
+agent: timer-agent
+description: Calendar/list timers query
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    timer-agent (95%): List active timers
+  agents:
+    timer-agent: |
+      Listing active timers.
+      ```json
+      {"action": "list_timers", "entity": "", "parameters": {}}
+      ```
+request:
+  text: "what timers are active?"
+expected:
+  routed_agent: timer-agent
+  service_calls: []
+  speech_contains: ["timer"]

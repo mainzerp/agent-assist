@@ -1,0 +1,30 @@
+id: climate.weather_forecast
+agent: climate-agent
+description: Request the weather forecast (falls back to attribute when service returns no payload)
+snapshot: home_default
+language: en
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+preconditions:
+  entity_overrides:
+    - entity_id: weather.home
+      attributes:
+        forecast:
+          - {datetime: "2026-04-23T00:00:00+00:00", temperature: 19, condition: "sunny"}
+          - {datetime: "2026-04-24T00:00:00+00:00", temperature: 17, condition: "cloudy"}
+llm:
+  classify: |
+    climate-agent (95%): Query weather forecast
+  agents:
+    climate-agent: |
+      Looking up the forecast.
+      ```json
+      {"action": "query_weather_forecast", "entity": "home weather", "parameters": {}}
+      ```
+request:
+  text: "what's the forecast?"
+expected:
+  routed_agent: climate-agent
+  service_calls:
+    - {domain: weather, service: get_forecasts, target_entity: weather.home}
+  allow_extra_calls: true
+  speech_contains: ["forecast"]

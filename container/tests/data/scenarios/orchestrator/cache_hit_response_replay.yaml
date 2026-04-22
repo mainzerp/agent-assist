@@ -1,0 +1,19 @@
+id: orchestrator.cache_hit_response_replay
+agent: orchestrator
+description: Cache-hit response replay (skipped; pipeline runs without cache_manager)
+snapshot: home_default
+language: en
+xfail: "runner constructs orchestrator with cache_manager=None; cache replay needs a wired CacheManager"
+context: {source: ha, area_id: living_room, device_id: satellite_living_room}
+llm:
+  classify: |
+    general-agent (90%): cached question
+  agents:
+    general-agent: |
+      Cached answer.
+request:
+  text: "cached query"
+expected:
+  routed_agent: general-agent
+  service_calls: []
+  speech_contains: ["cached"]
