@@ -4481,9 +4481,7 @@ class TestStreamMediatedSpeech:
         intermediate = [c for c in chunks if not c["done"]]
         # P2-1: at least one non-filler raw token chunk must be
         # forwarded to the client when mediation is enabled.
-        non_filler_tokens = [
-            c for c in intermediate if not c.get("is_filler") and c.get("token")
-        ]
+        non_filler_tokens = [c for c in intermediate if not c.get("is_filler") and c.get("token")]
         assert non_filler_tokens, "raw sub-agent tokens must be forwarded when mediation is enabled"
         joined = "".join(c["token"] for c in non_filler_tokens)
         assert "Light" in joined and "is on" in joined

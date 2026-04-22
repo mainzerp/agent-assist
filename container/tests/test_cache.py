@@ -564,12 +564,8 @@ class TestCacheManager:
     def test_flush_pending_delegates_to_both_caches(self):
         """flush_pending() should call flush_pending() on both caches."""
         manager, store = self._make_manager()
-        manager._routing_cache._state.record_pending_update(
-            "r-1", "q", {"hit_count": "2"}, flush_interval=1_000_000
-        )
-        manager._response_cache._state.record_pending_update(
-            "s-1", "q", {"hit_count": "3"}, flush_interval=1_000_000
-        )
+        manager._routing_cache._state.record_pending_update("r-1", "q", {"hit_count": "2"}, flush_interval=1_000_000)
+        manager._response_cache._state.record_pending_update("s-1", "q", {"hit_count": "3"}, flush_interval=1_000_000)
         manager.flush_pending()
         # Both should have been flushed via update_metadata
         assert not manager._routing_cache._state.has_pending()

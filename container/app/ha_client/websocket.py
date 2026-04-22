@@ -34,7 +34,7 @@ MAX_RECONNECT_ATTEMPTS = 10
 RECONNECT_PAUSE_DURATION = 300.0
 
 
-class WebSocketReset(Exception):
+class WebSocketResetError(Exception):
     """Raised on pending state waiters when the WebSocket is torn down.
 
     P3-5: callers awaiting :meth:`HAWebSocketClient.register_state_waiter`
@@ -92,13 +92,9 @@ class HAWebSocketClient:
             # P3-2: bound both handshake receives. A half-open HA that
             # never replies must not block the receive loop forever.
             try:
-                msg = await asyncio.wait_for(
-                    self._ws.receive_json(), timeout=AUTH_HANDSHAKE_TIMEOUT
-                )
+                msg = await asyncio.wait_for(self._ws.receive_json(), timeout=AUTH_HANDSHAKE_TIMEOUT)
             except TimeoutError:
-                self._logger.error(
-                    "HA WebSocket handshake timed out waiting for auth_required"
-                )
+                self._logger.error("HA WebSocket handshake timed out waiting for auth_required")
                 await self._close_session()
                 return False
             if msg.get("type") != "auth_required":
@@ -108,13 +104,9 @@ class HAWebSocketClient:
 
             await self._ws.send_json({"type": "auth", "access_token": token})
             try:
-                auth_response = await asyncio.wait_for(
-                    self._ws.receive_json(), timeout=AUTH_HANDSHAKE_TIMEOUT
-                )
+                auth_response = await asyncio.wait_for(self._ws.receive_json(), timeout=AUTH_HANDSHAKE_TIMEOUT)
             except TimeoutError:
-                self._logger.error(
-                    "HA WebSocket handshake timed out waiting for auth_ok"
-                )
+                self._logger.error("HA WebSocket handshake timed out waiting for auth_ok")
                 await self._close_session()
                 return False
 
@@ -151,7 +143,7 @@ class HAWebSocketClient:
             self._session = None
 
     def _cancel_all_state_waiters(self, reason: str) -> None:
-        """Resolve every pending state waiter with ``WebSocketReset``.
+        """Resolve every pending state waiter with ``WebSocketResetError``.
 
         P3-5: invoked from ``_close_session`` so a reconnect (admin URL
         change, idle timeout, transport error) does not leave verifier
@@ -167,7 +159,7 @@ class HAWebSocketClient:
                 if future.done():
                     continue
                 with contextlib.suppress(asyncio.InvalidStateError):
-                    future.set_exception(WebSocketReset(reason))
+                    future.set_exception(WebSocketResetError(reason))
 
     async def disconnect(self) -> None:
         self._running = False

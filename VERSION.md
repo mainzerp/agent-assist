@@ -1,6 +1,6 @@
 # Version
 
-**Current Version:** 0.18.39
+**Current Version:** 0.18.40
 
 ## Version History
 
@@ -1161,4 +1161,4 @@ New send-agent enables content delivery to smartphones (via HA notify) and satel
 
 ## Recent Changes (since 0.18.4)
 
-(none yet)
+- 0.18.40 (PATCH): Fix GitHub Actions lint failures (ruff check/format violations in container/, pin ruff==0.15.11 in CI and requirements-dev.txt, rename WebSocketReset -> WebSocketResetError).

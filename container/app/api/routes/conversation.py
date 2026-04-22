@@ -160,9 +160,7 @@ async def ws_conversation(
 
             if connection_span is not None:
                 span_collector = connection_span
-                parent_token = (
-                    span_collector.push_parent(connection_root_span) if connection_root_span else None
-                )
+                parent_token = span_collector.push_parent(connection_root_span) if connection_root_span else None
             else:
                 # Fallback for call sites that bypass the middleware
                 # (unit tests instantiating the endpoint directly).

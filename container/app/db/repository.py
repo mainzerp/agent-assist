@@ -11,7 +11,7 @@ import json
 import re
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from app.db.schema import get_db_read, get_db_write
 
@@ -39,7 +39,7 @@ class SettingsRepository:
     # ``{key: (value_or_MISSING, expires_at_monotonic)}``.
     # Class-level on purpose: ``SettingsRepository`` is a stateless
     # collection of staticmethods used as a namespace.
-    _value_cache: dict[str, tuple[Any, float]] = {}
+    _value_cache: ClassVar[dict[str, tuple[Any, float]]] = {}
 
     @classmethod
     def _cache_get(cls, key: str) -> tuple[bool, Any]:

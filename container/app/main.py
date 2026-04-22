@@ -15,35 +15,24 @@ from fastapi.staticfiles import StaticFiles
 from app.a2a.dispatcher import Dispatcher
 from app.a2a.registry import registry
 from app.a2a.transport import InProcessTransport
-from app.agents.automation import AutomationAgent
-from app.agents.climate import ClimateAgent
 from app.agents.custom_loader import CustomAgentLoader
 from app.agents.filler import FillerAgent
 from app.agents.general import GeneralAgent
 from app.agents.light import LightAgent
-from app.agents.media import MediaAgent
 from app.agents.music import MusicAgent
 from app.agents.orchestrator import OrchestratorAgent
-from app.agents.rewrite import RewriteAgent
-from app.agents.scene import SceneAgent
-from app.agents.security import SecurityAgent
-from app.agents.send import SendAgent
-from app.agents.timer import TimerAgent
 from app.api.routes import admin as admin_routes
 from app.api.routes import conversation as conversation_routes
 from app.api.routes import dashboard_api as dashboard_api_routes
 from app.api.routes import health as health_routes
-from app.cache.vector_store import COLLECTION_ENTITY_INDEX
 from app.config import settings
 from app.dashboard.routes import router as dashboard_router
-from app.db.repository import AgentConfigRepository, SettingsRepository, SetupStateRepository
+from app.db.repository import SettingsRepository, SetupStateRepository
 from app.db.schema import init_db
-from app.entity.ingest import parse_ha_states, state_to_entity_index_entry
+from app.entity.ingest import parse_ha_states
 from app.middleware.auth import SetupRedirectMiddleware, apply_auth_dependencies
 from app.middleware.tracing import TracingMiddleware
 from app.models.entity_index import EntityIndexEntry
-from app.presence.detector import PresenceDetector
-from app.runtime_setup import schedule_entity_index_prime
 from app.setup.routes import router as setup_router
 
 logger = logging.getLogger(__name__)
@@ -251,9 +240,7 @@ async def lifespan(app: FastAPI):
         )
         await registry.register(orchestrator_agent)
 
-        general_agent = GeneralAgent(
-            ha_client=None, entity_index=None, mcp_tool_manager=mcp_tool_manager
-        )
+        general_agent = GeneralAgent(ha_client=None, entity_index=None, mcp_tool_manager=mcp_tool_manager)
         await registry.register(general_agent)
 
         light_agent = LightAgent(ha_client=None, entity_index=None, entity_matcher=None)

@@ -14,7 +14,6 @@ streamed tokens.
 
 from __future__ import annotations
 
-import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -49,9 +48,7 @@ def _make_orchestrator() -> tuple[OrchestratorAgent, AsyncMock]:
     dispatcher = AsyncMock()
     registry = AsyncMock()
     cache_manager = MagicMock()
-    cache_manager.process = AsyncMock(
-        return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5)
-    )
+    cache_manager.process = AsyncMock(return_value=MagicMock(hit_type="miss", agent_id=None, similarity=0.5))
     cache_manager.apply_rewrite = AsyncMock()
 
     async def _store_routing_async(*args, **kwargs):
@@ -73,9 +70,7 @@ def _make_orchestrator() -> tuple[OrchestratorAgent, AsyncMock]:
             ),
         ]
     )
-    orch = OrchestratorAgent(
-        dispatcher=dispatcher, registry=registry, cache_manager=cache_manager
-    )
+    orch = OrchestratorAgent(dispatcher=dispatcher, registry=registry, cache_manager=cache_manager)
     return orch, dispatcher
 
 
@@ -88,9 +83,7 @@ def _make_orchestrator() -> tuple[OrchestratorAgent, AsyncMock]:
 @patch("app.agents.orchestrator.SettingsRepository")
 @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
 @patch("app.llm.client.complete", new_callable=AsyncMock)
-async def test_handle_task_equals_run_pipeline_payload(
-    mock_complete, mock_track, mock_settings
-):
+async def test_handle_task_equals_run_pipeline_payload(mock_complete, mock_track, mock_settings):
     """handle_task() must return exactly the payload yielded by
     _run_pipeline(streaming=False) for the same task. This proves the
     wrapper does not lose or mutate the dict."""
@@ -102,9 +95,7 @@ async def test_handle_task_equals_run_pipeline_payload(
     mock_settings.get_value = AsyncMock(return_value="")
 
     captured = {"speech": "Light is on."}
-    orch._dispatch_single = AsyncMock(
-        return_value=("light-agent", "Light is on.", captured)
-    )
+    orch._dispatch_single = AsyncMock(return_value=("light-agent", "Light is on.", captured))
 
     task_a = _make_task("turn on light", conversation_id="conv-a")
     task_b = _make_task("turn on light", conversation_id="conv-b")
@@ -128,9 +119,7 @@ async def test_handle_task_equals_run_pipeline_payload(
 @patch("app.agents.orchestrator.SettingsRepository")
 @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
 @patch("app.llm.client.complete", new_callable=AsyncMock)
-async def test_streaming_pipeline_terminates_with_done(
-    mock_complete, mock_track, mock_settings
-):
+async def test_streaming_pipeline_terminates_with_done(mock_complete, mock_track, mock_settings):
     """_run_pipeline(streaming=True) must yield a terminal done chunk
     that mirrors handle_task_stream's contract."""
     orch, dispatcher = _make_orchestrator()
@@ -200,9 +189,7 @@ async def test_legacy_pipeline_flag_routes_directly_to_impls(monkeypatch):
 @patch("app.agents.orchestrator.SettingsRepository")
 @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
 @patch("app.llm.client.complete", new_callable=AsyncMock)
-async def test_streaming_mediation_forwards_tokens(
-    mock_complete, mock_track, mock_settings
-):
+async def test_streaming_mediation_forwards_tokens(mock_complete, mock_track, mock_settings):
     """When personality.prompt is set, sub-agent tokens must reach the
     client. Previously they were swallowed (FLOW-MED-8); P2-1 forwards
     them while still appending mediated_speech on the terminal chunk."""
@@ -229,9 +216,7 @@ async def test_streaming_mediation_forwards_tokens(
 
     chunks = [c async for c in orch.handle_task_stream(task)]
 
-    raw_tokens = [
-        c for c in chunks if not c["done"] and not c.get("is_filler") and c.get("token")
-    ]
+    raw_tokens = [c for c in chunks if not c["done"] and not c.get("is_filler") and c.get("token")]
     assert raw_tokens, "raw sub-agent tokens must be forwarded under mediation (P2-1)"
     joined = "".join(c["token"] for c in raw_tokens)
     assert "Light" in joined

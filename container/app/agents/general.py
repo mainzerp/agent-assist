@@ -6,8 +6,7 @@ import logging
 
 from app.agents.base import BaseAgent
 from app.analytics.tracer import _optional_span
-from app.models.agent import AgentErrorCode
-from app.models.agent import AgentCard, AgentTask, TaskResult
+from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
 
 logger = logging.getLogger(__name__)
 

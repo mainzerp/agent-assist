@@ -11,7 +11,6 @@ import pytest
 from app.db import repository as repo_mod
 from app.db.repository import SettingsRepository
 
-
 pytestmark = pytest.mark.asyncio
 
 

@@ -1126,9 +1126,7 @@ class OrchestratorAgent(BaseAgent):
     def _legacy_pipeline_enabled() -> bool:
         return os.environ.get("ORCHESTRATOR_LEGACY_PIPELINE") == "1"
 
-    async def _pipeline_resolve_conversation_and_language(
-        self, task: AgentTask
-    ) -> tuple[str, str, list]:
+    async def _pipeline_resolve_conversation_and_language(self, task: AgentTask) -> tuple[str, str, list]:
         """Resolve conversation_id (with uuid fallback), the effective
         language for this turn, and prefetch the conversation turns
         used by language detection.
@@ -1392,7 +1390,7 @@ class OrchestratorAgent(BaseAgent):
         self, task: AgentTask, *, _pre_classified: tuple[list[tuple[str, str, float]], bool] | None = None
     ) -> dict:
         user_text = task.user_text or task.description
-        conversation_id, detected_language, lang_turns = await self._pipeline_resolve_conversation_and_language(task)
+        conversation_id, detected_language, _lang_turns = await self._pipeline_resolve_conversation_and_language(task)
 
         # Get span collector from task context if available
         span_collector = task.span_collector
@@ -2585,7 +2583,7 @@ class OrchestratorAgent(BaseAgent):
             deduped.append((agent_id, condensed, confidence))
 
         # Sort by confidence desc (None treated as lowest), cap at 3
-        deduped.sort(key=lambda x: (x[2] if x[2] is not None else -1.0), reverse=True)
+        deduped.sort(key=lambda x: x[2] if x[2] is not None else -1.0, reverse=True)
         return deduped[:3]
 
     async def _get_turns(self, conversation_id: str | None) -> list[dict]:

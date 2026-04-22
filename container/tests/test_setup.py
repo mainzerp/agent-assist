@@ -641,9 +641,7 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         matcher_inst = MagicMock()
         matcher_inst.load_config = AsyncMock()
         mock_matcher_cls.return_value = matcher_inst
-        mock_rewrite_cls.return_value = MagicMock(
-            agent_card=SimpleNamespace(agent_id="rewrite-agent")
-        )
+        mock_rewrite_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="rewrite-agent"))
         cache_inst = MagicMock()
         cache_inst.initialize = AsyncMock()
         cache_inst.purge_readonly_entries = AsyncMock(return_value=0)
@@ -651,18 +649,10 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         orch_inst = MagicMock(agent_card=SimpleNamespace(agent_id="orchestrator"))
         orch_inst.initialize = AsyncMock()
         mock_orch_cls.return_value = orch_inst
-        mock_general_cls.return_value = MagicMock(
-            agent_card=SimpleNamespace(agent_id="general-agent")
-        )
-        mock_light_cls.return_value = MagicMock(
-            agent_card=SimpleNamespace(agent_id="light-agent")
-        )
-        mock_music_cls.return_value = MagicMock(
-            agent_card=SimpleNamespace(agent_id="music-agent")
-        )
-        mock_filler_cls.return_value = MagicMock(
-            agent_card=SimpleNamespace(agent_id="filler-agent")
-        )
+        mock_general_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="general-agent"))
+        mock_light_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="light-agent"))
+        mock_music_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="music-agent"))
+        mock_filler_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="filler-agent"))
         loader_inst = MagicMock()
         loader_inst.load_all = AsyncMock()
         mock_custom_cls.return_value = loader_inst
@@ -689,7 +679,6 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         assert mock_cache_cls.call_count == first_cache_cls_calls
         # PresenceDetector must only be initialized once.
         assert fake_presence.initialize.await_count == first_presence_init
-
 
 
 # ===================================================================

@@ -17,7 +17,6 @@ from app.cache.vector_store import VectorStore
 from app.models.cache import ResponseCacheEntry
 from app.models.conversation import ConversationResponse, StreamToken
 
-
 # ---------------------------------------------------------------------------
 # P3-1: backend signals sanitized=True so HA can skip its strip pass.
 # ---------------------------------------------------------------------------
@@ -111,9 +110,7 @@ class TestResponseCachePrepareForFlush:
 
     def test_prepare_for_flush_clears_pending_and_bumps_generation(self):
         cache, _store = self._make_cache()
-        cache._state.record_pending_update(
-            "id-1", "q", {"hit_count": "3"}, flush_interval=1_000_000
-        )
+        cache._state.record_pending_update("id-1", "q", {"hit_count": "3"}, flush_interval=1_000_000)
         gen0 = cache._state.current_generation()
 
         cache.prepare_for_flush()
@@ -224,7 +221,11 @@ class TestKnownAgentsMemoization:
 
         # Reload reliability config (e.g. admin save) clears the memo.
         with (
-            patch.object(orch, "_load_reliability_config", new=AsyncMock(side_effect=lambda: setattr(orch, "_known_agents_cache", None))),
+            patch.object(
+                orch,
+                "_load_reliability_config",
+                new=AsyncMock(side_effect=lambda: setattr(orch, "_known_agents_cache", None)),
+            ),
             patch.object(orch, "_load_mediation_config", new=AsyncMock()),
         ):
             await orch.initialize()

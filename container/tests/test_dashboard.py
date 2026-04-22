@@ -196,7 +196,7 @@ class TestDashboardTemplateRendering:
         resp = await dashboard_client.get("/dashboard/agents")
         html = resp.text
         assert 'aria-controls="dashboard-sidebar"' in html
-        assert 'x-bind:aria-expanded="sidebarOpen ? \'true\' : \'false\'"' in html
+        assert "x-bind:aria-expanded=\"sidebarOpen ? 'true' : 'false'\"" in html
         assert 'id="dashboard-sidebar"' in html
 
     async def test_send_devices_page_has_labels_and_live_region(self, dashboard_client: httpx.AsyncClient):
@@ -209,8 +209,8 @@ class TestDashboardTemplateRendering:
         assert 'for="send-device-target-select"' in html
         assert 'id="send-device-target-manual"' in html
         assert '@submit.prevent="createMapping()"' in html
-        assert ':aria-live="messageType === \'error\' ? \'assertive\' : \'polite\'"' in html
-        assert ':role="messageType === \'error\' ? \'alert\' : \'status\'"' in html
+        assert ":aria-live=\"messageType === 'error' ? 'assertive' : 'polite'\"" in html
+        assert ":role=\"messageType === 'error' ? 'alert' : 'status'\"" in html
 
     async def test_settings_page_has_live_regions(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/settings")
@@ -269,7 +269,9 @@ class TestPersonalityPage:
 
 @pytest.mark.integration
 class TestAgentEditorFailures:
-    async def test_update_agent_config_returns_json_error_on_repository_failure(self, dashboard_client: httpx.AsyncClient):
+    async def test_update_agent_config_returns_json_error_on_repository_failure(
+        self, dashboard_client: httpx.AsyncClient
+    ):
         with patch(
             "app.api.routes.dashboard_api.AgentConfigRepository.upsert",
             new_callable=AsyncMock,

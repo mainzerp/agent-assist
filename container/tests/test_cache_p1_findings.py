@@ -14,9 +14,8 @@ from unittest.mock import AsyncMock, MagicMock
 from app.cache._state import _CacheState
 from app.cache.response_cache import ResponseCache
 from app.cache.routing_cache import RoutingCache
-from app.cache.vector_store import COLLECTION_RESPONSE_CACHE, VectorStore
+from app.cache.vector_store import VectorStore
 from app.models.cache import CachedAction, ResponseCacheEntry
-
 
 # ---------------------------------------------------------------------------
 # P1-3: threadsafety
@@ -30,9 +29,7 @@ class TestCacheStateConcurrency:
 
         def worker(i: int) -> None:
             try:
-                state.record_pending_update(
-                    f"id-{i}", f"q-{i}", {"hit_count": str(i)}, flush_interval=10_000
-                )
+                state.record_pending_update(f"id-{i}", f"q-{i}", {"hit_count": str(i)}, flush_interval=10_000)
             except BaseException as exc:  # pragma: no cover - defensive
                 errors.append(exc)
 
@@ -84,12 +81,7 @@ class TestRoutingCacheStoreConcurrency:
 
         async def spawn_all() -> None:
             await asyncio.gather(
-                *(
-                    asyncio.to_thread(
-                        cache.store, f"query-{i}", "light-agent", 0.95
-                    )
-                    for i in range(50)
-                )
+                *(asyncio.to_thread(cache.store, f"query-{i}", "light-agent", 0.95) for i in range(50))
             )
 
         asyncio.run(spawn_all())
@@ -106,9 +98,7 @@ class TestRoutingCacheFlushRequeue:
         store = MagicMock(spec=VectorStore)
         store.update_metadata.side_effect = RuntimeError("chroma down")
         cache = RoutingCache(store)
-        cache._state.record_pending_update(
-            "id-1", "q", {"hit_count": "2"}, flush_interval=10_000
-        )
+        cache._state.record_pending_update("id-1", "q", {"hit_count": "2"}, flush_interval=10_000)
         assert cache._state.has_pending()
 
         cache._flush_pending_updates()
@@ -138,15 +128,9 @@ class TestRoutingCacheLRUPagination:
         # Two pages: 1000 entries, then a 100-entry tail that also
         # signals the end of pagination (len < PAGE_SIZE).
         ids_page1 = [f"id-{i}" for i in range(1000)]
-        metas_page1 = [
-            {"last_accessed": f"2025-01-{(i % 28) + 1:02d}T00:00:00"}
-            for i in range(1000)
-        ]
+        metas_page1 = [{"last_accessed": f"2025-01-{(i % 28) + 1:02d}T00:00:00"} for i in range(1000)]
         ids_page2 = [f"id-{i}" for i in range(1000, 1100)]
-        metas_page2 = [
-            {"last_accessed": f"2025-02-{(i % 28) + 1:02d}T00:00:00"}
-            for i in range(100)
-        ]
+        metas_page2 = [{"last_accessed": f"2025-02-{(i % 28) + 1:02d}T00:00:00"} for i in range(100)]
         store.get.side_effect = [
             {"ids": ids_page1, "metadatas": metas_page1},
             {"ids": ids_page2, "metadatas": metas_page2},
@@ -182,9 +166,7 @@ class TestClassifyNoConfidence:
                 AgentCard(agent_id="light-agent", name="", description="", skills=[]),
             ]
         )
-        results = await orch._parse_classification(
-            "light-agent: turn on bedroom", "turn on bedroom"
-        )
+        results = await orch._parse_classification("light-agent: turn on bedroom", "turn on bedroom")
         assert len(results) == 1
         assert results[0][0] == "light-agent"
         assert results[0][2] is None
@@ -241,7 +223,7 @@ class TestResponseCacheReplayServiceData:
             "documents": [[entry.query_text]],
             "metadatas": [[meta]],
         }
-        hit_type, looked_up, similarity = cache.lookup(entry.query_text)
+        hit_type, looked_up, _similarity = cache.lookup(entry.query_text)
         assert hit_type == "hit"
         assert looked_up is not None
         assert looked_up.cached_action is not None
@@ -255,9 +237,7 @@ class TestResponseCacheReplayServiceData:
         ``schema_version`` and ``service_data``. They must still decode
         into a ``CachedAction`` with an empty ``service_data`` dict."""
         cache, store = _make_response_cache()
-        legacy_action_json = (
-            '{"service":"light/turn_on","entity_id":"light.bedroom"}'
-        )
+        legacy_action_json = '{"service":"light/turn_on","entity_id":"light.bedroom"}'
         store.query.return_value = {
             "ids": [["legacy-1"]],
             "distances": [[0.02]],

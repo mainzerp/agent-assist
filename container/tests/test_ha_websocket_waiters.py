@@ -108,11 +108,11 @@ class TestStateWaiters:
 
 
 class TestStateWaiterReconnectCleanup:
-    """P3-5: pending state waiters must fail with WebSocketReset on reconnect."""
+    """P3-5: pending state waiters must fail with WebSocketResetError on reconnect."""
 
     @pytest.mark.asyncio
     async def test_close_session_cancels_all_state_waiters(self):
-        from app.ha_client.websocket import WebSocketReset
+        from app.ha_client.websocket import WebSocketResetError
 
         client = HAWebSocketClient()
         fut1 = client.register_state_waiter("light.keller", expected="off")
@@ -122,9 +122,9 @@ class TestStateWaiterReconnectCleanup:
 
         # Both pending futures must now resolve so awaiters can fall back
         # to REST polling instead of hanging forever.
-        with pytest.raises(WebSocketReset):
+        with pytest.raises(WebSocketResetError):
             await asyncio.wait_for(fut1, timeout=0.1)
-        with pytest.raises(WebSocketReset):
+        with pytest.raises(WebSocketResetError):
             await asyncio.wait_for(fut2, timeout=0.1)
         # Waiter map is cleared so the reconnect starts fresh.
         assert client._state_waiters == {}
@@ -138,7 +138,7 @@ class TestStateWaiterReconnectCleanup:
 
     @pytest.mark.asyncio
     async def test_close_session_skips_already_done_futures(self):
-        from app.ha_client.websocket import WebSocketReset
+        from app.ha_client.websocket import WebSocketResetError
 
         client = HAWebSocketClient()
         fut = client.register_state_waiter("light.keller", expected="off")
@@ -149,7 +149,7 @@ class TestStateWaiterReconnectCleanup:
 
         # Result is preserved -- close did not clobber it with the exception.
         assert fut.result() == "off"
-        # And the second close still works without raising WebSocketReset
+        # And the second close still works without raising WebSocketResetError
         # against a finished future.
         assert client._state_waiters == {}
-        del WebSocketReset  # silence unused-import lint when assertion above hits
+        del WebSocketResetError  # silence unused-import lint when assertion above hits
