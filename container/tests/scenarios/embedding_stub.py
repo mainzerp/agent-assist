@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import math
 
-
 _DIM = 384
 
 
@@ -23,7 +22,7 @@ def deterministic_embedding(text: str) -> list[float]:
     counter = 0
     while len(out) < needed:
         h = hashlib.blake2b(
-            f"{norm}|{counter}".encode("utf-8"),
+            f"{norm}|{counter}".encode(),
             digest_size=64,
         ).digest()
         out.extend(h)

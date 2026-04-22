@@ -91,10 +91,7 @@ class StubVectorStore:
         include: list[str] | None = None,
     ) -> dict:
         coll = self._coll(collection_name)
-        if ids is None:
-            target_ids = list(coll.docs.keys())
-        else:
-            target_ids = [eid for eid in ids if eid in coll.docs]
+        target_ids = list(coll.docs.keys()) if ids is None else [eid for eid in ids if eid in coll.docs]
         if where:
             target_ids = [eid for eid in target_ids if _matches_where(coll.metas.get(eid, {}), where)]
         return {
