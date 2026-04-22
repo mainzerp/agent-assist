@@ -257,14 +257,17 @@ async def get_trace_detail(trace_id: str):
     user_input = summary.get("user_input", "")
     final_response = summary.get("final_response", "")
 
-    # Detect response_cache_hit (no classify span, return span has response_cache_hit)
-    response_cache_hit = False
+    # Detect action_cache_hit (no classify span, return span has action_cache_hit
+    # or the legacy response_cache_hit key)
+    action_cache_hit = False
     if return_span and not classify_span:
         ret_meta = return_span.get("metadata") or {}
-        response_cache_hit = ret_meta.get("response_cache_hit", False)
+        action_cache_hit = bool(
+            ret_meta.get("action_cache_hit") or ret_meta.get("response_cache_hit")
+        )
 
-    if response_cache_hit:
-        # Response cache hit short-circuit
+    if action_cache_hit:
+        # Action cache hit short-circuit
         target = (return_span.get("metadata") or {}).get("from_agent", "")
         routing_cached = True
         agent_communication.append(
@@ -298,7 +301,7 @@ async def get_trace_detail(trace_id: str):
             rw_meta = rewrite_span.get("metadata") or {}
             agent_communication.append(
                 {
-                    "from_agent": "response cache",
+                    "from_agent": "action cache",
                     "to_agent": "rewrite-agent",
                     "task": (rw_meta.get("original_text") or "")[:200],
                     "response": (rw_meta.get("rewritten_text") or "")[:200],
@@ -306,11 +309,11 @@ async def get_trace_detail(trace_id: str):
             )
         agent_communication.append(
             {
-                "from_agent": "orchestrator (response cache)",
+                "from_agent": "orchestrator (action cache)",
                 "to_agent": "user",
                 "task": "",
                 "response": final_response,
-                "response_cache_hit": True,
+                "action_cache_hit": True,
             }
         )
     elif classify_span:

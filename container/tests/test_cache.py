@@ -492,7 +492,7 @@ class TestCacheManager:
         store.count.return_value = 10
         stats = manager.get_stats()
         assert "routing" in stats
-        assert "response" in stats
+        assert "action" in stats
 
     async def test_initialize_loads_config(self):
         manager, _store = self._make_manager()
@@ -692,7 +692,7 @@ class TestCacheManager:
             },
         ]
         result = manager._process_inner("schalte keller ein")
-        assert result.hit_type == "response_hit"
+        assert result.hit_type == "action_hit"
         assert result.agent_id == "light-agent"
         assert result.cached_action is not None
         assert result.cached_action.entity_id == "light.keller"
@@ -794,7 +794,7 @@ class TestCacheManager:
             },
         ]
         result = manager._process_inner("dim the lights")
-        assert result.hit_type == "response_partial"
+        assert result.hit_type == "action_partial"
         assert result.response_text == "Lights dimmed."
 
     def test_store_response_disabled_skips_store(self):

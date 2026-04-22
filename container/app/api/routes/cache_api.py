@@ -3,14 +3,26 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from app.cache.export_import import (
+    ALLOWED_TIERS,
+    MAX_IMPORT_BYTES,
+    ImportValidationError,
+    build_export_filename,
+    import_envelope,
+    iter_export_chunks,
+    parse_envelope,
+)
 from app.cache.vector_store import (
     COLLECTION_RESPONSE_CACHE,
     COLLECTION_ROUTING_CACHE,
 )
+from app.config import settings
 from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import require_admin_session
 
@@ -23,8 +35,21 @@ router = APIRouter(
 )
 
 
+# Tier param accepts both the canonical 0.21.0+ value ``action`` and the
+# legacy ``response`` alias. ``_normalize_tier`` collapses the alias once
+# at the route entry so downstream code only sees ``action`` (or
+# ``routing``, or ``None``).
+_TIER_ALIASES = {"response": "action"}
+
+
+def _normalize_tier(tier: str | None) -> str | None:
+    if tier is None:
+        return None
+    return _TIER_ALIASES.get(tier, tier)
+
+
 class FlushRequest(BaseModel):
-    tier: str | None = None  # "routing", "response", or None for all
+    tier: str | None = None  # "routing", "action", "response" (legacy), or None for all
 
 
 @router.get("/stats")
@@ -33,7 +58,7 @@ async def get_cache_stats(request: Request):
     await ensure_setup_runtime_initialized(request.app)
     cache_manager = request.app.state.cache_manager
     if not cache_manager:
-        return {"routing": {}, "response": {}, "status": "not_initialized"}
+        return {"routing": {}, "action": {}, "status": "not_initialized"}
     try:
         stats = cache_manager.get_stats()
         return stats
@@ -45,12 +70,13 @@ async def get_cache_stats(request: Request):
 @router.get("/entries")
 async def browse_cache_entries(
     request: Request,
-    tier: str = Query("routing", pattern="^(routing|response)$"),
+    tier: str = Query("routing", pattern="^(routing|action|response)$"),
     search: str | None = Query(None),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
 ):
     """Browse/search cache entries by tier."""
+    tier = _normalize_tier(tier) or "routing"
     cache_manager = request.app.state.cache_manager
     if not cache_manager:
         return {"entries": [], "total": 0}
@@ -136,13 +162,143 @@ async def flush_cache(request: Request, payload: FlushRequest):
     if not cache_manager:
         return {"status": "error", "detail": "Cache not initialized"}
 
-    tier = payload.tier
-    if tier and tier not in ("routing", "response"):
-        return {"status": "error", "detail": "Invalid tier. Use 'routing', 'response', or omit for all."}
+    tier = _normalize_tier(payload.tier)
+    if tier and tier not in ("routing", "action"):
+        return {"status": "error", "detail": "Invalid tier. Use 'routing', 'action' (or legacy 'response'), or omit for all."}
 
     try:
         cache_manager.flush(tier)
         return {"status": "ok", "flushed": tier or "all"}
     except Exception as exc:
-        logger.warning("Failed to flush cache", exc_info=True)
+        logger.warning("Failed to flush action cache", exc_info=True)
         return {"status": "error", "detail": str(exc)}
+
+
+@router.get("/export")
+async def export_cache(
+    request: Request,
+    tier: str = Query("all", pattern="^(routing|action|response|all)$"),
+):
+    """Stream a JSON envelope containing the requested cache tier(s)."""
+    await ensure_setup_runtime_initialized(request.app)
+    cache_manager = getattr(request.app.state, "cache_manager", None)
+    if cache_manager is None:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "detail": "cache not initialized"},
+        )
+
+    canonical_tier = _normalize_tier(tier)
+    if canonical_tier == "all":
+        tiers = [t for t in ALLOWED_TIERS if t != "response"]
+    else:
+        tiers = [canonical_tier]
+    raw_version = getattr(settings, "app_version", None)
+    app_version = raw_version if isinstance(raw_version, str) else "unknown"
+    filename = build_export_filename(tiers, datetime.now(UTC))
+
+    try:
+        generator = iter_export_chunks(cache_manager, tiers, app_version=app_version)
+    except Exception as exc:
+        logger.warning("Failed to start cache export", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": str(exc)},
+        )
+
+    return StreamingResponse(
+        generator,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/import")
+async def import_cache(
+    request: Request,
+    file: UploadFile = File(...),
+    mode: str = Form("merge"),
+    tiers: str = Form("routing,action"),
+    re_embed: bool = Form(False),
+):
+    """Import a cache export envelope. Returns an ImportSummary as JSON."""
+    cache_manager = getattr(request.app.state, "cache_manager", None)
+    if cache_manager is None:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "detail": "cache not initialized"},
+        )
+
+    if mode not in ("merge", "replace"):
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "detail": f"invalid mode {mode!r}"},
+        )
+
+    requested_tiers = [t.strip() for t in (tiers or "").split(",") if t.strip()]
+    requested_tiers = [_normalize_tier(t) for t in requested_tiers]
+    requested_tiers = [t for t in requested_tiers if t in ("routing", "action")]
+    if not requested_tiers:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "detail": "no supported tiers requested"},
+        )
+
+    try:
+        raw = await file.read()
+    except Exception as exc:
+        logger.warning("Failed to read cache import upload", exc_info=True)
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "detail": f"failed to read upload: {exc}"},
+        )
+
+    if len(raw) > MAX_IMPORT_BYTES:
+        return JSONResponse(
+            status_code=413,
+            content={"status": "error", "detail": "payload too large"},
+        )
+
+    try:
+        envelope = parse_envelope(raw)
+    except ImportValidationError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "detail": str(exc)},
+        )
+
+    try:
+        summary = await import_envelope(
+            cache_manager,
+            envelope,
+            mode=mode,
+            tiers=requested_tiers,
+            re_embed=re_embed,
+        )
+    except ImportValidationError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "detail": str(exc)},
+        )
+    except Exception as exc:
+        logger.warning("Cache import failed", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "detail": str(exc)},
+        )
+
+    return {
+        "status": "ok",
+        "mode": summary.mode,
+        "format_version": summary.format_version,
+        "tiers": {
+            name: {
+                "imported": result.imported,
+                "skipped": result.skipped,
+                "re_embedded": result.re_embedded,
+                "warnings": result.warnings,
+            }
+            for name, result in summary.tiers.items()
+        },
+        "warnings": summary.warnings,
+    }

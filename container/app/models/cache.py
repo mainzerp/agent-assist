@@ -43,3 +43,9 @@ class ResponseCacheEntry(BaseModel):
     # FLOW-HIGH-4: detected language at store time. Lookup filters on
     # this so cross-language hits cannot leak.
     language: str = "en"
+
+
+# Public alias (added in 0.21.0). The class keeps the name
+# ResponseCacheEntry internally to avoid churn; new callers should use
+# ActionCacheEntry. The alias will remain for at least one minor.
+ActionCacheEntry = ResponseCacheEntry

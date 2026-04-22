@@ -9,18 +9,21 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 
 ## Features
 
-- **Multi-agent orchestration** -- Specialized agents for lights, music, climate, media, timers, scenes, automation, and security, coordinated by a central orchestrator via the A2A protocol
+- **Multi-agent orchestration** -- Specialized agents for lights, music, climate, media, timers, scenes, automation, security, a general assistant, and `send` (delivery to phones, satellites, and notification targets), coordinated by a central orchestrator via the A2A protocol
 - **A2A protocol** -- JSON-RPC 2.0-based agent-to-agent communication with registry, dispatcher, and in-process transport
-- **Two-tier vector cache** -- Routing cache (skip intent classification) and response cache (skip entire agent pipeline) using ChromaDB embeddings with configurable similarity thresholds
+- **Two-tier vector cache** -- Routing cache (skip intent classification) and action cache, formerly response cache (skip entire agent pipeline) using ChromaDB embeddings with configurable similarity thresholds
+- **Cache backup and restore** -- Export and import the routing and action caches as a portable JSON envelope via `/api/admin/cache/export` and `/api/admin/cache/import` (added in 0.20.0)
 - **Hybrid entity matching** -- Five-signal weighted matcher (Levenshtein, Jaro-Winkler, phonetic, embedding similarity, alias lookup) with LLM disambiguation fallback
 - **MCP tool integration** -- Connect external tool servers via Model Context Protocol (stdio and SSE transports) and assign tools to agents
 - **Plugin system** -- Extend functionality with Python plugins that register agents, subscribe to events, add dashboard routes, and access settings
-- **Admin dashboard** -- 14-page HTMX-powered dashboard for managing agents, entities, cache, MCP servers, analytics, traces, presence, and plugins
+- **Admin dashboard** -- HTMX-powered admin dashboard for managing agents, entities, cache, MCP servers, analytics, traces, presence, and plugins
 - **Presence detection** -- Room-level presence awareness using motion, occupancy, and mmWave sensors with weighted scoring and decay
 - **Custom agents** -- Create LLM-powered agents via the dashboard with custom system prompts, model selection, MCP tools, and intent patterns
-- **Rewrite agent** -- Optional response variation for cached responses to avoid repetitive answers
+- **Rewrite agent** -- Optional response variation for cached responses (driven by the personality prompt) to avoid repetitive answers
 - **Setup wizard** -- Guided 5-step first-launch configuration (admin account, HA connection, API key, LLM providers, review)
-- **Analytics and tracing** -- Request counts, cache hit rates, latency tracking, token usage, and per-request trace span Gantt visualization
+- **Analytics and tracing** -- Request counts, cache hit rates, latency tracking, token usage, and per-request trace span Gantt visualization, with per-turn tracing on `/ws/conversation` (added in 0.20.1)
+- **Voice experience** -- Filler / interim TTS, voice-followup, cancel-intent ("never mind"), and repeat-turn coalescing in the HA integration
+- **Real-pipeline scenario tests** -- YAML-driven end-to-end test framework under `container/tests/scenarios/` exercising the full orchestrator pipeline against a curated HA snapshot
 
 ## Architecture
 
@@ -43,7 +46,15 @@ See [docs/architecture.md](docs/architecture.md) for component diagrams, request
 ```bash
 git clone https://github.com/mainzerp/ha-agenthub.git
 cd ha-agenthub/container
-docker-compose up -d
+docker compose up -d
+```
+
+The production `container/docker-compose.yml` pulls the prebuilt
+image from `ghcr.io/mainzerp/ha-agenthub:${HA_AGENTHUB_TAG:-main}`.
+For a local development build (sources from this checkout):
+
+```bash
+docker compose -f docker-compose_local.yml up -d --build
 ```
 
 ### 2. Run the Setup Wizard
@@ -87,6 +98,7 @@ See [docs/configuration.md](docs/configuration.md) for the full reference.
 - [Configuration Reference](docs/configuration.md) -- Environment variables, SQLite settings, agent config
 - [Architecture Overview](docs/architecture.md) -- Components, A2A protocol, request flow, cache, entity matching
 - [API Reference](docs/api-reference.md) -- All REST, SSE, and WebSocket endpoints
+- [Backup and Restore](docs/backup-restore.md) -- Volume backup, Fernet key export, cache export/import
 - [Plugin Development](docs/plugin-development.md) -- Writing plugins, lifecycle hooks, event bus
 - [Troubleshooting](docs/troubleshooting.md) -- Common issues and solutions
 
@@ -129,10 +141,11 @@ ruff format --check .
 ```text
 container/          Docker container (FastAPI backend)
   app/              Application code
-    agents/         Specialized agents + orchestrator
     a2a/            A2A protocol (registry, dispatcher, transport)
+    agents/         Specialized agents + orchestrator
+    analytics/      Analytics aggregation and queries
     api/routes/     REST/SSE/WebSocket endpoints
-    cache/          Two-tier vector cache
+    cache/          Two-tier vector cache (routing + action)
     dashboard/      Admin dashboard (HTMX + Jinja2 templates)
     db/             SQLite schema + repository
     entity/         Hybrid entity matcher
@@ -143,10 +156,12 @@ container/          Docker container (FastAPI backend)
     models/         Pydantic models
     plugins/        Plugin system
     presence/       Presence detection
+    prompts/        System prompts for orchestrator and domain agents
     security/       Encryption, hashing, sanitization
     setup/          Setup wizard
+    util/           Shared helpers
   plugins/          User plugins directory
-  tests/            Test suite
+  tests/            Test suite (incl. real-pipeline scenarios)
 custom_components/  HA custom integration
   ha_agenthub/      Thin I/O bridge
 ```

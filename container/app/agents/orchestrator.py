@@ -765,8 +765,8 @@ class OrchestratorAgent(BaseAgent):
                 cache_span["metadata"]["hit_type"] = cache_result.hit_type
                 cache_span["metadata"]["similarity"] = cache_result.similarity
                 cache_span["metadata"]["cached_agent_id"] = cache_result.agent_id
-                if cache_result.hit_type.startswith("response"):
-                    cache_span["metadata"]["cache_tier"] = "response"
+                if cache_result.hit_type.startswith("action") or cache_result.hit_type.startswith("response"):
+                    cache_span["metadata"]["cache_tier"] = "action"
                 elif cache_result.hit_type == "routing_hit":
                     cache_span["metadata"]["cache_tier"] = "routing"
                 else:
@@ -939,6 +939,7 @@ class OrchestratorAgent(BaseAgent):
             ret_span["metadata"]["final_response"] = speech[:500]
             ret_span["metadata"]["mediated"] = False
             ret_span["metadata"]["response_cache_hit"] = True
+            ret_span["metadata"]["action_cache_hit"] = True
             prior_turns = await self._get_turns(conversation_id)
             await self._store_turn(conversation_id, user_text, speech, agent_id=target_agent)
             if span_collector:
@@ -1168,7 +1169,7 @@ class OrchestratorAgent(BaseAgent):
         ``None`` return that followed a response_hit, so downstream
         classify routing-cache logic matches the previous flow.
         """
-        if not (cache_result and cache_result.hit_type == "response_hit"):
+        if not (cache_result and cache_result.hit_type in ("action_hit", "response_hit")):
             return None
         result = await self._handle_response_cache_hit(
             cache_result,
@@ -1406,7 +1407,7 @@ class OrchestratorAgent(BaseAgent):
             )
 
         # Response hit short-circuit: skip classify and dispatch entirely
-        if cache_result and cache_result.hit_type == "response_hit":
+        if cache_result and cache_result.hit_type in ("action_hit", "response_hit"):
             replay = await self._pipeline_try_response_cache_replay(
                 cache_result,
                 cache_span_ref,
@@ -1670,7 +1671,7 @@ class OrchestratorAgent(BaseAgent):
             )
 
         # Response hit short-circuit for streaming
-        if cache_result and cache_result.hit_type == "response_hit":
+        if cache_result and cache_result.hit_type in ("action_hit", "response_hit"):
             replay = await self._pipeline_try_response_cache_replay(
                 cache_result,
                 cache_span_ref,

@@ -1,4 +1,4 @@
-# agent-assist Plugins
+# HA-AgentHub Plugins
 
 Place Python plugin files (`.py`) in this directory. They are discovered and
 loaded automatically when the container starts.
@@ -50,7 +50,14 @@ Through the `PluginContext` object passed to lifecycle hooks:
 - `ctx.agent_registry` -- Register/unregister A2A agents
 - `ctx.mcp_registry` -- Access MCP server connections
 - `ctx.settings` -- Read/write settings via `SettingsRepository`
-- `ctx.app` -- The FastAPI application instance
+- `ctx.event_bus` -- Subscribe to / publish plugin events
+- `ctx.add_api_route(path, endpoint, **kwargs)` and
+  `ctx.include_router(router, **kwargs)` -- register HTTP routes
+
+Direct access to the FastAPI application instance via `ctx.app` was
+removed in 0.13.0. Use `ctx.add_api_route` or `ctx.include_router`
+instead; arbitrary `app` mutation is no longer part of the plugin
+trust boundary.
 
 ## Notes
 

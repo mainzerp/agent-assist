@@ -121,26 +121,47 @@ class TracingMiddleware:
             )
 
     async def _handle_websocket(self, scope, receive, send) -> None:
-        """FLOW-WS-SPAN-1 (P1-6): populate a per-connection SpanCollector
-        so the WS endpoint no longer has to build one with a hardcoded
-        ``source="ha"``. Each message handled inside the connection
-        becomes a child span under the root connection span."""
-        trace_id = uuid.uuid4().hex[:16]
+        """FLOW-WS-TURN-1: ``/ws/conversation`` is a persistent socket
+        carrying many independent HA conversation turns. Creating a
+        connection-level trace here would overwrite each per-turn
+        ``total_duration_ms`` with the full socket lifetime when the
+        connection finally closes. Instead, the route handler mints a
+        fresh ``SpanCollector`` per inbound message and flushes it
+        synchronously, and this middleware only exposes ``source`` and
+        a ``ws_per_turn`` marker on scope state. Other WS paths keep
+        the legacy per-connection trace behaviour."""
         path = scope.get("path", "")
-        # WS is HA-facing today (``/ws/conversation``). Future WS routes
-        # (admin chat, plugin callbacks) fall back to ``"api"``.
-        if path.startswith("/ws/conversation"):
+        per_turn_route = path.startswith("/ws/conversation")
+        if per_turn_route:
             source: str = "ha"
         elif path.startswith("/api/admin/chat"):
             source = "chat"
         else:
             source = "api"
-        span_collector = SpanCollector(trace_id, source=source)
 
         state = scope.setdefault("state", {})
+        state["source"] = source
+        state["ws_per_turn"] = per_turn_route
+
+        if per_turn_route:
+            # The route owns the trace boundary; do not create a
+            # connection-level collector or write a connection-level
+            # ``trace_summary`` row.
+            state.pop("trace_id", None)
+            state.pop("span_collector", None)
+            state.pop("root_span_id", None)
+            logger.info("WS %s connected (per-turn tracing)", path)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                logger.info("WS %s closed", path)
+            return
+
+        # Legacy per-connection behaviour for any other WS route.
+        trace_id = uuid.uuid4().hex[:16]
+        span_collector = SpanCollector(trace_id, source=source)
         state["trace_id"] = trace_id
         state["span_collector"] = span_collector
-        state["source"] = source
 
         root_span_id = uuid.uuid4().hex[:12]
         state["root_span_id"] = root_span_id

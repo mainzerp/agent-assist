@@ -375,7 +375,7 @@ class TestOverviewExtended:
         }
         app.state.entity_index = entity_index
         app.state.cache_manager = MagicMock()
-        app.state.cache_manager.get_stats.return_value = {"routing": {}, "response": {}}
+        app.state.cache_manager.get_stats.return_value = {"routing": {}, "action": {}}
 
         resp = await dashboard_client.get("/api/admin/health/extended")
         assert resp.status_code == 200

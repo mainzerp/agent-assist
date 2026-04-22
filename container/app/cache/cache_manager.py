@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class CacheResult:
     """Result from cache manager process() call."""
 
-    hit_type: str  # "response_hit", "response_partial", "routing_hit", "miss"
+    hit_type: str  # "action_hit", "action_partial", "routing_hit", "miss" ("response_hit"/"response_partial" accepted as legacy aliases)
     agent_id: str | None = None
     response_text: str | None = None
     cached_action: CachedAction | None = None
@@ -46,6 +46,16 @@ class CacheManager:
         self._rewrite_agent = rewrite_agent
         self._rewrite_enabled: bool = False
         self._response_cache_enabled: bool = True
+
+    @property
+    def response_cache(self) -> ResponseCache:
+        """Public accessor for the response cache tier."""
+        return self._response_cache
+
+    @property
+    def action_cache(self) -> ResponseCache:
+        """Alias for response_cache, added in 0.21.0."""
+        return self._response_cache
 
     async def initialize(self) -> None:
         """Load config for both cache tiers."""
@@ -105,13 +115,26 @@ class CacheManager:
                 language,
             )
             # FLOW-TELEM-1 (P2-5): only emit a cache event for real hits
-            # (routing_hit / response_hit / response_partial). Misses
+            # (routing_hit / action_hit / action_partial; legacy response_*
+            # variants accepted for one minor). Misses
             # would just fill the analytics table with agent_id=None rows
             # that dashboards ignore anyway; aggregate miss counting is
             # handled via the hit-rate derivation in the dashboards.
-            if result.hit_type in {"response_hit", "response_partial", "routing_hit"}:
+            if result.hit_type in {
+                "action_hit",
+                "action_partial",
+                "response_hit",
+                "response_partial",
+                "routing_hit",
+            }:
+                tier = (
+                    "action"
+                    if result.hit_type.startswith("action")
+                    or result.hit_type.startswith("response")
+                    else "routing"
+                )
                 await track_cache_event(
-                    tier="response" if result.hit_type.startswith("response") else "routing",
+                    tier=tier,
                     hit_type=result.hit_type,
                     agent_id=result.agent_id,
                     similarity=result.similarity,
@@ -122,8 +145,8 @@ class CacheManager:
             return CacheResult(hit_type="miss")
 
     async def apply_rewrite(self, result: CacheResult) -> None:
-        """Apply rewrite to a response_hit CacheResult in-place."""
-        if result.hit_type != "response_hit" or not self._rewrite_agent or not result.response_text:
+        """Apply rewrite to an action_hit CacheResult in-place."""
+        if result.hit_type not in ("action_hit", "response_hit") or not self._rewrite_agent or not result.response_text:
             return
         original_text = result.response_text
         t0 = time.perf_counter()
@@ -172,7 +195,7 @@ class CacheManager:
         )
         if hit_type == "hit" and resp_entry is not None and resp_entry.cached_action is not None:
             return CacheResult(
-                hit_type="response_hit",
+                hit_type="action_hit",
                 agent_id=resp_entry.agent_id,
                 response_text=resp_entry.response_text,
                 cached_action=resp_entry.cached_action,
@@ -204,7 +227,7 @@ class CacheManager:
         #    / tracing. Partial never short-circuits dispatch.
         if hit_type == "partial" and resp_entry is not None:
             return CacheResult(
-                hit_type="response_partial",
+                hit_type="action_partial",
                 agent_id=resp_entry.agent_id,
                 response_text=resp_entry.response_text,
                 cached_action=resp_entry.cached_action,
@@ -275,8 +298,16 @@ class CacheManager:
         """Clear one or both cache tiers. Used by admin UI.
 
         Args:
-            tier: "routing", "response", or None (both).
+            tier: ``"routing"``, ``"action"`` (canonical, since 0.21.0),
+                ``"response"`` (legacy alias for ``"action"``), or
+                ``None`` for both tiers.
         """
+        if tier not in (None, "routing", "action", "response"):
+            raise ValueError(f"unknown cache tier {tier!r}")
+        # Normalise the new canonical "action" value to the internal
+        # "response" name so the rest of this method stays unchanged.
+        if tier == "action":
+            tier = "response"
         if tier is None or tier == "routing":
             self._routing_cache.prepare_for_flush()
             count = self._vector_store.count(COLLECTION_ROUTING_CACHE)
@@ -295,7 +326,7 @@ class CacheManager:
                 all_data = self._vector_store.get(COLLECTION_RESPONSE_CACHE, include=[])
                 if all_data["ids"]:
                     self._vector_store.delete(COLLECTION_RESPONSE_CACHE, ids=all_data["ids"])
-            logger.info("Response cache flushed")
+            logger.info("Action cache flushed")
 
     def flush_pending(self) -> None:
         """Flush buffered hit-count updates (call at shutdown)."""
@@ -306,7 +337,7 @@ class CacheManager:
         """Return combined stats for both tiers."""
         return {
             "routing": self._routing_cache.get_stats(),
-            "response": self._response_cache.get_stats(),
+            "action": self._response_cache.get_stats(),
         }
 
     async def purge_readonly_entries(self) -> int:

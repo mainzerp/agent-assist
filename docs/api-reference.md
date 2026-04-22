@@ -16,7 +16,7 @@ The API key is generated during the setup wizard (step 3).
 
 ### Admin Endpoints
 
-Admin endpoints require a session cookie obtained by logging in through the dashboard. The cookie name is `agent_assist_session` and expires after 24 hours.
+Admin endpoints require a session cookie obtained by logging in through the dashboard. The cookie name is `agent_assist_session` (literal in `container/app/security/auth.py`) and expires after 24 hours.
 
 ### WebSocket
 
@@ -41,10 +41,13 @@ Returns container health status. No authentication required.
 ```json
 {
   "status": "ok",
-  "version": "0.1.0",
+  "version": "0.21.0",
   "log_level": "INFO"
 }
 ```
+
+The `version` value is read from `container/app/__init__.py`
+`__version__` at runtime; older containers will report their own value.
 
 ---
 
@@ -61,18 +64,40 @@ Send a natural language command and receive a full response.
 ```json
 {
   "text": "turn on the bedroom light",
-  "conversation_id": "optional-conversation-id"
+  "conversation_id": "optional-conversation-id",
+  "device_id": "optional-ha-device-id",
+  "area_id": "optional-ha-area-id",
+  "device_name": "optional-friendly-device-name",
+  "area_name": "optional-friendly-area-name",
+  "language": "optional-bcp47-or-iso-code"
 }
 ```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `text` | string | yes | Natural language command. |
+| `conversation_id` | string | no | Reuse a prior turn's conversation thread. |
+| `device_id` | string | no | HA device id of the calling satellite/voice device. |
+| `area_id` | string | no | HA area id derived from the calling device. |
+| `device_name` | string | no | Friendly device name (used by send-agent and presence). |
+| `area_name` | string | no | Friendly area name (used for context and routing). |
+| `language` | string | no | Per-turn language override; falls back to the `language` setting (default `auto`). |
 
 **Response:**
 
 ```json
 {
   "speech": "I've turned on the bedroom light.",
-  "conversation_id": "abc123"
+  "conversation_id": "abc123",
+  "voice_followup": false
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `speech` | string | Final speech text returned to the user. |
+| `conversation_id` | string | Conversation thread identifier. |
+| `voice_followup` | bool | When true, the HA integration is asked to keep the microphone open for an immediate follow-up turn. |
 
 ### POST /api/conversation/stream
 
@@ -89,6 +114,19 @@ data: {"token": "I've", "done": false, "conversation_id": null}
 data: {"token": " turned on", "done": false, "conversation_id": null}
 data: {"token": "", "done": true, "conversation_id": "abc123"}
 ```
+
+**StreamToken fields** (also emitted over `/ws/conversation`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `token` | string | Token text fragment. |
+| `done` | bool | True on the terminal event. |
+| `conversation_id` | string \| null | Set on the terminal event. |
+| `mediated_speech` | string \| null | Final mediated speech replacement (set when the personality / mediation pipeline rewrites the streamed tokens). |
+| `is_filler` | bool | Marks tokens emitted by the filler agent (interim TTS while the real answer is being computed). |
+| `error` | string \| null | Set when the stream is terminating due to an error. |
+| `voice_followup` | bool | Mirrors the REST `voice_followup` flag on the terminal event. |
+| `sanitized` | bool | When true, the integration must skip its defensive markdown stripper because the container already sanitised the speech (added in 0.18.35). |
 
 ### WS /ws/conversation
 
@@ -312,6 +350,14 @@ List all Home Assistant entities grouped by domain and area.
 
 ## Admin -- Cache
 
+The action cache was named "response cache" in 0.20.x and earlier.
+Every cache endpoint accepts both the canonical `action` value and
+the legacy `response` alias for the `tier` parameter (URL query, JSON
+body, or multipart form). New responses emit `action` as the
+canonical key. The export envelope `format_version` was bumped to `2`
+in 0.21.0 to reflect the rename; `parse_envelope` still accepts a
+`format_version: 1` envelope with `tiers.response`.
+
 ### GET /api/admin/cache/stats
 
 Get cache statistics per tier.
@@ -321,7 +367,7 @@ Get cache statistics per tier.
 Browse/search cache entries.
 
 **Query parameters:**
-- `tier` -- `routing` or `response` (default: `routing`)
+- `tier` -- `routing`, `action`, or `response` (legacy alias for `action`; default: `routing`)
 - `search` -- Text filter
 - `page` -- Page number (default: 1)
 - `per_page` -- Results per page (default: 50, max: 200)
@@ -338,7 +384,249 @@ Flush cache entries.
 }
 ```
 
-Omit `tier` or set to `null` to flush all tiers.
+Omit `tier` or set to `null` to flush all tiers. Accepted values:
+`routing`, `action`, or `response` (legacy alias).
+
+### GET /api/admin/cache/export
+
+Streams a JSON envelope (`format_version: 2`) of one or more cache
+tiers.
+
+**Query parameters:**
+- `tier` -- `routing`, `action`, `response` (legacy alias), or `all`
+  (default: `all`)
+
+### POST /api/admin/cache/import
+
+Multipart upload that restores cache entries from an envelope.
+
+**Form fields:**
+- `file` -- the JSON envelope (max 50 MiB)
+- `mode` -- `merge` or `replace`
+- `tiers` -- CSV of tier names; accepts `action` and `response` as
+  aliases
+- `re_embed` -- `true` to recompute embeddings on import
+
+New exports use the `tiers.action.entries` shape. `parse_envelope`
+still accepts `format_version: 1` envelopes that carry
+`tiers.response.entries` so backups produced on 0.20.x remain
+importable.
+
+---
+
+## Admin -- Home Assistant connection
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/ha-connection` | Read the current HA URL (token redacted). |
+| PUT | `/api/admin/ha-connection` | Update HA URL and/or Long-Lived Access Token. |
+| POST | `/api/admin/ha-connection/test` | Validate a candidate URL/token pair without persisting. |
+
+Auth: admin session.
+
+## Admin -- Container API key
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/container-api-key` | Report whether an API key is set. |
+| POST | `/api/admin/container-api-key` | Create the initial API key. |
+| PUT | `/api/admin/container-api-key` | Replace the stored API key with a caller-supplied value. |
+| POST | `/api/admin/container-api-key/rotate` | Generate a new API key server-side and return it once. |
+
+Auth: admin session.
+
+## Admin -- Entity matching weights
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/entity-matching-weights` | Return the current five-signal weight vector. |
+| PUT | `/api/admin/entity-matching-weights` | Update one or more signal weights. |
+
+Auth: admin session.
+
+## Admin -- LLM providers
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/llm-providers/{id}` | Read provider config (key redacted). |
+| PUT | `/api/admin/llm-providers/{id}` | Update provider config. |
+| DELETE | `/api/admin/llm-providers/{id}` | Remove a provider. |
+| POST | `/api/admin/llm-providers/test` | Validate a candidate provider config without persisting. |
+| GET | `/api/admin/llm-providers/configured` | List provider ids that have stored credentials. |
+
+Auth: admin session.
+
+## Admin -- Agents (visibility)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/agents/visibility-summary` | Per-agent counts of effective entity visibility rules. |
+
+Auth: admin session. See also `/api/admin/agents` (above) and
+`/api/admin/entity-visibility/{agent_id}` for editing rules.
+
+## Admin -- Timers
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/timers` | List active and scheduled timers. |
+| GET | `/api/admin/timers/recently-expired` | Recently-fired timers for dashboard surfacing. |
+
+Auth: admin session.
+
+## Admin -- Fernet key backup
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/fernet-key-backup` | Export the current Fernet key for offline backup. |
+
+Auth: admin session. See [Backup and Restore](backup-restore.md) for
+guidance on storing the returned key.
+
+## Admin -- Notification profile
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/notification-profile` | Read the current notification dispatcher profile. |
+| PUT | `/api/admin/notification-profile` | Update notification routing profile fields. |
+
+Auth: admin session.
+
+## Admin -- Alarm monitor
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/alarm-monitor` | Read alarm-monitor agent state. |
+
+Auth: admin session.
+
+## Admin -- Rewrite agent
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/rewrite/config` | Read rewrite-agent model and temperature. |
+| PUT | `/api/admin/rewrite/config` | Update rewrite-agent configuration. |
+
+Auth: admin session. The rewrite agent runs only when
+`personality.prompt` is non-empty.
+
+## Admin -- Personality
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/personality/config` | Read the personality prompt and mediation parameters. |
+| PUT | `/api/admin/personality/config` | Update the personality prompt and mediation parameters. |
+
+Auth: admin session.
+
+## Admin -- Dashboard chat
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/admin/chat` | Send a single command from the dashboard chat tester (non-streaming). |
+| POST | `/api/admin/chat/stream` | Streaming variant returning the same StreamToken format as `/api/conversation/stream`. |
+
+Auth: admin session. These bypass the HA conversation pipeline and
+talk straight to the orchestrator.
+
+## Admin -- Send devices
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/send-devices` | List configured send-device mappings. |
+| POST | `/api/admin/send-devices` | Create a send-device mapping. |
+| PUT | `/api/admin/send-devices/{id}` | Update a send-device mapping. |
+| DELETE | `/api/admin/send-devices/{id}` | Remove a send-device mapping. |
+| GET | `/api/admin/send-devices/available-targets` | List HA notify targets and assist satellites available for mapping. |
+
+Auth: admin session.
+
+## Admin -- Domain agent map
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/domain-agent-map` | Read the domain-to-agent routing table. |
+| PUT | `/api/admin/domain-agent-map` | Replace the domain-to-agent routing table. |
+| PUT | `/api/admin/domain-agent-map/device-class` | Update device-class overrides used by the routing table. |
+
+Auth: admin session.
+
+## Admin -- Entity index (match preview)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/entity-index/match-preview` | Live-test the hybrid matcher against a query string and return the top candidates. |
+
+Auth: admin session. Companion to the existing `/api/admin/entity-index/stats`
+and `/api/admin/entity-index/refresh` endpoints documented above.
+
+## Admin -- Traces
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/traces/export` | Export traces in NDJSON form for offline inspection. |
+| GET | `/api/admin/traces/labels` | List configured trace labels. |
+| PUT | `/api/admin/traces/{trace_id}/label` | Set or clear the label on a trace. |
+
+Auth: admin session. Companions to the existing `/api/admin/traces`
+list and `/api/admin/traces/{trace_id}` detail endpoints.
+
+## Admin -- Analytics
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/analytics/agents` | Per-agent request counts and latency. |
+| GET | `/api/admin/analytics/cache` | Cache hit-rate breakdown per tier. |
+| GET | `/api/admin/analytics/tokens` | Token-usage time series and totals. |
+| GET | `/api/admin/analytics/rewrite` | Rewrite-agent usage metrics. |
+
+Auth: admin session.
+
+## Admin -- Dashboard overview
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/admin/dashboard/overview` | Compact JSON used by the dashboard landing page. |
+| GET | `/api/admin/dashboard/overview/extended` | Extended dashboard overview (presence, MCP, plugin status). |
+| GET | `/api/admin/dashboard/health/extended` | Extended health snapshot for the System Health page. |
+
+Auth: admin session.
+
+---
+
+## Errors and status codes
+
+| Code | Meaning |
+|------|---------|
+| 400 | Schema-level rejection (for example, malformed cache export envelope). |
+| 401 | Missing `X-Container-API-Key` / `Authorization: Bearer ...` for conversation endpoints, or missing/invalid admin session cookie for admin endpoints. |
+| 403 | Credentials present but refused (for example, a stale `X-Container-API-Key` after rotation). |
+| 422 | Pydantic-level body validation failure. |
+| 429 | Per-route rate limiter rejected the request. |
+| 503 | Home Assistant is unreachable from the container (REST or WebSocket). |
+
+Admin endpoints distinguish missing-credential (`401`) from
+credential-rejected (`403`) so the dashboard and the HA integration
+can show different remediation messages. The HA integration's REST
+fallback uses these codes to surface the distinct user-facing
+error messages added in 0.18.39.
+
+## WebSocket close-error contract
+
+`/ws/conversation` uses application close codes that the HA
+integration reacts to specifically:
+
+| Code | Reason |
+|------|--------|
+| `4401` | Authentication failed (missing or invalid API key during the WebSocket handshake). The integration falls back to REST. |
+| `4408` | Idle/heartbeat timeout. The integration reconnects with backoff. |
+| `1011` | Server-side error during a turn. The integration reconnects and retries the turn over REST if a final response was not received. |
+| `1000` | Normal close (initiated by the client or container shutdown). |
+
+The contract is exercised by the integration tests in
+`container/tests/test_ha_client.py` and the matching client logic in
+`custom_components/ha_agenthub/conversation.py`.
+
 
 ---
 

@@ -1,8 +1,103 @@
 # Version
 
-**Current Version:** 0.19.3
+**Current Version:** 0.21.0
 
 ## Version History
+
+### 0.21.0 (MINOR) -- action-cache rename and v2 cache export envelope
+
+User-facing rename of the second cache tier from "response cache" to
+"action cache". Backwards compatible: legacy `response` continues to be
+accepted everywhere the new `action` value is, the on-disk Chroma
+collection literal is unchanged, and existing `cache.response.*`
+setting keys are preserved so user-tuned thresholds survive the rename.
+
+Highlights:
+
+- API surface: every cache endpoint (`/api/admin/cache/stats`,
+  `/entries`, `/flush`, `/export`, `/import`) accepts both `tier=action`
+  (canonical) and `tier=response` (legacy alias). New responses emit
+  `action` as the canonical tier name.
+- Export envelopes are now stamped with `format_version: 2` and use the
+  `tiers.action.entries` shape. `parse_envelope` still accepts a
+  `format_version: 1` envelope with `tiers.response.entries` so
+  exports created on 0.20.x remain importable on 0.21.0.
+- Dashboard cache page (`container/app/dashboard/templates/cache.html`)
+  shows the tier label "action" and uses the action-named query
+  parameters when calling the API.
+- `cache_manager.action_cache` exposed as an alias for
+  `cache_manager.response_cache` so plugin and test code that already
+  uses the new name compiles against the runtime.
+
+Changes:
+
+- Cache API entry-shape uses `tiers.action.entries` for new exports;
+  importer accepts both `tiers.action` and `tiers.response`.
+- Internal Chroma collection literal kept as `response_cache` (no
+  data migration required).
+- DB-stored settings keys remain `cache.response.threshold`,
+  `cache.response.partial_threshold`, `cache.response.max_entries`.
+
+Compatibility:
+
+- Exports produced by 0.20.x (envelope `format_version: 1`,
+  `tiers.response`) are still importable on 0.21.0.
+- Settings keys are unchanged. No DB migration runs.
+- The `tier=response` query/body/form value continues to work on
+  every endpoint; clients can adopt `tier=action` at their own pace.
+
+Commits: see `git log v0.20.1..v0.21.0`.
+
+### 0.20.1 (PATCH) -- per-turn tracing for /ws/conversation
+
+Fixes inflated `total_duration_ms` on the dashboard waterfall for HA
+conversation turns delivered over the persistent
+`/ws/conversation` socket. The `TracingMiddleware` previously
+created a connection-level `SpanCollector` and called
+`TraceSummaryRepository.update_duration` when the socket finally
+closed, overwriting each per-turn duration with the entire
+connection lifetime.
+
+- `container/app/middleware/tracing.py`: `_handle_websocket` now
+  bypasses connection-level trace creation for paths starting with
+  `/ws/conversation`. It still exposes `state["source"] = "ha"` and
+  a new `state["ws_per_turn"] = True` marker. All other WS paths
+  keep the legacy per-connection trace + flush + `update_duration`
+  behaviour.
+- `container/app/api/routes/conversation.py`: `ws_conversation`
+  now mints a fresh `trace_id` + `SpanCollector` + `root_span_id`
+  per inbound message inside the receive loop, exposes them on
+  `scope["state"]` for the duration of the turn, hands the
+  collector to `_build_a2a_request`, and in `finally` appends a
+  synthesised `ws_turn` root span and flushes the collector. The
+  dead `connection_span` / `connection_root_span` fallback branch
+  is removed and `FLOW-WS-SPAN-1` comments are updated to
+  `FLOW-WS-TURN-1`.
+- `container/tests/test_streaming_middleware.py`: flipped
+  `test_tracing_middleware_populates_websocket_span` to assert the
+  new bypass semantics for `/ws/conversation`; kept
+  `test_tracing_middleware_ws_source_defaults_to_api` unchanged
+  (legacy path); added `test_ws_conversation_mints_per_turn_trace`
+  driving two synthetic turns through `ws_conversation` and
+  asserting per-turn flushes and absence of any middleware-side
+  `update_duration` call.
+
+### 0.20.0 (MINOR) -- routing/response cache export and import
+
+New admin endpoints and dashboard controls to back up and restore the
+routing and response caches as a portable JSON envelope.
+
+- New helper module ``container/app/cache/export_import.py`` with
+  ``iter_export_chunks``, ``parse_envelope`` and ``import_envelope``.
+- New endpoints ``GET /api/admin/cache/export`` (streams the envelope)
+  and ``POST /api/admin/cache/import`` (multipart upload, ``mode``
+  ``merge`` or ``replace``, ``tiers`` CSV, ``re_embed`` flag).
+- Dashboard cache page gains a "Backup" card with export/import
+  controls, mode and re-embed toggles.
+- Per-entry validation drops malformed records and reports them in
+  ``warnings``; envelope-level rejection returns HTTP 400.
+- Imports run ``prepare_for_flush()`` to invalidate in-flight writes
+  and a single ``_enforce_lru`` pass per affected tier afterwards.
 
 ### 0.19.3 (PATCH) -- scene_executor domain filtering
 
@@ -1276,6 +1371,4 @@ New send-agent enables content delivery to smartphones (via HA notify) and satel
 - Project scaffolding and directory structure
 - Project definition document
 
-## Recent Changes (since 0.18.4)
-
-- 0.18.40 (PATCH): Fix GitHub Actions lint failures (ruff check/format violations in container/, pin ruff==0.15.11 in CI and requirements-dev.txt, rename WebSocketReset -> WebSocketResetError).
+## Recent Changes (since 0.21.0)

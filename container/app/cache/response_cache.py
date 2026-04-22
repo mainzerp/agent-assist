@@ -25,6 +25,7 @@ _LRU_TRIGGER_FRACTION = 0.95
 # ``service_data`` to an empty dict) so upgrades do not invalidate the
 # persisted Chroma collection.
 _RESPONSE_CACHE_SCHEMA_VERSION = "2"
+_ACTION_CACHE_SCHEMA_VERSION = _RESPONSE_CACHE_SCHEMA_VERSION
 
 
 class ResponseCache:
@@ -186,7 +187,7 @@ class ResponseCache:
     def invalidate(self, entry_id: str) -> None:
         """Remove a specific entry (reactive invalidation on action failure)."""
         self._store.delete(COLLECTION_RESPONSE_CACHE, ids=[entry_id])
-        logger.info("Response cache entry invalidated: %s", entry_id)
+        logger.info("Action cache entry invalidated: %s", entry_id)
 
     def _enforce_lru(self) -> None:
         """Evict oldest entries if collection exceeds max_entries.
@@ -225,7 +226,7 @@ class ResponseCache:
         if to_delete:
             for i in range(0, len(to_delete), 500):
                 self._store.delete(COLLECTION_RESPONSE_CACHE, ids=to_delete[i : i + 500])
-            logger.info("Response cache LRU evicted %d entries", len(to_delete))
+            logger.info("Action cache LRU evicted %d entries", len(to_delete))
 
     def _flush_pending_updates(self) -> None:
         """Batch-flush pending hit count updates to ChromaDB (metadata only)."""
@@ -239,7 +240,7 @@ class ResponseCache:
         except Exception:
             # P1-3: keep pending updates on failure.
             self._state.requeue_failed(pending)
-            logger.warning("Failed to flush response cache hit updates; re-queued", exc_info=True)
+            logger.warning("Failed to flush action cache hit updates; re-queued", exc_info=True)
 
     def flush_pending(self) -> None:
         """Public flush for shutdown hook."""
@@ -269,7 +270,7 @@ class ResponseCache:
             for i in range(0, len(to_delete), 500):
                 self._store.delete(COLLECTION_RESPONSE_CACHE, ids=to_delete[i : i + 500])
             logger.info(
-                "Response cache: purged %d pre-0.18.0 entries without language metadata",
+                "Action cache: purged %d pre-0.18.0 entries without language metadata",
                 len(to_delete),
             )
         return len(to_delete)
@@ -321,3 +322,9 @@ class ResponseCache:
             for i in range(0, len(to_delete), 500):
                 self._store.delete(COLLECTION_RESPONSE_CACHE, ids=to_delete[i : i + 500])
         return len(to_delete)
+
+
+# Public alias (added in 0.21.0). The class keeps the name
+# ResponseCache internally to avoid churn; new callers should use
+# ActionCache. The alias will remain for at least one minor.
+ActionCache = ResponseCache

@@ -457,6 +457,10 @@ def create_app() -> FastAPI:
     async def root_redirect():
         return RedirectResponse(url="/dashboard")
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon_redirect():
+        return RedirectResponse(url="/dashboard/static/favicon.svg")
+
     # Try to mount static files (may not exist yet in dev)
     try:
         from pathlib import Path

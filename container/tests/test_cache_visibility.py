@@ -382,3 +382,40 @@ class TestSequentialSendContentFailure:
         assert call_log == ["general-agent", "send-agent"]
         assert speech == "Sent."
         assert (result or {}).get("error") is None
+
+
+class TestActionCacheTraceDualWrite:
+    async def test_orchestrator_writes_both_action_and_legacy_metadata_keys(self):
+        orch, _dispatcher, _cache_manager, ha_client = _make_orchestrator()
+        ha_client.call_service.return_value = [
+            {"entity_id": "light.kitchen", "state": "on"}
+        ]
+        cached = make_cached_action(service="light/turn_on", entity_id="light.kitchen")
+        cache_result = _make_cache_result(cached_action=cached)
+
+        from app.analytics.tracer import SpanCollector
+
+        span_collector = SpanCollector("dual-write-test")
+        with (
+            patch(
+                "app.db.repository.EntityVisibilityRepository.get_rules",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "app.agents.orchestrator.ConversationRepository.insert",
+                new=AsyncMock(return_value=1),
+            ),
+        ):
+            result = await orch._handle_response_cache_hit(
+                cache_result,
+                "conv-1",
+                "turn on the kitchen light",
+                span_collector,
+            )
+
+        assert result is not None
+        return_spans = [s for s in span_collector._spans if s.get("span_name") == "return"]
+        assert return_spans, "orchestrator must emit a 'return' span on cache hit"
+        meta = return_spans[-1].get("metadata") or {}
+        assert meta.get("action_cache_hit") is True
+        assert meta.get("response_cache_hit") is True

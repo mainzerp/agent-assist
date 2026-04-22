@@ -165,7 +165,7 @@ async def analytics_cache(
     start = (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
     events = await AnalyticsRepository.query_by_range(start=start, limit=100000)
 
-    hit_types = {"routing_hit", "response_hit", "response_partial"}
+    hit_types = {"routing_hit", "action_hit", "action_partial", "response_hit", "response_partial"}
     miss_types = {"miss"}
 
     hits_per_bucket: dict[str, int] = defaultdict(int)

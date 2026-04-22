@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -142,34 +144,47 @@ async def ws_conversation(
 ):
     """WebSocket streaming endpoint."""
     await websocket.accept()
-    # FLOW-WS-SPAN-1 (P1-6): the TracingMiddleware sets up a single
-    # SpanCollector per connection with the correct ``source``. Each
-    # message becomes a child span under the connection root span
-    # instead of minting a brand-new top-level trace with a
-    # hardcoded ``source="ha"``.
-    connection_span = websocket.scope.get("state", {}).get("span_collector")
-    connection_root_span = websocket.scope.get("state", {}).get("root_span_id")
+    # FLOW-WS-TURN-1: ``/ws/conversation`` is a persistent socket
+    # carrying many independent HA conversation turns. The
+    # TracingMiddleware deliberately does NOT create a connection-
+    # level SpanCollector for this path (that would overwrite each
+    # per-turn ``total_duration_ms`` with the connection lifetime
+    # when the socket eventually closes). Instead, this handler
+    # mints a fresh ``trace_id`` + ``SpanCollector`` + root span per
+    # inbound message and flushes them in ``finally`` so the
+    # dashboard waterfall reflects exactly one HA turn per trace.
+    state = websocket.scope.setdefault("state", {})
+    source = state.get("source") or "ha"
     try:
         while True:
             raw = await websocket.receive_text()
             if len(raw) > _MAX_WS_MESSAGE_SIZE:
                 await websocket.send_json({"error": "Message too large", "max_bytes": _MAX_WS_MESSAGE_SIZE})
                 continue
-            data = json.loads(raw)
-            conv_request = ConversationRequest(**data)
+            try:
+                data = json.loads(raw)
+                conv_request = ConversationRequest(**data)
+            except Exception as exc:  # noqa: BLE001 - parse errors are user input
+                await websocket.send_json({"error": f"Invalid request: {exc}"})
+                continue
 
-            if connection_span is not None:
-                span_collector = connection_span
-                parent_token = span_collector.push_parent(connection_root_span) if connection_root_span else None
-            else:
-                # Fallback for call sites that bypass the middleware
-                # (unit tests instantiating the endpoint directly).
-                trace_id = uuid.uuid4().hex[:16]
-                span_collector = SpanCollector(trace_id, source="ha")
-                parent_token = None
+            # Per-turn trace boundary.
+            trace_id = uuid.uuid4().hex[:16]
+            span_collector = SpanCollector(trace_id, source=source)
+            root_span_id = uuid.uuid4().hex[:12]
+            parent_token = span_collector.push_parent(root_span_id)
+
+            # Expose to anything still reading scope state during this turn.
+            state["trace_id"] = trace_id
+            state["span_collector"] = span_collector
+            state["root_span_id"] = root_span_id
 
             a2a_request, _ = _build_a2a_request(conv_request, "message/stream", span_collector)
 
+            t0 = time.perf_counter()
+            start_time = datetime.now(UTC).isoformat()
+            status = "ok"
+            disconnect_during_turn = False
             try:
                 async for chunk in _dispatcher.dispatch_stream(a2a_request):
                     token = StreamToken(
@@ -182,11 +197,41 @@ async def ws_conversation(
                         voice_followup=bool(chunk.result.get("voice_followup")) if chunk.done else False,
                     )
                     await websocket.send_json(token.model_dump())
+            except WebSocketDisconnect:
+                status = "error"
+                disconnect_during_turn = True
+            except Exception:
+                status = "error"
+                raise
             finally:
-                if parent_token is not None:
-                    span_collector.pop_parent(parent_token)
-                if connection_span is None:
-                    # We created an ad-hoc collector for this message; flush it.
+                span_collector.pop_parent(parent_token)
+                duration_ms = (time.perf_counter() - t0) * 1000
+                span_collector._spans.append(
+                    {
+                        "span_id": root_span_id,
+                        "trace_id": trace_id,
+                        "span_name": "ws_turn",
+                        "agent_id": None,
+                        "parent_span": None,
+                        "start_time": start_time,
+                        "duration_ms": round(duration_ms, 2),
+                        "status": status,
+                        "metadata": {"status_code": 101, "ws_path": "/ws/conversation"},
+                    }
+                )
+                try:
                     await span_collector.flush()
+                except Exception:
+                    logger.warning(
+                        "Failed to flush per-turn spans for trace %s", trace_id, exc_info=True
+                    )
+                # Clear scope state so the next iteration cannot
+                # accidentally read stale values before the next mint.
+                state.pop("trace_id", None)
+                state.pop("span_collector", None)
+                state.pop("root_span_id", None)
+
+            if disconnect_during_turn:
+                raise WebSocketDisconnect()
     except WebSocketDisconnect:
         logger.debug("WebSocket client disconnected")

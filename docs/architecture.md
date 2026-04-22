@@ -2,7 +2,7 @@
 
 ## System Overview
 
-agent-assist is a two-component system for natural language smart home control:
+HA-AgentHub is a two-component system for natural language smart home control:
 
 1. **Docker Container** -- The AI backend running FastAPI with multi-agent orchestration, a two-tier vector cache, hybrid entity matching, MCP tool integration, and a plugin system.
 2. **HA Custom Integration** -- A thin I/O bridge (`custom_components/ha_agenthub/`) that forwards user input to the container and streams responses back to Home Assistant's conversation system.
@@ -45,7 +45,7 @@ All configuration, secrets, and state are stored in SQLite. ChromaDB provides ve
 |                                                   |
 |  +---------------+   +----------+  +----------+  |
 |  | MCP Tool Mgr  |   | Plugin   |  | LLM      |  |
-|  | (stdio/HTTP)  |   | System   |  | Client   |  |
+|  | (stdio/SSE)   |   | System   |  | Client   |  |
 |  +---------------+   +----------+  +----------+  |
 |                                                   |
 |  +----------------------------------------------+ |
@@ -66,6 +66,18 @@ Agents communicate via a JSON-RPC 2.0-based Agent-to-Agent (A2A) protocol:
 
 Each agent publishes an **Agent Card** containing its ID, capabilities, and supported intents. The orchestrator uses these cards to make routing decisions.
 
+### Agent Inventory
+
+Ten routable domain agents are reachable from intent classification:
+`orchestrator` plus `light`, `music`, `climate`, `media`, `timer`,
+`scene`, `automation`, `security`, `general`, and `send` (delivery to
+phones, satellites, and notify targets; added in 0.12.0).
+
+Internal helper agents participate in the pipeline but are not
+user-routable: `filler`, `rewrite`, `mediation`, `language_detect`,
+`sanitize`, `cancel_speech`, `delayed_tasks`, `alarm_monitor`,
+`notification_dispatcher`, and the plugin-loader stub `custom_loader`.
+
 ## Request Flow
 
 1. User speaks a command in Home Assistant (e.g., "turn on the bedroom light").
@@ -80,15 +92,83 @@ Each agent publishes an **Agent Card** containing its ID, capabilities, and supp
    a. Uses the **entity matcher** to resolve "bedroom light" to `light.bedroom_main`.
    b. Calls the HA REST API (`ha_client/rest.py`) to execute `light/turn_on`.
    c. Returns a response with speech text and action details.
-6. The orchestrator checks the **response cache** for reuse opportunities and stores the new result.
+6. The orchestrator checks the **action cache** for reuse opportunities and stores the new result.
 7. The response flows back through the API layer to the HA integration, which speaks it to the user.
 
+### Send Agent and Sequential Dispatch
+
+When the orchestrator classifies a turn as a delivery action ("tell
+the kitchen speaker that dinner is ready"), the request is routed to
+`send-agent`. The agent resolves the target through the
+`send_device_mappings` table (configured under the dashboard
+"Send devices" page), composes a notification or assist-satellite
+payload, and calls Home Assistant's `notify.*` service or the
+appropriate `assist_satellite.*` service.
+
+Multi-step intents ("close the blinds and tell me how warm it got
+in the bedroom today") are sequenced by the orchestrator: each step
+is dispatched as its own A2A `message/send` against the chosen
+domain agent, with subsequent steps receiving the previous step's
+result as context. Per-action domain filtering in the executors
+(0.19.2/0.19.3) ensures, for example, that a `camera_turn_on` step
+cannot land on a same-named `lock` or `switch` entity.
+
+### Filler / Interim TTS
+
+When `filler.enabled` is `true` and the orchestrator's first useful
+token takes longer than `filler.threshold_ms`, the filler agent
+emits short interim tokens marked with `StreamToken.is_filler=true`.
+The HA integration speaks these immediately while the real reply
+continues to be generated. Once the real first token arrives, the
+filler stops emitting and the stream continues normally.
+
+### Language Detection and Per-Agent Directive
+
+The `language` setting (default `auto`) controls reply language.
+When `auto`, the `language_detect` agent resolves the per-turn
+language from the user input and the HA-provided `language` field,
+and the orchestrator injects an explicit
+"respond in <language>" directive into the system prompt of the
+downstream domain agent. Forcing an ISO code (`de`, `en`, ...)
+bypasses detection and pins all replies.
+
+### Per-Turn Tracing on `/ws/conversation`
+
+`TracingMiddleware` skips connection-level traces for paths under
+`/ws/conversation` and instead leaves a `ws_per_turn=True` marker on
+the ASGI scope. The route handler mints a fresh `trace_id`,
+`SpanCollector`, and root span per inbound message, hands the
+collector to the orchestrator dispatch, and flushes a synthesised
+`ws_turn` root span at the end of each turn. This avoids the
+0.20.0-and-earlier bug where every per-turn duration was overwritten
+with the entire connection lifetime.
+
+### Recorder-History Tool
+
+A recorder-history MCP tool exposes Home Assistant's long-term
+history queries to agents that need them (mostly the general agent).
+See `container/tests/test_recorder_history.py` for the tool's
+contract.
+
+### Cancel-Intent / Dismiss
+
+The `cancel_speech` agent detects user requests to dismiss the
+current or previous response ("never mind", "stop") and short-
+circuits the dispatch so no downstream domain agent is invoked. See
+`container/tests/test_cancel_interaction.py` for the interaction
+matrix.
+
 ## Two-Tier Cache
+
+The action cache was named "response cache" in 0.20.x and earlier.
+The legacy term still appears in the on-disk Chroma collection name
+and in the `cache.response.*` settings keys for backward
+compatibility.
 
 The cache system uses ChromaDB vector embeddings for semantic similarity matching:
 
 - **Routing Cache** -- Caches the mapping from user intent to target agent. A hit (cosine similarity >= 0.92) skips LLM-based intent classification entirely. Max entries: 50,000 with LRU eviction.
-- **Response Cache** -- Caches full agent responses including executed actions.
+- **Action Cache** -- Caches full agent responses including executed actions.
   - **Full hit** (>= 0.95): Returns the cached response directly (optionally rewritten by the rewrite agent for variety).
   - **Partial hit** (0.80-0.95): Provides the cached response as context to the agent for faster processing.
   - **Miss** (< 0.80): No cache involvement.
@@ -113,7 +193,7 @@ A weighted score above 0.75 returns a single confident match. Below that thresho
 ## Data Storage
 
 - **SQLite** -- Primary store for all structured data: settings, agent configs, custom agents, aliases, MCP servers, secrets (Fernet-encrypted), admin accounts (bcrypt-hashed), setup state, conversations, analytics, and trace spans.
-- **ChromaDB** -- Vector store for entity index embeddings, routing cache embeddings, and response cache embeddings. Persisted to disk at `/data/chromadb`.
+- **ChromaDB** -- Vector store for entity index embeddings, routing cache embeddings, and action cache embeddings (the on-disk collection literal is still `response_cache` for backward compatibility). Persisted to disk at `/data/chromadb`.
 
 ## Plugin Architecture
 

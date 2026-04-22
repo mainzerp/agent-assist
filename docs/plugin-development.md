@@ -1,15 +1,18 @@
 # Plugin Development Guide
 
-This document covers how to develop plugins for the agent-assist system.
+This document covers how to develop plugins for HA-AgentHub.
 
 ## Overview
 
-Plugins extend agent-assist without modifying core code. They can register
+Plugins extend HA-AgentHub without modifying core code. They can register
 custom agents, subscribe to events, read/write settings, and interact with
 MCP servers.
 
 Plugins live as individual `.py` files in the `container/plugins/` directory.
 They are discovered and loaded automatically at container startup.
+
+See also [`container/plugins/README.md`](../container/plugins/README.md) for
+the quickstart kept next to the plugins directory itself.
 
 ## Getting Started
 
@@ -186,7 +189,7 @@ other handlers subscribed to the same event.
 ## Trust Model
 
 Plugins are **fully trusted code** running in the same Python process as the
-agent-assist container. There is no sandbox, filesystem isolation, or resource
+HA-AgentHub container. There is no sandbox, filesystem isolation, or resource
 limiting.
 
 What this means in practice:
