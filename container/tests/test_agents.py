@@ -1749,9 +1749,7 @@ class TestOrchestratorAgent:
                 AgentCard(agent_id="climate-agent", name="", description="", skills=[]),
             ]
         )
-        results = await orch._parse_classification(
-            "climate-agent (95%): wohnzimmer temperature", "original"
-        )
+        results = await orch._parse_classification("climate-agent (95%): wohnzimmer temperature", "original")
         assert len(results) == 1
         assert "wohnzimmer" in results[0][1].lower()
         assert "living room" not in results[0][1].lower()
@@ -1782,9 +1780,7 @@ class TestOrchestratorAgent:
             ]
         )
         orch._load_prompt = MagicMock(
-            return_value=(
-                "Agents:\n{agent_descriptions}\nRules:\n\n{language_hint}\n\nOutput: x"
-            )
+            return_value=("Agents:\n{agent_descriptions}\nRules:\n\n{language_hint}\n\nOutput: x")
         )
         orch._build_agent_descriptions = AsyncMock(return_value="general-agent: handles anything")
         orch._get_turns = AsyncMock(return_value=[])

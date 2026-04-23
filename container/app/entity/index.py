@@ -170,9 +170,8 @@ class EntityIndex:
             )
             ids = current.get("ids") or []
             metas = current.get("metadatas") or []
-            if ids and metas:
-                if self._stored_hash(metas[0]) == entry.content_hash:
-                    return
+            if ids and metas and self._stored_hash(metas[0]) == entry.content_hash:
+                return
         except Exception:
             logger.debug(
                 "add() pre-fetch failed for %s -- falling through to upsert",

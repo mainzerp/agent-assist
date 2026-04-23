@@ -136,6 +136,19 @@ ruff check .
 ruff format --check .
 ```
 
+### Pre-commit hook
+
+Run ruff check + format automatically on every `git commit`:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+Hooks are scoped to `container/` and pinned to the same ruff version
+CI uses (`v0.15.11`), so passing the hook locally guarantees a green
+`Lint` workflow.
+
 ### Project Structure
 
 ```text

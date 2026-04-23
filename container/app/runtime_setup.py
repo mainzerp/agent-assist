@@ -117,9 +117,7 @@ async def _resolve_active_embedding_model() -> str:
     try:
         provider = await SettingsRepository.get_value("embedding.provider", "local")
         if provider == "local":
-            return await SettingsRepository.get_value(
-                "embedding.local_model", "all-MiniLM-L6-v2"
-            ) or ""
+            return await SettingsRepository.get_value("embedding.local_model", "all-MiniLM-L6-v2") or ""
         return await SettingsRepository.get_value("embedding.external_model", "") or ""
     except Exception:
         logger.debug("Could not resolve active embedding model", exc_info=True)
@@ -129,12 +127,7 @@ async def _resolve_active_embedding_model() -> str:
 def _is_chroma_dimension_error(exc: BaseException) -> bool:
     """Heuristic: detect HNSW dimension / compaction failures from Chroma."""
     msg = str(exc).lower()
-    return (
-        "compaction" in msg
-        or "hnsw" in msg
-        or "dimension" in msg
-        or "dimensionality" in msg
-    )
+    return "compaction" in msg or "hnsw" in msg or "dimension" in msg or "dimensionality" in msg
 
 
 async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_index: EntityIndex, vector_store) -> None:
@@ -158,20 +151,16 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
         try:
             from app.entity.index import INDEX_SCHEMA_VERSION
 
-            stored_version = await SettingsRepository.get_value(
-                "entity_index.schema_version", "0"
-            )
+            stored_version = await SettingsRepository.get_value("entity_index.schema_version", "0")
             if int(stored_version or 0) != INDEX_SCHEMA_VERSION:
                 force_rebuild = True
         except Exception:
-            INDEX_SCHEMA_VERSION = 0  # type: ignore[assignment]
+            INDEX_SCHEMA_VERSION = 0  # type: ignore[assignment]  # noqa: N806
 
         active_model = await _resolve_active_embedding_model()
         stored_model = ""
         try:
-            stored_model = await SettingsRepository.get_value(
-                "entity_index.embedding_model", ""
-            ) or ""
+            stored_model = await SettingsRepository.get_value("entity_index.embedding_model", "") or ""
         except Exception:
             logger.debug("Could not read entity_index.embedding_model", exc_info=True)
         model_changed = bool(active_model) and bool(stored_model) and active_model != stored_model
@@ -190,11 +179,7 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
         # Drop & rebuild trigger: schema bump, model switch, or empty
         # collection while there are entities to index (covers the case
         # where the persisted model setting was never written).
-        drop_required = (
-            force_rebuild
-            or model_changed
-            or (existing_count == 0 and len(entities) > 0)
-        )
+        drop_required = force_rebuild or model_changed or (existing_count == 0 and len(entities) > 0)
         if drop_required:
             try:
                 vector_store.delete_collection(COLLECTION_ENTITY_INDEX)
@@ -268,20 +253,14 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
         try:
             from app.entity.index import INDEX_SCHEMA_VERSION as _ISV
 
-            await SettingsRepository.set(
-                "entity_index.schema_version", str(_ISV)
-            )
+            await SettingsRepository.set("entity_index.schema_version", str(_ISV))
         except Exception:
             logger.debug("Could not persist entity_index.schema_version", exc_info=True)
         if active_model:
             try:
-                await SettingsRepository.set(
-                    "entity_index.embedding_model", active_model
-                )
+                await SettingsRepository.set("entity_index.embedding_model", active_model)
             except Exception:
-                logger.debug(
-                    "Could not persist entity_index.embedding_model", exc_info=True
-                )
+                logger.debug("Could not persist entity_index.embedding_model", exc_info=True)
         # 0.23.0: load any user-supplied alias overrides (empty by default).
         try:
             from app.entity.user_aliases import load_user_aliases

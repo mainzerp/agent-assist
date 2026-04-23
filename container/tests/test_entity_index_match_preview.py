@@ -408,10 +408,7 @@ async def test_match_preview_area_only_climate_agent_returns_visible_sensor(prev
     data = resp.json()
     assert data["agent_id"] == "climate-agent"
     assert set(data["preferred_domains"]) >= {"climate", "sensor", "weather"}
-    assert any(
-        h["entity_id"] == target.entity_id and h["area"] == "masterbad"
-        for h in data["hybrid"]
-    ), data["hybrid"]
+    assert any(h["entity_id"] == target.entity_id and h["area"] == "masterbad" for h in data["hybrid"]), data["hybrid"]
     em.match.assert_awaited()
     call = em.match.await_args
     assert call.kwargs.get("agent_id") == "climate-agent"

@@ -1,8 +1,20 @@
 # Version
 
-**Current Version:** 0.23.1
+**Current Version:** 0.23.2
 
 ## Version History
+
+### 0.23.2 (PATCH) -- Lint cleanup; pre-commit hook for ruff added
+
+- Resolved 22 ruff findings (RUF005, SIM102 x3, SIM105, SIM108,
+  SIM117 x3, plus the deleted `container/data/probe.py` debug
+  script that surfaced E401/I001/F401/T201/E702/E701/W291).
+- `.gitignore` tightened: `container/data/*` with a `.gitkeep`
+  escape hatch replaces the prior narrow patterns.
+- Added `.pre-commit-config.yaml` (ruff + ruff-format, pinned to
+  `v0.15.11`, scoped to `container/`) and `pre-commit==4.0.1`
+  in `container/requirements-dev.txt`.
+- Added committed `.vscode/settings.json` for ruff format-on-save.
 
 ### 0.23.0 (MINOR) -- Language-agnostic entity resolution rework
 
@@ -1525,6 +1537,7 @@ New send-agent enables content delivery to smartphones (via HA notify) and satel
 
 ## Recent Changes (since 0.21.1)
 
+- Lint cleanup; pre-commit hook for ruff added
 - Match-preview empty-state diagnostics: when
   `/api/admin/entity-index/match-preview` returns zero hybrid
   candidates, the response now includes a `diagnostics` block with

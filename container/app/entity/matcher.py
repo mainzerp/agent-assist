@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import unicodedata
@@ -216,7 +217,7 @@ class EntityMatcher:
 
         # Miss: emit structured diagnostic.
         if self._log_misses:
-            try:
+            with contextlib.suppress(Exception):
                 logger.info(
                     "entity_match_diag query=%r verbatim_terms=%s expansions_used=%s top_candidates=%s",
                     query,
@@ -224,8 +225,6 @@ class EntityMatcher:
                     expansions_used,
                     [],
                 )
-            except Exception:
-                pass
         return []
 
     async def _match_query(
@@ -244,9 +243,7 @@ class EntityMatcher:
         # candidates before the top_n slice.
         filtering_active = bool(agent_id) or bool(preferred_domains)
         embedding_n = (
-            max(self._top_n * 2, self._top_n * self._oversample_factor)
-            if filtering_active
-            else self._top_n * 2
+            max(self._top_n * 2, self._top_n * self._oversample_factor) if filtering_active else self._top_n * 2
         )
 
         # 1. Alias signal (fast path -- exact match)
@@ -339,17 +336,20 @@ class EntityMatcher:
                 best_area_bonus = 0.0
                 if entry.area:
                     area_containment = _normalize_for_containment(entry.area)
-                    if query_containment and area_containment:
-                        if query_containment == area_containment or query_containment in area_containment:
-                            best_area_bonus = max(best_area_bonus, 0.30)
+                    if (
+                        query_containment
+                        and area_containment
+                        and (query_containment == area_containment or query_containment in area_containment)
+                    ):
+                        best_area_bonus = max(best_area_bonus, 0.30)
                 if entry.area_name:
                     area_name_containment = _normalize_for_containment(entry.area_name)
-                    if query_containment and area_name_containment:
-                        if (
-                            query_containment == area_name_containment
-                            or query_containment in area_name_containment
-                        ):
-                            best_area_bonus = max(best_area_bonus, 0.30)
+                    if (
+                        query_containment
+                        and area_name_containment
+                        and (query_containment == area_name_containment or query_containment in area_name_containment)
+                    ):
+                        best_area_bonus = max(best_area_bonus, 0.30)
                 if best_area_bonus:
                     result.score = min(1.0, result.score + best_area_bonus)
 

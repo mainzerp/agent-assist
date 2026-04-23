@@ -865,8 +865,7 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             """
         )
         await db.execute(
-            "CREATE INDEX IF NOT EXISTS ix_query_synonym_cache_last_used "
-            "ON query_synonym_cache(last_used_at)"
+            "CREATE INDEX IF NOT EXISTS ix_query_synonym_cache_last_used ON query_synonym_cache(last_used_at)"
         )
         # Switch the embedding default to a multilingual model on
         # databases that still carry the old English-only default.

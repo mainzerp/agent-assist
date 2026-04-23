@@ -61,7 +61,7 @@ def _sanitize_condensed(
     parts = fragment_re.split(condensed)
     # ``parts`` shape with one capture group:
     # [text0, agent1, text1, agent2, text2, ...]
-    text_segments = [parts[0]] + parts[2::2]
+    text_segments = [parts[0], *parts[2::2]]
     text_segments = [seg.strip(" ;|,-") for seg in text_segments if seg and seg.strip()]
 
     seen: list[str] = []
@@ -73,11 +73,7 @@ def _sanitize_condensed(
         cleaned = seen[0]
         # Collapse "ABC ABC ABC..." literal repetitions of the same prefix.
         half = len(cleaned) // 2
-        while (
-            half > 0
-            and cleaned[:half] == cleaned[half : 2 * half]
-            and cleaned[half:].startswith(cleaned[:half])
-        ):
+        while half > 0 and cleaned[:half] == cleaned[half : 2 * half] and cleaned[half:].startswith(cleaned[:half]):
             cleaned = cleaned[:half].rstrip()
             half = len(cleaned) // 2
     else:
@@ -90,6 +86,7 @@ def _sanitize_condensed(
             repr(cleaned[:200]),
         )
     return cleaned
+
 
 # Canned fallback strings emitted by _dispatch_single when an agent
 # times out or the general-agent itself errors. Multi-agent merge
@@ -2503,10 +2500,8 @@ class OrchestratorAgent(BaseAgent):
             )
         else:
             language_hint = ""
-        system_prompt = (
-            system_prompt_template
-            .replace("{agent_descriptions}", agent_descriptions)
-            .replace("{language_hint}", language_hint)
+        system_prompt = system_prompt_template.replace("{agent_descriptions}", agent_descriptions).replace(
+            "{language_hint}", language_hint
         )
         if "send-agent" not in agent_descriptions:
             system_prompt = self._strip_seq_rule(system_prompt)

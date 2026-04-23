@@ -66,6 +66,7 @@ async def test_oversample_factor_clamped_on_load():
     async def _settings(values):
         async def _get(key, default=None):
             return values.get(key, default)
+
         return _get
 
     # Stub entity_matching_config DB read to return empty rows.
@@ -92,7 +93,9 @@ async def test_oversample_factor_clamped_on_load():
         patch("app.db.schema.get_db_read", new=_get_db_read),
         patch(
             "app.entity.matcher.SettingsRepository.get_value",
-            new=AsyncMock(side_effect=lambda key, default=None: "0" if key == "entity_matching.oversample_factor" else default),
+            new=AsyncMock(
+                side_effect=lambda key, default=None: "0" if key == "entity_matching.oversample_factor" else default
+            ),
         ),
     ):
         await matcher.load_config()
@@ -103,7 +106,9 @@ async def test_oversample_factor_clamped_on_load():
         patch("app.db.schema.get_db_read", new=_get_db_read),
         patch(
             "app.entity.matcher.SettingsRepository.get_value",
-            new=AsyncMock(side_effect=lambda key, default=None: "9999" if key == "entity_matching.oversample_factor" else default),
+            new=AsyncMock(
+                side_effect=lambda key, default=None: "9999" if key == "entity_matching.oversample_factor" else default
+            ),
         ),
     ):
         await matcher.load_config()
@@ -114,7 +119,9 @@ async def test_oversample_factor_clamped_on_load():
         patch("app.db.schema.get_db_read", new=_get_db_read),
         patch(
             "app.entity.matcher.SettingsRepository.get_value",
-            new=AsyncMock(side_effect=lambda key, default=None: "abc" if key == "entity_matching.oversample_factor" else default),
+            new=AsyncMock(
+                side_effect=lambda key, default=None: "abc" if key == "entity_matching.oversample_factor" else default
+            ),
         ),
     ):
         await matcher.load_config()

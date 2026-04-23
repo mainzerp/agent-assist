@@ -119,13 +119,9 @@ class ActionableAgent(BaseAgent):
                 # message into a condensed task, give the agent the
                 # ORIGINAL text first so original-language entity tokens
                 # are preserved through the LLM call.
-                user_content = (
-                    f'{task.user_text}\n\n(Routing summary: "{task.description}")'
-                )
+                user_content = f'{task.user_text}\n\n(Routing summary: "{task.description}")'
             else:
-                user_content = (
-                    f'{task.description}\n\n(Original user message: "{task.user_text}")'
-                )
+                user_content = f'{task.description}\n\n(Original user message: "{task.user_text}")'
         messages.append({"role": "user", "content": user_content})
 
         try:

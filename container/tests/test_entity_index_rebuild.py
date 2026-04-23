@@ -102,11 +102,17 @@ async def test_prime_drops_collection_when_embedding_model_changed():
     get_patch, set_patch, set_calls = _patch_settings(settings_values)
     pipeline_patches = _patch_entity_pipeline()
 
-    with get_patch, set_patch, pipeline_patches[0], pipeline_patches[1], pipeline_patches[2]:
-        # Force INDEX_SCHEMA_VERSION to the value we wrote above so only
-        # the model mismatch drives the rebuild decision.
-        with patch("app.entity.index.INDEX_SCHEMA_VERSION", 2):
-            await runtime_setup._prime_entity_index(app, ha, ei, vs)
+    # Force INDEX_SCHEMA_VERSION to the value we wrote above so only
+    # the model mismatch drives the rebuild decision.
+    with (
+        get_patch,
+        set_patch,
+        pipeline_patches[0],
+        pipeline_patches[1],
+        pipeline_patches[2],
+        patch("app.entity.index.INDEX_SCHEMA_VERSION", 2),
+    ):
+        await runtime_setup._prime_entity_index(app, ha, ei, vs)
 
     assert vs.delete_collection.call_count == 1
     assert vs.delete_collection.call_args.args[0] == COLLECTION_ENTITY_INDEX
@@ -137,9 +143,15 @@ async def test_prime_does_not_drop_when_schema_and_model_match():
     get_patch, set_patch, _ = _patch_settings(settings_values)
     pipeline_patches = _patch_entity_pipeline()
 
-    with get_patch, set_patch, pipeline_patches[0], pipeline_patches[1], pipeline_patches[2]:
-        with patch("app.entity.index.INDEX_SCHEMA_VERSION", 2):
-            await runtime_setup._prime_entity_index(app, ha, ei, vs)
+    with (
+        get_patch,
+        set_patch,
+        pipeline_patches[0],
+        pipeline_patches[1],
+        pipeline_patches[2],
+        patch("app.entity.index.INDEX_SCHEMA_VERSION", 2),
+    ):
+        await runtime_setup._prime_entity_index(app, ha, ei, vs)
 
     vs.delete_collection.assert_not_called()
     # Existing collection with matching schema+model takes the sync path.
@@ -158,9 +170,7 @@ async def test_prime_drops_and_retries_on_chroma_compaction_error():
     # Empty existing collection -> populate path (no model mismatch needed).
     vs = _make_vector_store(count=0)
 
-    err = RuntimeError(
-        "Error in compaction: Failed to apply logs to the hnsw segment writer"
-    )
+    err = RuntimeError("Error in compaction: Failed to apply logs to the hnsw segment writer")
     ei.populate_async = AsyncMock(side_effect=[err, None])
 
     settings_values = {
@@ -172,9 +182,15 @@ async def test_prime_drops_and_retries_on_chroma_compaction_error():
     get_patch, set_patch, _ = _patch_settings(settings_values)
     pipeline_patches = _patch_entity_pipeline()
 
-    with get_patch, set_patch, pipeline_patches[0], pipeline_patches[1], pipeline_patches[2]:
-        with patch("app.entity.index.INDEX_SCHEMA_VERSION", 2):
-            await runtime_setup._prime_entity_index(app, ha, ei, vs)
+    with (
+        get_patch,
+        set_patch,
+        pipeline_patches[0],
+        pipeline_patches[1],
+        pipeline_patches[2],
+        patch("app.entity.index.INDEX_SCHEMA_VERSION", 2),
+    ):
+        await runtime_setup._prime_entity_index(app, ha, ei, vs)
 
     # One drop happens up-front because count==0 with entities to index;
     # a second drop happens after the compaction error during populate.

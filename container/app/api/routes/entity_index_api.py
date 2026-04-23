@@ -331,13 +331,8 @@ async def match_preview(
             reason = "unknown"
             domain_counts: dict[str, int] = {}
         else:
-            domain_counts = _count_allowed_domain_entries(
-                entity_index, allowed_for_diag
-            )
-            if all(v == 0 for v in domain_counts.values()):
-                reason = "no_entities_of_allowed_domains"
-            else:
-                reason = "filtered_out"
+            domain_counts = _count_allowed_domain_entries(entity_index, allowed_for_diag)
+            reason = "no_entities_of_allowed_domains" if all(v == 0 for v in domain_counts.values()) else "filtered_out"
 
         diagnostics = {
             "reason": reason,

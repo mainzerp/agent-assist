@@ -15,10 +15,11 @@ venv/
 env/
 
 # IDE
-.vscode/
+.vscode/*
 .idea/
 *.swp
 *.swo
+!.vscode/settings.json
 
 # Environment
 .env
@@ -27,9 +28,10 @@ env/
 # Docker
 docker-compose.override.yml
 
-# Data (runtime artifacts)
-container/data/*.db
-container/data/chromadb/
+# Data (runtime artifacts) -- everything under container/data is
+# machine-generated; only the placeholder .gitkeep is tracked.
+container/data/*
+!container/data/.gitkeep
 
 # OS
 .DS_Store

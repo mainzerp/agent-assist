@@ -247,7 +247,7 @@ class HARestClient:
             return cached
         template = (
             "[{% for a in areas() %}"
-            "{\"id\": \"{{ a }}\", \"name\": \"{{ area_name(a) }}\"}"
+            '{"id": "{{ a }}", "name": "{{ area_name(a) }}"}'
             "{% if not loop.last %},{% endif %}"
             "{% endfor %}]"
         )

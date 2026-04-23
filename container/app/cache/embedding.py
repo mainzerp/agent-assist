@@ -73,9 +73,7 @@ class EmbeddingEngine:
             }
             dimensions = defaults.get(self._model_name)
         name = (self._model_name or "").lower()
-        is_multilingual = (
-            "multilingual" in name or name.startswith("intfloat/multilingual")
-        )
+        is_multilingual = "multilingual" in name or name.startswith("intfloat/multilingual")
         return {
             "provider": self._provider or "unknown",
             "model": self._model_name or "unknown",
@@ -99,9 +97,7 @@ class EmbeddingEngine:
         # show_progress_bar=False suppresses the per-call tqdm "Batches"
         # progress bar that would otherwise spam logs on every embed
         # (entity matcher queries, cache lookups, periodic HA syncs).
-        embeddings = model.encode(
-            texts, convert_to_numpy=True, show_progress_bar=False
-        )
+        embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
         return [emb.tolist() for emb in embeddings]
 
     def _embed_external(self, texts: list[str]) -> list[list[float]]:

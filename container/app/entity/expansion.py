@@ -89,9 +89,7 @@ class QueryExpansionService:
             return []
         lang_key = (source_language or "").strip().lower()
         try:
-            enabled = (
-                await SettingsRepository.get_value("entity_matching.expansion.enabled", "true")
-            ) or "true"
+            enabled = (await SettingsRepository.get_value("entity_matching.expansion.enabled", "true")) or "true"
         except Exception:
             enabled = "true"
         if enabled.lower() not in ("1", "true", "yes", "on"):
@@ -124,9 +122,7 @@ class QueryExpansionService:
             except Exception:
                 pass
             try:
-                cap = int(
-                    await SettingsRepository.get_value("entity_matching.expansion.max_cache_rows", "5000")
-                )
+                cap = int(await SettingsRepository.get_value("entity_matching.expansion.max_cache_rows", "5000"))
                 if cap > 0:
                     await self._cache.evict_lru(cap)
             except Exception:
@@ -142,8 +138,7 @@ class QueryExpansionService:
             logger.warning("Failed to read query_expansion prompt", exc_info=True)
             return []
         prompt = (
-            template
-            .replace("{token}", token)
+            template.replace("{token}", token)
             .replace("{source_language}", source_language or "unknown")
             .replace("{index_language}", index_language or "unknown")
         )
