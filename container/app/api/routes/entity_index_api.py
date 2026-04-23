@@ -49,6 +49,57 @@ AGENT_ALLOWED_DOMAINS: dict[str, frozenset[str]] = {
 _LIGHT_DETERMINISTIC_AGENTS: frozenset[str] = frozenset({"light-agent"})
 
 
+def _count_allowed_domain_entries(
+    entity_index: Any,
+    allowed_domains: tuple[str, ...] | list[str] | frozenset[str],
+) -> dict[str, int]:
+    """Return ``{domain: count}`` for the given domains, in one vector-store scan.
+
+    Always returns a dict that contains *every* requested domain (zero counts
+    for absent domains). On any failure returns the requested domains all
+    mapped to ``0`` -- the caller relies on the dict shape to decide between
+    `no_entities_of_allowed_domains` and `filtered_out`, so a fail-soft
+    zero-map is the safe default (UI just won't claim entities exist).
+    """
+    counts: dict[str, int] = {d: 0 for d in allowed_domains}
+    if not counts:
+        return counts
+    try:
+        vector_store = getattr(entity_index, "_store", None)
+        if vector_store is None:
+            return counts
+        where: dict[str, Any] | None
+        if len(counts) == 1:
+            (only,) = tuple(counts.keys())
+            where = {"domain": only}
+        else:
+            where = {"domain": {"$in": list(counts.keys())}}
+        try:
+            data = vector_store.get(
+                COLLECTION_ENTITY_INDEX,
+                where=where,
+                include=["metadatas"],
+            )
+        except Exception:
+            # Backend may not support this `where` shape -- fall back to a
+            # full scan and filter client-side.
+            data = vector_store.get(
+                COLLECTION_ENTITY_INDEX,
+                include=["metadatas"],
+            )
+        for meta in data.get("metadatas", []) or []:
+            d = (meta or {}).get("domain")
+            if d in counts:
+                counts[d] += 1
+    except Exception:
+        logger.debug(
+            "match-preview: domain-count helper failed for domains=%s",
+            list(counts.keys()),
+            exc_info=True,
+        )
+    return counts
+
+
 @router.get("/stats")
 async def get_entity_index_stats(request: Request):
     """Entity index stats with per-domain breakdown."""
@@ -262,6 +313,39 @@ async def match_preview(
         hybrid_error = str(exc)
 
     # -----------------------------------------------------------------
+    # Empty-state diagnostics: only when the hybrid list is empty.
+    # Attached regardless of `hybrid_error` -- admins still benefit from
+    # knowing whether allowed domains have any entities at all.
+    # -----------------------------------------------------------------
+    diagnostics: dict[str, Any] | None = None
+    if not hybrid:
+        allowed_for_diag: tuple[str, ...]
+        if domain_filter:
+            allowed_for_diag = (domain_filter,)
+        elif agent_allowed_domains:
+            allowed_for_diag = tuple(sorted(agent_allowed_domains))
+        else:
+            allowed_for_diag = ()
+
+        if not allowed_for_diag:
+            reason = "unknown"
+            domain_counts: dict[str, int] = {}
+        else:
+            domain_counts = _count_allowed_domain_entries(
+                entity_index, allowed_for_diag
+            )
+            if all(v == 0 for v in domain_counts.values()):
+                reason = "no_entities_of_allowed_domains"
+            else:
+                reason = "filtered_out"
+
+        diagnostics = {
+            "reason": reason,
+            "allowed_domains": list(allowed_for_diag),
+            "domain_counts": domain_counts,
+        }
+
+    # -----------------------------------------------------------------
     # Visibility summary for the selected agent
     # -----------------------------------------------------------------
     visibility: dict[str, Any] = {
@@ -314,6 +398,7 @@ async def match_preview(
         "hybrid": hybrid,
         "hybrid_error": hybrid_error,
         "visibility": visibility,
+        **({"diagnostics": diagnostics} if diagnostics is not None else {}),
     }
 
 

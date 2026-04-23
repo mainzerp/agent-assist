@@ -61,6 +61,7 @@ accepted as a legacy alias on read).
 |-----|---------|------|-------------|
 | `entity_matching.confidence_threshold` | `0.75` | float | Minimum confidence score for entity match |
 | `entity_matching.top_n_candidates` | `3` | int | Number of candidates for LLM disambiguation |
+| `entity_matching.oversample_factor` | `20` | int | Embedding shortlist multiplier when agent visibility/preferred-domain hints are present |
 
 ### Presence Settings
 

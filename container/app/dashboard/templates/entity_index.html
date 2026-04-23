@@ -275,7 +275,35 @@
                         <div class="alert alert-error"
                              x-text="'Matcher error: ' + previewResult.hybrid_error"></div>
                     </template>
-                    <template x-if="!previewResult.hybrid_error && previewResult.hybrid.length === 0">
+                    <template x-if="!previewResult.hybrid_error
+                                    && previewResult.hybrid.length === 0
+                                    && previewResult.diagnostics
+                                    && previewResult.diagnostics.reason !== 'unknown'">
+                        <div class="empty-state">
+                            <p><strong>Keine Treffer.</strong></p>
+                            <template x-if="previewResult.diagnostics.allowed_domains.length > 0">
+                                <p x-text="'Erlaubte Domains: ' + previewResult.diagnostics.allowed_domains.join(', ')"></p>
+                            </template>
+                            <template x-if="Object.keys(previewResult.diagnostics.domain_counts || {}).length > 0">
+                                <p>
+                                    <span>Im Index: </span>
+                                    <span x-text="Object.entries(previewResult.diagnostics.domain_counts)
+                                                    .map(function(e){ return e[0] + '=' + e[1]; })
+                                                    .join(', ')"></span>
+                                </p>
+                            </template>
+                            <template x-if="previewResult.diagnostics.reason === 'no_entities_of_allowed_domains'">
+                                <p>Wahrscheinliche Ursache: Keine Entitaeten der erlaubten Domains im Index.</p>
+                            </template>
+                            <template x-if="previewResult.diagnostics.reason === 'filtered_out'">
+                                <p>Wahrscheinliche Ursache: Entitaeten sind vorhanden, wurden aber durch Sichtbarkeit, Recall oder Confidence-Schwelle herausgefiltert.</p>
+                            </template>
+                        </div>
+                    </template>
+                    <template x-if="!previewResult.hybrid_error
+                                    && previewResult.hybrid.length === 0
+                                    && (!previewResult.diagnostics
+                                        || previewResult.diagnostics.reason === 'unknown')">
                         <div class="empty-state"><p>No candidates above confidence threshold.</p></div>
                     </template>
                     <div class="table-container" x-show="previewResult.hybrid.length > 0">

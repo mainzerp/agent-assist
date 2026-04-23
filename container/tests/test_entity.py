@@ -285,7 +285,7 @@ class TestEntityMatcher:
                 yield mock_db
 
             mock_get_db.side_effect = fake_db
-            mock_settings.get_value = AsyncMock(side_effect=["0.75", "3"])
+            mock_settings.get_value = AsyncMock(side_effect=["0.75", "3", "20", "true"])
             await matcher.load_config()
 
         assert "levenshtein" in matcher._weights

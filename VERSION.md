@@ -1,6 +1,6 @@
 # Version
 
-**Current Version:** 0.23.0
+**Current Version:** 0.23.1
 
 ## Version History
 
@@ -1524,6 +1524,22 @@ New send-agent enables content delivery to smartphones (via HA notify) and satel
 - Project definition document
 
 ## Recent Changes (since 0.21.1)
+
+- Match-preview empty-state diagnostics: when
+  `/api/admin/entity-index/match-preview` returns zero hybrid
+  candidates, the response now includes a `diagnostics` block with
+  the active `allowed_domains`, per-domain entity counts, and a
+  `reason` (`no_entities_of_allowed_domains`, `filtered_out`, or
+  `unknown`). The admin UI replaces the previous generic empty-state
+  paragraph with a German info box explaining the most likely cause.
+- Entity matcher: when an `agent_id` or `preferred_domains` is supplied,
+  oversample the embedding shortlist (new setting
+  `entity_matching.oversample_factor`, default `20`) so visibility-restricted
+  agents like `climate-agent` can return area-resident sensors for
+  area-only queries (e.g. `masterbad`, `flur`). Previously the fixed
+  shortlist of `top_n*2 = 6` candidates frequently dropped legitimate
+  climate-visible sensors before scoring, yielding zero hybrid matches
+  for valid area queries.
 
 ### 0.21.2 -- Orchestrator condensed-task hardening
 

@@ -406,6 +406,7 @@ def mock_settings() -> dict[str, str]:
         "embedding.dimension": "384",
         "entity_matching.confidence_threshold": "0.60",
         "entity_matching.top_n_candidates": "3",
+        "entity_matching.oversample_factor": "20",
         "presence.enabled": "true",
         "presence.decay_timeout": "300",
         "rewrite.model": "groq/llama-3.1-8b-instant",

@@ -384,6 +384,13 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "Minimum confidence for entity match",
         ),
         ("entity_matching.top_n_candidates", "3", "int", "entity_matching", "Top-N candidates for LLM disambiguation"),
+        (
+            "entity_matching.oversample_factor",
+            "20",
+            "int",
+            "entity_matching",
+            "Embedding shortlist multiplier when agent visibility/preferred-domain hints are present",
+        ),
         # 0.23.0: language-agnostic on-demand expansion cache.
         (
             "entity_matching.expansion.enabled",

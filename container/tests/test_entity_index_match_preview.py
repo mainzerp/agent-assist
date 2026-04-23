@@ -352,3 +352,275 @@ async def test_match_preview_backward_compat_no_filters(preview_client):
     assert data["deterministic"]["domain_allowed"] is True
     # Resolution path is not annotated when no agent filter applies.
     assert data["deterministic"]["metadata"]["resolution_path"] == "exact_friendly_name"
+
+
+@pytest.mark.asyncio
+async def test_match_preview_area_only_climate_agent_returns_visible_sensor(preview_client):
+    """Area-only query under climate-agent must surface a visible sensor in hybrid.
+
+    Locks the route contract that the matcher fix in
+    docs/SubAgent/area_only_climate_agent_plan.md must satisfy: when the
+    matcher returns a climate-visible sensor for an area-only query, the
+    route propagates it through ``hybrid`` with ``area`` populated and
+    advertises the climate-agent's preferred domain set.
+    """
+    client, ei, em = preview_client
+    target = _make_entry(
+        "sensor.luftsensor_masterbad_am2301_temperature",
+        "Luftsensor Masterbad Temperatur",
+        area="masterbad",
+    )
+    ei.list_entries = MagicMock(return_value=[target])
+    ei.get_by_id = MagicMock(side_effect=lambda eid: target if eid == target.entity_id else None)
+    em.match.return_value = [
+        MatchResult(
+            entity_id=target.entity_id,
+            friendly_name=target.friendly_name,
+            score=0.91,
+            signal_scores={"embedding": 0.78, "area": 0.30},
+        ),
+    ]
+    resolver_output = {
+        "entity_id": None,
+        "friendly_name": "masterbad",
+        "speech": None,
+        "metadata": {
+            "query": "masterbad",
+            "resolution_path": "no_match",
+            "match_count": 0,
+        },
+    }
+    with (
+        patch(
+            "app.agents.action_executor._resolve_light_entity",
+            new=AsyncMock(return_value=resolver_output),
+        ),
+        patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        resp = await client.get(
+            "/api/admin/entity-index/match-preview",
+            params={"q": "masterbad", "agent_id": "climate-agent"},
+        )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["agent_id"] == "climate-agent"
+    assert set(data["preferred_domains"]) >= {"climate", "sensor", "weather"}
+    assert any(
+        h["entity_id"] == target.entity_id and h["area"] == "masterbad"
+        for h in data["hybrid"]
+    ), data["hybrid"]
+    em.match.assert_awaited()
+    call = em.match.await_args
+    assert call.kwargs.get("agent_id") == "climate-agent"
+
+
+@pytest.mark.asyncio
+async def test_match_preview_diagnostics_no_allowed_entities(preview_client):
+    """Empty hybrid + no allowed-domain entities -> reason=no_entities_of_allowed_domains."""
+    client, ei, em = preview_client
+    em.match.return_value = []
+    ei._store = MagicMock()
+    ei._store.get = MagicMock(return_value={"metadatas": []})
+    resolver_output = {
+        "entity_id": None,
+        "friendly_name": "foo",
+        "speech": None,
+        "metadata": {"query": "foo", "resolution_path": "no_match", "match_count": 0},
+    }
+    with (
+        patch(
+            "app.agents.action_executor._resolve_light_entity",
+            new=AsyncMock(return_value=resolver_output),
+        ),
+        patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        resp = await client.get(
+            "/api/admin/entity-index/match-preview",
+            params={"q": "foo", "agent_id": "climate-agent"},
+        )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["hybrid"] == []
+    diag = data["diagnostics"]
+    assert diag["reason"] == "no_entities_of_allowed_domains"
+    assert set(diag["allowed_domains"]) == {"climate", "sensor", "weather"}
+    assert diag["domain_counts"] == {"climate": 0, "sensor": 0, "weather": 0}
+
+
+@pytest.mark.asyncio
+async def test_match_preview_diagnostics_filtered_out(preview_client):
+    """Empty hybrid but allowed-domain entities exist -> reason=filtered_out."""
+    client, ei, em = preview_client
+    em.match.return_value = []
+    ei._store = MagicMock()
+    ei._store.get = MagicMock(
+        return_value={
+            "metadatas": [
+                {"domain": "sensor"},
+                {"domain": "sensor"},
+                {"domain": "light"},
+            ]
+        }
+    )
+    resolver_output = {
+        "entity_id": None,
+        "friendly_name": "foo",
+        "speech": None,
+        "metadata": {"query": "foo", "resolution_path": "no_match", "match_count": 0},
+    }
+    with (
+        patch(
+            "app.agents.action_executor._resolve_light_entity",
+            new=AsyncMock(return_value=resolver_output),
+        ),
+        patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        resp = await client.get(
+            "/api/admin/entity-index/match-preview",
+            params={"q": "foo", "agent_id": "climate-agent"},
+        )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    diag = data["diagnostics"]
+    assert diag["reason"] == "filtered_out"
+    assert diag["domain_counts"]["sensor"] == 2
+    assert "light" not in diag["domain_counts"]
+
+
+@pytest.mark.asyncio
+async def test_match_preview_diagnostics_absent_when_hybrid_nonempty(preview_client):
+    """Diagnostics block must not appear when hybrid returns candidates."""
+    client, *_ = preview_client
+    resolver_output = {
+        "entity_id": "light.keller",
+        "friendly_name": "Keller",
+        "speech": None,
+        "metadata": {"query": "keller", "resolution_path": "exact_friendly_name", "match_count": 1},
+    }
+    with (
+        patch(
+            "app.agents.action_executor._resolve_light_entity",
+            new=AsyncMock(return_value=resolver_output),
+        ),
+        patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        resp = await client.get(
+            "/api/admin/entity-index/match-preview",
+            params={"q": "keller", "agent_id": "light-agent"},
+        )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert "diagnostics" not in data
+
+
+@pytest.mark.asyncio
+async def test_match_preview_diagnostics_explicit_domain(preview_client):
+    """Explicit ?domain= path: single-domain count map and matching reason."""
+    client, ei, em = preview_client
+    em.match.return_value = []
+    ei._store = MagicMock()
+    ei._store.get = MagicMock(return_value={"metadatas": [{"domain": "climate"}]})
+    resolver_output = {
+        "entity_id": None,
+        "friendly_name": "foo",
+        "speech": None,
+        "metadata": {"query": "foo", "resolution_path": "no_match", "match_count": 0},
+    }
+    with (
+        patch(
+            "app.agents.action_executor._resolve_light_entity",
+            new=AsyncMock(return_value=resolver_output),
+        ),
+        patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        resp = await client.get(
+            "/api/admin/entity-index/match-preview",
+            params={"q": "foo", "domain": "climate"},
+        )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    diag = data["diagnostics"]
+    assert diag["reason"] == "filtered_out"
+    assert diag["allowed_domains"] == ["climate"]
+    assert diag["domain_counts"] == {"climate": 1}
+
+
+@pytest.mark.asyncio
+async def test_match_preview_diagnostics_unknown_when_no_filters(preview_client):
+    """No agent_id and no domain filter -> reason=unknown."""
+    client, _ei, em = preview_client
+    em.match.return_value = []
+    resolver_output = {
+        "entity_id": None,
+        "friendly_name": "foo",
+        "speech": None,
+        "metadata": {"query": "foo", "resolution_path": "no_match", "match_count": 0},
+    }
+    with (
+        patch(
+            "app.agents.action_executor._resolve_light_entity",
+            new=AsyncMock(return_value=resolver_output),
+        ),
+        patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        resp = await client.get(
+            "/api/admin/entity-index/match-preview",
+            params={"q": "foo"},
+        )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    diag = data["diagnostics"]
+    assert diag["reason"] == "unknown"
+    assert diag["allowed_domains"] == []
+    assert diag["domain_counts"] == {}
+
+
+@pytest.mark.asyncio
+async def test_match_preview_diagnostics_with_hybrid_error(preview_client):
+    """Diagnostics still attached when matcher errors out and hybrid is empty."""
+    client, ei, em = preview_client
+    em.match.side_effect = RuntimeError("boom")
+    ei._store = MagicMock()
+    ei._store.get = MagicMock(return_value={"metadatas": [{"domain": "climate"}]})
+    resolver_output = {
+        "entity_id": None,
+        "friendly_name": "foo",
+        "speech": None,
+        "metadata": {"query": "foo", "resolution_path": "no_match", "match_count": 0},
+    }
+    with (
+        patch(
+            "app.agents.action_executor._resolve_light_entity",
+            new=AsyncMock(return_value=resolver_output),
+        ),
+        patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        resp = await client.get(
+            "/api/admin/entity-index/match-preview",
+            params={"q": "foo", "agent_id": "climate-agent"},
+        )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["hybrid_error"] == "boom"
+    assert data["diagnostics"]["reason"] == "filtered_out"

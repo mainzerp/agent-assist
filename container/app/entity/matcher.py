@@ -72,6 +72,7 @@ class EntityMatcher:
         self._weights: dict[str, float] = {}
         self._confidence_threshold: float = 0.60
         self._top_n: int = 3
+        self._oversample_factor: int = 20
         # 0.23.0: optional language-agnostic on-demand expansion service.
         # Wired by runtime_setup; leave None in tests that do not need it.
         self._expansion_service = None
@@ -113,11 +114,22 @@ class EntityMatcher:
         )
         self._top_n = int(await SettingsRepository.get_value("entity_matching.top_n_candidates", "3"))
         try:
+            raw_factor = await SettingsRepository.get_value("entity_matching.oversample_factor", "20")
+            self._oversample_factor = max(2, min(200, int(raw_factor)))
+        except (TypeError, ValueError):
+            self._oversample_factor = 20
+        try:
             log_misses = await SettingsRepository.get_value("entity_matching.log_misses", "true")
             self._log_misses = (log_misses or "true").lower() in ("1", "true", "yes", "on")
         except Exception:
             self._log_misses = True
-        logger.info("Entity matcher config: weights=%s threshold=%s", self._weights, self._confidence_threshold)
+        logger.info(
+            "Entity matcher config: weights=%s threshold=%s top_n=%s oversample_factor=%s",
+            self._weights,
+            self._confidence_threshold,
+            self._top_n,
+            self._oversample_factor,
+        )
 
     async def match(
         self,
@@ -227,6 +239,16 @@ class EntityMatcher:
         """Inner matcher: scores a single query string against the index."""
         results: dict[str, MatchResult] = {}
 
+        # Embedding shortlist size: oversample when downstream filtering
+        # (agent visibility or preferred-domain re-ranking) will prune
+        # candidates before the top_n slice.
+        filtering_active = bool(agent_id) or bool(preferred_domains)
+        embedding_n = (
+            max(self._top_n * 2, self._top_n * self._oversample_factor)
+            if filtering_active
+            else self._top_n * 2
+        )
+
         # 1. Alias signal (fast path -- exact match)
         alias_result = await AliasSignal.score(query, self._alias_resolver)
         if alias_result:
@@ -240,7 +262,7 @@ class EntityMatcher:
 
         # 2. Embedding signal -- vector search
         try:
-            embedding_results = await EmbeddingSignal.score(query, self._entity_index, n=self._top_n * 2)
+            embedding_results = await EmbeddingSignal.score(query, self._entity_index, n=embedding_n)
         except Exception:
             logger.warning("Embedding signal unavailable, proceeding with remaining signals")
             embedding_results = []
@@ -260,7 +282,7 @@ class EntityMatcher:
         umlaut_query = _digraphs_to_umlauts(query)
         if umlaut_query:
             try:
-                umlaut_results = await EmbeddingSignal.score(umlaut_query, self._entity_index, n=self._top_n * 2)
+                umlaut_results = await EmbeddingSignal.score(umlaut_query, self._entity_index, n=embedding_n)
             except Exception:
                 umlaut_results = []
             for entity_id, friendly_name, emb_score in umlaut_results:
