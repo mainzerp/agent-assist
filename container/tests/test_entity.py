@@ -1468,6 +1468,9 @@ class TestEntityIndexAsync:
         entry = make_entity_index_entry("light.kitchen", "Kitchen Light", area="kitchen")
         old_meta = EntityIndex._build_metadata(entry)
         old_meta["area"] = "old_area"  # different metadata
+        # Stale rows from before the v3 schema bump have no content_hash;
+        # drop it here so the secondary new_doc == old_doc check fires.
+        old_meta.pop("content_hash", None)
         store.get.return_value = {
             "ids": ["light.kitchen"],
             "documents": [entry.embedding_text],
@@ -1519,6 +1522,9 @@ class TestEntityIndexAsync:
 
         old_meta_only_meta = EntityIndex._build_metadata(meta_only)
         old_meta_only_meta["area"] = "old_area"
+        # Simulate a legacy v2 row (no content_hash) so the secondary
+        # metadata-only diff path is exercised.
+        old_meta_only_meta.pop("content_hash", None)
 
         store.get.return_value = {
             "ids": ["light.unchanged", "light.meta_only", "light.doc_changed"],
@@ -1560,3 +1566,94 @@ class TestEntityIndexAsync:
         store.upsert.assert_called_once()
         ids = store.upsert.call_args[1]["ids"]
         assert len(ids) == 2
+
+    # ------------------------------------------------------------------
+    # content_hash short-circuit (PART B of entity_index_push_dedup)
+    # ------------------------------------------------------------------
+
+    def test_entity_index_entry_content_hash_stable(self):
+        """content_hash is deterministic and order-insensitive on lists."""
+        a = make_entity_index_entry(
+            "light.kitchen",
+            "Kitchen Light",
+            aliases=["main", "ceiling"],
+            id_tokens=["light", "kitchen"],
+        )
+        b = make_entity_index_entry(
+            "light.kitchen",
+            "Kitchen Light",
+            aliases=["ceiling", "main"],
+            id_tokens=["kitchen", "light"],
+        )
+        assert a.content_hash == b.content_hash
+
+        renamed = make_entity_index_entry("light.kitchen", "Kitchen Light Renamed")
+        assert renamed.content_hash != a.content_hash
+
+    def test_batch_add_skips_unchanged_via_content_hash(self):
+        """Stored content_hash matching the entry's hash skips upsert AND update_metadata."""
+        index, store = self._make_index()
+        entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
+        store.get.return_value = {
+            "ids": ["light.kitchen"],
+            # documents intentionally differ to prove the hash check wins
+            "documents": ["stale doc text"],
+            "metadatas": [{"content_hash": entry.content_hash, "friendly_name": "stale"}],
+        }
+        index.batch_add([entry])
+        store.upsert.assert_not_called()
+        store.update_metadata.assert_not_called()
+
+    def test_batch_add_friendly_name_change_triggers_upsert(self):
+        """Hash mismatch falls through to upsert."""
+        index, store = self._make_index()
+        old = make_entity_index_entry("light.kitchen", "Kitchen Light")
+        new = make_entity_index_entry("light.kitchen", "Kitchen Ceiling Light")
+        store.get.return_value = {
+            "ids": ["light.kitchen"],
+            "documents": [old.embedding_text],
+            "metadatas": [EntityIndex._build_metadata(old)],
+        }
+        index.batch_add([new])
+        store.upsert.assert_called_once()
+
+    def test_add_skips_unchanged_via_content_hash(self):
+        """add() short-circuits when stored content_hash matches."""
+        index, store = self._make_index()
+        entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
+        store.get.return_value = {
+            "ids": ["light.kitchen"],
+            "metadatas": [{"content_hash": entry.content_hash}],
+        }
+        index.add(entry)
+        store.upsert.assert_not_called()
+
+    def test_add_upserts_when_hash_missing(self):
+        """add() falls through to upsert when no content_hash is stored."""
+        index, store = self._make_index()
+        entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
+        store.get.return_value = {
+            "ids": ["light.kitchen"],
+            "metadatas": [{"friendly_name": "Kitchen Light"}],
+        }
+        index.add(entry)
+        store.upsert.assert_called_once()
+
+    def test_add_upserts_when_hash_differs(self):
+        """add() upserts when stored hash differs from the new entry."""
+        index, store = self._make_index()
+        entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
+        store.get.return_value = {
+            "ids": ["light.kitchen"],
+            "metadatas": [{"content_hash": "different-hash"}],
+        }
+        index.add(entry)
+        store.upsert.assert_called_once()
+
+    def test_add_falls_through_when_get_fails(self):
+        """add() upserts when the pre-fetch raises (fail open)."""
+        index, store = self._make_index()
+        store.get.side_effect = RuntimeError("Chroma down")
+        entry = make_entity_index_entry("light.kitchen", "Kitchen Light")
+        index.add(entry)
+        store.upsert.assert_called_once()

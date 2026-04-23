@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import chromadb
 
@@ -30,7 +31,21 @@ class EmbeddingEngine:
     def _get_local_model(self):
         """Lazy-load sentence-transformers model on first use."""
         if self._local_model is None:
+            os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+            os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
             from sentence_transformers import SentenceTransformer
+
+            try:
+                import huggingface_hub
+
+                if hasattr(huggingface_hub, "disable_progress_bars"):
+                    huggingface_hub.disable_progress_bars()
+                else:
+                    from huggingface_hub.utils import logging as hf_logging
+
+                    hf_logging.disable_progress_bars()
+            except Exception:
+                pass
 
             self._local_model = SentenceTransformer(self._model_name)
             logger.info("Loaded local embedding model: %s", self._model_name)
@@ -48,12 +63,24 @@ class EmbeddingEngine:
         if self._provider == "local" and self._local_model is not None:
             dimensions = self._local_model.get_sentence_embedding_dimension()
         elif self._provider == "local":
-            defaults = {"all-MiniLM-L6-v2": 384, "all-mpnet-base-v2": 768}
+            defaults = {
+                "all-MiniLM-L6-v2": 384,
+                "all-mpnet-base-v2": 768,
+                # 0.23.0: multilingual default.
+                "intfloat/multilingual-e5-small": 384,
+                "intfloat/multilingual-e5-base": 768,
+                "paraphrase-multilingual-MiniLM-L12-v2": 384,
+            }
             dimensions = defaults.get(self._model_name)
+        name = (self._model_name or "").lower()
+        is_multilingual = (
+            "multilingual" in name or name.startswith("intfloat/multilingual")
+        )
         return {
             "provider": self._provider or "unknown",
             "model": self._model_name or "unknown",
             "dimensions": dimensions,
+            "is_multilingual": is_multilingual,
         }
 
     def embed(self, text: str) -> list[float]:
@@ -69,7 +96,12 @@ class EmbeddingEngine:
     def _embed_local(self, texts: list[str]) -> list[list[float]]:
         """Use sentence-transformers for local embedding."""
         model = self._get_local_model()
-        embeddings = model.encode(texts, convert_to_numpy=True)
+        # show_progress_bar=False suppresses the per-call tqdm "Batches"
+        # progress bar that would otherwise spam logs on every embed
+        # (entity matcher queries, cache lookups, periodic HA syncs).
+        embeddings = model.encode(
+            texts, convert_to_numpy=True, show_progress_bar=False
+        )
         return [emb.tolist() for emb in embeddings]
 
     def _embed_external(self, texts: list[str]) -> list[list[float]]:

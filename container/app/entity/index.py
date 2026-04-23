@@ -14,6 +14,18 @@ logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 500
 
+# 0.23.0: bump when EntityIndexEntry / embedding_text shape changes so
+# stale ChromaDB collections (built before the new fields existed) are
+# fully rebuilt on startup. Persisted under setting key
+# ``entity_index.schema_version``.
+#
+# v3: adds ``content_hash`` to Chroma metadata so the WebSocket push
+# path can short-circuit redundant re-embeddings when only the runtime
+# state of an entity changes (its identity-bearing fields are
+# unchanged). Existing v2 collections are dropped and rebuilt on first
+# startup by ``_prime_entity_index``.
+INDEX_SCHEMA_VERSION = 3
+
 
 class EntityIndex:
     """Pre-embedded entity index backed by ChromaDB."""
@@ -44,21 +56,37 @@ class EntityIndex:
             "friendly_name": entry.friendly_name,
             "domain": entry.domain,
             "area": entry.area or "",
+            "area_name": entry.area_name or "",
             "device_class": entry.device_class or "",
             "aliases": ",".join(entry.aliases) if entry.aliases else "",
+            "device_name": entry.device_name or "",
+            "id_tokens": ",".join(entry.id_tokens) if entry.id_tokens else "",
+            "content_hash": entry.content_hash,
         }
+
+    @staticmethod
+    def _stored_hash(meta: dict | None) -> str | None:
+        """Extract the stored ``content_hash`` from Chroma metadata, if any."""
+        if not meta:
+            return None
+        value = meta.get("content_hash")
+        return value or None
 
     @staticmethod
     def _entry_from_metadata(entity_id: str, meta: dict) -> EntityIndexEntry:
         """Build an EntityIndexEntry from stored Chroma metadata."""
-        aliases_str = meta.get("aliases", "")
+        aliases_str = meta.get("aliases", "") or ""
+        id_tokens_str = meta.get("id_tokens", "") or ""
         return EntityIndexEntry(
             entity_id=entity_id,
             friendly_name=meta.get("friendly_name", ""),
             domain=meta.get("domain", ""),
             area=meta.get("area", "") or None,
+            area_name=meta.get("area_name", "") or None,
             device_class=meta.get("device_class", "") or None,
-            aliases=aliases_str.split(",") if aliases_str else [],
+            aliases=[a for a in aliases_str.split(",") if a] if aliases_str else [],
+            device_name=meta.get("device_name", "") or None,
+            id_tokens=[t for t in id_tokens_str.split(",") if t] if id_tokens_str else [],
         )
 
     def populate(self, entities: list[EntityIndexEntry]) -> None:
@@ -122,7 +150,31 @@ class EntityIndex:
         return entries
 
     def add(self, entry: EntityIndexEntry) -> None:
-        """Add or update a single entity."""
+        """Add or update a single entity.
+
+        Skips the upsert when the stored ``content_hash`` already
+        matches the entry's hash, so HA ``state_changed`` pushes whose
+        identity is unchanged do not re-embed the row. Any error while
+        reading current metadata falls through to the upsert (fail
+        open -- never silently drop a write).
+        """
+        try:
+            current = self._store.get(
+                COLLECTION_ENTITY_INDEX,
+                ids=[entry.entity_id],
+                include=["metadatas"],
+            )
+            ids = current.get("ids") or []
+            metas = current.get("metadatas") or []
+            if ids and metas:
+                if self._stored_hash(metas[0]) == entry.content_hash:
+                    return
+        except Exception:
+            logger.debug(
+                "add() pre-fetch failed for %s -- falling through to upsert",
+                entry.entity_id,
+                exc_info=True,
+            )
         self._store.upsert(
             COLLECTION_ENTITY_INDEX,
             ids=[entry.entity_id],
@@ -334,10 +386,15 @@ class EntityIndex:
         meta_only_metas: list[dict] = []
 
         for entry in deduped:
-            new_doc = entry.embedding_text
-            new_meta = self._build_metadata(entry)
             if entry.entity_id in current_map:
                 old_doc, old_meta = current_map[entry.entity_id]
+                # Hash-first short-circuit: if the stored content_hash
+                # matches, identity is unchanged -- skip entirely. This
+                # is the dominant path for HA state_changed pushes.
+                if self._stored_hash(old_meta) == entry.content_hash:
+                    continue
+                new_doc = entry.embedding_text
+                new_meta = self._build_metadata(entry)
                 if new_doc == old_doc and new_meta == old_meta:
                     continue  # Unchanged -- skip entirely
                 if new_doc == old_doc:

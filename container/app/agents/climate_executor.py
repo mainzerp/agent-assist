@@ -93,6 +93,7 @@ async def execute_climate_action(
     *,
     preferred_area_id: str | None = None,
     task_context: TaskContext | None = None,
+    verbatim_terms: list[str] | None = None,
 ) -> dict:
     """Resolve an entity, call a climate HA service, and verify the result.
 
@@ -148,8 +149,17 @@ async def execute_climate_action(
     try:
         if entity_matcher:
             async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
+                matches = await entity_matcher.match(
+                    entity_query,
+                    agent_id=agent_id,
+                    verbatim_terms=verbatim_terms,
+                    preferred_domains=tuple(_CLIMATE_WRITE_DOMAINS),
+                )
+                em_span["metadata"] = {
+                    "query": entity_query,
+                    "match_count": len(matches),
+                    "verbatim_terms_tried": verbatim_terms or [],
+                }
                 # FLOW-DOMAIN-1 (0.19.2): drop wrong-domain candidates.
                 filtered = filter_matches_by_domain(matches, _CLIMATE_WRITE_DOMAINS)
                 if len(filtered) != len(matches):

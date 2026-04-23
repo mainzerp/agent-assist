@@ -82,6 +82,35 @@ class VectorStore:
         """Return a named collection. Must call initialize() first."""
         return self._collections[name]
 
+    def delete_collection(self, name: str) -> None:
+        """Delete a collection from the underlying client and re-create it empty.
+
+        Used when an on-disk HNSW segment is incompatible with the current
+        embedding model (e.g. dimension mismatch after switching models).
+        Swallows NotFoundError so callers can treat the call as idempotent.
+        """
+        if self._client is None:
+            return
+        try:
+            self._client.delete_collection(name=name)
+        except Exception as exc:  # chromadb raises various NotFoundError variants
+            if "not" in str(exc).lower() and "found" in str(exc).lower():
+                logger.debug("delete_collection: %s did not exist", name)
+            else:
+                logger.warning(
+                    "delete_collection(%s) raised %s: %s",
+                    name,
+                    type(exc).__name__,
+                    exc,
+                )
+        # Re-create empty so subsequent get_collection() calls succeed.
+        self._collections[name] = self._client.get_or_create_collection(
+            name=name,
+            embedding_function=self._embedding_fn,
+            metadata={"hnsw:space": "cosine"},
+        )
+        logger.info("Recreated empty Chroma collection %s", name)
+
     def add(
         self,
         collection_name: str,

@@ -30,6 +30,11 @@ class HARestClient:
         # FLOW-VERIFY-1: optional WebSocket observer for post-action state
         # verification. Wired from main.py once both clients exist.
         self._state_observer: HAWebSocketClient | None = None
+        # 0.23.0: lightweight TTL caches for registry-derived enrichment
+        # data used by the entity index ingest. Avoids hitting
+        # /api/template on every single sync.
+        self._registry_cache: dict[str, tuple[float, Any]] = {}
+        self._registry_cache_ttl_sec: float = 300.0
 
     async def initialize(self) -> None:
         """Load HA URL from settings and create httpx client."""
@@ -212,6 +217,136 @@ class HARestClient:
         resp = await self._client.post(f"/api/events/{event_type}", json=event_data or {})
         resp.raise_for_status()
         return resp.json()
+
+    # ------------------------------------------------------------------
+    # 0.23.0: registry-derived enrichment helpers used by entity ingest.
+    # All wrap /api/template with a small TTL cache. Each method returns
+    # an empty / None default on any failure so ingest never blocks.
+    # ------------------------------------------------------------------
+    def _registry_cache_get(self, key: str) -> Any | None:
+        entry = self._registry_cache.get(key)
+        if not entry:
+            return None
+        expires_at, value = entry
+        if expires_at <= time.monotonic():
+            self._registry_cache.pop(key, None)
+            return None
+        return value
+
+    def _registry_cache_put(self, key: str, value: Any) -> None:
+        self._registry_cache[key] = (time.monotonic() + self._registry_cache_ttl_sec, value)
+
+    def clear_area_registry_cache(self) -> None:
+        """Drop cached area / alias / device registry data."""
+        self._registry_cache.clear()
+
+    async def get_area_registry(self) -> dict[str, str]:
+        """Return ``{area_id: area_name}`` from the HA area registry."""
+        cached = self._registry_cache_get("area_registry")
+        if cached is not None:
+            return cached
+        template = (
+            "[{% for a in areas() %}"
+            "{\"id\": \"{{ a }}\", \"name\": \"{{ area_name(a) }}\"}"
+            "{% if not loop.last %},{% endif %}"
+            "{% endfor %}]"
+        )
+        rendered = await self.render_template(template)
+        result: dict[str, str] = {}
+        if rendered:
+            try:
+                import json as _json
+
+                data = _json.loads(rendered)
+                for row in data or []:
+                    aid = row.get("id")
+                    name = row.get("name")
+                    if aid and name:
+                        result[aid] = name
+            except Exception:
+                logger.debug("Failed to parse area_registry template output", exc_info=True)
+        self._registry_cache_put("area_registry", result)
+        return result
+
+    async def get_entity_aliases(self) -> dict[str, list[str]]:
+        """Return ``{entity_id: [alias, ...]}`` from HA per-entity aliases."""
+        cached = self._registry_cache_get("entity_aliases")
+        if cached is not None:
+            return cached
+        template = (
+            "{% set ns = namespace(items=[]) %}"
+            "{% for s in states %}"
+            "{% set al = state_attr(s.entity_id, 'aliases') %}"
+            "{% if al %}"
+            "{% set ns.items = ns.items + [{'id': s.entity_id, 'aliases': al}] %}"
+            "{% endif %}{% endfor %}"
+            "{{ ns.items | tojson }}"
+        )
+        rendered = await self.render_template(template)
+        result: dict[str, list[str]] = {}
+        if rendered:
+            try:
+                import json as _json
+
+                data = _json.loads(rendered)
+                for row in data or []:
+                    eid = row.get("id")
+                    aliases = row.get("aliases") or []
+                    if eid and isinstance(aliases, list):
+                        cleaned = [str(a) for a in aliases if isinstance(a, str) and a]
+                        if cleaned:
+                            result[eid] = cleaned
+            except Exception:
+                logger.debug("Failed to parse entity_aliases template output", exc_info=True)
+        self._registry_cache_put("entity_aliases", result)
+        return result
+
+    async def get_device_names(self) -> dict[str, str]:
+        """Return ``{entity_id: device_name}`` for entities with a parent device."""
+        cached = self._registry_cache_get("device_names")
+        if cached is not None:
+            return cached
+        template = (
+            "{% set ns = namespace(items=[]) %}"
+            "{% for s in states %}"
+            "{% set did = device_id(s.entity_id) %}"
+            "{% if did %}"
+            "{% set dname = device_attr(did, 'name_by_user') or device_attr(did, 'name') %}"
+            "{% if dname %}"
+            "{% set ns.items = ns.items + [{'id': s.entity_id, 'name': dname}] %}"
+            "{% endif %}{% endif %}{% endfor %}"
+            "{{ ns.items | tojson }}"
+        )
+        rendered = await self.render_template(template)
+        result: dict[str, str] = {}
+        if rendered:
+            try:
+                import json as _json
+
+                data = _json.loads(rendered)
+                for row in data or []:
+                    eid = row.get("id")
+                    name = row.get("name")
+                    if eid and name:
+                        result[eid] = str(name)
+            except Exception:
+                logger.debug("Failed to parse device_names template output", exc_info=True)
+        self._registry_cache_put("device_names", result)
+        return result
+
+    async def get_user_language(self) -> str | None:
+        """Return the HA-configured UI language code (e.g. ``de``, ``en``)."""
+        cached = self._registry_cache_get("user_language")
+        if cached is not None:
+            return cached or None
+        try:
+            cfg = await self.get_config()
+        except Exception:
+            cfg = {}
+        lang = cfg.get("language") if isinstance(cfg, dict) else None
+        result = str(lang) if isinstance(lang, str) and lang else ""
+        self._registry_cache_put("user_language", result)
+        return result or None
 
     async def get_history_period(
         self,

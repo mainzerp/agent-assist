@@ -57,13 +57,163 @@ def _set_entity_index_pending_status(entity_index: EntityIndex, *, state: str, t
     }
 
 
+async def _gather_ha_lookups(ha_client: HARestClient) -> tuple[dict, dict, dict]:
+    """Fetch area, alias, and device lookups from HA in parallel.
+
+    Each individual fetch is wrapped so a partial outage degrades to
+    empty enrichment instead of failing the entire entity sync.
+    """
+
+    async def _safe(coro_factory):
+        try:
+            return await coro_factory()
+        except Exception:
+            logger.debug("HA registry lookup failed", exc_info=True)
+            return None
+
+    area_lookup, alias_lookup, device_lookup = await asyncio.gather(
+        _safe(ha_client.get_area_registry),
+        _safe(ha_client.get_entity_aliases),
+        _safe(ha_client.get_device_names),
+    )
+    return (
+        area_lookup or {},
+        alias_lookup or {},
+        device_lookup or {},
+    )
+
+
+def _store_entity_lookups(
+    app: FastAPI,
+    area_lookup: dict,
+    alias_lookup: dict,
+    device_lookup: dict,
+) -> None:
+    """Atomically publish HA registry lookups on ``app.state``.
+
+    The dict is rebuilt and assigned in a single statement so concurrent
+    readers (notably ``on_state_changed``) always observe a consistent
+    triple of area/alias/device lookups, never a partially populated
+    snapshot.
+    """
+    app.state.entity_lookups = {
+        "area": area_lookup or {},
+        "alias": alias_lookup or {},
+        "device": device_lookup or {},
+    }
+
+
+async def _resolve_active_embedding_model() -> str:
+    """Read the embedding model identifier currently configured in settings.
+
+    Returns the empty string if it cannot be determined; callers treat
+    an empty string as "do not compare" so a missing setting does not
+    cause spurious rebuilds.
+    """
+    try:
+        provider = await SettingsRepository.get_value("embedding.provider", "local")
+        if provider == "local":
+            return await SettingsRepository.get_value(
+                "embedding.local_model", "all-MiniLM-L6-v2"
+            ) or ""
+        return await SettingsRepository.get_value("embedding.external_model", "") or ""
+    except Exception:
+        logger.debug("Could not resolve active embedding model", exc_info=True)
+        return ""
+
+
+def _is_chroma_dimension_error(exc: BaseException) -> bool:
+    """Heuristic: detect HNSW dimension / compaction failures from Chroma."""
+    msg = str(exc).lower()
+    return (
+        "compaction" in msg
+        or "hnsw" in msg
+        or "dimension" in msg
+        or "dimensionality" in msg
+    )
+
+
 async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_index: EntityIndex, vector_store) -> None:
     """Fetch HA states and build/sync the entity index in the background."""
     try:
         states = await ha_client.get_states()
-        entities = parse_ha_states(states)
-        existing_count = vector_store.count(COLLECTION_ENTITY_INDEX)
-        if existing_count > 0:
+        area_lookup, alias_lookup, device_lookup = await _gather_ha_lookups(ha_client)
+        _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup)
+        entities = parse_ha_states(
+            states,
+            area_lookup=area_lookup,
+            alias_lookup=alias_lookup,
+            device_lookup=device_lookup,
+        )
+        # 0.23.0: detect stale on-disk index built before the
+        # EntityIndexEntry shape changed -- or built with a different
+        # embedding model whose dimension no longer matches the
+        # active one -- and force a rebuild.
+        force_rebuild = False
+        try:
+            from app.entity.index import INDEX_SCHEMA_VERSION
+
+            stored_version = await SettingsRepository.get_value(
+                "entity_index.schema_version", "0"
+            )
+            if int(stored_version or 0) != INDEX_SCHEMA_VERSION:
+                force_rebuild = True
+        except Exception:
+            INDEX_SCHEMA_VERSION = 0  # type: ignore[assignment]
+
+        active_model = await _resolve_active_embedding_model()
+        stored_model = ""
+        try:
+            stored_model = await SettingsRepository.get_value(
+                "entity_index.embedding_model", ""
+            ) or ""
+        except Exception:
+            logger.debug("Could not read entity_index.embedding_model", exc_info=True)
+        model_changed = bool(active_model) and bool(stored_model) and active_model != stored_model
+
+        try:
+            existing_count = vector_store.count(COLLECTION_ENTITY_INDEX)
+        except Exception:
+            logger.warning(
+                "vector_store.count failed for %s -- forcing rebuild",
+                COLLECTION_ENTITY_INDEX,
+                exc_info=True,
+            )
+            existing_count = 0
+            force_rebuild = True
+
+        # Drop & rebuild trigger: schema bump, model switch, or empty
+        # collection while there are entities to index (covers the case
+        # where the persisted model setting was never written).
+        drop_required = (
+            force_rebuild
+            or model_changed
+            or (existing_count == 0 and len(entities) > 0)
+        )
+        if drop_required:
+            try:
+                vector_store.delete_collection(COLLECTION_ENTITY_INDEX)
+                logger.warning(
+                    "Dropped Chroma collection %s before rebuild "
+                    "(force_rebuild=%s, model_changed=%s, existing_count=%d, "
+                    "active_model=%r, stored_model=%r)",
+                    COLLECTION_ENTITY_INDEX,
+                    force_rebuild,
+                    model_changed,
+                    existing_count,
+                    active_model,
+                    stored_model,
+                )
+                existing_count = 0
+                force_rebuild = True
+            except Exception:
+                logger.warning(
+                    "Failed to drop Chroma collection %s before rebuild",
+                    COLLECTION_ENTITY_INDEX,
+                    exc_info=True,
+                )
+
+        if existing_count > 0 and not force_rebuild:
             _set_entity_index_pending_status(entity_index, state="syncing", total=len(entities))
             result = await entity_index.sync_async(entities)
             logger.info(
@@ -76,8 +226,64 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
             )
         else:
             _set_entity_index_pending_status(entity_index, state="building", total=len(entities))
-            await entity_index.populate_async(entities)
-            logger.info("Entity index populated in background with %d entities", len(entities))
+            try:
+                await entity_index.populate_async(entities)
+            except Exception as exc:
+                if not _is_chroma_dimension_error(exc):
+                    raise
+                logger.warning(
+                    "Entity index populate failed with chroma compaction/HNSW "
+                    "error -- dropping collection %s and retrying once: %s",
+                    COLLECTION_ENTITY_INDEX,
+                    exc,
+                )
+                try:
+                    vector_store.delete_collection(COLLECTION_ENTITY_INDEX)
+                except Exception:
+                    logger.error(
+                        "Failed to drop %s after populate error",
+                        COLLECTION_ENTITY_INDEX,
+                        exc_info=True,
+                    )
+                    raise
+                try:
+                    await entity_index.populate_async(entities)
+                except Exception:
+                    logger.error(
+                        "Entity index populate retry after collection drop also "
+                        "failed; entity matching will be degraded until next sync",
+                        exc_info=True,
+                    )
+                    return
+            logger.info(
+                "Entity index populated in background with %d entities (force_rebuild=%s)",
+                len(entities),
+                force_rebuild,
+            )
+        try:
+            from app.entity.index import INDEX_SCHEMA_VERSION as _ISV
+
+            await SettingsRepository.set(
+                "entity_index.schema_version", str(_ISV)
+            )
+        except Exception:
+            logger.debug("Could not persist entity_index.schema_version", exc_info=True)
+        if active_model:
+            try:
+                await SettingsRepository.set(
+                    "entity_index.embedding_model", active_model
+                )
+            except Exception:
+                logger.debug(
+                    "Could not persist entity_index.embedding_model", exc_info=True
+                )
+        # 0.23.0: load any user-supplied alias overrides (empty by default).
+        try:
+            from app.entity.user_aliases import load_user_aliases
+
+            await load_user_aliases()
+        except Exception:
+            logger.debug("User alias load failed", exc_info=True)
     except Exception:
         logger.warning("Failed to prime entity index in background", exc_info=True)
 
@@ -122,7 +328,14 @@ async def _periodic_entity_sync(app: FastAPI) -> None:
                 continue
 
             states = await ha_client.get_states()
-            entities = parse_ha_states(states)
+            area_lookup, alias_lookup, device_lookup = await _gather_ha_lookups(ha_client)
+            _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup)
+            entities = parse_ha_states(
+                states,
+                area_lookup=area_lookup,
+                alias_lookup=alias_lookup,
+                device_lookup=device_lookup,
+            )
             result = await entity_index.sync_async(entities)
             logger.info(
                 "Periodic entity sync: +%d ~%d -%d =%d",
@@ -233,6 +446,33 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
     if entity_matcher is None:
         entity_matcher = EntityMatcher(entity_index, alias_resolver)
         await entity_matcher.load_config()
+        # 0.23.0: wire optional language-agnostic on-demand expansion.
+        try:
+            from app.entity.expansion import QueryExpansionService
+
+            async def _llm_expand(prompt: str) -> str:
+                # Use the orchestrator-tier LLM for expansion (cheap,
+                # cached). Fail-soft: any error returns empty string so
+                # the matcher falls through.
+                try:
+                    from app.llm.client import complete
+
+                    return await complete(
+                        "orchestrator",
+                        [{"role": "user", "content": prompt}],
+                        max_tokens=200,
+                        temperature=0.0,
+                    )
+                except Exception:
+                    return ""
+
+            entity_matcher._expansion_service = QueryExpansionService(llm_call=_llm_expand)
+        except Exception:
+            logger.debug("Expansion service wiring skipped", exc_info=True)
+        try:
+            entity_matcher._index_language = await ha_client.get_user_language()
+        except Exception:
+            entity_matcher._index_language = None
         app.state.entity_matcher = entity_matcher
 
     rewrite_agent = getattr(app.state, "rewrite_agent", None)
@@ -381,7 +621,14 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
             if new_state is None and old_state is not None:
                 await entity_index.remove_async(entity_id)
             elif new_state is not None:
-                entry = state_to_entity_index_entry(new_state, entity_id=entity_id)
+                lookups = getattr(app.state, "entity_lookups", None) or {}
+                entry = state_to_entity_index_entry(
+                    new_state,
+                    entity_id=entity_id,
+                    area_lookup=lookups.get("area") or {},
+                    alias_lookup=lookups.get("alias") or {},
+                    device_lookup=lookups.get("device") or {},
+                )
                 entity_update_queue.put_nowait(entry)
 
         def on_state_changed_presence(event: dict) -> None:

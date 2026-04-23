@@ -406,11 +406,13 @@ class OrchestratorAgent(BaseAgent):
             except Exception:
                 logger.debug("Failed to populate home context", exc_info=True)
 
+        verbatim_terms = self._extract_verbatim_terms(user_text)
         agent_task = AgentTask(
-            description=condensed_task,
+            description=self._append_original_suffix(condensed_task, verbatim_terms),
             user_text=user_text,
             conversation_id=conversation_id,
             context=context,
+            verbatim_terms=verbatim_terms,
         )
         request = JsonRpcRequest(
             method="message/send",
@@ -1972,11 +1974,13 @@ class OrchestratorAgent(BaseAgent):
                     context.local_time = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
             except Exception:
                 logger.debug("Failed to populate home context for streaming", exc_info=True)
+        verbatim_terms = self._extract_verbatim_terms(user_text)
         agent_task = AgentTask(
-            description=condensed_task,
+            description=self._append_original_suffix(condensed_task, verbatim_terms),
             user_text=user_text,
             conversation_id=conversation_id,
             context=context,
+            verbatim_terms=verbatim_terms,
         )
 
         # 3. Dispatch via A2A message/stream
@@ -2894,3 +2898,85 @@ class OrchestratorAgent(BaseAgent):
         if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
             return prompt[:start_idx] + prompt[end_idx:]
         return prompt
+
+    # ------------------------------------------------------------------
+    # 0.23.0: language-agnostic verbatim-term extraction.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _extract_verbatim_terms(user_text: str) -> list[str]:
+        """Pull likely entity / room tokens out of the user's original text.
+
+        The heuristic is intentionally language-agnostic: it never
+        consults a translation table. It picks up:
+
+        - Tokens shaped like Home Assistant entity ids (``light.kitchen``).
+        - Snake_case identifiers (``living_room``).
+        - Quoted spans ("...", '...').
+        - Mid-sentence Capitalized words (skip the leading word so that
+          a normal sentence start does not get treated as a token).
+
+        Returns an order-preserving deduped list, capped at 6 items.
+        """
+        if not user_text or not isinstance(user_text, str):
+            return []
+        text = user_text.strip()
+        terms: list[str] = []
+        seen: set[str] = set()
+
+        def _add(term: str) -> None:
+            term = term.strip().strip(".,;:!?\"'()[]{}")
+            if not term or len(term) < 2 or len(term) > 60:
+                return
+            key = term.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            terms.append(term)
+
+        # Quoted spans first.
+        for m in re.finditer(r'"([^"]{2,60})"|\'([^\']{2,60})\'', text):
+            span = m.group(1) or m.group(2) or ""
+            if span:
+                _add(span)
+
+        # HA-id shape and snake_case.
+        for m in re.finditer(r"\b[a-z][a-z0-9_]*\.[a-z0-9_]+\b", text):
+            _add(m.group(0))
+        for m in re.finditer(r"\b[a-zA-Z]+(?:_[a-zA-Z0-9]+)+\b", text):
+            _add(m.group(0))
+
+        # Mid-sentence Capitalized words (skip first word of the text).
+        words = re.findall(r"[^\s]+", text)
+        for idx, w in enumerate(words):
+            if idx == 0:
+                continue
+            cleaned = w.strip(".,;:!?\"'()[]{}")
+            if not cleaned or len(cleaned) < 2:
+                continue
+            first = cleaned[0]
+            # Match any Unicode uppercase letter (covers DE/FR/ES diacritics too).
+            if first.isupper() and not cleaned.isupper() and any(c.isalpha() for c in cleaned[1:]):
+                _add(cleaned)
+
+        return terms[:6]
+
+    @staticmethod
+    def _append_original_suffix(condensed_task: str, verbatim_terms: list[str]) -> str:
+        """Append ``[original: t1, t2]`` to a condensed task when terms are absent.
+
+        Idempotent: never appends a second suffix and never duplicates a
+        term that is already present (case-insensitive substring) in
+        the condensed text.
+        """
+        if not verbatim_terms or not condensed_task:
+            return condensed_task or ""
+        if "[original:" in condensed_task:
+            return condensed_task
+        haystack = condensed_task.lower()
+        missing: list[str] = []
+        for term in verbatim_terms[:4]:
+            if term and term.lower() not in haystack:
+                missing.append(term)
+        if not missing:
+            return condensed_task
+        return f"{condensed_task} [original: {', '.join(missing)}]"

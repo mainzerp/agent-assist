@@ -118,6 +118,7 @@ def make_agent_task(
     user_text: str = "turn on the kitchen light",
     conversation_id: str | None = None,
     context: TaskContext | None = None,
+    verbatim_terms: list[str] | None = None,
 ) -> AgentTask:
     """Build an AgentTask."""
     return AgentTask(
@@ -125,6 +126,7 @@ def make_agent_task(
         user_text=user_text,
         conversation_id=conversation_id,
         context=context,
+        verbatim_terms=verbatim_terms or [],
     )
 
 
@@ -165,6 +167,9 @@ def make_entity_index_entry(
     area: str | None = "kitchen",
     device_class: str | None = None,
     aliases: list[str] | None = None,
+    area_name: str | None = None,
+    device_name: str | None = None,
+    id_tokens: list[str] | None = None,
 ) -> EntityIndexEntry:
     """Build an EntityIndexEntry."""
     if domain is None:
@@ -174,8 +179,11 @@ def make_entity_index_entry(
         friendly_name=friendly_name,
         domain=domain,
         area=area,
+        area_name=area_name,
         device_class=device_class,
         aliases=aliases or [],
+        device_name=device_name,
+        id_tokens=id_tokens or [],
     )
 
 

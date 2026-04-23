@@ -157,6 +157,22 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
         )
     """)
 
+    # 0.23.0: organic LLM-expansion cache. Created EMPTY: NO seed data
+    # for any language. Created in _create_tables (in addition to
+    # migration v18) so fresh test DBs that skip migrations still have
+    # the table. Both paths use IF NOT EXISTS and are safe to re-run.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS query_synonym_cache (
+            token TEXT NOT NULL,
+            language TEXT NOT NULL DEFAULT '',
+            expansions TEXT NOT NULL DEFAULT '[]',
+            created_at INTEGER NOT NULL,
+            last_used_at INTEGER NOT NULL,
+            hit_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (token, language)
+        )
+    """)
+
     await db.execute("""
         CREATE TABLE IF NOT EXISTS mcp_servers (
             name TEXT PRIMARY KEY,
@@ -340,7 +356,17 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "embedding",
             "Embedding provider: local, openrouter, groq, anthropic, or ollama",
         ),
-        ("embedding.local_model", "all-MiniLM-L6-v2", "string", "embedding", "Local embedding model name"),
+        # 0.23.0: default to a multilingual sentence-transformer so that
+        # query tokens such as "bedroom" / "schlafzimmer" / "chambre" /
+        # "dormitorio" land near each other in vector space without any
+        # per-language seed data. Admins can override.
+        (
+            "embedding.local_model",
+            "intfloat/multilingual-e5-small",
+            "string",
+            "embedding",
+            "Local embedding model name (multilingual recommended)",
+        ),
         (
             "embedding.external_model",
             "",
@@ -358,6 +384,42 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "Minimum confidence for entity match",
         ),
         ("entity_matching.top_n_candidates", "3", "int", "entity_matching", "Top-N candidates for LLM disambiguation"),
+        # 0.23.0: language-agnostic on-demand expansion cache.
+        (
+            "entity_matching.expansion.enabled",
+            "true",
+            "bool",
+            "entity_matching",
+            "Enable on-demand LLM expansion of cold query tokens",
+        ),
+        (
+            "entity_matching.expansion.ttl_seconds",
+            "2592000",
+            "int",
+            "entity_matching",
+            "Query synonym cache TTL in seconds (default 30 days)",
+        ),
+        (
+            "entity_matching.expansion.max_cache_rows",
+            "5000",
+            "int",
+            "entity_matching",
+            "Query synonym cache LRU cap",
+        ),
+        (
+            "entity_matching.log_misses",
+            "true",
+            "bool",
+            "entity_matching",
+            "Emit structured entity_match_diag log on matcher misses",
+        ),
+        (
+            "agents.actionable.primary_text_source",
+            "original_when_translated",
+            "string",
+            "agents",
+            "Primary user message for actionable agents: 'original_when_translated' or 'description_first'",
+        ),
         # Presence settings
         ("presence.enabled", "true", "bool", "presence", "Enable presence detection"),
         ("presence.decay_timeout", "300", "int", "presence", "Presence decay timeout in seconds"),
@@ -774,3 +836,40 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             """
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (17)")
+
+    if current_version < 18:
+        # Migration 18 (0.23.0): create the on-demand query_synonym_cache
+        # table used by the language-agnostic entity matcher to cache
+        # LLM-produced expansions of cold query tokens. The table is
+        # created EMPTY -- there is intentionally NO seed data for any
+        # language. Entries are added organically when matcher misses
+        # trigger a single LLM expansion call.
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS query_synonym_cache (
+                token TEXT NOT NULL,
+                language TEXT NOT NULL DEFAULT '',
+                expansions TEXT NOT NULL DEFAULT '[]',
+                created_at INTEGER NOT NULL,
+                last_used_at INTEGER NOT NULL,
+                hit_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (token, language)
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS ix_query_synonym_cache_last_used "
+            "ON query_synonym_cache(last_used_at)"
+        )
+        # Switch the embedding default to a multilingual model on
+        # databases that still carry the old English-only default.
+        # Admin overrides are preserved.
+        await db.execute(
+            """
+            UPDATE settings
+            SET value = 'intfloat/multilingual-e5-small'
+            WHERE key = 'embedding.local_model'
+              AND value = 'all-MiniLM-L6-v2'
+            """
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (18)")

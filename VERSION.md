@@ -1,8 +1,80 @@
 # Version
 
-**Current Version:** 0.22.0
+**Current Version:** 0.23.0
 
 ## Version History
+
+### 0.23.0 (MINOR) -- Language-agnostic entity resolution rework
+
+Replaces the previous English-centric entity matcher contract with a
+fully language-agnostic resolution pipeline. No hardcoded translation
+tables or per-language seed data are introduced anywhere in product
+code or schema seeds.
+
+Highlights:
+
+- New `AgentTask.verbatim_terms` contract: the orchestrator extracts
+  original-language entity / room tokens from `user_text` (HA-id
+  shape, snake_case, quoted spans, mid-sentence Capitalized words)
+  and propagates them to every dispatched agent. The condensed task
+  gains a deterministic `[original: ...]` suffix when a token is
+  absent from the translated description.
+- Entity matcher accepts `verbatim_terms` and `preferred_domains`
+  kwargs and tries verbatim tokens before any translated query.
+- Entity index ingest now joins the HA area registry and ingests
+  per-entity aliases plus parent device names. `EntityIndexEntry`
+  gains `area_name`, `device_name`, and `id_tokens` fields; the
+  embedding text is widened accordingly.
+- Tokenized `entity_id` indexing: distinctive tokens parsed from
+  `entity_id` (split on `.` and `_`, structural HA stopwords removed)
+  feed both the embedding text and a new token-overlap matcher
+  bonus (+0.20 for full coverage, +0.10 for >= 50% coverage).
+- New `area_name` matcher bonus mirrors the existing area-id bonus.
+- New organic LLM expansion cache (`query_synonym_cache` table,
+  created EMPTY by migration v18) -- cold query tokens trigger a
+  single LLM expansion call whose result is cached per (token,
+  language). TTL and LRU caps are admin-configurable.
+- Default local embedding model switched to a multilingual
+  sentence-transformer (`intfloat/multilingual-e5-small`, 384-dim,
+  drop-in replacement for the previous English-only default).
+- Climate read/write executors forward `verbatim_terms` and emit
+  richer `entity_match` span metadata (`verbatim_terms_tried`,
+  `expansions_used`, `top_candidates`).
+- Structured `entity_match_diag` log is emitted on matcher misses
+  (gated by `entity_matching.log_misses`).
+- ActionableAgent gains a setting-controlled primary text source
+  (`agents.actionable.primary_text_source`, default
+  `original_when_translated`) so the LLM sees the user's original
+  message first when the orchestrator translated the condensed task.
+- `INDEX_SCHEMA_VERSION` constant + persisted setting force a
+  full entity-index rebuild when the entry shape changes.
+- Optional `/data/entity_aliases.yaml` loader (`load_user_aliases`)
+  for power users; the file is empty by default in fresh installs.
+- New diagnostics on `/api/admin/entity-index/stats` and new
+  `/api/admin/query-synonym-cache` endpoints (list + clear).
+- Drop and recreate entity-index Chroma collection automatically when
+  embedding model or index schema version changes (prevents HNSW
+  dimension mismatch errors after model swap).
+- Skip redundant entity index re-embeddings on HA `state_changed`
+  events: incremental WebSocket updates now reuse the same enriched
+  area / alias / device lookup data as the snapshot path (cached on
+  `app.state.entity_lookups` and refreshed by the periodic sync), and
+  a stable `content_hash` metadata field short-circuits `batch_add`
+  and `add` when entity identity is unchanged. `INDEX_SCHEMA_VERSION`
+  bumped to 3 (auto-rebuild on first startup).
+- Suppress safetensors model-load progress bar on first
+  embedding-model load.
+
+Schema migration v18 creates the empty `query_synonym_cache` table
+plus its `last_used_at` index and seeds the new
+`entity_matching.expansion.*`, `entity_matching.log_misses`, and
+`agents.actionable.primary_text_source` settings. The migration only
+rewrites the embedding-model setting when it still carries the old
+English-only default, preserving administrator overrides.
+
+Compatibility: no API breakage; existing actions still parse and
+execute as before. Old entity-index collections built before this
+release are rebuilt automatically on first startup.
 
 ### 0.22.0 (MINOR) -- Area-aware entity matching and lower default threshold
 

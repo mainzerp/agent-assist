@@ -15,6 +15,11 @@ class ClimateAgent(ActionableAgent):
         # as a tie-breaker for ambiguous thermostat/sensor queries.
         ctx = getattr(self, "_current_task_context", None)
         area_id = ctx.area_id if ctx else None
+        # 0.23.0: forward verbatim original-language tokens preserved
+        # by the orchestrator so the matcher can try them before any
+        # translated entity name.
+        current_task = getattr(self, "_current_task", None)
+        verbatim_terms = list(getattr(current_task, "verbatim_terms", []) or []) if current_task else []
         return await execute_climate_action(
             action,
             ha_client,
@@ -24,6 +29,7 @@ class ClimateAgent(ActionableAgent):
             span_collector=span_collector,
             preferred_area_id=area_id,
             task_context=ctx,
+            verbatim_terms=verbatim_terms,
         )
 
     @property

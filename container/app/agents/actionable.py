@@ -8,6 +8,7 @@ import re
 
 from app.agents.action_executor import parse_action
 from app.agents.base import BaseAgent
+from app.db.repository import SettingsRepository
 from app.models.agent import ActionExecuted, AgentErrorCode, AgentTask, TaskResult
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,9 @@ class ActionableAgent(BaseAgent):
         # Cleared in ``finally`` to avoid leaking between overlapping
         # tasks (same agent instance, two concurrent requests).
         self._current_task_context = task.context
+        # 0.23.0: domain executors (e.g. climate) read verbatim_terms
+        # from the active task without an extra plumbing kwarg.
+        self._current_task = task
         try:
             try:
                 return await self._handle_task_inner(task)
@@ -63,6 +67,7 @@ class ActionableAgent(BaseAgent):
                 )
         finally:
             self._current_task_context = None
+            self._current_task = None
 
     async def _handle_task_inner(self, task: AgentTask) -> TaskResult:
         agent_id = self.agent_card.agent_id
@@ -102,7 +107,25 @@ class ActionableAgent(BaseAgent):
 
         user_content = task.description
         if task.user_text and task.user_text != task.description:
-            user_content = f'{task.description}\n\n(Original user message: "{task.user_text}")'
+            try:
+                primary_source = await SettingsRepository.get_value(
+                    "agents.actionable.primary_text_source",
+                    "original_when_translated",
+                )
+            except Exception:
+                primary_source = "original_when_translated"
+            if (primary_source or "").lower() == "original_when_translated":
+                # 0.23.0: when the orchestrator translated the user
+                # message into a condensed task, give the agent the
+                # ORIGINAL text first so original-language entity tokens
+                # are preserved through the LLM call.
+                user_content = (
+                    f'{task.user_text}\n\n(Routing summary: "{task.description}")'
+                )
+            else:
+                user_content = (
+                    f'{task.description}\n\n(Original user message: "{task.user_text}")'
+                )
         messages.append({"role": "user", "content": user_content})
 
         try:

@@ -27,14 +27,14 @@ User Request
     ↓
 ORCHESTRATOR: Receive request, spawn subagent
     ↓
-SUBAGENT #1: Research & Analysis  (model: GPT-5.4)
+SUBAGENT #1: Research & Analysis  (model: GPT-5.4, reasoning: xhigh)
     - Reads files, analyzes codebase
     - Creates analysis doc in docs/SubAgent/[NAME_ANALYSIS].md
     - Returns summary and analysis file path
     ↓
     ORCHESTRATOR: Receive results, spawn next subagent
     ↓
-    SUBAGENT #2: Planning  (model: Claude Opus 4.7)
+    SUBAGENT #2: Planning  (model: Claude Opus 4.7, reasoning: high)
     - Reads analysis from Research subagent in docs/SubAgent/[NAME_ANALYSIS].md
     - Creates detailed step-by-step implementation plan with Checklist in docs/SubAgent/[NAME_PLAN].md
     - Returns summary and plan file path
@@ -44,7 +44,7 @@ ORCHESTRATOR: Calls only plan_review tool to render the plan.
     - If approved: YOU MUST spawn SUBAGENT #3. DO NOT implement yourself.
     - The orchestrator NEVER writes code, edits files, or runs implementation commands.
     ↓
-    SUBAGENT #3: Implementation (FRESH context)  (model: Claude Opus 4.7)
+    SUBAGENT #3: Implementation (FRESH context)  (model: Claude Opus 4.7, reasoning: high)
     - Reads the approved plan in docs/SubAgent/[NAME_PLAN].md
     - Implements/codes based on plan
     - Returns completion summary
@@ -55,7 +55,7 @@ ORCHESTRATOR: Confirm with user via ask_user tool UNTIL user confirms task compl
 ## Subagent Prompts
 
 ### Research Subagent Template
-Call `runSubagent` with `model: "GPT-5.4 (copilot)"`.
+Call `runSubagent` with `model: "GPT-5.4 (copilot, reasoning: xhigh)"`.
 ```
 Research [topic]. Analyze relevant files in the codebase.
 Think thoroughly and consider all edge cases, dependencies, and implications.
@@ -65,7 +65,7 @@ Return: summary of findings and the analysis file path.
 ```
 
 ### Planning Subagent Template
-Call `runSubagent` with `model: "Claude Opus 4.7 (copilot)"`.
+Call `runSubagent` with `model: "Claude Opus 4.7 (copilot, reasoning: high)"`.
 ```
 Read the analysis at: docs/SubAgent/[NAME_ANALYSIS].md
 Think deeply and comprehensively. Consider all edge cases, risks, and ordering constraints.
@@ -75,7 +75,7 @@ Return: summary of the plan and the plan file path.
 ```
 
 ### Implementation Subagent Template
-Call `runSubagent` with `model: "Claude Opus 4.7 (copilot)"`.
+Call `runSubagent` with `model: "Claude Opus 4.7 (copilot, reasoning: high)"`.
 ```
 Read the approved plan at: docs/SubAgent/[NAME_PLAN].md
 Be efficient and direct. Follow the plan precisely without re-analyzing decisions already made.

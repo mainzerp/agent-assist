@@ -56,6 +56,14 @@ class AgentTask(BaseModel):
     user_text: str = Field(..., description="Original unmodified user input")
     conversation_id: str | None = None
     context: TaskContext | None = None
+    # 0.23.0: original-language entity / room tokens preserved by the
+    # orchestrator. Tried verbatim by the entity matcher before any
+    # translated query so a German "Schlafzimmer" never gets flattened
+    # into an English "bedroom" before lookup.
+    verbatim_terms: list[str] = Field(
+        default_factory=list,
+        description="Original-language entity/room tokens preserved from user_text",
+    )
 
     # Runtime-only: not serialized, not included in model_dump()
     span_collector: Any = Field(default=None, exclude=True)

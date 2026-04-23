@@ -72,6 +72,11 @@ class EntityMatcher:
         self._weights: dict[str, float] = {}
         self._confidence_threshold: float = 0.60
         self._top_n: int = 3
+        # 0.23.0: optional language-agnostic on-demand expansion service.
+        # Wired by runtime_setup; leave None in tests that do not need it.
+        self._expansion_service = None
+        self._index_language: str | None = None
+        self._log_misses: bool = True
 
     async def load_config(self) -> None:
         """Load matching weights and thresholds from DB."""
@@ -107,6 +112,11 @@ class EntityMatcher:
             await SettingsRepository.get_value("entity_matching.confidence_threshold", "0.60")
         )
         self._top_n = int(await SettingsRepository.get_value("entity_matching.top_n_candidates", "3"))
+        try:
+            log_misses = await SettingsRepository.get_value("entity_matching.log_misses", "true")
+            self._log_misses = (log_misses or "true").lower() in ("1", "true", "yes", "on")
+        except Exception:
+            self._log_misses = True
         logger.info("Entity matcher config: weights=%s threshold=%s", self._weights, self._confidence_threshold)
 
     async def match(
@@ -114,6 +124,10 @@ class EntityMatcher:
         query: str,
         candidates: list[EntityIndexEntry] | None = None,
         agent_id: str | None = None,
+        *,
+        verbatim_terms: list[str] | None = None,
+        preferred_domains: tuple[str, ...] | None = None,
+        source_language: str | None = None,
     ) -> list[MatchResult]:
         """Match a query against entities using all active signals.
 
@@ -121,10 +135,96 @@ class EntityMatcher:
             query: User text (e.g. "kitchen light", "living room lamp").
             candidates: Optional pre-filtered candidates. If None, uses entity_index search.
             agent_id: Optional agent ID for entity visibility filtering.
+            verbatim_terms: Optional original-language tokens preserved by
+                the orchestrator. Tried verbatim before any embedding-only
+                lookup so a translated condensed task ("bedroom") never
+                clobbers the user's original word ("Schlafzimmer").
+            preferred_domains: Optional ordered tuple of HA domains. Used
+                only as a tie-breaker when scores are otherwise equal.
+            source_language: Optional ISO language code for the original
+                user input; consumed by on-demand expansion fallback.
 
         Returns:
             Sorted list of MatchResult (highest score first), filtered by confidence threshold.
         """
+        expansions_used: list[str] = []
+        # 1. Try verbatim terms first.
+        if verbatim_terms:
+            for term in verbatim_terms:
+                if not term:
+                    continue
+                results = await self._match_query(
+                    term,
+                    candidates=candidates,
+                    agent_id=agent_id,
+                    preferred_domains=preferred_domains,
+                )
+                if results:
+                    return results
+
+        # 2. Try the (possibly translated) main query.
+        results = await self._match_query(
+            query,
+            candidates=candidates,
+            agent_id=agent_id,
+            preferred_domains=preferred_domains,
+        )
+        if results:
+            return results
+
+        # 3. On-demand expansion fallback.
+        if self._expansion_service is not None and (verbatim_terms or query):
+            tokens_to_expand: list[str] = []
+            if verbatim_terms:
+                tokens_to_expand.extend(t for t in verbatim_terms if t)
+            if query and query not in tokens_to_expand:
+                tokens_to_expand.append(query)
+            for token in tokens_to_expand:
+                try:
+                    expansions = await self._expansion_service.expand(
+                        token,
+                        source_language=source_language,
+                        index_language=self._index_language,
+                    )
+                except Exception:
+                    logger.debug("Expansion service raised", exc_info=True)
+                    expansions = []
+                for exp in expansions:
+                    if exp in expansions_used:
+                        continue
+                    expansions_used.append(exp)
+                    exp_results = await self._match_query(
+                        exp,
+                        candidates=candidates,
+                        agent_id=agent_id,
+                        preferred_domains=preferred_domains,
+                    )
+                    if exp_results:
+                        return exp_results
+
+        # Miss: emit structured diagnostic.
+        if self._log_misses:
+            try:
+                logger.info(
+                    "entity_match_diag query=%r verbatim_terms=%s expansions_used=%s top_candidates=%s",
+                    query,
+                    verbatim_terms or [],
+                    expansions_used,
+                    [],
+                )
+            except Exception:
+                pass
+        return []
+
+    async def _match_query(
+        self,
+        query: str,
+        candidates: list[EntityIndexEntry] | None = None,
+        agent_id: str | None = None,
+        *,
+        preferred_domains: tuple[str, ...] | None = None,
+    ) -> list[MatchResult]:
+        """Inner matcher: scores a single query string against the index."""
         results: dict[str, MatchResult] = {}
 
         # 1. Alias signal (fast path -- exact match)
@@ -210,17 +310,65 @@ class EntityMatcher:
             if query_containment and fn_containment and query_containment in fn_containment:
                 result.score = min(1.0, result.score + 0.3)
 
-            # Area bonus: query matches or is contained in normalized area name
+            # Area bonus: query matches or is contained in normalized area
+            # (slug) name OR human-readable area_name OR id_tokens.
             entry = self._entity_index.get_by_id(result.entity_id)
-            if entry and entry.area:
-                area_containment = _normalize_for_containment(entry.area)
-                if query_containment and area_containment:
-                    if query_containment == area_containment or query_containment in area_containment:
-                        result.score = min(1.0, result.score + 0.30)
+            if entry:
+                best_area_bonus = 0.0
+                if entry.area:
+                    area_containment = _normalize_for_containment(entry.area)
+                    if query_containment and area_containment:
+                        if query_containment == area_containment or query_containment in area_containment:
+                            best_area_bonus = max(best_area_bonus, 0.30)
+                if entry.area_name:
+                    area_name_containment = _normalize_for_containment(entry.area_name)
+                    if query_containment and area_name_containment:
+                        if (
+                            query_containment == area_name_containment
+                            or query_containment in area_name_containment
+                        ):
+                            best_area_bonus = max(best_area_bonus, 0.30)
+                if best_area_bonus:
+                    result.score = min(1.0, result.score + best_area_bonus)
+
+                # Token-overlap bonus across the union of distinctive
+                # entity tokens. Language-agnostic: just normalized tokens.
+                query_tokens = {t for t in re.split(r"\W+", query.lower()) if t}
+                entity_tokens: set[str] = set()
+                for src in (
+                    entry.friendly_name,
+                    entry.area or "",
+                    entry.area_name or "",
+                    entry.device_name or "",
+                ):
+                    if src:
+                        entity_tokens.update(t for t in re.split(r"\W+", src.lower()) if t)
+                entity_tokens.update(t.lower() for t in (entry.id_tokens or []) if t)
+                for alias in entry.aliases or []:
+                    entity_tokens.update(t for t in re.split(r"\W+", alias.lower()) if t)
+                if query_tokens and entity_tokens:
+                    matched = query_tokens & entity_tokens
+                    if matched:
+                        coverage = len(matched) / len(query_tokens)
+                        if coverage >= 1.0:
+                            result.score = min(1.0, result.score + 0.20)
+                        elif coverage >= 0.5:
+                            result.score = min(1.0, result.score + 0.10)
 
         # Filter by confidence and sort
         filtered = [r for r in results.values() if r.score >= self._confidence_threshold]
-        filtered.sort(key=lambda r: r.score, reverse=True)
+        if preferred_domains:
+            preferred = tuple(d.lower() for d in preferred_domains if d)
+
+            def _sort_key(r: MatchResult) -> tuple:
+                domain = r.entity_id.split(".")[0].lower() if "." in r.entity_id else ""
+                # Higher score first; preferred domains break ties.
+                domain_rank = preferred.index(domain) if domain in preferred else len(preferred)
+                return (-r.score, domain_rank)
+
+            filtered.sort(key=_sort_key)
+        else:
+            filtered.sort(key=lambda r: r.score, reverse=True)
 
         # Apply entity visibility filtering if agent_id is provided
         if agent_id:
