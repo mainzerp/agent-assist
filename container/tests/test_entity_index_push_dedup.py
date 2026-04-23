@@ -31,35 +31,77 @@ def _state_payload(entity_id: str, state: str, area_id: str | None = "kitchen") 
 
 
 def test_store_entity_lookups_atomic_assignment():
-    """_store_entity_lookups publishes a complete triple in one assignment."""
+    """_store_entity_lookups publishes a complete snapshot in one assignment."""
     app = SimpleNamespace(state=SimpleNamespace())
     _store_entity_lookups(
         app,
         {"kitchen": "Kitchen"},
         {"light.kitchen_ceiling": ["main"]},
         {"light.kitchen_ceiling": "Kitchen Ceiling Device"},
+        {"light.kitchen_ceiling": "kitchen"},
     )
     lookups = app.state.entity_lookups
-    assert set(lookups.keys()) == {"area", "alias", "device"}
+    assert set(lookups.keys()) == {"area", "alias", "device", "area_id"}
     assert lookups["area"] == {"kitchen": "Kitchen"}
     assert lookups["alias"] == {"light.kitchen_ceiling": ["main"]}
     assert lookups["device"] == {"light.kitchen_ceiling": "Kitchen Ceiling Device"}
+    assert lookups["area_id"] == {"light.kitchen_ceiling": "kitchen"}
 
 
 def test_store_entity_lookups_replaces_previous():
     """Subsequent calls fully replace the previous lookup snapshot."""
     app = SimpleNamespace(state=SimpleNamespace())
-    _store_entity_lookups(app, {"a": "A"}, {}, {})
-    _store_entity_lookups(app, {"b": "B"}, {"x": ["y"]}, {})
+    _store_entity_lookups(app, {"a": "A"}, {}, {}, {})
+    _store_entity_lookups(app, {"b": "B"}, {"x": ["y"]}, {}, {"e": "b"})
     assert app.state.entity_lookups["area"] == {"b": "B"}
     assert app.state.entity_lookups["alias"] == {"x": ["y"]}
+    assert app.state.entity_lookups["area_id"] == {"e": "b"}
 
 
 def test_store_entity_lookups_handles_none_inputs():
     """None inputs are coerced to empty dicts for safe lookup access."""
     app = SimpleNamespace(state=SimpleNamespace())
-    _store_entity_lookups(app, None, None, None)  # type: ignore[arg-type]
-    assert app.state.entity_lookups == {"area": {}, "alias": {}, "device": {}}
+    _store_entity_lookups(app, None, None, None, None)  # type: ignore[arg-type]
+    assert app.state.entity_lookups == {
+        "area": {},
+        "alias": {},
+        "device": {},
+        "area_id": {},
+    }
+
+
+def test_state_to_entity_index_entry_area_id_lookup_overrides_missing_attrs():
+    """area_id_lookup populates entry.area when attrs has no area_id."""
+    state = {
+        "entity_id": "light.kitchen_ceiling",
+        "state": "on",
+        "attributes": {"friendly_name": "Kitchen Ceiling"},
+    }
+    entry = state_to_entity_index_entry(
+        state,
+        entity_id="light.kitchen_ceiling",
+        area_lookup={"kitchen": "Kitchen"},
+        area_id_lookup={"light.kitchen_ceiling": "kitchen"},
+    )
+    assert entry.area == "kitchen"
+    assert entry.area_name == "Kitchen"
+
+
+def test_state_to_entity_index_entry_attrs_area_id_used_when_lookup_missing():
+    """attrs-provided area_id remains a fallback when no lookup is supplied."""
+    state = {
+        "entity_id": "light.kitchen_ceiling",
+        "state": "on",
+        "attributes": {"friendly_name": "Kitchen Ceiling", "area_id": "kitchen"},
+    }
+    entry = state_to_entity_index_entry(
+        state,
+        entity_id="light.kitchen_ceiling",
+        area_lookup={"kitchen": "Kitchen"},
+        area_id_lookup=None,
+    )
+    assert entry.area == "kitchen"
+    assert entry.area_name == "Kitchen"
 
 
 def test_state_changed_with_cached_lookups_produces_enriched_entry():

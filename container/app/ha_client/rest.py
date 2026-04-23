@@ -334,6 +334,37 @@ class HARestClient:
         self._registry_cache_put("device_names", result)
         return result
 
+    async def get_entity_areas(self) -> dict[str, str]:
+        """Return ``{entity_id: area_id}`` from the HA entity / device area registry."""
+        cached = self._registry_cache_get("entity_areas")
+        if cached is not None:
+            return cached
+        template = (
+            "{% set ns = namespace(items=[]) %}"
+            "{% for s in states %}"
+            "{% set aid = area_id(s.entity_id) %}"
+            "{% if aid %}"
+            "{% set ns.items = ns.items + [{'id': s.entity_id, 'area': aid}] %}"
+            "{% endif %}{% endfor %}"
+            "{{ ns.items | tojson }}"
+        )
+        rendered = await self.render_template(template)
+        result: dict[str, str] = {}
+        if rendered:
+            try:
+                import json as _json
+
+                data = _json.loads(rendered)
+                for row in data or []:
+                    eid = row.get("id")
+                    aid = row.get("area")
+                    if eid and aid:
+                        result[eid] = str(aid)
+            except Exception:
+                logger.debug("Failed to parse entity_areas template output", exc_info=True)
+        self._registry_cache_put("entity_areas", result)
+        return result
+
     async def get_user_language(self) -> str | None:
         """Return the HA-configured UI language code (e.g. ``de``, ``en``)."""
         cached = self._registry_cache_get("user_language")

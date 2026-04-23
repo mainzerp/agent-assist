@@ -193,3 +193,162 @@ async def test_match_preview_503_when_index_missing():
             params={"q": "keller"},
         )
     assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_match_preview_climate_agent_allows_climate_entity(preview_client):
+    """`climate-agent` must mark a `climate.*` resolution as domain_allowed."""
+    client, _ei, em = preview_client
+    em.match.return_value = [
+        MatchResult(entity_id="climate.wohnzimmer", friendly_name="Wohnzimmer", score=0.9),
+    ]
+    resolver_output = {
+        "entity_id": "climate.wohnzimmer",
+        "friendly_name": "Wohnzimmer",
+        "speech": None,
+        "metadata": {
+            "query": "wohnzimmer",
+            "resolution_path": "exact_friendly_name",
+            "match_count": 1,
+        },
+    }
+    with (
+        patch(
+            "app.agents.action_executor._resolve_light_entity",
+            new=AsyncMock(return_value=resolver_output),
+        ),
+        patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        resp = await client.get(
+            "/api/admin/entity-index/match-preview",
+            params={"q": "wohnzimmer", "agent_id": "climate-agent"},
+        )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["deterministic"]["entity_id"] == "climate.wohnzimmer"
+    assert data["deterministic"]["domain_allowed"] is True
+    assert "climate" in data["agent_allowed_domains"]
+    # `:non_light_agent` suffix should be appended on the resolution path.
+    assert data["deterministic"]["metadata"]["resolution_path"].endswith(":non_light_agent")
+
+
+@pytest.mark.asyncio
+async def test_match_preview_domain_hard_filter(preview_client):
+    """`?domain=climate` must restrict hybrid candidates to that domain."""
+    client, _ei, em = preview_client
+    em.match.return_value = [
+        MatchResult(entity_id="climate.wohnzimmer", friendly_name="Wohnzimmer", score=0.9),
+        MatchResult(entity_id="light.wohnzimmer", friendly_name="Wohnzimmer", score=0.8),
+    ]
+    resolver_output = {
+        "entity_id": "light.wohnzimmer",
+        "friendly_name": "Wohnzimmer",
+        "speech": None,
+        "metadata": {
+            "query": "wohnzimmer",
+            "resolution_path": "exact_friendly_name",
+            "match_count": 2,
+        },
+    }
+    with (
+        patch(
+            "app.agents.action_executor._resolve_light_entity",
+            new=AsyncMock(return_value=resolver_output),
+        ),
+        patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        resp = await client.get(
+            "/api/admin/entity-index/match-preview",
+            params={"q": "wohnzimmer", "domain": "climate"},
+        )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["domain"] == "climate"
+    assert data["preferred_domains"] == ["climate"]
+    assert data["hybrid"], "expected at least one hybrid entry after filter"
+    for entry in data["hybrid"]:
+        assert entry["domain"] == "climate"
+    # Resolved id is in `light` -> dropped flag set, gate flips to False.
+    assert data["deterministic"]["metadata"]["domain_filter_dropped"] is True
+    assert data["deterministic"]["domain_allowed"] is False
+    # Matcher must have received `preferred_domains=("climate",)`.
+    em.match.assert_awaited()
+    call = em.match.await_args
+    assert call.kwargs.get("preferred_domains") == ("climate",)
+
+
+@pytest.mark.asyncio
+async def test_match_preview_response_exposes_agent_allowed_domains(preview_client):
+    """Response surfaces the agent's allowed-domain set."""
+    client, *_ = preview_client
+    resolver_output = {
+        "entity_id": None,
+        "friendly_name": "anything",
+        "speech": None,
+        "metadata": {"query": "anything", "resolution_path": "no_match", "match_count": 0},
+    }
+    with (
+        patch(
+            "app.agents.action_executor._resolve_light_entity",
+            new=AsyncMock(return_value=resolver_output),
+        ),
+        patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        resp = await client.get(
+            "/api/admin/entity-index/match-preview",
+            params={"q": "anything", "agent_id": "climate-agent"},
+        )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert set(data["agent_allowed_domains"]) == {"climate", "sensor", "weather"}
+    assert set(data["preferred_domains"]) == {"climate", "sensor", "weather"}
+
+
+@pytest.mark.asyncio
+async def test_match_preview_backward_compat_no_filters(preview_client):
+    """No filters: legacy keys preserved; new keys empty/None."""
+    client, *_ = preview_client
+    resolver_output = {
+        "entity_id": "light.keller",
+        "friendly_name": "Keller",
+        "speech": None,
+        "metadata": {
+            "query": "keller",
+            "resolution_path": "exact_friendly_name",
+            "match_count": 1,
+        },
+    }
+    with (
+        patch(
+            "app.agents.action_executor._resolve_light_entity",
+            new=AsyncMock(return_value=resolver_output),
+        ),
+        patch(
+            "app.db.repository.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        resp = await client.get(
+            "/api/admin/entity-index/match-preview",
+            params={"q": "keller"},
+        )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    legacy = {"query", "agent_id", "deterministic", "hybrid", "hybrid_error", "visibility"}
+    assert legacy.issubset(data.keys())
+    assert data["domain"] is None
+    assert data["agent_allowed_domains"] == []
+    assert data["preferred_domains"] == []
+    # Legacy `_validate_domain` semantics: light.* is allowed.
+    assert data["deterministic"]["domain_allowed"] is True
+    # Resolution path is not annotated when no agent filter applies.
+    assert data["deterministic"]["metadata"]["resolution_path"] == "exact_friendly_name"

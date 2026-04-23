@@ -24,7 +24,11 @@ BATCH_SIZE = 500
 # state of an entity changes (its identity-bearing fields are
 # unchanged). Existing v2 collections are dropped and rebuilt on first
 # startup by ``_prime_entity_index``.
-INDEX_SCHEMA_VERSION = 3
+# v4: 0.23.0 area-id resolution fix populates entry.area /
+# entry.area_name for production states (HA /api/states never carries
+# area_id in attributes), changing content_hash for previously
+# indexed entities; force a one-time rebuild.
+INDEX_SCHEMA_VERSION = 4
 
 
 class EntityIndex:

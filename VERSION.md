@@ -62,8 +62,20 @@ Highlights:
   a stable `content_hash` metadata field short-circuits `batch_add`
   and `add` when entity identity is unchanged. `INDEX_SCHEMA_VERSION`
   bumped to 3 (auto-rebuild on first startup).
+- Entity index area resolution: a new `get_entity_areas()` HA
+  template helper publishes `{entity_id: area_id}` so
+  `EntityIndexEntry.area` / `area_name` are populated for production
+  `/api/states` payloads (which omit registry-only `area_id`). The
+  lookup overrides any attrs-provided `area_id`; missing lookups fall
+  back to attrs to preserve fixture behavior. `INDEX_SCHEMA_VERSION`
+  bumped to 4 to force a one-time rebuild.
 - Suppress safetensors model-load progress bar on first
   embedding-model load.
+- Fix admin entity-index match-preview to respect the selected
+  agent's allowed domains (no longer always uses the light executor's
+  gate) and accept an explicit `domain` query filter that hard-filters
+  the hybrid candidates and is propagated to the matcher as a
+  preferred-domain tie-breaker.
 
 Schema migration v18 creates the empty `query_synonym_cache` table
 plus its `last_used_at` index and seeds the new

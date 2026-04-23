@@ -57,8 +57,8 @@ def _set_entity_index_pending_status(entity_index: EntityIndex, *, state: str, t
     }
 
 
-async def _gather_ha_lookups(ha_client: HARestClient) -> tuple[dict, dict, dict]:
-    """Fetch area, alias, and device lookups from HA in parallel.
+async def _gather_ha_lookups(ha_client: HARestClient) -> tuple[dict, dict, dict, dict]:
+    """Fetch area, alias, device, and entity-area lookups from HA in parallel.
 
     Each individual fetch is wrapped so a partial outage degrades to
     empty enrichment instead of failing the entire entity sync.
@@ -71,15 +71,17 @@ async def _gather_ha_lookups(ha_client: HARestClient) -> tuple[dict, dict, dict]
             logger.debug("HA registry lookup failed", exc_info=True)
             return None
 
-    area_lookup, alias_lookup, device_lookup = await asyncio.gather(
+    area_lookup, alias_lookup, device_lookup, area_id_lookup = await asyncio.gather(
         _safe(ha_client.get_area_registry),
         _safe(ha_client.get_entity_aliases),
         _safe(ha_client.get_device_names),
+        _safe(ha_client.get_entity_areas),
     )
     return (
         area_lookup or {},
         alias_lookup or {},
         device_lookup or {},
+        area_id_lookup or {},
     )
 
 
@@ -88,18 +90,20 @@ def _store_entity_lookups(
     area_lookup: dict,
     alias_lookup: dict,
     device_lookup: dict,
+    area_id_lookup: dict,
 ) -> None:
     """Atomically publish HA registry lookups on ``app.state``.
 
     The dict is rebuilt and assigned in a single statement so concurrent
     readers (notably ``on_state_changed``) always observe a consistent
-    triple of area/alias/device lookups, never a partially populated
-    snapshot.
+    snapshot of area/alias/device/area_id lookups, never a partially
+    populated one.
     """
     app.state.entity_lookups = {
         "area": area_lookup or {},
         "alias": alias_lookup or {},
         "device": device_lookup or {},
+        "area_id": area_id_lookup or {},
     }
 
 
@@ -137,13 +141,14 @@ async def _prime_entity_index(app: FastAPI, ha_client: HARestClient, entity_inde
     """Fetch HA states and build/sync the entity index in the background."""
     try:
         states = await ha_client.get_states()
-        area_lookup, alias_lookup, device_lookup = await _gather_ha_lookups(ha_client)
-        _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup)
+        area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(ha_client)
+        _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
         entities = parse_ha_states(
             states,
             area_lookup=area_lookup,
             alias_lookup=alias_lookup,
             device_lookup=device_lookup,
+            area_id_lookup=area_id_lookup,
         )
         # 0.23.0: detect stale on-disk index built before the
         # EntityIndexEntry shape changed -- or built with a different
@@ -328,13 +333,14 @@ async def _periodic_entity_sync(app: FastAPI) -> None:
                 continue
 
             states = await ha_client.get_states()
-            area_lookup, alias_lookup, device_lookup = await _gather_ha_lookups(ha_client)
-            _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup)
+            area_lookup, alias_lookup, device_lookup, area_id_lookup = await _gather_ha_lookups(ha_client)
+            _store_entity_lookups(app, area_lookup, alias_lookup, device_lookup, area_id_lookup)
             entities = parse_ha_states(
                 states,
                 area_lookup=area_lookup,
                 alias_lookup=alias_lookup,
                 device_lookup=device_lookup,
+                area_id_lookup=area_id_lookup,
             )
             result = await entity_index.sync_async(entities)
             logger.info(
@@ -628,6 +634,7 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
                     area_lookup=lookups.get("area") or {},
                     alias_lookup=lookups.get("alias") or {},
                     device_lookup=lookups.get("device") or {},
+                    area_id_lookup=lookups.get("area_id") or {},
                 )
                 entity_update_queue.put_nowait(entry)
 

@@ -55,7 +55,7 @@ def _patch_entity_pipeline(entities: list | None = None):
     return [
         patch(
             "app.runtime_setup._gather_ha_lookups",
-            new=AsyncMock(return_value=({}, {}, {})),
+            new=AsyncMock(return_value=({}, {}, {}, {})),
         ),
         patch("app.runtime_setup.parse_ha_states", return_value=entities),
         patch(

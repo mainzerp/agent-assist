@@ -23,6 +23,32 @@ router = APIRouter(
 )
 
 
+# Mirrors each executor's local _ALLOWED_DOMAINS constant. Keep in sync
+# manually if any executor changes its allowed domains.
+#   action_executor.py     -> light-agent (and switch/sensor light path)
+#   climate_executor.py    -> climate-agent
+#   automation_executor.py -> automation-agent
+#   media_executor.py      -> media-agent
+#   music_executor.py      -> music-agent
+#   scene_executor.py      -> scene-agent
+#   security_executor.py   -> security-agent
+#   timer_executor.py      -> timer-agent
+AGENT_ALLOWED_DOMAINS: dict[str, frozenset[str]] = {
+    "light-agent": frozenset({"light", "switch", "sensor"}),
+    "climate-agent": frozenset({"climate", "sensor", "weather"}),
+    "automation-agent": frozenset({"automation"}),
+    "media-agent": frozenset({"media_player"}),
+    "music-agent": frozenset({"media_player"}),
+    "scene-agent": frozenset({"scene"}),
+    "security-agent": frozenset({"alarm_control_panel", "lock", "camera", "binary_sensor", "sensor"}),
+    "timer-agent": frozenset({"timer", "input_datetime"}),
+}
+
+# Agents whose execute path runs `_resolve_light_entity` upstream; for
+# these the deterministic block's domain gate is the legacy light gate.
+_LIGHT_DETERMINISTIC_AGENTS: frozenset[str] = frozenset({"light-agent"})
+
+
 @router.get("/stats")
 async def get_entity_index_stats(request: Request):
     """Entity index stats with per-domain breakdown."""
@@ -76,6 +102,11 @@ async def match_preview(
         default=None,
         description="Optional agent id for visibility/domain gating",
     ),
+    domain: str | None = Query(
+        default=None,
+        max_length=64,
+        description="Optional explicit domain hard-filter (e.g. 'climate')",
+    ),
 ) -> dict[str, Any]:
     """Preview how the entity resolver + hybrid matcher handle a query.
 
@@ -111,6 +142,18 @@ async def match_preview(
         raise HTTPException(status_code=422, detail="Query must not be empty")
 
     agent = (agent_id or "").strip() or None
+    domain_filter = (domain or "").strip().lower() or None
+
+    agent_allowed_domains: frozenset[str] = AGENT_ALLOWED_DOMAINS.get(agent or "", frozenset())
+    # `preferred_domains` for the matcher: explicit ?domain wins; else
+    # the agent's allowed-domain set; else None.
+    preferred_domains: tuple[str, ...] | None
+    if domain_filter:
+        preferred_domains = (domain_filter,)
+    elif agent_allowed_domains:
+        preferred_domains = tuple(sorted(agent_allowed_domains))
+    else:
+        preferred_domains = None
 
     # -----------------------------------------------------------------
     # Deterministic light-agent resolver (same code path as execute_action)
@@ -142,16 +185,37 @@ async def match_preview(
                 entity_matcher,
                 agent,
             )
+            metadata = dict(resolution.get("metadata") or {})
+            if agent and agent not in _LIGHT_DETERMINISTIC_AGENTS:
+                rp = metadata.get("resolution_path")
+                if isinstance(rp, str) and not rp.endswith(":non_light_agent"):
+                    metadata["resolution_path"] = f"{rp}:non_light_agent"
             deterministic.update(
                 {
                     "entity_id": resolution.get("entity_id"),
                     "friendly_name": resolution.get("friendly_name") or query,
                     "speech": resolution.get("speech"),
-                    "metadata": resolution.get("metadata") or deterministic["metadata"],
+                    "metadata": metadata,
                 }
             )
             resolved_id = deterministic["entity_id"]
-            deterministic["domain_allowed"] = bool(resolved_id and _validate_domain(resolved_id))
+            resolved_domain = (
+                resolved_id.split(".", 1)[0] if isinstance(resolved_id, str) and "." in resolved_id else ""
+            )
+            if not resolved_id:
+                deterministic["domain_allowed"] = False
+            elif agent is None or agent in _LIGHT_DETERMINISTIC_AGENTS:
+                deterministic["domain_allowed"] = bool(_validate_domain(resolved_id))
+            elif agent_allowed_domains:
+                deterministic["domain_allowed"] = resolved_domain in agent_allowed_domains
+            else:
+                # Unknown agent: don't lie about gating.
+                deterministic["domain_allowed"] = True
+            if domain_filter and resolved_domain and resolved_domain != domain_filter:
+                metadata["domain_filter_dropped"] = True
+                deterministic["domain_allowed"] = False
+            elif domain_filter:
+                metadata["domain_filter_dropped"] = False
     except Exception as exc:
         logger.warning("match-preview: deterministic resolution failed", exc_info=True)
         deterministic["error"] = str(exc)
@@ -165,10 +229,16 @@ async def match_preview(
         if entity_matcher is None:
             hybrid_error = "entity_matcher not initialized"
         else:
-            matches = await entity_matcher.match(query, agent_id=agent)
+            matches = await entity_matcher.match(
+                query,
+                agent_id=agent,
+                preferred_domains=preferred_domains,
+            )
             for match in matches:
                 entity_id = getattr(match, "entity_id", "") or ""
                 domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
+                if domain_filter and domain != domain_filter:
+                    continue
                 entry = None
                 try:
                     if entity_index is not None and hasattr(entity_index, "get_by_id"):
@@ -237,6 +307,9 @@ async def match_preview(
     return {
         "query": query,
         "agent_id": agent,
+        "domain": domain_filter,
+        "agent_allowed_domains": sorted(agent_allowed_domains) if agent_allowed_domains else [],
+        "preferred_domains": list(preferred_domains) if preferred_domains else [],
         "deterministic": deterministic,
         "hybrid": hybrid,
         "hybrid_error": hybrid_error,

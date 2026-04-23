@@ -73,18 +73,29 @@ def state_to_entity_index_entry(
     area_lookup: dict[str, str] | None = None,
     alias_lookup: dict[str, list[str]] | None = None,
     device_lookup: dict[str, str] | None = None,
+    area_id_lookup: dict[str, str] | None = None,
 ) -> EntityIndexEntry:
     """Convert a Home Assistant state payload into an EntityIndexEntry.
 
     ``area_lookup`` maps HA ``area_id`` -> human-readable area name
     (from the HA area registry). ``alias_lookup`` maps ``entity_id`` ->
     list of HA per-entity aliases. ``device_lookup`` maps
-    ``entity_id`` -> parent device name. All three are optional.
+    ``entity_id`` -> parent device name. ``area_id_lookup`` maps
+    ``entity_id`` -> ``area_id`` resolved through the HA registry
+    (entity area or inherited from parent device); HA ``/api/states``
+    never carries ``area_id`` inside attributes, so this lookup is
+    consulted first and the attrs ``area_id`` is used only as a
+    fallback (kept for snapshot-fixture compatibility). All four are
+    optional.
     """
     resolved_entity_id = entity_id or state.get("entity_id", "")
     attrs = state.get("attributes", {}) or {}
     domain = resolved_entity_id.split(".")[0] if "." in resolved_entity_id else ""
-    area = attrs.get("area_id")
+    area: str | None = None
+    if area_id_lookup:
+        area = area_id_lookup.get(resolved_entity_id) or None
+    if not area:
+        area = attrs.get("area_id") or None
     area_name: str | None = None
     if area and area_lookup:
         area_name = area_lookup.get(area) or None
@@ -120,6 +131,7 @@ def parse_ha_states(
     area_lookup: dict[str, str] | None = None,
     alias_lookup: dict[str, list[str]] | None = None,
     device_lookup: dict[str, str] | None = None,
+    area_id_lookup: dict[str, str] | None = None,
 ) -> list[EntityIndexEntry]:
     """Convert a Home Assistant states snapshot into index entries."""
     return [
@@ -128,6 +140,7 @@ def parse_ha_states(
             area_lookup=area_lookup,
             alias_lookup=alias_lookup,
             device_lookup=device_lookup,
+            area_id_lookup=area_id_lookup,
         )
         for state in states
     ]

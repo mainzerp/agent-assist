@@ -164,6 +164,25 @@
                     <option :value="a" x-text="a"></option>
                 </template>
             </select>
+            <select class="form-input"
+                    style="width: auto; min-width: 160px;"
+                    x-model="previewDomain">
+                <option value="">(any domain)</option>
+                <option value="light">light</option>
+                <option value="switch">switch</option>
+                <option value="climate">climate</option>
+                <option value="sensor">sensor</option>
+                <option value="binary_sensor">binary_sensor</option>
+                <option value="media_player">media_player</option>
+                <option value="scene">scene</option>
+                <option value="automation">automation</option>
+                <option value="alarm_control_panel">alarm_control_panel</option>
+                <option value="lock">lock</option>
+                <option value="camera">camera</option>
+                <option value="weather">weather</option>
+                <option value="timer">timer</option>
+                <option value="input_datetime">input_datetime</option>
+            </select>
             <button class="btn btn-primary btn-sm"
                     @click="runPreview()"
                     :disabled="previewing || !previewQuery.trim()">
@@ -495,6 +514,7 @@ function entityIndexPage() {
         // --- Match Preview state ---
         previewQuery: '',
         previewAgent: '',
+        previewDomain: '',
         previewing: false,
         previewResult: null,
         previewError: '',
@@ -513,6 +533,7 @@ function entityIndexPage() {
             try {
                 const params = new URLSearchParams({ q });
                 if (this.previewAgent) params.set('agent_id', this.previewAgent);
+                if (this.previewDomain) params.set('domain', this.previewDomain);
                 const resp = await fetch('/api/admin/entity-index/match-preview?' + params.toString());
                 if (!resp.ok) {
                     const detail = await resp.text();
