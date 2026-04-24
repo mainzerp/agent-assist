@@ -29,6 +29,9 @@ class EntityIndexEntry(BaseModel):
         default_factory=list,
         description="Distinctive tokens parsed from entity_id (split on . and _).",
     )
+    state: str | None = Field(None, description="Current runtime state for background readers that need it")
+    has_date: bool = Field(False, description="input_datetime runtime flag")
+    has_time: bool = Field(False, description="input_datetime runtime flag")
 
     @property
     def embedding_text(self) -> str:
@@ -78,5 +81,9 @@ class EntityIndexEntry(BaseModel):
             "device_name": self.device_name or "",
             "id_tokens": sorted(self.id_tokens or []),
         }
+        if self.domain == "input_datetime":
+            payload["state"] = self.state or ""
+            payload["has_date"] = self.has_date
+            payload["has_time"] = self.has_time
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

@@ -11,12 +11,17 @@ llm:
   classify: |
     send-agent (95%): Persistent Banner|||CONTENT|||Reminder: take out the trash.
   agents:
+    orchestrator: |
+      general-agent (95%): draft the reminder text
+      send-agent (95%): Persistent Banner|||CONTENT|||Reminder: take out the trash.
+    general-agent: |
+      Reminder: take out the trash.
     send-agent: |
       Reminder: take out the trash.
 request:
   text: "post a reminder to take out the trash"
 expected:
-  routed_agent: send-agent
+  routed_agent: general-agent, send-agent
   service_calls:
     - {domain: notify, service: persistent_notification}
   speech_contains: ["sent"]

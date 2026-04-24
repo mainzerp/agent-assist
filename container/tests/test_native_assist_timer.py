@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # 1. Container route + eligibility propagation tests
 # ---------------------------------------------------------------------------
@@ -189,8 +188,8 @@ def _ha_stubs():
 def _build_entity(_ha_stubs, *, native_enabled: bool, native_delegate=None):
     """Construct a HaAgentHubConversationEntity wired for delegation tests
     without going through ``__init__``."""
-    from custom_components.ha_agenthub.conversation import HaAgentHubConversationEntity
     from custom_components.ha_agenthub.const import CONF_NATIVE_PLAIN_TIMERS
+    from custom_components.ha_agenthub.conversation import HaAgentHubConversationEntity
 
     entity = HaAgentHubConversationEntity.__new__(HaAgentHubConversationEntity)
     entity._coalesce_lock = asyncio.Lock()
@@ -292,13 +291,12 @@ class TestIntegrationDirectiveFlow:
         native.assert_not_awaited()
 
     async def test_scenario_05_opt_in_off_skips_eligibility(self, _ha_stubs):
-        from custom_components.ha_agenthub import conversation as conv_mod
         from custom_components.ha_agenthub.const import (
             NATIVE_PLAIN_TIMER_ELIGIBLE_FIELD,
             NATIVE_PLAIN_TIMER_ELIGIBLE_HEADER,
         )
 
-        entity, bridge = _build_entity(_ha_stubs, native_enabled=False)
+        entity, _bridge = _build_entity(_ha_stubs, native_enabled=False)
 
         # Directly exercise the REST sender to inspect the outgoing payload.
         captured: dict = {}
@@ -337,7 +335,7 @@ class TestIntegrationDirectiveFlow:
             NATIVE_PLAIN_TIMER_ELIGIBLE_HEADER,
         )
 
-        entity, bridge = _build_entity(_ha_stubs, native_enabled=True)
+        entity, _bridge = _build_entity(_ha_stubs, native_enabled=True)
 
         captured: dict = {}
 
@@ -424,7 +422,7 @@ class TestIntegrationDirectiveFlow:
         async def _native(*args, **kwargs):
             raise RuntimeError("pre-handler boom")
 
-        entity, bridge = _build_entity(_ha_stubs, native_enabled=True, native_delegate=_native)
+        entity, _bridge = _build_entity(_ha_stubs, native_enabled=True, native_delegate=_native)
 
         async def _bridge(_ui):
             seen_suppressed.append(conv_mod._suppress_native_plain_timer_eligibility.get())
@@ -512,3 +510,148 @@ class TestConversationModelDirectiveFields:
         assert restored.done is True
         assert restored.directive == "delegate_native_plain_timer"
         assert restored.reason == "native_cancel"
+
+
+# ---------------------------------------------------------------------------
+# 4. LLM-only delegation contract (0.26.0)
+# ---------------------------------------------------------------------------
+
+
+class TestLLMDelegationContract:
+    """The LLM is the sole gate for ``delegate_native_plain_timer``.
+
+    The container injects an eligibility hint as the LAST line of the
+    user-content message. There is no deterministic pre-LLM heuristic;
+    these tests prove the LLM is always called and that the hint is
+    delivered verbatim.
+    """
+
+    def _agent(self):
+        from app.agents.timer import TimerAgent
+
+        agent = TimerAgent(
+            ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock()
+        )
+        agent._call_llm = AsyncMock(
+            return_value='```json\n{"action": "list_timers", "entity": "", "parameters": {}}\n```'
+        )
+        return agent
+
+    def _task(self, text: str, *, eligible: bool):
+        from app.models.agent import TaskContext
+        from tests.helpers import make_agent_task
+
+        ctx = TaskContext(native_plain_timer_eligible=eligible, language="de")
+        return make_agent_task(description=text, user_text=text, context=ctx)
+
+    async def test_eligibility_line_present_when_true(self):
+        agent = self._agent()
+        task = self._task("Stelle einen Timer auf 3 Minuten.", eligible=True)
+        await agent.handle_task(task)
+        agent._call_llm.assert_awaited_once()
+        messages = agent._call_llm.await_args.args[0]
+        last_user = [m for m in messages if m["role"] == "user"][-1]
+        assert last_user["content"].rstrip().endswith(
+            "(Execution context: native_plain_timer_eligible=true)"
+        )
+
+    async def test_eligibility_line_present_when_false(self):
+        agent = self._agent()
+        task = self._task("Stelle einen Timer auf 3 Minuten.", eligible=False)
+        await agent.handle_task(task)
+        messages = agent._call_llm.await_args.args[0]
+        last_user = [m for m in messages if m["role"] == "user"][-1]
+        assert last_user["content"].rstrip().endswith(
+            "(Execution context: native_plain_timer_eligible=false)"
+        )
+
+    async def test_system_prompt_contains_eligibility_aware_few_shots(self):
+        agent = self._agent()
+        await agent.handle_task(self._task("Set a timer for 5 minutes.", eligible=True))
+        messages = agent._call_llm.await_args.args[0]
+        system = messages[0]["content"]
+        assert messages[0]["role"] == "system"
+        for needle in (
+            "Stelle einen Timer auf 3 Minuten.",
+            "Set a timer for 5 minutes.",
+            "delegate_native_plain_timer",
+            "Küchentimer",
+        ):
+            assert needle in system
+
+    async def test_system_prompt_does_not_contain_helper_pool_framing(self):
+        agent = self._agent()
+        await agent.handle_task(self._task("Set a timer for 5 minutes.", eligible=True))
+        system = agent._call_llm.await_args.args[0][0]["content"]
+        for forbidden in (
+            "helper pool",
+            "idle timer",
+            "no specific entity matches",
+            "available idle timer",
+        ):
+            assert forbidden not in system
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Stelle einen Timer auf 3 Minuten.",
+            "Set a timer for 5 minutes.",
+            "Stoppe den Timer.",
+        ],
+    )
+    async def test_no_pre_llm_short_circuit(self, text):
+        agent = self._agent()
+        await agent.handle_task(self._task(text, eligible=True))
+        agent._call_llm.assert_awaited_once()
+
+    def test_timer_agent_has_no_handle_task_override(self):
+        from app.agents.actionable import ActionableAgent
+        from app.agents.timer import TimerAgent
+
+        # handle_task must come from ActionableAgent, not be overridden.
+        assert "handle_task" not in TimerAgent.__dict__
+        assert TimerAgent.handle_task is ActionableAgent.handle_task
+
+        import app.agents.timer as timer_mod
+
+        for forbidden in (
+            "_detect_plain_timer_directive",
+            "_PLAIN_TIMER_PLACEHOLDERS",
+            "_PLAIN_TIMER_NEGATIVE_KEYWORDS",
+            "_PLAIN_START_PATTERNS",
+            "_PLAIN_CANCEL_PATTERNS",
+            "_build_native_delegation_result",
+        ):
+            assert getattr(timer_mod, forbidden, None) is None
+
+
+# ---------------------------------------------------------------------------
+# 5. Removal-assertions (0.26.0)
+# ---------------------------------------------------------------------------
+
+
+class TestHelperPoolRemoval:
+    def test_idle_pool_symbols_removed(self):
+        import app.agents.timer_executor as te
+
+        assert getattr(te, "_TimerPool", None) is None
+        assert getattr(te, "_timer_pool", None) is None
+        assert getattr(te, "_find_idle_timer", None) is None
+        assert getattr(te, "on_timer_finished", None) is None
+        assert getattr(te, "TimerMetadata", None) is None
+        assert getattr(te, "ExpiredTimer", None) is None
+
+    def test_delayed_tasks_module_removed(self):
+        import importlib
+
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module("app.agents.delayed_tasks")
+
+    def test_idle_pool_failure_speech_unreachable(self):
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[1] / "app" / "agents" / "timer_executor.py"
+        text = src.read_text(encoding="utf-8")
+        assert "no idle timer entities are available for pool allocation" not in text
+
+

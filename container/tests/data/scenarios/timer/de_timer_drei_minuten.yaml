@@ -13,13 +13,6 @@ context:
 request:
   text: "Stelle einen Timer auf 3 Minuten."
 
-preconditions:
-  entity_overrides:
-    - entity_id: timer.kitchen_5min
-      state: "idle"
-    - entity_id: timer.bedroom_sleep
-      state: "active"
-
 llm:
   classify: |
     timer-agent (95%): Stelle einen Timer auf 3 Minuten
@@ -32,10 +25,9 @@ llm:
 
 expected:
   routed_agent: timer-agent
-  service_calls:
-    - domain: timer
-      service: start
-      target_entity: timer.kitchen_5min
-      service_data: {duration: "00:03:00"}
+  # AgentHub manages plain timers internally via TimerScheduler; no HA service calls.
+  service_calls: []
   speech_contains: ["timer"]
   speech_excludes: ["could not verify", "could not understand"]
+# TODO: add a sibling scenario covering eligibility=true native delegation
+# (LLM stub returns delegate_native_plain_timer; assertion expects directive in response).

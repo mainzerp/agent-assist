@@ -11,12 +11,17 @@ llm:
   classify: |
     send-agent (95%): Laura Phone|||CONTENT|||The dinner reservation is at 7pm.
   agents:
+    orchestrator: |
+      general-agent (95%): summarize the dinner reservation
+      send-agent (95%): Laura Phone|||CONTENT|||The dinner reservation is at 7pm.
+    general-agent: |
+      The dinner reservation is at 7pm.
     send-agent: |
       The dinner reservation is at 7pm.
 request:
   text: "send the dinner reservation to Laura phone"
 expected:
-  routed_agent: send-agent
+  routed_agent: general-agent, send-agent
   service_calls:
     - {domain: notify, service: mobile_app_laura}
   speech_contains: ["sent"]

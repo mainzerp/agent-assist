@@ -8,6 +8,8 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from app.a2a.orchestrator_gateway import OrchestratorGateway
+
 logger = logging.getLogger(__name__)
 
 _CHECK_INTERVAL = 30.0  # seconds
@@ -17,8 +19,9 @@ _MATCH_WINDOW = 60  # seconds -- alarm matches if within this window
 class AlarmMonitor:
     """Polls input_datetime entities and dispatches notifications when alarm time is reached."""
 
-    def __init__(self, ha_client: Any) -> None:
-        self._ha_client = ha_client
+    def __init__(self, entity_index: Any, orchestrator_gateway: OrchestratorGateway) -> None:
+        self._entity_index = entity_index
+        self._orchestrator_gateway = orchestrator_gateway
         self._fired: set[str] = set()
         self._last_reset_date: str = ""
         self._task: asyncio.Task | None = None
@@ -62,26 +65,27 @@ class AlarmMonitor:
             self._last_reset_date = today_str
 
         try:
-            states = await self._ha_client.get_states()
+            entries = await self._entity_index.list_entries_async(domains={"input_datetime"})
         except Exception:
-            logger.warning("Failed to fetch states in AlarmMonitor", exc_info=True)
+            logger.warning("Failed to read input_datetime entries in AlarmMonitor", exc_info=True)
             return
 
-        for s in states:
-            entity_id = s.get("entity_id", "")
+        for entry in entries:
+            entity_id = entry.entity_id
             if not entity_id.startswith("input_datetime."):
                 continue
-
-            attrs = s.get("attributes", {})
-            has_time = attrs.get("has_time", False)
-            if not has_time:
+            if not entry.has_time:
                 continue
 
-            state_val = s.get("state", "")
+            state_val = entry.state or ""
             if not state_val or state_val == "unknown":
                 continue
 
-            alarm_time = self._parse_alarm_time(state_val, attrs, now)
+            alarm_time = self._parse_alarm_time(
+                state_val,
+                {"has_date": entry.has_date, "has_time": entry.has_time},
+                now,
+            )
             if alarm_time is None:
                 continue
 
@@ -89,7 +93,7 @@ class AlarmMonitor:
             delta = abs((now - alarm_time).total_seconds())
             if delta <= _MATCH_WINDOW and fire_key not in self._fired:
                 self._fired.add(fire_key)
-                friendly_name = attrs.get("friendly_name", entity_id)
+                friendly_name = entry.friendly_name or entity_id
                 logger.info("Alarm triggered: %s (%s)", entity_id, friendly_name)
                 await self._fire_notification(entity_id, friendly_name)
 
@@ -114,14 +118,15 @@ class AlarmMonitor:
         return None
 
     async def _fire_notification(self, entity_id: str, friendly_name: str) -> None:
-        """Dispatch alarm notification via the notification dispatcher."""
+        """Dispatch alarm notification through the orchestrator gateway."""
         try:
-            from app.agents.notification_dispatcher import dispatch_alarm_notification
-
-            await dispatch_alarm_notification(
-                ha_client=self._ha_client,
-                alarm_name=friendly_name,
-                entity_id=entity_id,
+            await self._orchestrator_gateway.dispatch_background_event(
+                "alarm_notification",
+                {
+                    "alarm_name": friendly_name,
+                    "entity_id": entity_id,
+                },
+                description=f"Dispatch alarm notification for {friendly_name}",
             )
         except Exception:
             logger.error("Alarm notification dispatch failed for %s", entity_id, exc_info=True)

@@ -541,14 +541,35 @@ async def get_all_agents_visibility_summary():
 
 @router.get("/timers")
 async def get_timers_info(request: Request):
-    """Return timer, alarm, pool, and delayed task state for the dashboard."""
-    from app.agents.delayed_tasks import delayed_task_manager
-    from app.agents.timer_executor import _timer_pool
-
+    """Return scheduler-managed timer state plus HA input_datetime alarms for the dashboard."""
     ha_client = getattr(request.app.state, "ha_client", None)
+    scheduler = getattr(request.app.state, "timer_scheduler", None)
 
-    timers = []
-    alarms = []
+    timers: list[dict] = []
+    alarms: list[dict] = []
+
+    if scheduler is not None:
+        try:
+            rows = await scheduler.list()
+        except Exception:
+            rows = []
+        import time as _time
+
+        now = int(_time.time())
+        for row in rows:
+            remaining_seconds = max(0, int(row["fires_at"]) - now)
+            timers.append(
+                {
+                    "id": row["id"],
+                    "logical_name": row["logical_name"],
+                    "kind": row["kind"],
+                    "duration_seconds": row["duration_seconds"],
+                    "remaining_seconds": remaining_seconds,
+                    "origin_area": row.get("origin_area"),
+                    "origin_device_id": row.get("origin_device_id"),
+                    "state": row["state"],
+                }
+            )
 
     if ha_client:
         try:
@@ -561,24 +582,7 @@ async def get_timers_info(request: Request):
             state = s.get("state", "unknown")
             attrs = s.get("attributes", {})
             friendly_name = attrs.get("friendly_name", entity_id)
-
-            if entity_id.startswith("timer."):
-                pool_name = _timer_pool.get_name(entity_id)
-                duration = attrs.get("duration", "")
-                remaining = attrs.get("remaining", "")
-                timers.append(
-                    {
-                        "entity_id": entity_id,
-                        "name": pool_name or friendly_name,
-                        "friendly_name": friendly_name,
-                        "pool_name": pool_name,
-                        "state": state,
-                        "duration": duration,
-                        "remaining": remaining,
-                    }
-                )
-
-            elif entity_id.startswith("input_datetime."):
+            if entity_id.startswith("input_datetime."):
                 has_date = attrs.get("has_date", False)
                 has_time = attrs.get("has_time", False)
                 dtype = "datetime" if (has_date and has_time) else ("date" if has_date else "time")
@@ -591,21 +595,9 @@ async def get_timers_info(request: Request):
                     }
                 )
 
-    # Timer pool
-    pool_mappings = _timer_pool.all_mappings()
-    pool = {
-        "mappings": [{"name": name, "entity_id": eid} for name, eid in pool_mappings.items()],
-        "allocated": len(pool_mappings),
-    }
-
-    # Delayed tasks
-    pending = delayed_task_manager.get_pending()
-
     return {
         "timers": timers,
         "alarms": alarms,
-        "pool": pool,
-        "delayed_tasks": pending,
     }
 
 
@@ -677,17 +669,11 @@ async def get_alarm_monitor_status(request: Request):
 
 @router.get("/timers/recently-expired")
 async def get_recently_expired_timers():
-    """Get recently expired timers."""
-    from app.agents.timer_executor import get_recently_expired
+    """Recently-expired timers are no longer tracked separately.
 
-    expired = get_recently_expired()
-    return {
-        "recently_expired": [
-            {
-                "name": e.name,
-                "entity_id": e.entity_id,
-                "expired_at": e.expired_at.isoformat(),
-            }
-            for e in expired
-        ],
-    }
+    The AgentHub-managed scheduler stores firing time in the
+    ``scheduled_timers`` table; clients should query ``/timers`` for
+    state. This endpoint is kept for compatibility and returns an
+    empty list.
+    """
+    return {"recently_expired": []}

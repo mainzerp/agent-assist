@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.a2a.orchestrator_gateway import AgentCatalog, OrchestratorGateway
 from app.plugins.base import BasePlugin, PluginContext
 from app.plugins.hooks import EventBus, LifecyclePhase
 from app.plugins.loader import PluginLoader
@@ -119,25 +120,41 @@ class TestBasePlugin:
 
 class TestPluginContext:
     def test_context_provides_registries(self):
-        agent_reg = MagicMock()
+        agent_catalog = MagicMock(spec=AgentCatalog)
+        gateway = MagicMock(spec=OrchestratorGateway)
         mcp_reg = MagicMock()
         settings = MagicMock()
         app = MagicMock()
         ctx = PluginContext(
-            agent_registry=agent_reg,
+            agent_catalog=agent_catalog,
+            orchestrator_gateway=gateway,
             mcp_registry=mcp_reg,
             settings_repo=settings,
             app=app,
         )
-        assert ctx.agent_registry is agent_reg
+        assert ctx.agent_catalog is agent_catalog
+        assert ctx.orchestrator_gateway is gateway
         assert ctx.mcp_registry is mcp_reg
         assert ctx.settings is settings
+
+    def test_ctx_agent_registry_raises_attribute_error(self):
+        app = MagicMock()
+        ctx = PluginContext(
+            agent_catalog=MagicMock(spec=AgentCatalog),
+            orchestrator_gateway=MagicMock(spec=OrchestratorGateway),
+            mcp_registry=MagicMock(),
+            settings_repo=MagicMock(),
+            app=app,
+        )
+        with pytest.raises(AttributeError, match="agent_registry has been removed"):
+            _ = ctx.agent_registry
 
     def test_ctx_app_raises_attribute_error(self):
         """PluginContext.app must raise AttributeError (escape hatch removed)."""
         app = MagicMock()
         ctx = PluginContext(
-            agent_registry=MagicMock(),
+            agent_catalog=MagicMock(spec=AgentCatalog),
+            orchestrator_gateway=MagicMock(spec=OrchestratorGateway),
             mcp_registry=MagicMock(),
             settings_repo=MagicMock(),
             app=app,
@@ -149,7 +166,8 @@ class TestPluginContext:
         """add_api_route should still work after app property removal."""
         app = MagicMock()
         ctx = PluginContext(
-            agent_registry=MagicMock(),
+            agent_catalog=MagicMock(spec=AgentCatalog),
+            orchestrator_gateway=MagicMock(spec=OrchestratorGateway),
             mcp_registry=MagicMock(),
             settings_repo=MagicMock(),
             app=app,
@@ -162,7 +180,8 @@ class TestPluginContext:
         app = MagicMock()
         router = MagicMock()
         ctx = PluginContext(
-            agent_registry=MagicMock(),
+            agent_catalog=MagicMock(spec=AgentCatalog),
+            orchestrator_gateway=MagicMock(spec=OrchestratorGateway),
             mcp_registry=MagicMock(),
             settings_repo=MagicMock(),
             app=app,

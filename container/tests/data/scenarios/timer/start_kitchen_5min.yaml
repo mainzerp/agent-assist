@@ -9,11 +9,6 @@ context:
   area_id: kitchen
   device_id: satellite_kitchen
 
-preconditions:
-  entity_overrides:
-    - entity_id: timer.kitchen_5min
-      state: "idle"
-
 llm:
   classify: |
     timer-agent (95%): Start kitchen 5 minute timer
@@ -26,8 +21,8 @@ llm:
 
 expected:
   routed_agent: timer-agent
-  service_calls:
-    - domain: timer
-      service: start
-      target_entity: timer.kitchen_5min
+  # AgentHub manages plain timers internally via TimerScheduler; no HA service calls.
+  service_calls: []
+  # "timer" is present both in the success message ("Started ... timer ...")
+  # via the logical name and in the scheduler-unavailable fallback.
   speech_contains: ["timer"]

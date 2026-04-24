@@ -28,7 +28,9 @@ BATCH_SIZE = 500
 # entry.area_name for production states (HA /api/states never carries
 # area_id in attributes), changing content_hash for previously
 # indexed entities; force a one-time rebuild.
-INDEX_SCHEMA_VERSION = 4
+# v5: index the runtime alarm fields (state, has_date, has_time) for
+# input_datetime entities so AlarmMonitor can read them from EntityIndex.
+INDEX_SCHEMA_VERSION = 5
 
 
 class EntityIndex:
@@ -65,6 +67,9 @@ class EntityIndex:
             "aliases": ",".join(entry.aliases) if entry.aliases else "",
             "device_name": entry.device_name or "",
             "id_tokens": ",".join(entry.id_tokens) if entry.id_tokens else "",
+            "state": entry.state or "",
+            "has_date": "1" if entry.has_date else "0",
+            "has_time": "1" if entry.has_time else "0",
             "content_hash": entry.content_hash,
         }
 
@@ -91,6 +96,9 @@ class EntityIndex:
             aliases=[a for a in aliases_str.split(",") if a] if aliases_str else [],
             device_name=meta.get("device_name", "") or None,
             id_tokens=[t for t in id_tokens_str.split(",") if t] if id_tokens_str else [],
+            state=meta.get("state", "") or None,
+            has_date=str(meta.get("has_date", "0")) == "1",
+            has_time=str(meta.get("has_time", "0")) == "1",
         )
 
     def populate(self, entities: list[EntityIndexEntry]) -> None:

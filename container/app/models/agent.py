@@ -7,7 +7,21 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-RequestSource = Literal["ha", "chat", "api"]
+RequestSource = Literal["ha", "chat", "api", "background"]
+BackgroundEventType = Literal[
+    "alarm_notification",
+    "timer_notification",
+    "delayed_action",
+    "sleep_media_stop",
+    "voice_followup",
+]
+
+
+class BackgroundEvent(BaseModel):
+    """Structured internal event carried by a background orchestrator turn."""
+
+    event_type: BackgroundEventType
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentCard(BaseModel):
@@ -89,6 +103,7 @@ class TaskContext(BaseModel):
     # a satellite in a known area).
     source: RequestSource = "api"
     language: str = "en"
+    background_event: BackgroundEvent | None = None
     sequential_send: bool = False
     timezone: str = "UTC"
     location_name: str = ""

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.models.agent import AgentCard, AgentConfig, AgentTask, TaskContext, TaskResult
+from app.models.agent import AgentCard, AgentConfig, AgentTask, BackgroundEvent, TaskContext, TaskResult
 from app.models.cache import CachedAction, RoutingCacheEntry
 from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.models.entity_index import EntityIndexEntry
@@ -178,6 +178,20 @@ class TestAgentTask:
         ctx = TaskContext(native_plain_timer_eligible=True)
         restored = TaskContext.model_validate(ctx.model_dump())
         assert restored.native_plain_timer_eligible is True
+
+    def test_task_context_background_event_round_trip(self):
+        ctx = TaskContext(
+            source="background",
+            background_event=BackgroundEvent(
+                event_type="timer_notification",
+                payload={"timer_name": "Tea"},
+            ),
+        )
+        restored = TaskContext.model_validate(ctx.model_dump())
+        assert restored.source == "background"
+        assert restored.background_event is not None
+        assert restored.background_event.event_type == "timer_notification"
+        assert restored.background_event.payload["timer_name"] == "Tea"
 
     def test_missing_description_raises(self):
         with pytest.raises(ValidationError):

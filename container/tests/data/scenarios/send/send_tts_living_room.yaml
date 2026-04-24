@@ -11,12 +11,17 @@ llm:
   classify: |
     send-agent (95%): Living Room Satellite|||CONTENT|||Welcome home.
   agents:
+    orchestrator: |
+      general-agent (95%): draft the welcome-home message
+      send-agent (95%): Living Room Satellite|||CONTENT|||Welcome home.
+    general-agent: |
+      Welcome home.
     send-agent: |
       Welcome home.
 request:
   text: "say welcome home in the living room"
 expected:
-  routed_agent: send-agent
+  routed_agent: general-agent, send-agent
   service_calls:
     - {domain: tts, service: speak}
   speech_contains: ["sent"]

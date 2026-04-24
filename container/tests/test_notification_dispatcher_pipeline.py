@@ -1,5 +1,4 @@
-"""Tests for FLOW-HIGH-5 (real device_id for assist_pipeline.run) and
-FLOW-HIGH-6 (assist_satellite resolved via EntityIndex)."""
+"""Tests for orchestrator-owned background notification helpers."""
 
 from __future__ import annotations
 
@@ -8,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.agents import notification_dispatcher as nd
+from app.agents import background_actions as nd
 
 
 class _FakeResp:

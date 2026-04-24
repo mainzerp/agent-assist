@@ -11,12 +11,17 @@ llm:
   classify: |
     send-agent (95%): send to Laura Phone|||CONTENT|||This message contains the special separator.
   agents:
+    orchestrator: |
+      general-agent (95%): draft the outgoing message
+      send-agent (95%): send to Laura Phone|||CONTENT|||This message contains the special separator.
+    general-agent: |
+      This message contains the special separator.
     send-agent: |
       This message contains the special separator.
 request:
   text: "send a message to Laura phone"
 expected:
-  routed_agent: send-agent
+  routed_agent: general-agent, send-agent
   service_calls:
     - {domain: notify, service: mobile_app_laura}
   speech_contains: ["sent"]

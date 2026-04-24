@@ -126,6 +126,18 @@ class ActionableAgent(BaseAgent):
                 user_content = f'{task.user_text}\n\n(Routing summary: "{task.description}")'
             else:
                 user_content = f'{task.description}\n\n(Original user message: "{task.user_text}")'
+
+        # 0.26.0: For the timer agent only, append a deterministic
+        # eligibility hint as the LAST line of the user message so the
+        # LLM is the sole decision-maker for native plain-timer
+        # delegation. The prompt's eligibility-aware few-shots teach
+        # the model to read this line.
+        if self._prompt_name == "timer" and task.context is not None:
+            eligibility = bool(getattr(task.context, "native_plain_timer_eligible", False))
+            user_content = (
+                f"{user_content}\n\n(Execution context: native_plain_timer_eligible="
+                f"{'true' if eligibility else 'false'})"
+            )
         messages.append({"role": "user", "content": user_content})
 
         try:

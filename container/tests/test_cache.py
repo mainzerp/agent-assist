@@ -1168,6 +1168,20 @@ class TestVectorStore:
                 metadatas=[{"key": "v1"}],
             )
 
+    def test_close_closes_client_and_clears_cached_state(self):
+        store = VectorStore()
+        client = MagicMock()
+        store._client = client
+        store._embedding_fn = MagicMock()
+        store._collections = {COLLECTION_ENTITY_INDEX: MagicMock()}
+
+        store.close()
+
+        client.close.assert_called_once_with()
+        assert store._client is None
+        assert store._embedding_fn is None
+        assert store._collections == {}
+
 
 # ---------------------------------------------------------------------------
 # Cache trace visibility -- similarity propagation tests

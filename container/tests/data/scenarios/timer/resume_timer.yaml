@@ -4,9 +4,6 @@ description: Resume the kitchen timer
 snapshot: home_default
 language: en
 context: {source: ha, area_id: kitchen, device_id: satellite_kitchen}
-preconditions:
-  entity_overrides:
-    - {entity_id: timer.kitchen_5min, state: "paused"}
 llm:
   classify: |
     timer-agent (95%): Resume the kitchen timer
@@ -20,6 +17,7 @@ request:
   text: "resume the timer"
 expected:
   routed_agent: timer-agent
-  service_calls:
-    - {domain: timer, service: start, target_entity: timer.kitchen_5min}
-  speech_contains: ["active"]
+  # Resume is not supported for AgentHub-managed timers; the executor returns
+  # an explanatory message and makes no HA service call.
+  service_calls: []
+  speech_contains: ["timer"]

@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.a2a.dispatcher import Dispatcher
+from app.a2a.orchestrator_gateway import AgentCatalog, OrchestratorGateway
 from app.a2a.registry import registry
 from app.a2a.transport import InProcessTransport
 from app.agents.custom_loader import CustomAgentLoader
@@ -202,6 +203,7 @@ async def lifespan(app: FastAPI):
     # helper used by both this lifespan and the post-wizard re-init path.
     transport = InProcessTransport(registry)
     dispatcher = Dispatcher(registry, transport)
+    orchestrator_gateway = OrchestratorGateway(dispatcher)
     conversation_routes.set_dispatcher(dispatcher)
     dashboard_api_routes.set_chat_dispatcher(dispatcher)
     admin_routes.set_registry(registry)
@@ -214,6 +216,7 @@ async def lifespan(app: FastAPI):
 
     app.state.registry = registry
     app.state.dispatcher = dispatcher
+    app.state.orchestrator_gateway = orchestrator_gateway
     app.state.mcp_registry = mcp_registry
     app.state.mcp_tool_manager = mcp_tool_manager
 
@@ -247,8 +250,6 @@ async def lifespan(app: FastAPI):
 
         music_agent = MusicAgent(ha_client=None, entity_index=None, entity_matcher=None)
         await registry.register(music_agent)
-
-        await registry.register(filler_agent)
 
         custom_loader = CustomAgentLoader(registry, ha_client=None, entity_index=None)
         await custom_loader.load_all()
@@ -299,6 +300,7 @@ async def lifespan(app: FastAPI):
         "ws_client",
         "sync_task",
         "alarm_monitor",
+        "timer_scheduler",
     ):
         if not hasattr(app.state, _attr):
             setattr(app.state, _attr, None)
@@ -309,7 +311,8 @@ async def lifespan(app: FastAPI):
     from app.plugins.loader import PluginLoader
 
     plugin_context = PluginContext(
-        agent_registry=registry,
+        agent_catalog=AgentCatalog(registry),
+        orchestrator_gateway=orchestrator_gateway,
         mcp_registry=mcp_registry,
         settings_repo=SettingsRepository,
         app=app,
@@ -343,9 +346,16 @@ async def lifespan(app: FastAPI):
     ha_client = getattr(app.state, "ha_client", None)
     cache_manager = getattr(app.state, "cache_manager", None)
     entity_index_init_task = getattr(app.state, "entity_index_init_task", None)
+    timer_scheduler = getattr(app.state, "timer_scheduler", None)
 
     if alarm_monitor:
         await alarm_monitor.stop()
+
+    if timer_scheduler:
+        try:
+            await timer_scheduler.stop()
+        except Exception:
+            logger.warning("TimerScheduler.stop failed", exc_info=True)
 
     if ws_client:
         await ws_client.disconnect()
@@ -377,9 +387,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("Cache flush_pending failed at shutdown", exc_info=True)
 
+    from app.cache.vector_store import close_vector_store
+
     await mcp_registry.disconnect_all()
     if ha_client:
         await ha_client.close()
+    close_vector_store()
     from app.db.schema import close_db
 
     await close_db()

@@ -938,20 +938,22 @@ class TestEntityIngest:
     def test_state_to_entity_index_entry_preserves_state_fields(self):
         entry = state_to_entity_index_entry(
             {
-                "entity_id": "light.keller",
+                "entity_id": "input_datetime.morning_alarm",
+                "state": "08:30:00",
                 "attributes": {
-                    "friendly_name": "Keller",
-                    "area_id": "keller",
-                    "device_class": "light",
+                    "friendly_name": "Morning Alarm",
+                    "has_date": False,
+                    "has_time": True,
                 },
             }
         )
 
-        assert entry.entity_id == "light.keller"
-        assert entry.friendly_name == "Keller"
-        assert entry.domain == "light"
-        assert entry.area == "keller"
-        assert entry.device_class == "light"
+        assert entry.entity_id == "input_datetime.morning_alarm"
+        assert entry.friendly_name == "Morning Alarm"
+        assert entry.domain == "input_datetime"
+        assert entry.state == "08:30:00"
+        assert entry.has_date is False
+        assert entry.has_time is True
 
     def test_state_to_entity_index_entry_supports_event_entity_id_override(self):
         entry = state_to_entity_index_entry(
@@ -987,6 +989,30 @@ class TestEntityIndexHelpers:
         store = MagicMock()
         index = EntityIndex(store)
         return index, store
+
+    def test_entry_from_metadata_preserves_alarm_runtime_fields(self):
+        index, _store = self._make_index()
+
+        entry = index._entry_from_metadata(
+            "input_datetime.morning_alarm",
+            {
+                "friendly_name": "Morning Alarm",
+                "domain": "input_datetime",
+                "area": "",
+                "area_name": "",
+                "device_class": "",
+                "aliases": "",
+                "device_name": "",
+                "id_tokens": "morning,alarm",
+                "state": "08:30:00",
+                "has_date": "0",
+                "has_time": "1",
+            },
+        )
+
+        assert entry.state == "08:30:00"
+        assert entry.has_date is False
+        assert entry.has_time is True
 
     def test_list_entries_returns_all_indexed_entities(self):
         index, store = self._make_index()

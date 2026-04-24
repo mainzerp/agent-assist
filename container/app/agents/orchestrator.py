@@ -39,6 +39,14 @@ _CONVERSATION_TTL_SECONDS = 1800  # 30 minutes
 _FALLBACK_AGENT = "general-agent"
 # Virtual agent: classification LLM routes here when the user only dismisses the chat/voice turn.
 _CANCEL_INTERACTION_AGENT = "cancel-interaction"
+_INTERNAL_ONLY_AGENTS: frozenset[str] = frozenset({"orchestrator", "rewrite-agent", "filler-agent"})
+
+
+class _RecoverableClassificationError(RuntimeError):
+    def __init__(self, message: str, *, code: str = "parse_error") -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
 
 
 def _sanitize_condensed(
@@ -720,7 +728,7 @@ class OrchestratorAgent(BaseAgent):
         if not ctx.area_id and not ctx.device_id:
             logger.debug("Voice follow-up skipped (need area_id and/or device_id, e.g. Companion has device_id only)")
             return
-        from app.agents.notification_dispatcher import spawn_voice_followup_after_conversation
+        from app.agents.background_actions import spawn_voice_followup_after_conversation
 
         spawn_voice_followup_after_conversation(
             self._ha_client,
@@ -1184,6 +1192,8 @@ class OrchestratorAgent(BaseAgent):
             conversation_id = str(uuid.uuid4())
             logger.debug("No conversation_id from HA, generated fallback: %s", conversation_id)
         context_language = (task.context.language if task.context else None) or "en"
+        if self._is_background_turn(task):
+            return conversation_id, context_language, []
         lang_turns = await self._get_turns(conversation_id)
         detected_language = await self._resolve_language(user_text, context_language, turns=lang_turns)
         return conversation_id, detected_language, lang_turns
@@ -1437,6 +1447,17 @@ class OrchestratorAgent(BaseAgent):
         # Get span collector from task context if available
         span_collector = task.span_collector
 
+        if self._is_background_turn(task):
+            result = await self._handle_background_turn(task)
+            return {
+                "speech": result.get("speech", ""),
+                "conversation_id": conversation_id,
+                "routed_to": "orchestrator",
+                "action_executed": result.get("action_executed"),
+                "voice_followup": False,
+                "error": result.get("error"),
+            }
+
         # 0. Cache lookup (before classify)
         cache_result = None
         cache_span_ref = None
@@ -1468,24 +1489,38 @@ class OrchestratorAgent(BaseAgent):
             classifications, routing_cached = _pre_classified
             target_agent, condensed_task, confidence = classifications[0]
         else:
-            async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
-                classifications, routing_cached = await self._classify(
-                    user_text,
-                    cache_result=cache_result,
-                    conversation_id=conversation_id,
-                    span_collector=span_collector,
-                    language=detected_language,
-                )
-                target_agent, condensed_task, confidence = classifications[0]
-                self._pipeline_record_classify_span(
-                    span,
-                    classifications,
-                    user_text,
-                    condensed_task,
-                    confidence,
-                    routing_cached,
-                    extended_metadata=True,
-                )
+            try:
+                async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
+                    classifications, routing_cached = await self._classify(
+                        user_text,
+                        cache_result=cache_result,
+                        conversation_id=conversation_id,
+                        span_collector=span_collector,
+                        language=detected_language,
+                    )
+                    target_agent, condensed_task, confidence = classifications[0]
+                    self._pipeline_record_classify_span(
+                        span,
+                        classifications,
+                        user_text,
+                        condensed_task,
+                        confidence,
+                        routing_cached,
+                        extended_metadata=True,
+                    )
+            except _RecoverableClassificationError as exc:
+                return {
+                    "speech": exc.message,
+                    "conversation_id": conversation_id,
+                    "routed_to": "orchestrator",
+                    "action_executed": None,
+                    "voice_followup": False,
+                    "error": {
+                        "code": exc.code,
+                        "message": exc.message,
+                        "recoverable": True,
+                    },
+                }
         # P3-10: per-request routing log; debug.
         logger.debug(
             "Routed to %s (%s): %s (conversation=%s)",
@@ -1501,7 +1536,9 @@ class OrchestratorAgent(BaseAgent):
         turns = await self._get_turns(conversation_id)
 
         # Check for sequential send dispatch
-        is_sequential_send = len(classifications) > 1 and any(a == "send-agent" for a, _, _ in classifications)
+        is_sequential_send = any(a == "send-agent" for a, _, _ in classifications) and any(
+            a != "send-agent" for a, _, _ in classifications
+        )
 
         # 3-4. Dispatch
         incoming_context = task.context
@@ -1718,6 +1755,18 @@ class OrchestratorAgent(BaseAgent):
         # 0. Cache lookup (before classify)
         cache_result = None
         cache_span_ref = None
+        if self._is_background_turn(task):
+            result = await self._handle_background_turn(task)
+            final_chunk = {
+                "token": "",
+                "done": True,
+                "conversation_id": conversation_id,
+                "mediated_speech": strip_markdown(result.get("speech", "")),
+            }
+            if result.get("error"):
+                final_chunk["error"] = result["error"]
+            yield final_chunk
+            return
         if self._cache_manager:
             cache_result, cache_span_ref = await self._do_cache_lookup(
                 user_text,
@@ -1747,24 +1796,38 @@ class OrchestratorAgent(BaseAgent):
             cache_result = None  # Reset so _classify() can re-check routing cache
 
         # 1. Classify (non-streaming -- fast via Groq)
-        async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
-            classifications, routing_cached = await self._classify(
-                user_text,
-                cache_result=cache_result,
-                conversation_id=conversation_id,
-                span_collector=span_collector,
-                language=detected_language,
-            )
-            target_agent, condensed_task, confidence = classifications[0]
-            self._pipeline_record_classify_span(
-                span,
-                classifications,
-                user_text,
-                condensed_task,
-                confidence,
-                routing_cached,
-                extended_metadata=False,
-            )
+        try:
+            async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
+                classifications, routing_cached = await self._classify(
+                    user_text,
+                    cache_result=cache_result,
+                    conversation_id=conversation_id,
+                    span_collector=span_collector,
+                    language=detected_language,
+                )
+                target_agent, condensed_task, confidence = classifications[0]
+                self._pipeline_record_classify_span(
+                    span,
+                    classifications,
+                    user_text,
+                    condensed_task,
+                    confidence,
+                    routing_cached,
+                    extended_metadata=False,
+                )
+        except _RecoverableClassificationError as exc:
+            yield {
+                "token": "",
+                "done": True,
+                "conversation_id": conversation_id,
+                "mediated_speech": strip_markdown(exc.message),
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "recoverable": True,
+                },
+            }
+            return
         # P3-10: per-request streaming routing log; debug.
         logger.debug(
             "Stream routed to %s: %s (conversation=%s)",
@@ -1820,7 +1883,9 @@ class OrchestratorAgent(BaseAgent):
             return
 
         # Multi-agent: yield progress marker, then fall back to non-streaming handle_task
-        is_sequential_send = len(classifications) > 1 and any(a == "send-agent" for a, _, _ in classifications)
+        is_sequential_send = any(a == "send-agent" for a, _, _ in classifications) and any(
+            a != "send-agent" for a, _, _ in classifications
+        )
 
         # Sequential send: fall back to non-streaming, with filler support
         if is_sequential_send:
@@ -2043,13 +2108,7 @@ class OrchestratorAgent(BaseAgent):
             if not use_filler:
                 # No filler logic -- stream directly
                 async for chunk in stream_iter:
-                    token = await _process_chunk(chunk)
-                    if token:
-                        yield {
-                            "token": token,
-                            "done": False,
-                            "conversation_id": None,
-                        }
+                    await _process_chunk(chunk)
                 return
 
             # Queue-based approach: reader task fills queue, main loop consumes
@@ -2128,44 +2187,16 @@ class OrchestratorAgent(BaseAgent):
 
                 # Process first chunk
                 if first_chunk is not None:
-                    token = await _process_chunk(first_chunk)
-                    if token:
-                        yield {
-                            "token": token,
-                            "done": False,
-                            "conversation_id": None,
-                        }
+                    await _process_chunk(first_chunk)
 
                 # Drain remaining chunks from queue
                 while True:
                     item = await queue.get()
                     if item is _sentinel:
                         break
-                    token = await _process_chunk(item)
-                    if token:
-                        yield {
-                            "token": token,
-                            "done": False,
-                            "conversation_id": None,
-                        }
+                    await _process_chunk(item)
             finally:
                 await reader_task
-
-        # FLOW-MED-8 (P2-1, 0.18.x): Previously, when personality
-        # mediation was enabled, all non-filler interim tokens were
-        # suppressed to avoid pre-mediation flicker -- but this hid
-        # the streaming experience entirely from the user. The
-        # final ``done`` chunk still carries ``mediated_speech`` so
-        # clients that prefer the mediated text can replace the
-        # streamed tokens at end-of-stream. We probe the personality
-        # setting only to record an instrumentation flag on the
-        # dispatch span; tokens are forwarded to the client unchanged.
-        mediation_enabled = False
-        try:
-            personality = await SettingsRepository.get_value("personality.prompt", "")
-            mediation_enabled = bool(personality and personality.strip())
-        except Exception:
-            mediation_enabled = False
 
         async with _optional_span(span_collector, "dispatch", agent_id=target_agent) as span:
             async for token_dict in _stream_with_filler(self._dispatcher.dispatch_stream(request), span):
@@ -2174,8 +2205,7 @@ class OrchestratorAgent(BaseAgent):
             span["metadata"]["agent_response"] = "".join(collected_speech)[:500]
             if filler_sent:
                 span["metadata"]["filler_sent"] = True
-            if mediation_enabled:
-                span["metadata"]["mediation_streamed_interim_tokens"] = True
+            span["metadata"]["non_filler_tokens_buffered_until_terminal"] = True
 
         latency_ms = (time.perf_counter() - t0_dispatch) * 1000
         await track_request(target_agent, cache_hit=False, latency_ms=latency_ms)
@@ -2439,6 +2469,132 @@ class OrchestratorAgent(BaseAgent):
             "music-agent, etc."
         )
 
+    @staticmethod
+    def _is_background_turn(task: AgentTask) -> bool:
+        ctx = task.context
+        return bool(ctx and ctx.source == "background" and ctx.background_event is not None)
+
+    async def _handle_background_turn(self, task: AgentTask) -> dict:
+        ctx = task.context
+        event = ctx.background_event if ctx else None
+        if event is None:
+            return {
+                "speech": "",
+                "error": {
+                    "code": "parse_error",
+                    "message": "Missing background event payload.",
+                    "recoverable": True,
+                },
+            }
+        from app.agents.background_actions import handle_background_event
+
+        return await handle_background_event(
+            event,
+            context=ctx,
+            ha_client=self._ha_client,
+            entity_index=self._entity_index,
+        )
+
+    async def _repair_send_agent_classifications(
+        self,
+        user_text: str,
+        *,
+        conversation_id: str | None,
+        span_collector=None,
+        language: str = "en",
+    ) -> list[tuple[str, str, float | None]]:
+        system_prompt_template = self._load_prompt("orchestrator")
+        agent_descriptions = await self._build_agent_descriptions()
+        lang = (language or "").strip().lower()
+        if lang and lang != "en":
+            language_hint = (
+                f"User language hint: the user message is in '{lang}'. "
+                "Entity, room, device, and location names in the user input are "
+                "ALREADY in the user's language and MUST be copied verbatim into "
+                "the condensed task. Do not translate them to English."
+            )
+        else:
+            language_hint = ""
+        system_prompt = system_prompt_template.replace("{agent_descriptions}", agent_descriptions).replace(
+            "{language_hint}",
+            language_hint,
+        )
+        system_prompt += (
+            "\n\nHard routing rules:\n"
+            "- send-agent is a delivery-only second step and is NEVER valid on its own.\n"
+            "- If delivery is requested, return exactly one non-send content agent first and send-agent second.\n"
+            "- Never return orchestrator, filler-agent, or rewrite-agent."
+        )
+        messages = [{"role": "system", "content": system_prompt}]
+        turns = await self._get_turns(conversation_id)
+        if turns:
+            for turn in turns:
+                role = turn.get("role", "user")
+                content = turn.get("content", "")
+                if len(content) > 300:
+                    content = content[:300] + "..."
+                messages.append({"role": role, "content": content})
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Repair the routing result for this request. "
+                    "If the user wants content delivered somewhere, return content-agent first and send-agent second.\n\n"
+                    f"Request: {user_text}"
+                ),
+            }
+        )
+        async with _optional_span(span_collector, "llm_call", agent_id="orchestrator") as llm_span:
+            response = await self._call_llm(messages, span_collector=span_collector)
+            llm_span["metadata"]["model"] = "orchestrator_repair"
+            llm_span["metadata"]["routing_cached"] = False
+        return await self._parse_classification(response, user_text)
+
+    async def _sanitize_or_repair_classifications(
+        self,
+        classifications: list[tuple[str, str, float | None]],
+        *,
+        user_text: str,
+        conversation_id: str | None,
+        span_collector=None,
+        language: str = "en",
+        allow_repair: bool = True,
+        require_send_partner: bool = False,
+    ) -> list[tuple[str, str, float | None]]:
+        filtered = [c for c in classifications if c[0] not in _INTERNAL_ONLY_AGENTS]
+        if not filtered:
+            raise _RecoverableClassificationError("I couldn't determine the right agent for that request.")
+
+        send_entries = [c for c in filtered if c[0] == "send-agent"]
+        content_entries = [c for c in filtered if c[0] != "send-agent"]
+
+        if not send_entries:
+            if require_send_partner:
+                raise _RecoverableClassificationError("I couldn't determine what content to deliver.")
+            return filtered
+
+        if content_entries:
+            return content_entries + send_entries
+
+        if allow_repair:
+            repaired = await self._repair_send_agent_classifications(
+                user_text,
+                conversation_id=conversation_id,
+                span_collector=span_collector,
+                language=language,
+            )
+            return await self._sanitize_or_repair_classifications(
+                repaired,
+                user_text=user_text,
+                conversation_id=conversation_id,
+                span_collector=span_collector,
+                language=language,
+                allow_repair=False,
+                require_send_partner=True,
+            )
+
+        raise _RecoverableClassificationError("I couldn't determine what content to deliver.")
+
     async def _build_agent_descriptions(self) -> str:
         """Build agent list for classification prompt from registered AgentCards."""
         cancel_line = self._cancel_interaction_description_line()
@@ -2448,9 +2604,7 @@ class OrchestratorAgent(BaseAgent):
         cards = await self._registry.list_agents()
         lines = []
         for card in cards:
-            if card.agent_id == "orchestrator":
-                continue
-            if card.agent_id == "rewrite-agent":
+            if card.agent_id in _INTERNAL_ONLY_AGENTS:
                 continue
             skills_str = ", ".join(card.skills) if card.skills else ""
             if skills_str:
@@ -2488,10 +2642,13 @@ class OrchestratorAgent(BaseAgent):
         # Use pre-computed cache result if available (avoids double lookup)
         if cache_result is not None:
             if cache_result.hit_type == "routing_hit" and cache_result.agent_id:
-                # P3-10: per-request cache-hit log; debug.
-                logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
-                condensed = cache_result.condensed_task or user_text
-                return [(cache_result.agent_id, condensed, 1.0)], True
+                if cache_result.agent_id == "send-agent" or cache_result.agent_id in _INTERNAL_ONLY_AGENTS:
+                    logger.debug("Ignoring invalid routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
+                else:
+                    # P3-10: per-request cache-hit log; debug.
+                    logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
+                    condensed = cache_result.condensed_task or user_text
+                    return [(cache_result.agent_id, condensed, 1.0)], True
         elif self._cache_manager:
             # Fallback: no pre-computed result (e.g. called without handle_task)
             try:
@@ -2500,10 +2657,17 @@ class OrchestratorAgent(BaseAgent):
                     language=language,
                 )
                 if cache_result.hit_type == "routing_hit" and cache_result.agent_id:
-                    # P3-10: per-request cache-hit log; debug.
-                    logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
-                    condensed = cache_result.condensed_task or user_text
-                    return [(cache_result.agent_id, condensed, 1.0)], True
+                    if cache_result.agent_id == "send-agent" or cache_result.agent_id in _INTERNAL_ONLY_AGENTS:
+                        logger.debug(
+                            "Ignoring invalid routing cache hit: %s for '%s'",
+                            cache_result.agent_id,
+                            user_text[:80],
+                        )
+                    else:
+                        # P3-10: per-request cache-hit log; debug.
+                        logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
+                        condensed = cache_result.condensed_task or user_text
+                        return [(cache_result.agent_id, condensed, 1.0)], True
             except Exception:
                 logger.warning("Routing cache check failed, proceeding with LLM", exc_info=True)
 
@@ -2546,6 +2710,13 @@ class OrchestratorAgent(BaseAgent):
                 llm_span["metadata"]["routing_cached"] = False
             logger.debug("Classification LLM response for '%s': %s", user_text[:60], repr(response[:300]))
             classifications = await self._parse_classification(response, user_text)
+            classifications = await self._sanitize_or_repair_classifications(
+                classifications,
+                user_text=user_text,
+                conversation_id=conversation_id,
+                span_collector=span_collector,
+                language=language,
+            )
             # P1-4: only persist routing decisions when the LLM actually
             # emitted a confidence value AND that value clears the
             # configured minimum. The previous 0.8 default (synthetic
@@ -2554,7 +2725,7 @@ class OrchestratorAgent(BaseAgent):
             # the model was highly confident.
             if self._cache_manager and len(classifications) == 1:
                 target_agent, condensed, confidence = classifications[0]
-                if target_agent not in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT):
+                if target_agent not in (_FALLBACK_AGENT, _CANCEL_INTERACTION_AGENT, "send-agent"):
                     try:
                         min_confidence = float(
                             await SettingsRepository.get_value(
@@ -2576,6 +2747,8 @@ class OrchestratorAgent(BaseAgent):
                         except Exception:
                             logger.warning("Failed to store routing decision", exc_info=True)
             return classifications, False
+        except _RecoverableClassificationError:
+            raise
         except Exception:
             logger.exception("Intent classification failed, falling back to %s", _FALLBACK_AGENT)
             return [(_FALLBACK_AGENT, user_text, 0.0)], False

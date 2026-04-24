@@ -602,6 +602,7 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         ),
         patch("app.ha_client.websocket.HAWebSocketClient"),
         patch("app.agents.alarm_monitor.AlarmMonitor"),
+        patch("app.agents.timer_scheduler.TimerScheduler"),
     ]
 
     with contextlib.ExitStack() as stack:
@@ -627,6 +628,7 @@ async def test_initialize_setup_dependent_services_is_idempotent():
             _agent_cfg,
             mock_ws_cls,
             mock_alarm_cls,
+            mock_timer_cls,
         ) = mocks
 
         mock_home_ctx.refresh = AsyncMock()
@@ -658,6 +660,9 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         alarm_inst = MagicMock()
         alarm_inst.start = AsyncMock()
         mock_alarm_cls.return_value = alarm_inst
+        timer_inst = MagicMock()
+        timer_inst.start = AsyncMock()
+        mock_timer_cls.return_value = timer_inst
 
         await _initialize_setup_dependent_services(app, source="test-1")
         first_ha_calls = fake_ha_client.initialize.await_count
@@ -671,6 +676,8 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         assert fake_ha_client.reload.await_count >= 1
         # CacheManager must only be constructed once.
         assert mock_cache_cls.call_count == first_cache_cls_calls
+        assert "filler-agent" not in fake_registry.registered
+        assert getattr(app.state, "orchestrator_gateway", None) is not None
 
 
 # ===================================================================

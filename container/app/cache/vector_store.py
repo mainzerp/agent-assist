@@ -78,6 +78,21 @@ class VectorStore:
                 )
             logger.info("VectorStore reinitialized successfully")
 
+    def close(self) -> None:
+        """Close the underlying Chroma client and clear cached state."""
+        client = self._client
+        self._collections.clear()
+        self._embedding_fn = None
+        self._client = None
+        if client is None:
+            return
+        close = getattr(client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                logger.warning("VectorStore client close failed", exc_info=True)
+
     def get_collection(self, name: str) -> Collection:
         """Return a named collection. Must call initialize() first."""
         return self._collections[name]
@@ -299,3 +314,14 @@ async def get_vector_store() -> VectorStore:
         _store = VectorStore()
         await _store.initialize()
     return _store
+
+
+def close_vector_store() -> None:
+    """Close and reset the singleton VectorStore, if one exists."""
+    global _store
+    if _store is None:
+        return
+    try:
+        _store.close()
+    finally:
+        _store = None

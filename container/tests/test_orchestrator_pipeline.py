@@ -1,5 +1,5 @@
 """Tests for the unified orchestrator pipeline introduced by P1-1 and the
-P2-1 streaming-mediation fix.
+terminal-frame streaming mediation contract.
 
 P1-1 keeps the existing public ``handle_task`` / ``handle_task_stream`` API
 but routes both methods through ``_run_pipeline`` which selects between the
@@ -7,9 +7,8 @@ non-streaming and streaming impls. The legacy direct-call path can be
 restored at runtime via ``ORCHESTRATOR_LEGACY_PIPELINE=1`` for emergency
 rollback.
 
-P2-1 stops the streaming mediation branch from suppressing sub-agent
-tokens when ``personality.prompt`` is set, so the user actually sees the
-streamed tokens.
+The current canonical flow buffers non-filler sub-agent tokens until the
+terminal frame so the client receives only the final mediated speech.
 """
 
 from __future__ import annotations
@@ -181,7 +180,7 @@ async def test_legacy_pipeline_flag_routes_directly_to_impls(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# P2-1: Streaming mediation forwards tokens to the client
+# Streaming mediation buffers tokens until the terminal frame
 # ---------------------------------------------------------------------------
 
 
@@ -189,10 +188,9 @@ async def test_legacy_pipeline_flag_routes_directly_to_impls(monkeypatch):
 @patch("app.agents.orchestrator.SettingsRepository")
 @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
 @patch("app.llm.client.complete", new_callable=AsyncMock)
-async def test_streaming_mediation_forwards_tokens(mock_complete, mock_track, mock_settings):
-    """When personality.prompt is set, sub-agent tokens must reach the
-    client. Previously they were swallowed (FLOW-MED-8); P2-1 forwards
-    them while still appending mediated_speech on the terminal chunk."""
+async def test_streaming_mediation_buffers_tokens_until_terminal_frame(mock_complete, mock_track, mock_settings):
+    """When personality.prompt is set, non-filler sub-agent tokens stay buffered
+    until the terminal frame, which carries the mediated speech."""
     orch, dispatcher = _make_orchestrator()
     mock_complete.side_effect = [
         "light-agent (95%): Turn on light",  # classify
@@ -217,10 +215,7 @@ async def test_streaming_mediation_forwards_tokens(mock_complete, mock_track, mo
     chunks = [c async for c in orch.handle_task_stream(task)]
 
     raw_tokens = [c for c in chunks if not c["done"] and not c.get("is_filler") and c.get("token")]
-    assert raw_tokens, "raw sub-agent tokens must be forwarded under mediation (P2-1)"
-    joined = "".join(c["token"] for c in raw_tokens)
-    assert "Light" in joined
-    assert "on" in joined
+    assert raw_tokens == []
 
     final = [c for c in chunks if c["done"]]
     assert len(final) == 1

@@ -6,6 +6,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from app.a2a.orchestrator_gateway import OrchestratorGateway
 from app.agents.automation import AutomationAgent
 from app.agents.climate import ClimateAgent
 from app.agents.custom_loader import CustomAgentLoader
@@ -394,6 +395,8 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
     mcp_tool_manager = getattr(app.state, "mcp_tool_manager", None)
     if registry is None or dispatcher is None or mcp_registry is None or mcp_tool_manager is None:
         raise RuntimeError("Core runtime state is not ready for setup initialization")
+    if getattr(app.state, "orchestrator_gateway", None) is None:
+        app.state.orchestrator_gateway = OrchestratorGateway(dispatcher)
 
     logger.info("Setup init (%s): initializing setup-dependent services", source)
 
@@ -537,8 +540,6 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
     music_agent = MusicAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=entity_matcher)
     await registry.register(music_agent)
 
-    await registry.register(filler_agent)
-
     phase2_agents = [
         "timer-agent",
         "climate-agent",
@@ -567,7 +568,6 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
 
     ws_client = getattr(app.state, "ws_client", None)
     if ws_client is None:
-        from app.agents.timer_executor import _timer_pool, on_timer_finished
         from app.ha_client.websocket import HAWebSocketClient
 
         ws_client = HAWebSocketClient()
@@ -609,25 +609,7 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
                 )
                 entity_update_queue.put_nowait(entry)
 
-        async def _on_timer_finished_event(event: dict) -> None:
-            data = event.get("data", {})
-            entity_id = data.get("entity_id", "")
-            if entity_id:
-                await on_timer_finished(
-                    entity_id,
-                    ha_client,
-                    entity_index=getattr(app.state, "entity_index", None),
-                )
-
-        async def _on_timer_cancelled_event(event: dict) -> None:
-            data = event.get("data", {})
-            entity_id = data.get("entity_id", "")
-            if entity_id:
-                _timer_pool.release(entity_id)
-
         ws_client.on_event("state_changed", on_state_changed)
-        ws_client.on_event("timer.finished", _on_timer_finished_event)
-        ws_client.on_event("timer.cancelled", _on_timer_cancelled_event)
 
         app.state.ws_client = ws_client
         app.state.ws_task = asyncio.create_task(ws_client.run())
@@ -644,9 +626,21 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
     if alarm_monitor is None:
         from app.agents.alarm_monitor import AlarmMonitor
 
-        alarm_monitor = AlarmMonitor(ha_client)
+        alarm_monitor = AlarmMonitor(entity_index, app.state.orchestrator_gateway)
         await alarm_monitor.start()
         app.state.alarm_monitor = alarm_monitor
+
+    timer_scheduler = getattr(app.state, "timer_scheduler", None)
+    if timer_scheduler is None:
+        from app.agents.timer_scheduler import TimerScheduler
+        from app.db.repository import ScheduledTimersRepository
+
+        timer_scheduler = TimerScheduler(
+            ScheduledTimersRepository,
+            orchestrator_gateway=app.state.orchestrator_gateway,
+        )
+        await timer_scheduler.start()
+        app.state.timer_scheduler = timer_scheduler
 
     logger.info("Setup init (%s): completed", source)
 

@@ -1,12 +1,76 @@
 # Version
 
-**Current Version:** 0.25.2
+**Current Version:** 0.26.1
 
-## Recent Changes (since 0.25.2)
+## Recent Changes (since 0.26.1)
 
 (none yet)
 
 ## Version History
+
+### 0.26.1 (PATCH) -- Canonical flow hardening for orchestrator-only routing and background turns
+
+Fixes the runtime to match the canonical flow invariants around orchestrator
+ownership, background dispatch, and terminal-frame streaming mediation.
+
+Changes:
+- Added `container/app/a2a/orchestrator_gateway.py` and routed plugins,
+  timers, and alarms through an orchestrator-only gateway instead of direct
+  registry or HA-facing shortcuts.
+- Extended `container/app/models/agent.py` with structured background-turn
+  metadata and taught `container/app/agents/orchestrator.py` to handle
+  background events without routing-cache reuse or filler output.
+- Hardened orchestrator classification so internal-only agents are not
+  routable, singleton `send-agent` results are repaired or rejected, and
+  invalid cached singleton `send-agent` routes are ignored.
+- Buffered non-filler streamed agent tokens until the terminal done frame,
+  leaving `mediated_speech` as the authoritative final response payload.
+- Moved alarm and timer background execution under orchestrator-owned helpers,
+  with `AlarmMonitor` reading indexed `input_datetime` runtime fields and
+  `TimerScheduler` dispatching structured background events instead of direct
+  HA work.
+- Tightened `PluginContext` so plugins receive only a read-only agent catalog
+  plus the orchestrator gateway, not the raw `AgentRegistry`.
+- Updated and added focused tests covering plugin context changes,
+  background-turn handling, send-agent routing repair/rejection, terminal-only
+  mediation output, entity-index alarm fields, `AlarmMonitor`, and
+  `TimerScheduler`.
+
+### 0.26.0 (MINOR) -- AgentHub-managed timer scheduler; HA timer.* helper pool removed
+
+Replaces the prior HA `timer.*` helper-pool model with an AgentHub-owned
+``TimerScheduler`` that persists pending timers in a new
+``scheduled_timers`` SQLite table and fires them via in-process
+``asyncio`` tasks. Plain unnamed relative timers can still be delegated
+to HA's native Assist engine via ``delegate_native_plain_timer`` -- this
+is now an LLM-only decision driven by an injected execution-context
+hint; there is no pre-LLM heuristic and no helper pool.
+
+Removed:
+- ``app.agents.timer_executor._TimerPool``, ``_find_idle_timer``,
+  ``on_timer_finished``, ``TimerMetadata``, expired-timer deque
+- ``app.agents.delayed_tasks`` module entirely
+- HA WebSocket subscriptions for ``timer.finished`` / ``timer.cancelled``
+- ``timer-agent`` default visibility seed for HA ``timer.*`` domain
+- ``no idle timer entities are available for pool allocation`` failure path
+
+Added:
+- ``container/app/agents/timer_scheduler.py`` (TimerScheduler)
+- ``container/app/db/repository.py`` ScheduledTimersRepository
+- ``scheduled_timers`` table + indexes (DB migration 19)
+- ``app.state.timer_scheduler`` lifecycle (init in runtime_setup, stop
+  in main.lifespan)
+- Eligibility hint injection: every timer-agent LLM call now carries a
+  ``(Execution context: native_plain_timer_eligible=true|false)``
+  trailing line on the user content so the model can decide.
+
+Prompt rewrite (``app/prompts/timer.txt``):
+- New "Internal AgentHub timers" section explaining no helper pool
+- Explicit "Native delegation policy" block with literal
+  ``PLAIN, UNNAMED, RELATIVE``
+- 9 mandatory few-shots covering DE/EN x eligible/not-eligible
+- 3 negative few-shots showing eligible=true must NOT delegate when
+  request is not plain/unnamed/relative
 
 ### 0.25.2 (PATCH) -- Timer-agent owns native plain-timer delegation
 

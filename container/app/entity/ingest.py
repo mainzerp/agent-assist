@@ -122,6 +122,9 @@ def state_to_entity_index_entry(
         aliases=aliases,
         device_name=device_name,
         id_tokens=_tokenize_entity_id(resolved_entity_id),
+        state=state.get("state"),
+        has_date=bool(attrs.get("has_date", False)),
+        has_time=bool(attrs.get("has_time", False)),
     )
 
 

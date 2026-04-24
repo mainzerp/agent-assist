@@ -6,7 +6,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-
 # Native plain-timer bridge directive.
 NATIVE_PLAIN_TIMER_DIRECTIVE = "delegate_native_plain_timer"
 

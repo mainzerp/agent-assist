@@ -315,6 +315,27 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
         )
     """)
 
+    # 0.26.0: AgentHub-managed timer scheduler. Persists every non-native
+    # timer (notification, delayed_action, sleep, snooze, internal plain)
+    # so they survive container restarts. The HA timer.* helper-pool
+    # concept was removed in 0.26.0; AgentHub owns timer state directly.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS scheduled_timers (
+            id TEXT PRIMARY KEY,
+            logical_name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            fires_at INTEGER NOT NULL,
+            duration_seconds INTEGER NOT NULL,
+            origin_device_id TEXT,
+            origin_area TEXT,
+            payload_json TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'pending',
+            fired_at INTEGER,
+            cancelled_at INTEGER
+        )
+    """)
+
 
 async def _create_indexes(db: aiosqlite.Connection) -> None:
     """Create indexes for query performance."""
@@ -334,6 +355,14 @@ async def _create_indexes(db: aiosqlite.Connection) -> None:
     await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_created_at ON trace_summary(created_at)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_routing_agent ON trace_summary(routing_agent)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_label ON trace_summary(label)")
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_timers_state_fires_at "
+        "ON scheduled_timers(state, fires_at)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_timers_logical_name "
+        "ON scheduled_timers(logical_name)"
+    )
 
 
 async def _seed_defaults(db: aiosqlite.Connection) -> None:
@@ -546,7 +575,6 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("media-agent", "domain_include", "media_player"),
         ("scene-agent", "domain_include", "scene"),
         ("automation-agent", "domain_include", "automation"),
-        ("timer-agent", "domain_include", "timer"),
         ("timer-agent", "domain_include", "input_datetime"),
         ("timer-agent", "domain_include", "persistent_notification"),
         ("timer-agent", "domain_include", "media_player"),
@@ -876,3 +904,38 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             """
         )
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (18)")
+
+    if current_version < 19:
+        # Migration 19 (0.26.0): create the AgentHub-managed timer
+        # scheduler table and remove the obsolete timer-agent visibility
+        # seed for the HA timer.* domain. AgentHub no longer touches HA
+        # timer.* helpers; it owns timer state internally.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_timers (
+                id TEXT PRIMARY KEY,
+                logical_name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                fires_at INTEGER NOT NULL,
+                duration_seconds INTEGER NOT NULL,
+                origin_device_id TEXT,
+                origin_area TEXT,
+                payload_json TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'pending',
+                fired_at INTEGER,
+                cancelled_at INTEGER
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scheduled_timers_state_fires_at "
+            "ON scheduled_timers(state, fires_at)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scheduled_timers_logical_name "
+            "ON scheduled_timers(logical_name)"
+        )
+        await db.execute(
+            "DELETE FROM entity_visibility_rules "
+            "WHERE agent_id = 'timer-agent' AND rule_type = 'domain_include' AND rule_value = 'timer'"
+        )
+        await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (19)")

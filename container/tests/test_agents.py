@@ -49,6 +49,7 @@ from app.models.agent import (  # noqa: E402
     AgentCard,
     AgentErrorCode,
     AgentTask,
+    BackgroundEvent,
     TaskContext,
 )
 from app.models.conversation import StreamToken  # noqa: E402
@@ -877,103 +878,119 @@ class TestTimerAgent:
 
 
 class TestTimerExecutor:
-    """Unit tests for timer_executor functions."""
+    """Unit tests for timer_executor functions (scheduler-backed in 0.26.0)."""
 
     async def test_query_timer_active(self):
-        """query_timer returns remaining time for active timer."""
-        ha = AsyncMock()
-        ha.get_state = AsyncMock(
-            return_value={"state": "active", "attributes": {"friendly_name": "Kitchen Timer", "remaining": "0:03:30"}}
-        )
-        matcher = AsyncMock()
-        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="timer.kitchen", friendly_name="Kitchen Timer")])
+        """query_timer returns remaining time for an active scheduler timer."""
+        import time as _time
+        from unittest.mock import patch as _patch
 
-        result = await execute_timer_action(
-            {"action": "query_timer", "entity": "kitchen timer"},
-            ha,
-            None,
-            matcher,
-            agent_id="timer-agent",
+        scheduler = MagicMock()
+        scheduler.list = AsyncMock(
+            return_value=[
+                {
+                    "id": "abc",
+                    "logical_name": "kitchen timer",
+                    "fires_at": int(_time.time()) + 210,
+                    "duration_seconds": 300,
+                }
+            ]
         )
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "query_timer", "entity": "kitchen timer"},
+                AsyncMock(),
+                None,
+                AsyncMock(),
+                agent_id="timer-agent",
+            )
         assert result["success"]
-        assert "3 minutes" in result["speech"]
+        assert "minute" in result["speech"]
 
     async def test_query_timer_idle(self):
-        """query_timer returns idle status."""
-        ha = AsyncMock()
-        ha.get_state = AsyncMock(return_value={"state": "idle", "attributes": {"friendly_name": "Kitchen Timer"}})
-        matcher = AsyncMock()
-        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="timer.kitchen", friendly_name="Kitchen Timer")])
+        """query_timer reports nothing running when scheduler list is empty."""
+        from unittest.mock import patch as _patch
 
-        result = await execute_timer_action(
-            {"action": "query_timer", "entity": "kitchen timer"},
-            ha,
-            None,
-            matcher,
-            agent_id="timer-agent",
-        )
-        assert result["success"]
-        assert "idle" in result["speech"]
+        scheduler = MagicMock()
+        scheduler.list = AsyncMock(return_value=[])
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "query_timer", "entity": "kitchen timer"},
+                AsyncMock(),
+                None,
+                AsyncMock(),
+                agent_id="timer-agent",
+            )
+        assert not result["success"]
+        assert "no timer" in result["speech"].lower()
 
     async def test_list_timers_empty(self):
-        """list_timers returns message when no timers exist."""
-        ha = AsyncMock()
-        ha.get_states = AsyncMock(return_value=[])
+        """list_timers returns 'No timers' when scheduler has none pending."""
+        from unittest.mock import patch as _patch
 
-        result = await execute_timer_action(
-            {"action": "list_timers", "entity": ""},
-            ha,
-            None,
-            None,
-            agent_id="timer-agent",
-        )
+        scheduler = MagicMock()
+        scheduler.list = AsyncMock(return_value=[])
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "list_timers", "entity": ""},
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+            )
         assert result["success"]
         assert "No timer" in result["speech"]
 
     async def test_list_timers_with_active(self):
-        """list_timers returns active timer info."""
-        ha = AsyncMock()
-        ha.get_states = AsyncMock(
+        """list_timers reports active scheduler timers."""
+        import time as _time
+        from unittest.mock import patch as _patch
+
+        scheduler = MagicMock()
+        scheduler.list = AsyncMock(
             return_value=[
                 {
-                    "entity_id": "timer.kitchen",
-                    "state": "active",
-                    "attributes": {"friendly_name": "Kitchen Timer", "remaining": "0:05:00"},
-                },
-                {"entity_id": "timer.sleep", "state": "idle", "attributes": {"friendly_name": "Sleep Timer"}},
+                    "id": "abc",
+                    "logical_name": "kitchen timer",
+                    "fires_at": int(_time.time()) + 300,
+                    "duration_seconds": 300,
+                }
             ]
         )
-
-        result = await execute_timer_action(
-            {"action": "list_timers", "entity": ""},
-            ha,
-            None,
-            None,
-            agent_id="timer-agent",
-        )
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "list_timers", "entity": ""},
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+            )
         assert result["success"]
-        assert "Kitchen Timer" in result["speech"]
+        assert "kitchen timer" in result["speech"]
 
     async def test_snooze_timer(self):
-        """snooze_timer cancels and restarts."""
-        from tests.helpers import attach_expect_state_shim
+        """snooze_timer cancels existing then schedules a snooze on the scheduler."""
+        from unittest.mock import patch as _patch
 
-        ha = AsyncMock()
-        ha.call_service = AsyncMock(return_value={})
-        ha.get_state = AsyncMock(return_value={"state": "active"})
-        attach_expect_state_shim(ha)
-        matcher = AsyncMock()
-        matcher.match = AsyncMock(return_value=[MagicMock(entity_id="timer.kitchen", friendly_name="Kitchen Timer")])
-
-        result = await execute_timer_action(
-            {"action": "snooze_timer", "entity": "kitchen timer", "parameters": {"duration": "00:05:00"}},
-            ha,
-            None,
-            matcher,
-            agent_id="timer-agent",
-        )
+        scheduler = MagicMock()
+        scheduler.cancel = AsyncMock(return_value=1)
+        scheduler.schedule = AsyncMock(return_value="new-id")
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {
+                    "action": "snooze_timer",
+                    "entity": "kitchen timer",
+                    "parameters": {"duration": "00:05:00"},
+                },
+                AsyncMock(),
+                None,
+                AsyncMock(),
+                agent_id="timer-agent",
+            )
         assert result["success"]
-        assert ha.call_service.call_count == 2  # cancel + start
+        scheduler.cancel.assert_awaited_once()
+        scheduler.schedule.assert_awaited_once()
+        assert scheduler.schedule.await_args.kwargs["kind"] == "snooze"
 
     async def test_unknown_action(self):
         """Unknown action returns error."""
@@ -986,6 +1003,71 @@ class TestTimerExecutor:
         )
         assert not result["success"]
         assert "Unknown" in result["speech"]
+
+
+class TestTimerPromptSnapshot:
+    """Phase D + E.4: lock the timer.txt few-shots and policy block."""
+
+    def _read_prompt(self) -> str:
+        from pathlib import Path
+
+        return (
+            Path(__file__).resolve().parents[1]
+            / "app"
+            / "prompts"
+            / "timer.txt"
+        ).read_text(encoding="utf-8")
+
+    def test_prompt_no_helper_pool_framing(self):
+        prompt = self._read_prompt()
+        for forbidden in (
+            'entity: "Timer"',
+            "no specific entity matches",
+            "available idle timer",
+            "helper pool",
+        ):
+            assert forbidden not in prompt
+
+    def test_prompt_contains_required_few_shots(self):
+        prompt = self._read_prompt()
+        for needle in (
+            "Stelle einen Timer auf 3 Minuten.",
+            "Set a timer for 5 minutes.",
+            "Stoppe den Timer.",
+            "Cancel the timer.",
+            "3-Minuten-Timer",
+            "5-minute timer",
+            "and remind me to check the oven",
+            "und stoppe die Musik",
+            "Stelle den Küchentimer auf 5 Minuten.",
+            "native_plain_timer_eligible=true",
+            "native_plain_timer_eligible=false",
+        ):
+            assert needle in prompt, f"missing required few-shot substring: {needle}"
+        assert prompt.count("delegate_native_plain_timer") >= 3
+
+    def test_prompt_contains_native_policy_block(self):
+        prompt = self._read_prompt()
+        assert "PLAIN, UNNAMED, RELATIVE" in prompt
+
+    async def test_non_timer_prompt_does_not_inject_eligibility(self):
+        from app.models.agent import TaskContext
+        from tests.helpers import make_agent_task
+
+        agent = LightAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        agent._call_llm = AsyncMock(
+            return_value='```json\n{"action": "turn_on", "entity": "kitchen", "parameters": {}}\n```'
+        )
+        ctx = TaskContext(native_plain_timer_eligible=True, language="en")
+        task = make_agent_task(
+            description="turn on the kitchen light",
+            user_text="turn on the kitchen light",
+            context=ctx,
+        )
+        await agent.handle_task(task)
+        messages = agent._call_llm.await_args.args[0]
+        last_user = [m for m in messages if m["role"] == "user"][-1]
+        assert "native_plain_timer_eligible" not in last_user["content"]
 
 
 class TestSceneAgent:
@@ -1652,6 +1734,43 @@ class TestOrchestratorAgent:
         orch._finalize_single_agent_response.assert_not_awaited()
         orch._schedule_ha_voice_followup_if_requested.assert_not_called()
 
+    @patch("app.agents.background_actions.handle_background_event", new_callable=AsyncMock)
+    async def test_background_turn_bypasses_cache_and_returns_directly(self, mock_background):
+        mock_background.return_value = {"speech": "", "action_executed": None}
+        orch, *_ = self._make_orchestrator()
+        orch._cache_manager.process = AsyncMock(side_effect=AssertionError("background turns must skip cache lookup"))
+        task = _make_task(
+            "background timer notification",
+            context=TaskContext(
+                source="background",
+                background_event=BackgroundEvent(event_type="timer_notification", payload={"timer_name": "Tea"}),
+            ),
+        )
+        result = await orch.handle_task(task)
+        assert result["routed_to"] == "orchestrator"
+        assert result["speech"] == ""
+        mock_background.assert_awaited_once()
+
+    @patch("app.agents.background_actions.handle_background_event", new_callable=AsyncMock)
+    async def test_background_stream_turn_skips_filler_and_returns_terminal_frame(self, mock_background):
+        mock_background.return_value = {"speech": ""}
+        orch, *_ = self._make_orchestrator()
+        orch._cache_manager.process = AsyncMock(side_effect=AssertionError("background turns must skip cache lookup"))
+        orch._invoke_filler_agent = AsyncMock(side_effect=AssertionError("background turns must skip filler"))
+        task = _make_task(
+            "background alarm notification",
+            context=TaskContext(
+                source="background",
+                background_event=BackgroundEvent(event_type="alarm_notification", payload={"alarm_name": "Morning"}),
+            ),
+        )
+        chunks = [c async for c in orch.handle_task_stream(task)]
+        assert len(chunks) == 1
+        assert chunks[0]["done"] is True
+        assert chunks[0]["token"] == ""
+        assert chunks[0]["mediated_speech"] == ""
+        mock_background.assert_awaited_once()
+
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
@@ -1731,6 +1850,32 @@ class TestOrchestratorAgent:
         assert classifications[0][0] == "light-agent"
         assert classifications[0][2] == 1.0
         assert routing_cached is True
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_classify_ignores_cached_singleton_send_agent_route(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, *_ = self._make_orchestrator()
+        orch._registry.list_agents = AsyncMock(
+            return_value=[
+                AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"]),
+                AgentCard(agent_id="send-agent", name="Send Agent", description="", skills=["send"]),
+            ]
+        )
+        orch._cache_manager.process = AsyncMock(
+            return_value=MagicMock(
+                hit_type="routing_hit",
+                agent_id="send-agent",
+                similarity=0.97,
+                condensed_task="send to Laura",
+            )
+        )
+        mock_complete.return_value = "general-agent (95%): summarize today\nsend-agent (94%): send to Laura"
+        classifications, routing_cached = await orch._classify("send today summary to Laura")
+        assert routing_cached is False
+        assert [agent_id for agent_id, _, _ in classifications] == ["general-agent", "send-agent"]
+        mock_complete.assert_awaited_once()
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -2153,6 +2298,63 @@ class TestOrchestratorAgent:
         classifications, _routing_cached = await orch._classify("turn on light")
         assert len(classifications) == 1
         orch._cache_manager.store_routing.assert_called_once()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_classify_repairs_singleton_send_agent_and_skips_cache_store(self, mock_complete, mock_track, mock_settings):
+        orch, *_ = self._make_orchestrator()
+        orch._registry.list_agents = AsyncMock(
+            return_value=[
+                AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"]),
+                AgentCard(agent_id="send-agent", name="Send Agent", description="", skills=["send"]),
+            ]
+        )
+        mock_complete.side_effect = [
+            "send-agent (99%): send to Laura Handy",
+            "general-agent (96%): summarize today\nsend-agent (95%): send to Laura Handy",
+        ]
+        classifications, routing_cached = await orch._classify("summarize today and send to Laura Handy")
+        assert routing_cached is False
+        assert [agent_id for agent_id, _, _ in classifications] == ["general-agent", "send-agent"]
+        orch._cache_manager.store_routing.assert_not_called()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_rejects_unrepairable_singleton_send_agent(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, *_ = self._make_orchestrator()
+        orch._registry.list_agents = AsyncMock(
+            return_value=[
+                AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"]),
+                AgentCard(agent_id="send-agent", name="Send Agent", description="", skills=["send"]),
+            ]
+        )
+        mock_complete.side_effect = [
+            "send-agent (99%): send to Laura Handy",
+            "send-agent (98%): send to Laura Handy",
+        ]
+        task = _make_task("send to Laura Handy")
+        result = await orch.handle_task(task)
+        assert result["routed_to"] == "orchestrator"
+        assert result["error"]["code"] == "parse_error"
+
+    async def test_build_agent_descriptions_excludes_internal_only_agents(self):
+        orch, *_ = self._make_orchestrator()
+        orch._registry.list_agents = AsyncMock(
+            return_value=[
+                AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"]),
+                AgentCard(agent_id="filler-agent", name="Filler Agent", description="", skills=["filler"]),
+                AgentCard(agent_id="rewrite-agent", name="Rewrite Agent", description="", skills=["rewrite"]),
+                AgentCard(agent_id="send-agent", name="Send Agent", description="", skills=["send"]),
+            ]
+        )
+        descriptions = await orch._build_agent_descriptions()
+        assert "filler-agent" not in descriptions
+        assert "rewrite-agent" not in descriptions
+        assert "general-agent" in descriptions
+        assert "send-agent" in descriptions
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -3167,9 +3369,12 @@ class TestOrchestratorFiller:
         # No filler token should be present
         filler_chunks = [c for c in chunks if c.get("is_filler")]
         assert len(filler_chunks) == 0
-        # Real tokens should be present
+        # Non-filler tokens are buffered until the terminal frame.
         real_tokens = [c for c in chunks if c.get("token") and not c.get("is_filler") and not c.get("done")]
-        assert len(real_tokens) >= 1
+        assert real_tokens == []
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        assert done_chunks[0].get("mediated_speech") == "Here is the answer"
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -3303,9 +3508,12 @@ class TestOrchestratorFiller:
         # No filler since generation failed
         filler_chunks = [c for c in chunks if c.get("is_filler")]
         assert len(filler_chunks) == 0
-        # But real tokens should still be present
+        # Non-filler tokens are buffered until the terminal frame.
         real_tokens = [c for c in chunks if c.get("token") == "Real answer"]
-        assert len(real_tokens) == 1
+        assert real_tokens == []
+        done_chunks = [c for c in chunks if c.get("done")]
+        assert len(done_chunks) == 1
+        assert done_chunks[0].get("mediated_speech") == "Real answer"
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -4648,14 +4856,9 @@ class TestStreamMediatedSpeech:
     async def test_stream_yields_mediated_speech_when_changed(self, mock_complete, mock_track, mock_settings):
         """Final done chunk includes mediated_speech when mediation changes the text.
 
-        P2-1 (0.18.x): when personality mediation is on, the
-        streaming pipeline now FORWARDS sub-agent tokens to the
-        client so the streaming experience is preserved. The
-        terminal ``done`` chunk additionally carries
-        ``mediated_speech`` so clients that prefer the mediated text
-        can replace the streamed tokens at end-of-stream. Previous
-        behavior (FLOW-MED-8) suppressed all non-filler interim
-        tokens; this test now asserts the new pass-through.
+        Canonical flow now buffers all non-filler sub-agent tokens
+        until the terminal frame, so the client should only see the
+        final mediated payload.
         """
         orch, dispatcher, _ = self._make_orchestrator()
         # First call: classify. Second call: mediation.
@@ -4682,12 +4885,8 @@ class TestStreamMediatedSpeech:
         chunks = [c async for c in orch.handle_task_stream(task)]
 
         intermediate = [c for c in chunks if not c["done"]]
-        # P2-1: at least one non-filler raw token chunk must be
-        # forwarded to the client when mediation is enabled.
         non_filler_tokens = [c for c in intermediate if not c.get("is_filler") and c.get("token")]
-        assert non_filler_tokens, "raw sub-agent tokens must be forwarded when mediation is enabled"
-        joined = "".join(c["token"] for c in non_filler_tokens)
-        assert "Light" in joined and "is on" in joined
+        assert non_filler_tokens == []
 
         final = [c for c in chunks if c["done"]]
         assert len(final) == 1

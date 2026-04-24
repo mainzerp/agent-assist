@@ -8,11 +8,16 @@ llm:
   classify: |
     send-agent (95%): Bob Phone|||CONTENT|||Hello.
   agents:
+    orchestrator: |
+      general-agent (95%): draft the hello message
+      send-agent (95%): Bob Phone|||CONTENT|||Hello.
+    general-agent: |
+      Hello.
     send-agent: |
       Hello.
 request:
   text: "send hello to Bob phone"
 expected:
-  routed_agent: send-agent
+  routed_agent: general-agent, send-agent
   service_calls: []
   speech_contains: ["mapping"]

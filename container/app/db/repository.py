@@ -1475,3 +1475,117 @@ class SendDeviceMappingRepository:
             )
             await db.commit()
             return cursor.rowcount > 0
+
+class ScheduledTimersRepository:
+    """CRUD for the AgentHub-managed timer scheduler.
+
+    Backs ``app.agents.timer_scheduler.TimerScheduler``. Rows survive
+    container restart so pending timers are rehydrated on startup.
+    """
+
+    @staticmethod
+    async def insert(
+        *,
+        id: str,
+        logical_name: str,
+        kind: str,
+        created_at: int,
+        fires_at: int,
+        duration_seconds: int,
+        origin_device_id: str | None,
+        origin_area: str | None,
+        payload_json: str,
+    ) -> None:
+        async with get_db_write() as db:
+            await db.execute(
+                "INSERT INTO scheduled_timers "
+                "(id, logical_name, kind, created_at, fires_at, duration_seconds, "
+                "origin_device_id, origin_area, payload_json, state) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
+                (
+                    id,
+                    logical_name,
+                    kind,
+                    int(created_at),
+                    int(fires_at),
+                    int(duration_seconds),
+                    origin_device_id,
+                    origin_area,
+                    payload_json,
+                ),
+            )
+            await db.commit()
+
+    @staticmethod
+    async def list_pending() -> list[dict]:
+        async with get_db_read() as db:
+            cursor = await db.execute(
+                "SELECT * FROM scheduled_timers WHERE state = 'pending' ORDER BY fires_at ASC"
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    @staticmethod
+    async def list_pending_for(
+        *, logical_name: str | None = None, area: str | None = None
+    ) -> list[dict]:
+        clauses = ["state = 'pending'"]
+        params: list[Any] = []
+        if logical_name is not None:
+            clauses.append("LOWER(logical_name) = LOWER(?)")
+            params.append(logical_name)
+        if area is not None:
+            clauses.append("origin_area = ?")
+            params.append(area)
+        sql = "SELECT * FROM scheduled_timers WHERE " + " AND ".join(clauses) + " ORDER BY fires_at ASC"
+        async with get_db_read() as db:
+            cursor = await db.execute(sql, tuple(params))
+            return [dict(row) for row in await cursor.fetchall()]
+
+    @staticmethod
+    async def get(id_: str) -> dict | None:
+        async with get_db_read() as db:
+            cursor = await db.execute("SELECT * FROM scheduled_timers WHERE id = ?", (id_,))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    async def mark_fired(id_: str, fired_at: int) -> None:
+        async with get_db_write() as db:
+            await db.execute(
+                "UPDATE scheduled_timers SET state = 'fired', fired_at = ? WHERE id = ?",
+                (int(fired_at), id_),
+            )
+            await db.commit()
+
+    @staticmethod
+    async def mark_cancelled(id_: str, cancelled_at: int) -> None:
+        async with get_db_write() as db:
+            await db.execute(
+                "UPDATE scheduled_timers SET state = 'cancelled', cancelled_at = ? "
+                "WHERE id = ? AND state = 'pending'",
+                (int(cancelled_at), id_),
+            )
+            await db.commit()
+
+    @staticmethod
+    async def cancel_by_logical_name(logical_name: str, cancelled_at: int) -> int:
+        async with get_db_write() as db:
+            cursor = await db.execute(
+                "UPDATE scheduled_timers SET state = 'cancelled', cancelled_at = ? "
+                "WHERE state = 'pending' AND LOWER(logical_name) = LOWER(?)",
+                (int(cancelled_at), logical_name),
+            )
+            await db.commit()
+            return cursor.rowcount
+
+    @staticmethod
+    async def purge_terminal_older_than(cutoff_epoch: int) -> int:
+        async with get_db_write() as db:
+            cursor = await db.execute(
+                "DELETE FROM scheduled_timers "
+                "WHERE state IN ('fired', 'cancelled', 'expired') "
+                "AND COALESCE(fired_at, cancelled_at, created_at) < ?",
+                (int(cutoff_epoch),),
+            )
+            await db.commit()
+            return cursor.rowcount

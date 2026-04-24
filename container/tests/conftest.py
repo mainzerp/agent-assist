@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -128,6 +129,24 @@ def _clear_settings_cache():
     SettingsRepository._cache_invalidate()
     yield
     SettingsRepository._cache_invalidate()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _close_vector_store_on_session_end():
+    """Close the Chroma singleton explicitly so pytest does not hang on shutdown."""
+    yield
+    try:
+        from app.cache.vector_store import close_vector_store
+
+        close_vector_store()
+    except Exception:
+        pass
+    try:
+        from app.db.schema import close_db
+
+        asyncio.run(close_db())
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
