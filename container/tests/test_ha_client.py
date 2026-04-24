@@ -405,7 +405,11 @@ class TestHAConfigFlow:
         mock_validate.assert_awaited_once_with("http://ha.local", "stored-token")
         flow.hass.config_entries.async_update_entry.assert_called_once_with(
             entry,
-            data={"url": "http://ha.local", "api_key": "stored-token"},
+            data={
+                "url": "http://ha.local",
+                "api_key": "stored-token",
+                "native_plain_timers": False,
+            },
         )
 
     async def test_options_flow_schema_uses_blank_password_field(self):

@@ -12,7 +12,14 @@ from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResu
 from homeassistant.const import CONF_URL, CONF_API_KEY
 from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType
 
-from .const import DOMAIN, DEFAULT_CONTAINER_URL, HEALTH_PATH, INTEGRATION_TITLE
+from .const import (
+    DOMAIN,
+    DEFAULT_CONTAINER_URL,
+    HEALTH_PATH,
+    INTEGRATION_TITLE,
+    CONF_NATIVE_PLAIN_TIMERS,
+    DEFAULT_NATIVE_PLAIN_TIMERS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +46,10 @@ def _build_options_schema(current: dict[str, Any]) -> vol.Schema:
         {
             vol.Required(CONF_URL, default=current.get(CONF_URL, DEFAULT_CONTAINER_URL)): str,
             vol.Optional(CONF_API_KEY, default=""): _password_selector(),
+            vol.Optional(
+                CONF_NATIVE_PLAIN_TIMERS,
+                default=current.get(CONF_NATIVE_PLAIN_TIMERS, DEFAULT_NATIVE_PLAIN_TIMERS),
+            ): bool,
         }
     )
 
@@ -124,6 +135,9 @@ class HaAgentHubOptionsFlow(OptionsFlow):
             url = _normalize_url(user_input[CONF_URL])
             new_api_key = (user_input.get(CONF_API_KEY) or "").strip()
             api_key = new_api_key or current.get(CONF_API_KEY, "")
+            native_plain_timers = bool(
+                user_input.get(CONF_NATIVE_PLAIN_TIMERS, DEFAULT_NATIVE_PLAIN_TIMERS)
+            )
 
             error = await _validate_connection(url, api_key)
             if error:
@@ -131,7 +145,11 @@ class HaAgentHubOptionsFlow(OptionsFlow):
             else:
                 self.hass.config_entries.async_update_entry(
                     self._entry,
-                    data={CONF_URL: url, CONF_API_KEY: api_key},
+                    data={
+                        CONF_URL: url,
+                        CONF_API_KEY: api_key,
+                        CONF_NATIVE_PLAIN_TIMERS: native_plain_timers,
+                    },
                 )
                 return self.async_create_entry(data={})
 

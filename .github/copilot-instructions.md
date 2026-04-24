@@ -1,6 +1,9 @@
+> **CRITICAL: `.github/instructions/prime-directives.md` contains project-specific architectural and correctness rules for the Project. These are not workflow instructions — they define what the codebase must enforce at runtime. Read and respect them when analyzing, changing, or implementing any part of this project. They are non-negotiable and override all other guidance.**
+
 ## Capabilities
 
 Project definition: .github/instructions/project-definition.md
+Prime Directives: .github/instructions/prime-directives.md
 
 ### What This Agent Does
 - Receives and interprets user requests

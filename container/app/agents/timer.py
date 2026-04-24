@@ -3,6 +3,9 @@
 from app.agents.actionable import ActionableAgent
 from app.agents.timer_executor import execute_timer_action
 from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
+from app.models.conversation import NATIVE_PLAIN_TIMER_DIRECTIVE
+
+_NATIVE_PLAIN_TIMER_REASONS = frozenset({"native_start", "native_cancel"})
 
 
 class TimerAgent(ActionableAgent):
@@ -15,6 +18,32 @@ class TimerAgent(ActionableAgent):
         # by ``ActionableAgent.handle_task`` for every subclass, so
         # we no longer need an override just to capture it here.
         ctx = getattr(self, "_current_task_context", None)
+        native_plain_timer_eligible = bool(getattr(ctx, "native_plain_timer_eligible", False))
+        if action.get("action") == NATIVE_PLAIN_TIMER_DIRECTIVE:
+            reason = ((action.get("parameters") or {}).get("reason") or "").strip()
+            metadata = {
+                "native_decision_source": "timer-agent",
+                "native_plain_timer_eligible": native_plain_timer_eligible,
+            }
+            if reason:
+                metadata["delegate_requested_reason"] = reason
+            if not native_plain_timer_eligible or reason not in _NATIVE_PLAIN_TIMER_REASONS:
+                return {
+                    "speech": "I could not safely delegate that timer request. Please try again.",
+                    "error": {
+                        "code": AgentErrorCode.PARSE_ERROR,
+                        "message": "Timer native delegation was requested without a valid eligible plain-timer reason.",
+                        "recoverable": True,
+                    },
+                    "metadata": metadata,
+                }
+            return {
+                "speech": "",
+                "directive": NATIVE_PLAIN_TIMER_DIRECTIVE,
+                "reason": reason,
+                "success": True,
+                "metadata": metadata,
+            }
         device_id = ctx.device_id if ctx else None
         area_id = ctx.area_id if ctx else None
         return await execute_timer_action(

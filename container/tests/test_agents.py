@@ -619,6 +619,43 @@ class TestMediaAgent:
 
 
 class TestTimerAgent:
+    @patch("app.agents.timer.execute_timer_action", new_callable=AsyncMock)
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "delegate_native_plain_timer", "entity": "timer", "parameters": {"reason": "native_start"}}\n```\nDelegating.',
+    )
+    async def test_handle_task_native_delegate_returns_directive(self, mock_complete, mock_exec):
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(
+            _make_task(
+                "set a timer for 5 minutes",
+                context=TaskContext(native_plain_timer_eligible=True),
+            )
+        )
+        assert result.directive == "delegate_native_plain_timer"
+        assert result.reason == "native_start"
+        assert result.speech == ""
+        assert result.action_executed is None
+        assert result.metadata["native_decision_source"] == "timer-agent"
+        mock_exec.assert_not_awaited()
+
+    @patch("app.agents.timer.execute_timer_action", new_callable=AsyncMock)
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "delegate_native_plain_timer", "entity": "timer", "parameters": {"reason": "native_start"}}\n```\nDelegating.',
+    )
+    async def test_handle_task_native_delegate_requires_eligibility(self, mock_complete, mock_exec):
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        result = await agent.handle_task(_make_task("set a timer for 5 minutes", context=TaskContext()))
+        assert result.directive is None
+        assert result.action_executed is None
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.PARSE_ERROR
+        assert "safely delegate" in result.speech.lower()
+        mock_exec.assert_not_awaited()
+
     @patch(
         "app.agents.timer.execute_timer_action",
         new_callable=AsyncMock,
@@ -1369,6 +1406,21 @@ class TestBaseAgentStream:
         assert len(chunks) == 1
         assert chunks[0]["voice_followup"] is True
 
+    async def test_handle_task_stream_includes_directive_and_reason(self):
+        agent = LightAgent()
+        agent.handle_task = AsyncMock(
+            return_value={
+                "speech": "",
+                "directive": "delegate_native_plain_timer",
+                "reason": "native_start",
+            }
+        )
+        task = _make_task("set a timer for 5 minutes")
+        chunks = [c async for c in agent.handle_task_stream(task)]
+        assert len(chunks) == 1
+        assert chunks[0]["directive"] == "delegate_native_plain_timer"
+        assert chunks[0]["reason"] == "native_start"
+
     async def test_handle_task_stream_converts_handle_task_exception(self):
         """Default stream must not propagate exceptions to InProcessTransport (generic error chunk)."""
         agent = LightAgent()
@@ -1461,6 +1513,7 @@ class TestOrchestratorAgent:
             return_value=[
                 AgentCard(agent_id="light-agent", name="Light Agent", description="", skills=["light"]),
                 AgentCard(agent_id="music-agent", name="Music Agent", description="", skills=["music"]),
+                AgentCard(agent_id="timer-agent", name="Timer Agent", description="", skills=["timer"]),
                 AgentCard(agent_id="general-agent", name="General Agent", description="", skills=["general"]),
             ]
         )
@@ -1499,6 +1552,38 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_passes_through_timer_directive(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, dispatcher, *_ = self._make_orchestrator(
+            dispatch_result={
+                "speech": "",
+                "directive": "delegate_native_plain_timer",
+                "reason": "native_start",
+            }
+        )
+        mock_complete.return_value = "timer-agent: Set a timer for 5 minutes"
+        orch._finalize_single_agent_response = AsyncMock()
+        orch._schedule_ha_voice_followup_if_requested = MagicMock()
+
+        task = _make_task(
+            "set a timer for 5 minutes",
+            context=TaskContext(native_plain_timer_eligible=True),
+        )
+        result = await orch.handle_task(task)
+
+        assert result["directive"] == "delegate_native_plain_timer"
+        assert result["reason"] == "native_start"
+        assert result["speech"] == ""
+        assert result["action_executed"] is None
+        assert result["voice_followup"] is False
+        dispatched_task = dispatcher.dispatch.call_args.args[0].params["task"]
+        assert dispatched_task["context"]["native_plain_timer_eligible"] is True
+        orch._finalize_single_agent_response.assert_not_awaited()
+        orch._schedule_ha_voice_followup_if_requested.assert_not_called()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_fallback_on_unknown_agent(self, mock_complete, mock_track, mock_settings):
         mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, *_ = self._make_orchestrator()
@@ -1527,6 +1612,45 @@ class TestOrchestratorAgent:
         task = _make_task("turn on kitchen light")
         result = await orch.handle_task(task)
         assert result["speech"] == "Fallback response."
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    @patch("app.llm.client.complete", new_callable=AsyncMock)
+    async def test_handle_task_stream_passes_through_timer_directive(self, mock_complete, mock_track, mock_settings):
+        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
+        orch, dispatcher, *_ = self._make_orchestrator()
+        mock_complete.return_value = "timer-agent: Set a timer for 5 minutes"
+        orch._finalize_single_agent_response = AsyncMock()
+        orch._schedule_ha_voice_followup_if_requested = MagicMock()
+
+        async def _directive_stream(_request):
+            final = MagicMock()
+            final.result = {
+                "token": "",
+                "done": True,
+                "directive": "delegate_native_plain_timer",
+                "reason": "native_cancel",
+            }
+            final.done = True
+            yield final
+
+        dispatcher.dispatch_stream = _directive_stream
+
+        task = _make_task(
+            "cancel my timer",
+            context=TaskContext(native_plain_timer_eligible=True),
+        )
+        chunks = [c async for c in orch.handle_task_stream(task)]
+
+        assert len(chunks) == 1
+        assert chunks[0]["token"] == ""
+        assert chunks[0]["done"] is True
+        assert chunks[0]["directive"] == "delegate_native_plain_timer"
+        assert chunks[0]["reason"] == "native_cancel"
+        assert chunks[0]["conversation_id"]
+        assert "mediated_speech" not in chunks[0]
+        orch._finalize_single_agent_response.assert_not_awaited()
+        orch._schedule_ha_voice_followup_if_requested.assert_not_called()
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)

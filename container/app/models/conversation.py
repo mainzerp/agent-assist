@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, model_validator
+
+
+# Native plain-timer bridge directive.
+NATIVE_PLAIN_TIMER_DIRECTIVE = "delegate_native_plain_timer"
 
 
 class ConversationRequest(BaseModel):
@@ -24,6 +30,17 @@ class ConversationRequest(BaseModel):
         None, description="Human-readable name of the originating device/satellite", max_length=128
     )
     area_name: str | None = Field(None, description="Human-readable name of the originating area/room", max_length=128)
+    # Opt-in eligibility flag for native plain-timer delegation. Only the
+    # HA-AgentHub integration sets this when the user has explicitly enabled
+    # native delegation. The container never infers eligibility from any
+    # other field; this flag is the only signal.
+    native_plain_timer_eligible: bool = Field(
+        False,
+        description=(
+            "When True, the container timer-agent may emit a "
+            "delegate_native_plain_timer directive for plain start/cancel requests."
+        ),
+    )
 
 
 class ConversationResponse(BaseModel):
@@ -45,6 +62,17 @@ class ConversationResponse(BaseModel):
     sanitized: bool = Field(
         True,
         description="True when speech has already been sanitized for TTS by the backend",
+    )
+    # Optional bridge directive emitted by the timer-agent path when the
+    # request should be delegated to native HA Assist instead of using
+    # ``speech``.
+    directive: Literal["delegate_native_plain_timer"] | None = Field(
+        None,
+        description="Optional bridge routing directive.",
+    )
+    reason: str | None = Field(
+        None,
+        description="Timer-agent reason code paired with ``directive``.",
     )
 
 
@@ -74,6 +102,10 @@ class StreamToken(BaseModel):
     # Filler tokens are NOT sanitized backend-side; the HA integration
     # still strips them in ``_speak_filler``.
     sanitized: bool = True
+    # Same directive carrier as ``ConversationResponse`` so a ``done=True``
+    # frame can short-circuit the stream and trigger native delegation.
+    directive: Literal["delegate_native_plain_timer"] | None = None
+    reason: str | None = None
 
     @model_validator(mode="after")
     def _force_unsanitized_filler(self) -> StreamToken:

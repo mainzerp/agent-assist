@@ -168,6 +168,41 @@ Default routable agents: `orchestrator`, `light-agent`, `music-agent`,
 (added in 0.12.0; delivers messages to phones, satellites, and
 notification targets).
 
+### Native Assist plain timers vs AgentHub timer features (0.25.0+)
+
+The HA-AgentHub conversation entity supports an opt-in delegation that
+sends only **plain timer** start/cancel utterances directly to Home
+Assistant's built-in default conversation agent
+(`conversation.home_assistant`) instead of the AgentHub container.
+
+- Toggle: integration **Options** -> "Use native Home Assistant Assist
+  for plain timers (start/cancel only)". Default is **off** -- existing
+  installations are unaffected until the option is enabled per config
+  entry.
+- Frozen native verb set: timer **start** (with a relative duration)
+  and **cancel** only. Pause, resume, status queries, list, and
+  increase/decrease still go to AgentHub.
+- Routing decision (0.25.1+): the integration no longer applies any
+  hardcoded keyword or regex list to the utterance. When the opt-in is
+  enabled, the integration marks each turn as eligible (additive JSON
+  field plus REST header) and a small route-level LLM classifier in
+  the container decides whether the utterance is a plain timer
+  start/cancel. On true the container returns an additive
+  `directive=delegate_native_plain_timer` on the bridge response and
+  the integration honours it by calling the native HA Assist seam.
+  The classifier is bias-to-false: anything ambiguous, multi-intent,
+  or with reminder/notification/alarm/sleep/delayed-action/absolute-
+  time/helper/device-target semantics stays on the AgentHub path.
+- Native plain timers live in HA's transient Assist timer manager and
+  therefore **do not appear in the helper-backed admin timer
+  dashboard** in the AgentHub UI. They also do not flow through the
+  helper notification/event surfaces.
+- AgentHub remains the owner of all advanced timer-like features:
+  reminders, delayed actions, sleep timers, alarms, notification-
+  enhanced timers, explicit helper-backed timers, device-targeted
+  timers, and any compound or multi-intent timer request. These always
+  stay on the AgentHub path even when the native option is enabled.
+
 The orchestrator uses a lower temperature (0.3) for consistent intent classification.
 
 Internal helper agents (`filler-agent`, `rewrite-agent`,

@@ -1,15 +1,131 @@
 # Version
 
-**Current Version:** 0.24.0
+**Current Version:** 0.25.2
 
-## Recent Changes (since 0.24.0)
+## Recent Changes (since 0.25.2)
 
-- Timer-agent hardening: generic timer prompts now align with the structured
-  action parser, timer-agent no longer falls back to success-sounding prose
-  when timer JSON is malformed or unusable, and deterministic timer state
-  changes only report success after Home Assistant verification.
+(none yet)
 
 ## Version History
+
+### 0.25.2 (PATCH) -- Timer-agent owns native plain-timer delegation
+
+Moves native plain-timer semantic ownership out of the route-level
+classifier and into the timer-agent. The HA integration still sends the
+same additive eligibility signal and still honours the same additive
+`delegate_native_plain_timer` directive, but the route is now transport-
+only: it forwards eligibility into task context, routes through the
+orchestrator, and forwards directive/reason fields from agent results.
+
+Native scope remains frozen to plain relative timer start/cancel only.
+Advanced timer flows (notifications, delayed actions, sleep timers,
+reminders, alarms, helper-backed timers, pause/resume/query/list) remain
+owned by the timer executor / AgentHub timer path.
+
+Changes:
+- `container/app/models/agent.py`: added
+  `TaskContext.native_plain_timer_eligible` and first-class
+  `TaskResult.directive` / `TaskResult.reason` transport fields.
+- `container/app/agents/actionable.py` and
+  `container/app/agents/base.py`: preserve directive/reason through
+  normal and streaming agent wrappers.
+- `container/app/prompts/timer.txt` and `container/app/agents/timer.py`:
+  added explicit `delegate_native_plain_timer` action owned by the
+  timer-agent.
+- `container/app/agents/orchestrator.py`: directive pass-through only;
+  no native timer semantic classification added.
+- `container/app/api/routes/conversation.py`: removed the route-level
+  native timer short-circuit; route now forwards eligibility into task
+  context and forwards directive/reason from dispatcher results.
+- `container/app/models/conversation.py`: public wire fields unchanged;
+  comments updated to reflect timer-agent ownership.
+- `custom_components/ha_agenthub/conversation.py`: integration behavior
+  unchanged except for updated comments describing the timer-agent-owned
+  directive path.
+- `container/app/agents/native_timer_classifier.py`: removed.
+- `container/app/__init__.py`: bumped `__version__` to `0.25.2`.
+
+### 0.25.1 (PATCH) -- LLM-driven native plain-timer routing
+
+Replaces the integration's hardcoded keyword/regex classifier with a
+small route-level LLM classifier in the container. The user-facing
+opt-in (`CONF_NATIVE_PLAIN_TIMERS`, default off) is unchanged; only the
+routing decision mechanism moved.
+
+When the integration has the opt-in enabled it now sends an additive
+eligibility flag (`native_plain_timer_eligible` JSON field plus the
+`X-HA-AgentHub-Native-Plain-Timer-Eligible: 1` REST header). The
+container runs `app.agents.native_timer_classifier` before orchestrator
+dispatch and may return an additive bridge directive
+(`directive="delegate_native_plain_timer"` with a `reason` enum). The
+integration honours the directive inside its existing coalesced bridge
+task by calling the proven `_async_delegate_to_native` seam. A
+task-local suppression flag prevents the native-fallback bridge call
+from triggering a second directive loop.
+
+Classifier settings (frozen): `groq/llama-3.1-8b-instant`,
+`temperature=0`, `max_tokens=32`, hard `1.5s` timeout, JSON-only output,
+strict closed enum, safe-default false on timeout / parse failure /
+provider error.
+
+Changes:
+- `container/app/agents/native_timer_classifier.py`: new module.
+- `container/app/api/routes/conversation.py`: REST + WebSocket short-
+  circuit before orchestrator dispatch.
+- `container/app/models/conversation.py`: additive
+  `native_plain_timer_eligible` request field and `directive` / `reason`
+  response and `StreamToken` fields.
+- `custom_components/ha_agenthub/conversation.py`: removed all
+  hardcoded timer regex constants and the `_classify_plain_timer`
+  helper; added `_BridgeDirective` carrier; added directive consumption
+  inside `_async_bridge_with_cleanup`; added eligibility emission to
+  WebSocket and REST senders; added task-local suppression flag.
+- `custom_components/ha_agenthub/const.py`: new protocol constants
+  (`NATIVE_PLAIN_TIMER_ELIGIBLE_FIELD`,
+  `NATIVE_PLAIN_TIMER_ELIGIBLE_HEADER`, `NATIVE_PLAIN_TIMER_DIRECTIVE`).
+- `container/tests/test_native_assist_timer.py`: rewritten to cover
+  the 12 directive-flow scenarios from the plan.
+- `container/app/__init__.py`: bumped `__version__` to 0.25.1.
+- `docs/configuration.md`: documents that the routing decision is now
+  LLM-driven and notes the additive bridge directive.
+
+### 0.25.0 (MINOR) -- Native Assist for plain timers (opt-in)
+
+Adds an opt-in delegation path that routes plain timer start/cancel
+utterances coming from the HA-AgentHub conversation entity directly to
+Home Assistant's built-in default conversation agent
+(`conversation.home_assistant`) instead of the AgentHub container.
+Default behavior is unchanged: the option is off until enabled in the
+integration's options flow.
+
+Frozen native verb set (this slice): timer **start** and **cancel**
+only. Pause, resume, status, list, and increase/decrease still go to
+AgentHub. AgentHub continues to own all advanced timer-like features
+(reminders, delayed actions, sleep timers, alarms, notification-enhanced
+timers, helper-backed timers, and compound requests).
+
+Operator-facing notes:
+- Native plain timers are not surfaced in the helper-backed admin
+  timer dashboard (they live in HA's transient Assist timer manager).
+- Toggle is per-config-entry, on the integration's options page,
+  labelled "Use native Home Assistant Assist for plain timers
+  (start/cancel only)".
+
+Changes:
+- `custom_components/ha_agenthub/conversation.py`: strict plain-timer
+  classifier (English + German), native branch inside the existing
+  coalescing/cleanup path, stable reason-code debug logging
+  (`path=native|agenthub|coalesced`, exclusion reason).
+- `custom_components/ha_agenthub/const.py`: `CONF_NATIVE_PLAIN_TIMERS`,
+  `DEFAULT_NATIVE_PLAIN_TIMERS`, `NATIVE_HA_AGENT_ID`.
+- `custom_components/ha_agenthub/config_flow.py`: options-flow toggle.
+- `custom_components/ha_agenthub/strings.json` and
+  `translations/{en,de}.json`: new option label.
+- `container/app/__init__.py`: bumped `__version__` to `0.25.0`.
+- `container/tests/test_native_assist_timer.py`: new test module
+  covering the 12 scenarios from the plan.
+- `docs/configuration.md`: documents the split between native plain
+  timers and AgentHub-managed advanced timer features.
 
 ### 0.24.0 (MINOR) -- Removed dedicated presence detection module
 

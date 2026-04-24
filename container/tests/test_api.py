@@ -149,6 +149,36 @@ class TestConversationEndpoints:
         data = resp.json()
         assert "speech" in data
 
+    async def test_conversation_rest_passes_through_directive(self, authed_client: httpx.AsyncClient):
+        from app.api.routes import conversation as conv_routes
+
+        old_dispatcher = conv_routes._dispatcher
+        mock_response = MagicMock()
+        mock_response.error = None
+        mock_response.result = {
+            "speech": "",
+            "directive": "delegate_native_plain_timer",
+            "reason": "native_start",
+            "conversation_id": "conv-native",
+        }
+        mock_d = MagicMock()
+        mock_d.dispatch = AsyncMock(return_value=mock_response)
+        conv_routes._dispatcher = mock_d
+
+        try:
+            resp = await authed_client.post(
+                "/api/conversation",
+                json={"text": "set a timer for 5 minutes", "native_plain_timer_eligible": True},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["directive"] == "delegate_native_plain_timer"
+            assert data["reason"] == "native_start"
+            assert data["speech"] == ""
+            mock_d.dispatch.assert_awaited_once()
+        finally:
+            conv_routes._dispatcher = old_dispatcher
+
     async def test_conversation_rest_without_auth_returns_401(self, unauthed_client: httpx.AsyncClient):
         resp = await unauthed_client.post(
             "/api/conversation",
@@ -247,6 +277,41 @@ class TestConversationEndpoints:
             last_data = _json.loads(lines[-1].removeprefix("data:").strip())
             assert last_data.get("done") is True
             assert last_data.get("error") == "Agent error: test"
+        finally:
+            conv_routes._dispatcher = old_dispatcher
+
+    async def test_conversation_sse_passes_through_directive(self, authed_client: httpx.AsyncClient):
+        import json as _json
+
+        from app.api.routes import conversation as conv_routes
+
+        async def _directive_stream(_req):
+            final = MagicMock()
+            final.result = {
+                "token": "",
+                "directive": "delegate_native_plain_timer",
+                "reason": "native_cancel",
+                "conversation_id": "conv-native",
+            }
+            final.done = True
+            yield final
+
+        old_dispatcher = conv_routes._dispatcher
+        mock_d = MagicMock()
+        mock_d.dispatch_stream = _directive_stream
+        conv_routes._dispatcher = mock_d
+
+        try:
+            resp = await authed_client.post(
+                "/api/conversation/stream",
+                json={"text": "cancel my timer", "native_plain_timer_eligible": True},
+            )
+            assert resp.status_code == 200
+            lines = [line for line in resp.text.splitlines() if line.startswith("data:")]
+            last_data = _json.loads(lines[-1].removeprefix("data:").strip())
+            assert last_data["done"] is True
+            assert last_data["directive"] == "delegate_native_plain_timer"
+            assert last_data["reason"] == "native_cancel"
         finally:
             conv_routes._dispatcher = old_dispatcher
 

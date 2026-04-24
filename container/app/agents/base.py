@@ -88,6 +88,10 @@ class BaseAgent(ABC):
             chunk["action_executed"] = action
         if result_dict.get("voice_followup"):
             chunk["voice_followup"] = True
+        if result_dict.get("directive"):
+            chunk["directive"] = result_dict["directive"]
+        if result_dict.get("reason") is not None:
+            chunk["reason"] = result_dict["reason"]
         yield chunk
 
     def _load_prompt(self, name: str) -> str:

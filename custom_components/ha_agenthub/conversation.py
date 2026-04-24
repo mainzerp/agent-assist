@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import aiohttp
@@ -26,9 +28,54 @@ from .const import (
     RECONNECT_MAX_DELAY,
     WS_HEARTBEAT_INTERVAL,
     WS_IDLE_THRESHOLD,
+    CONF_NATIVE_PLAIN_TIMERS,
+    DEFAULT_NATIVE_PLAIN_TIMERS,
+    NATIVE_HA_AGENT_ID,
+    NATIVE_PLAIN_TIMER_DIRECTIVE,
+    NATIVE_PLAIN_TIMER_ELIGIBLE_FIELD,
+    NATIVE_PLAIN_TIMER_ELIGIBLE_HEADER,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Native plain-timer delegation (0.25.1)
+# ---------------------------------------------------------------------------
+#
+# The integration no longer classifies utterances locally. Instead, when the
+# per-config-entry ``CONF_NATIVE_PLAIN_TIMERS`` opt-in is enabled, every
+# bridge request is marked eligible (additive JSON field + REST header).
+# The container timer-agent owns the semantic decision and may return a
+# ``directive=delegate_native_plain_timer`` response through the normal
+# orchestrator path. The integration honours the directive by calling the
+# proven native seam (``conversation.async_converse(...,
+# agent_id=NATIVE_HA_AGENT_ID)``).
+#
+# Recursion safety: ``_async_delegate_to_native`` falls back to the bridge
+# on pre-handler errors. To prevent that fallback from triggering a second
+# directive loop, eligibility is suppressed via a task-local ContextVar
+# while a directive is being honoured.
+
+
+@dataclass(slots=True)
+class _BridgeDirective:
+    """Internal carrier returned by bridge senders when the container
+    instructs the integration to delegate to native HA Assist."""
+
+    directive: str
+    reason: str | None = None
+    conversation_id: str | None = None
+
+
+# Task-local suppression of the eligibility flag/header. When True, neither
+# the WebSocket payload nor the REST request includes the eligibility
+# signal so the bridge cannot
+# emit a second native directive for the same turn.
+_suppress_native_plain_timer_eligibility: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "ha_agenthub_suppress_native_plain_timer_eligibility",
+    default=False,
+)
 
 
 class _WsDroppedAfterSendError(Exception):
@@ -303,10 +350,17 @@ class HaAgentHubConversationEntity(
         text are coalesced so only one WebSocket/REST round-trip runs;
         this matches traces where the container saw two identical turns
         back-to-back from production HA setups.
+
+        0.25.1: the integration no longer classifies utterances locally.
+        Native plain-timer delegation is decided by the container's timer-agent
+        path and surfaces as a directive on the bridge response;
+        ``_async_bridge_with_cleanup`` honours the directive inside the
+        coalesced task so duplicate suppression still applies.
         """
         cid = user_input.conversation_id or ""
         text = (user_input.text or "").strip()
         key = (cid, text)
+
         coalesced = False
         async with self._coalesce_lock:
             existing = self._inflight_bridge.get(key)
@@ -332,14 +386,154 @@ class HaAgentHubConversationEntity(
     ) -> conversation.ConversationResult:
         task = asyncio.current_task()
         try:
-            return await self._async_bridge_to_container(user_input)
+            outcome = await self._async_bridge_to_container(user_input)
+            if isinstance(outcome, _BridgeDirective):
+                return await self._handle_bridge_directive(user_input, outcome)
+            return outcome
         finally:
             async with self._coalesce_lock:
                 existing = self._inflight_bridge.get(key)
                 if task is not None and existing is not None and existing[1] is task:
                     self._inflight_bridge.pop(key, None)
 
-    async def _async_bridge_to_container(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
+    async def _handle_bridge_directive(
+        self,
+        user_input: conversation.ConversationInput,
+        directive: _BridgeDirective,
+    ) -> conversation.ConversationResult:
+        """Honour a directive returned by the container bridge.
+
+        Currently only ``delegate_native_plain_timer`` is supported. The
+        eligibility flag is suppressed for the duration of the native
+        attempt so that ``_async_delegate_to_native``'s own pre-handler
+        bridge fallback cannot trigger a second directive loop.
+        """
+        if directive.directive == NATIVE_PLAIN_TIMER_DIRECTIVE:
+            native_callable = self._resolve_native_delegate()
+            reason = directive.reason or "native"
+            if native_callable is None:
+                logger.warning(
+                    "HA-AgentHub: native delegate unavailable, retrying bridge "
+                    "(path=agenthub, reason=native_unavailable)"
+                )
+                token = _suppress_native_plain_timer_eligibility.set(True)
+                try:
+                    fallback = await self._async_bridge_to_container(user_input)
+                finally:
+                    _suppress_native_plain_timer_eligibility.reset(token)
+                if isinstance(fallback, _BridgeDirective):
+                    # Bridge unexpectedly emitted a second directive even with
+                    # suppression on. Surface a benign error instead of looping.
+                    return self._build_result(
+                        "Sorry, the assistant could not complete that request.",
+                        user_input.conversation_id,
+                        user_input.language,
+                    )
+                return fallback
+            logger.debug(
+                "HA-AgentHub: honouring native plain-timer directive "
+                "(path=native, reason=%s)",
+                reason,
+            )
+            token = _suppress_native_plain_timer_eligibility.set(True)
+            try:
+                return await self._async_delegate_to_native(
+                    user_input, native_callable, reason
+                )
+            finally:
+                _suppress_native_plain_timer_eligibility.reset(token)
+
+        # Unknown directive: log and run one bridge fallback with eligibility
+        # suppressed. Never recurse on unknown values.
+        logger.warning(
+            "HA-AgentHub: ignoring unknown bridge directive %r (path=agenthub)",
+            directive.directive,
+        )
+        token = _suppress_native_plain_timer_eligibility.set(True)
+        try:
+            fallback = await self._async_bridge_to_container(user_input)
+        finally:
+            _suppress_native_plain_timer_eligibility.reset(token)
+        if isinstance(fallback, _BridgeDirective):
+            return self._build_result(
+                "Sorry, the assistant could not complete that request.",
+                user_input.conversation_id,
+                user_input.language,
+            )
+        return fallback
+
+    # ------------------------------------------------------------------
+    # Native plain-timer delegation helpers (0.25.0)
+    # ------------------------------------------------------------------
+
+    def _is_native_plain_timers_enabled(self) -> bool:
+        """Return True if the integration is opted into native plain-timer
+        delegation. Default False keeps existing behavior unchanged when the
+        flag is absent or the entry data is missing."""
+        try:
+            data = getattr(self._entry, "data", None) or {}
+            return bool(data.get(CONF_NATIVE_PLAIN_TIMERS, DEFAULT_NATIVE_PLAIN_TIMERS))
+        except Exception:
+            return DEFAULT_NATIVE_PLAIN_TIMERS
+
+    def _resolve_native_delegate(self):
+        """Resolve the HA conversation delegate seam.
+
+        Phase 1 proven seam: ``conversation.async_converse(..., agent_id=
+        NATIVE_HA_AGENT_ID)``. The ``agent_id`` ensures HA core dispatches
+        directly to the built-in default agent, never re-entering this
+        custom entity. Returns the callable or None if the API is missing
+        on the running HA core (e.g., very old core or the stub used in
+        tests).
+        """
+        try:
+            return getattr(conversation, "async_converse", None)
+        except Exception:
+            return None
+
+    async def _async_delegate_to_native(
+        self,
+        user_input: conversation.ConversationInput,
+        native_callable,
+        reason_code: str,
+    ) -> conversation.ConversationResult:
+        """Delegate the request to HA's built-in default conversation agent.
+
+        On success the native ConversationResult is returned directly; per
+        plan D9 we never retry the request through AgentHub once native
+        has produced a definitive response. Only delegate-side construction
+        errors (raised before the native handler runs) fall through to the
+        AgentHub bridge as a safety net.
+        """
+        context = getattr(user_input, "context", None)
+        try:
+            result = await native_callable(
+                self.hass,
+                user_input.text,
+                conversation_id=user_input.conversation_id,
+                context=context,
+                language=user_input.language,
+                agent_id=NATIVE_HA_AGENT_ID,
+            )
+            logger.info(
+                "HA-AgentHub: native Assist handled plain timer "
+                "(path=native, reason=%s)",
+                reason_code,
+            )
+            return result
+        except Exception:
+            # Definitive native handler errors (e.g., intent-not-matched)
+            # are surfaced inside ConversationResult, not raised. A raised
+            # exception here means we never reached the native handler --
+            # safe to fall back to AgentHub once.
+            logger.warning(
+                "HA-AgentHub: native delegation failed before handler ran, "
+                "falling back to AgentHub (path=agenthub, reason=native_error)",
+                exc_info=True,
+            )
+            return await self._async_bridge_to_container(user_input)
+
+    async def _async_bridge_to_container(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult | _BridgeDirective:
         """Single WS (preferred) or REST attempt to the HA-AgentHub container."""
         try:
             async with self._ws_lock:
@@ -408,7 +602,7 @@ class HaAgentHubConversationEntity(
             logger.debug("area_registry lookup failed for %s", area_id, exc_info=True)
         return extra
 
-    async def _process_via_ws(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
+    async def _process_via_ws(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult | _BridgeDirective:
         """Send request via WebSocket and accumulate streaming tokens."""
         payload: dict[str, Any] = {
             "text": user_input.text,
@@ -416,6 +610,11 @@ class HaAgentHubConversationEntity(
             "language": user_input.language or "en",
         }
         payload.update(self._resolve_origin_context(user_input))
+        if (
+            self._is_native_plain_timers_enabled()
+            and not _suppress_native_plain_timer_eligibility.get()
+        ):
+            payload[NATIVE_PLAIN_TIMER_ELIGIBLE_FIELD] = True
         await self._ws.send_json(payload)
 
         try:
@@ -449,6 +648,17 @@ class HaAgentHubConversationEntity(
                         received_done = True
                         stream_err = data.get("error")
                         final_conversation_id = data.get("conversation_id", final_conversation_id)
+                        # 0.25.1: directive on the final frame short-circuits the
+                        # bridge response. The integration delegates to native
+                        # Assist instead of returning the (empty) speech.
+                        directive_value = data.get("directive")
+                        if directive_value:
+                            self._ws_last_active = time.monotonic()
+                            return _BridgeDirective(
+                                directive=str(directive_value),
+                                reason=data.get("reason"),
+                                conversation_id=final_conversation_id,
+                            )
                         mediated = data.get("mediated_speech")
                         if mediated:
                             speech_parts = [mediated]
@@ -485,7 +695,7 @@ class HaAgentHubConversationEntity(
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as err:
             raise _WsDroppedAfterSendError() from err
 
-    async def _process_via_rest(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
+    async def _process_via_rest(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult | _BridgeDirective:
         """Fallback: send request via REST and get full response."""
         try:
             if self._session is None:
@@ -497,6 +707,12 @@ class HaAgentHubConversationEntity(
                 "language": user_input.language or "en",
             }
             payload.update(self._resolve_origin_context(user_input))
+            if (
+                self._is_native_plain_timers_enabled()
+                and not _suppress_native_plain_timer_eligibility.get()
+            ):
+                payload[NATIVE_PLAIN_TIMER_ELIGIBLE_FIELD] = True
+                headers[NATIVE_PLAIN_TIMER_ELIGIBLE_HEADER] = "1"
             async with self._session.post(
                 f"{self._url}/api/conversation",
                 json=payload,
@@ -510,6 +726,13 @@ class HaAgentHubConversationEntity(
                         user_input.language,
                     )
                 data = await resp.json()
+                directive_value = data.get("directive")
+                if directive_value:
+                    return _BridgeDirective(
+                        directive=str(directive_value),
+                        reason=data.get("reason"),
+                        conversation_id=data.get("conversation_id", user_input.conversation_id),
+                    )
                 return self._build_result(
                     data.get("speech", ""),
                     data.get("conversation_id", user_input.conversation_id),

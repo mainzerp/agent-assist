@@ -363,6 +363,7 @@ class OrchestratorAgent(BaseAgent):
             context.area_name = incoming_context.area_name
             context.source = incoming_context.source
             context.language = incoming_context.language
+            context.native_plain_timer_eligible = incoming_context.native_plain_timer_eligible
         # FLOW-HIGH-3: Prefer the orchestrator-resolved language (from
         # _resolve_language / detect_user_language) over whatever the
         # incoming request carried. The streaming path already does this;
@@ -1507,6 +1508,8 @@ class OrchestratorAgent(BaseAgent):
         failed_agents: list[tuple[str, str]] = []
         agent_error = None
         agent_voice_followup = False
+        directive = None
+        directive_reason = None
         if is_sequential_send:
             # --- Sequential send dispatch (content agent -> send agent) ---
             routed_to, speech, result = await self._handle_sequential_send(
@@ -1536,6 +1539,18 @@ class OrchestratorAgent(BaseAgent):
             )
             action_executed = (result or {}).get("action_executed")
             routed_to = agent_id
+            directive = (result or {}).get("directive")
+            directive_reason = (result or {}).get("reason")
+            if directive:
+                return {
+                    "speech": result.get("speech", ""),
+                    "conversation_id": conversation_id,
+                    "routed_to": routed_to,
+                    "action_executed": None,
+                    "voice_followup": False,
+                    "directive": directive,
+                    "reason": directive_reason,
+                }
 
             # Check for agent-level error
             agent_error = (result or {}).get("error")
@@ -1942,6 +1957,7 @@ class OrchestratorAgent(BaseAgent):
             context.device_name = task.context.device_name
             context.area_name = task.context.area_name
             context.source = task.context.source
+            context.native_plain_timer_eligible = task.context.native_plain_timer_eligible
         if self._ha_client:
             try:
                 from zoneinfo import ZoneInfo
@@ -1982,6 +1998,8 @@ class OrchestratorAgent(BaseAgent):
         action_executed = None
         stream_error = None
         stream_voice_followup = False
+        stream_directive = None
+        stream_reason = None
         use_filler = await self._should_send_filler(target_agent)
         filler_threshold_ms = await self._get_filler_threshold_ms() if use_filler else 1000
         filler_sent = False
@@ -1995,7 +2013,7 @@ class OrchestratorAgent(BaseAgent):
 
         async def _process_chunk(chunk):
             """Process a single stream chunk: collect speech and detect actions."""
-            nonlocal action_executed, stream_error, stream_voice_followup
+            nonlocal action_executed, stream_error, stream_voice_followup, stream_directive, stream_reason
             token = chunk.result.get("token", "")
             done = chunk.result.get("done", False)
             error = chunk.result.get("error")
@@ -2008,6 +2026,9 @@ class OrchestratorAgent(BaseAgent):
                 action_executed = chunk.result["action_executed"]
             if done and chunk.result.get("voice_followup"):
                 stream_voice_followup = True
+            if done and chunk.result.get("directive"):
+                stream_directive = chunk.result["directive"]
+                stream_reason = chunk.result.get("reason")
             return token
 
         async def _stream_with_filler(stream_iter, span=None):
@@ -2180,6 +2201,18 @@ class OrchestratorAgent(BaseAgent):
                     actual_start = t0_request_utc + timedelta(milliseconds=filler_send_ms)
                     fs_span["start_time"] = actual_start.isoformat()
                     fs_span["_override_duration_ms"] = 0
+
+        if stream_directive:
+            final_chunk = {
+                "token": "",
+                "done": True,
+                "conversation_id": conversation_id,
+                "directive": stream_directive,
+            }
+            if stream_reason is not None:
+                final_chunk["reason"] = stream_reason
+            yield final_chunk
+            return
 
         # 4. Store conversation turn and create trace summary
         full_speech = "".join(collected_speech)

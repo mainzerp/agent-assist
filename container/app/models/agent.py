@@ -93,6 +93,7 @@ class TaskContext(BaseModel):
     timezone: str = "UTC"
     location_name: str = ""
     local_time: str = ""
+    native_plain_timer_eligible: bool = False
 
 
 class ActionExecuted(BaseModel):
@@ -152,4 +153,12 @@ class TaskResult(BaseModel):
     voice_followup: bool = Field(
         False,
         description="Ask orchestrator to trigger satellite listen-after-response (HA voice only)",
+    )
+    directive: str | None = Field(
+        None,
+        description="Optional transport directive emitted by an agent, such as timer-native delegation.",
+    )
+    reason: str | None = Field(
+        None,
+        description="Optional reason paired with a transport directive.",
     )

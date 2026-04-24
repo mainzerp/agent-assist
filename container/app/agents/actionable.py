@@ -9,7 +9,7 @@ import re
 from app.agents.action_executor import parse_action
 from app.agents.base import BaseAgent
 from app.db.repository import SettingsRepository
-from app.models.agent import ActionExecuted, AgentErrorCode, AgentTask, TaskResult
+from app.models.agent import ActionExecuted, AgentError, AgentErrorCode, AgentTask, TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -183,8 +183,29 @@ class ActionableAgent(BaseAgent):
                         agent_id=agent_id,
                         span_collector=span_collector,
                     )
+                metadata = result.get("metadata") or {}
+                if result.get("directive"):
+                    return TaskResult(
+                        speech=result.get("speech", ""),
+                        directive=result.get("directive"),
+                        reason=result.get("reason"),
+                        metadata=metadata,
+                        voice_followup=bool(result.get("voice_followup")),
+                    )
+                explicit_error = result.get("error")
+                if explicit_error:
+                    error = explicit_error
+                    if not isinstance(error, AgentError):
+                        error = AgentError.model_validate(explicit_error)
+                    return TaskResult(
+                        speech=result.get("speech", ""),
+                        error=error,
+                        metadata=metadata,
+                        voice_followup=bool(result.get("voice_followup")),
+                    )
                 return TaskResult(
                     speech=result["speech"],
+                    metadata=metadata,
                     action_executed=ActionExecuted(
                         action=action.get("action", ""),
                         entity_id=result.get("entity_id") or "",

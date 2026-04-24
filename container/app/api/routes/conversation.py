@@ -24,6 +24,9 @@ router = APIRouter(tags=["conversation"])
 # Maximum allowed WebSocket message size in bytes (10 KB)
 _MAX_WS_MESSAGE_SIZE = 10_000
 
+# REST eligibility hint header (mirrors the integration constant).
+_NATIVE_PLAIN_TIMER_HEADER = "X-HA-AgentHub-Native-Plain-Timer-Eligible"
+
 # The dispatcher is set by main.py during startup
 _dispatcher = None
 
@@ -34,8 +37,24 @@ def set_dispatcher(dispatcher) -> None:
     _dispatcher = dispatcher
 
 
+def _native_plain_timer_eligible(
+    conv_request: ConversationRequest, request: Request | None = None
+) -> bool:
+    """Return True when the integration explicitly opted this turn into the
+    native plain-timer delegation path. The flag on the request is the
+    authoritative signal; the REST header is an additive hint and is
+    never used for auth or to widen scope on its own."""
+    if conv_request.native_plain_timer_eligible:
+        return True
+    if request is not None:
+        header = request.headers.get(_NATIVE_PLAIN_TIMER_HEADER)
+        if header and header.strip() == "1":
+            return True
+    return False
+
+
 def _build_a2a_request(
-    conv_request: ConversationRequest, method: str, span_collector=None
+    conv_request: ConversationRequest, method: str, span_collector=None, request: Request | None = None
 ) -> tuple[JsonRpcRequest, AgentTask]:
     """Convert a ConversationRequest into an A2A JsonRpcRequest + AgentTask."""
     # FLOW-CTX-1 (0.18.6) / FLOW-WS-SPAN-1 (P1-6): source comes from the
@@ -51,6 +70,7 @@ def _build_a2a_request(
         area_name=conv_request.area_name,
         language=conv_request.language or "en",
         source=source,
+        native_plain_timer_eligible=_native_plain_timer_eligible(conv_request, request),
     )
     task = AgentTask(
         description=conv_request.text,
@@ -82,7 +102,8 @@ async def conversation_rest(
     # FLOW-MED-9: source is now set by TracingMiddleware from the
     # route path, no post-hoc assignment needed.
     span_collector = getattr(request.state, "span_collector", None)
-    a2a_request, _ = _build_a2a_request(conv_request, "message/send", span_collector)
+
+    a2a_request, _ = _build_a2a_request(conv_request, "message/send", span_collector, request)
     response = await _dispatcher.dispatch(a2a_request)
 
     if response.error:
@@ -96,6 +117,8 @@ async def conversation_rest(
         speech=result.get("speech", ""),
         conversation_id=result.get("conversation_id") or conv_request.conversation_id,
         voice_followup=bool(result.get("voice_followup")),
+        directive=result.get("directive"),
+        reason=result.get("reason"),
     )
 
 
@@ -109,7 +132,7 @@ async def conversation_sse(
     # FLOW-MED-9: source is now set by TracingMiddleware from the
     # route path.
     span_collector = getattr(request.state, "span_collector", None)
-    a2a_request, _ = _build_a2a_request(conv_request, "message/stream", span_collector)
+    a2a_request, _ = _build_a2a_request(conv_request, "message/stream", span_collector, request)
 
     async def generate():
         root_span_id = getattr(request.state, "root_span_id", None)
@@ -126,6 +149,8 @@ async def conversation_sse(
                     is_filler=chunk.result.get("is_filler", False),
                     error=chunk.result.get("error") if chunk.done else None,
                     voice_followup=bool(chunk.result.get("voice_followup")) if chunk.done else False,
+                    directive=chunk.result.get("directive") if chunk.done else None,
+                    reason=chunk.result.get("reason") if chunk.done else None,
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
@@ -195,6 +220,8 @@ async def ws_conversation(
                         is_filler=chunk.result.get("is_filler", False),
                         error=chunk.result.get("error") if chunk.done else None,
                         voice_followup=bool(chunk.result.get("voice_followup")) if chunk.done else False,
+                        directive=chunk.result.get("directive") if chunk.done else None,
+                        reason=chunk.result.get("reason") if chunk.done else None,
                     )
                     await websocket.send_json(token.model_dump())
             except WebSocketDisconnect:
