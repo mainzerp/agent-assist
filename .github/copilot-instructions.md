@@ -30,17 +30,17 @@ User Request
     ↓
 ORCHESTRATOR: Receive request, spawn subagent
     ↓
-SUBAGENT #1: Research & Analysis
+SUBAGENT #1: Research & Analysis (NEVER use copilot built-in explore functionality for research - always spawn a dedicated research subagent with the Research prompt)
     - Reads files, analyzes codebase
     - Creates analysis doc in docs/SubAgent/[NAME_ANALYSIS].md
-    - Returns summary and analysis file path
+    - Returns summary and analysis file path (Never uses ask_user)
     ↓
     ORCHESTRATOR: Receive results, spawn next subagent
     ↓
     SUBAGENT #2: Planning
     - Reads analysis from Research subagent in docs/SubAgent/[NAME_ANALYSIS].md
     - Creates detailed step-by-step implementation plan with Checklist in docs/SubAgent/[NAME_PLAN].md
-    - Returns summary and plan file path
+    - Returns summary and plan file path (Never uses ask_user)
     ↓
 ORCHESTRATOR: Calls only plan_review tool to render the plan.
     - If changes requested: re-spawn SUBAGENT #2 with feedback
@@ -58,32 +58,35 @@ ORCHESTRATOR: Confirm with user via ask_user tool UNTIL user confirms task compl
 ## Subagent Prompts
 
 ### Research Subagent Template
-Call `runSubagent` with `model: "GPT-5.4 (copilot)"`.
+Call `runSubagent` with `model: "GPT-5.4 (copilot)"`. NEVER use copilot built-in explore functionality for research - always spawn a dedicated research subagent with this prompt.
 ```
+**NEVER** call plan_review or ask_user tools from this subagent. This is for research and analysis only.
+You are an expert code analysis agent.
 Research [topic]. Analyze relevant files in the codebase.
 Think thoroughly and consider all edge cases, dependencies, and implications.
 Create a analysis doc in english at: docs/SubAgent/[NAME_ANALYSIS].md
-**NEVER** call plan_review or ask_user tool
 Return: summary of findings and the analysis file path.
 ```
 
 ### Planning Subagent Template
 Call `runSubagent` with `model: "GPT-5.4 (copilot)"`.
 ```
+**NEVER** call plan_review or ask_user tool from this subagent. This is for planning only.
+You are an expert code planning agent.
 Read the analysis at: docs/SubAgent/[NAME_ANALYSIS].md
 Think deeply and comprehensively. Consider all edge cases, risks, and ordering constraints.
 Create a detailed step-by-step implementation plan in english at: docs/SubAgent/[NAME_PLAN].md.
-**NEVER** call plan_review or ask_user tool.
 Return: summary of the plan and the plan file path.
 ```
 
 ### Implementation Subagent Template
-Call `runSubagent` with `model: "Claude Opus 4.7 (copilot)" or "GPT-5.4 (copilot)"`.
+Call `runSubagent` with `model: "Claude Opus 4.7 (copilot)"`.
 ```
+**NEVER** call plan_review or ask_user tool from this subagent. This is for implementation only.
+You are a senior software engineer agent.
 Read the approved plan at: docs/SubAgent/[NAME_PLAN].md
 Be efficient and direct. Follow the plan precisely without re-analyzing decisions already made.
 Implement according to the plan.
-**NEVER** call plan_review or ask_user tool
 Return: Summary of changes made and any relevant details.
 ```
 
@@ -94,7 +97,7 @@ Return: Summary of changes made and any relevant details.
 3. **NEVER skip the Research or Planning phases** - even for seemingly simple tasks
 4. **NEVER include `agentName`** in runSubagent calls - always use default subagent
 5. **runSubagent requires BOTH** `description` (3-5 words) and `prompt` (detailed instructions)
-6. **ALWAYS pass the `model` parameter** to `runSubagent`: `"GPT-5.4 (copilot)"` or `"Claude Opus 4.7 (copilot)"`
+6. **ALWAYS pass the `model` parameter** to `runSubagent`: e.g. `"Claude Opus 4.7 (copilot)"`
 7. **Gather context first** - don't make assumptions about the codebase
 8. **The ORCHESTRATOR never implements** - it never writes code, edits files, or executes implementation steps directly. ALL implementation goes through SUBAGENT #3, no exceptions, even for trivial changes.
 9. **Update VERSION.md** when implementing new features - track feature additions in the changelog
