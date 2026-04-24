@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import logging
 import os
 
@@ -10,6 +11,27 @@ import chromadb
 from app.db.repository import SettingsRepository
 
 logger = logging.getLogger(__name__)
+
+_MODEL_LOAD_LOGGER_LEVELS = (
+    ("httpx", logging.WARNING),
+    ("huggingface_hub.utils._http", logging.ERROR),
+    ("transformers.modeling_utils", logging.ERROR),
+    ("sentence_transformers.base.model", logging.WARNING),
+)
+
+
+@contextmanager
+def _suppress_model_load_startup_logs():
+    previous_levels = []
+    try:
+        for logger_name, temporary_level in _MODEL_LOAD_LOGGER_LEVELS:
+            noisy_logger = logging.getLogger(logger_name)
+            previous_levels.append((noisy_logger, noisy_logger.level))
+            noisy_logger.setLevel(temporary_level)
+        yield
+    finally:
+        for noisy_logger, previous_level in reversed(previous_levels):
+            noisy_logger.setLevel(previous_level)
 
 
 class EmbeddingEngine:
@@ -47,7 +69,8 @@ class EmbeddingEngine:
             except Exception:
                 pass
 
-            self._local_model = SentenceTransformer(self._model_name)
+            with _suppress_model_load_startup_logs():
+                self._local_model = SentenceTransformer(self._model_name)
             logger.info("Loaded local embedding model: %s", self._model_name)
         return self._local_model
 

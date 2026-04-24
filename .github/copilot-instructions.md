@@ -69,7 +69,7 @@ Return: summary of findings and the analysis file path.
 ```
 
 ### Planning Subagent Template
-Call `runSubagent` with `model: "GPT-5.4 (copilot)"`.
+Call `runSubagent` with `model: "GPT-5.5 (copilot)"`.
 ```
 **NEVER** call plan_review or ask_user tool from this subagent. This is for planning only.
 You are an expert code planning agent.
@@ -80,7 +80,7 @@ Return: summary of the plan and the plan file path.
 ```
 
 ### Implementation Subagent Template
-Call `runSubagent` with `model: "Claude Opus 4.7 (copilot)"`.
+Call `runSubagent` with `model: "GPT-5.5 (copilot)"`.
 ```
 **NEVER** call plan_review or ask_user tool from this subagent. This is for implementation only.
 You are a senior software engineer agent.

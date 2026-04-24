@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -997,6 +998,13 @@ class TestCacheManager:
 
 
 class TestEmbeddingEngine:
+    _startup_logger_levels = {
+        "httpx": logging.WARNING,
+        "huggingface_hub.utils._http": logging.ERROR,
+        "transformers.modeling_utils": logging.ERROR,
+        "sentence_transformers.base.model": logging.WARNING,
+    }
+
     def test_embed_local_via_sentence_transformer(self):
         engine = EmbeddingEngine()
         engine._provider = "local"
@@ -1048,6 +1056,101 @@ class TestEmbeddingEngine:
                 await engine.initialize()
         assert engine._provider == "local"
         assert engine._model_name == "all-MiniLM-L6-v2"
+
+    def test_get_local_model_restores_startup_logger_levels_on_success(self):
+        import sys
+        import types
+
+        engine = EmbeddingEngine()
+        engine._model_name = "all-MiniLM-L6-v2"
+        previous_levels = {name: logging.getLogger(name).level for name in self._startup_logger_levels}
+        seeded_levels = {
+            "httpx": logging.DEBUG,
+            "huggingface_hub.utils._http": logging.INFO,
+            "transformers.modeling_utils": logging.CRITICAL,
+            "sentence_transformers.base.model": logging.NOTSET,
+        }
+        fake_model = object()
+        seen_levels = {}
+
+        def fake_sentence_transformer(model_name):
+            assert model_name == "all-MiniLM-L6-v2"
+            seen_levels.update({name: logging.getLogger(name).level for name in self._startup_logger_levels})
+            return fake_model
+
+        sentence_transformers_module = types.ModuleType("sentence_transformers")
+        sentence_transformers_module.SentenceTransformer = fake_sentence_transformer
+        huggingface_hub_module = types.ModuleType("huggingface_hub")
+        huggingface_hub_module.disable_progress_bars = MagicMock()
+
+        try:
+            for name, level in seeded_levels.items():
+                logging.getLogger(name).setLevel(level)
+
+            with patch.dict(
+                sys.modules,
+                {
+                    "sentence_transformers": sentence_transformers_module,
+                    "huggingface_hub": huggingface_hub_module,
+                },
+            ):
+                result = engine._get_local_model()
+
+            assert seen_levels == self._startup_logger_levels
+            assert result is fake_model
+            assert engine._local_model is fake_model
+            for name, level in seeded_levels.items():
+                assert logging.getLogger(name).level == level
+        finally:
+            for name, level in previous_levels.items():
+                logging.getLogger(name).setLevel(level)
+
+    def test_get_local_model_restores_startup_logger_levels_on_failure(self):
+        import sys
+        import types
+
+        engine = EmbeddingEngine()
+        engine._model_name = "all-MiniLM-L6-v2"
+        previous_levels = {name: logging.getLogger(name).level for name in self._startup_logger_levels}
+        seeded_levels = {
+            "httpx": logging.DEBUG,
+            "huggingface_hub.utils._http": logging.INFO,
+            "transformers.modeling_utils": logging.CRITICAL,
+            "sentence_transformers.base.model": logging.NOTSET,
+        }
+        seen_levels = {}
+
+        def fake_sentence_transformer(model_name):
+            assert model_name == "all-MiniLM-L6-v2"
+            seen_levels.update({name: logging.getLogger(name).level for name in self._startup_logger_levels})
+            raise RuntimeError("model load failed")
+
+        sentence_transformers_module = types.ModuleType("sentence_transformers")
+        sentence_transformers_module.SentenceTransformer = fake_sentence_transformer
+        huggingface_hub_module = types.ModuleType("huggingface_hub")
+        huggingface_hub_module.disable_progress_bars = MagicMock()
+
+        try:
+            for name, level in seeded_levels.items():
+                logging.getLogger(name).setLevel(level)
+
+            with patch.dict(
+                sys.modules,
+                {
+                    "sentence_transformers": sentence_transformers_module,
+                    "huggingface_hub": huggingface_hub_module,
+                },
+            ):
+                with pytest.raises(RuntimeError, match="model load failed"):
+                    engine._get_local_model()
+
+            assert seen_levels == self._startup_logger_levels
+            assert engine._local_model is None
+            for name, level in seeded_levels.items():
+                assert logging.getLogger(name).level == level
+        finally:
+            for name, level in previous_levels.items():
+                logging.getLogger(name).setLevel(level)
 
 
 class TestChromaEmbeddingFunction:
