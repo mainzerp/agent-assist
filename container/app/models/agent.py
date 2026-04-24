@@ -73,7 +73,6 @@ class TaskContext(BaseModel):
     """Context propagated with an agent task."""
 
     conversation_turns: list[dict] = Field(default_factory=list)
-    presence_room: str | None = None
     entity_states: dict | None = None
     mcp_tools: list[str] = Field(default_factory=list)
     device_id: str | None = None

@@ -202,15 +202,6 @@ async def entity_visibility_page(
     return RedirectResponse(url=url, status_code=301)
 
 
-@router.get("/presence", response_class=HTMLResponse)
-async def presence_page(
-    request: Request,
-    _session: dict = Depends(require_admin_session_redirect),
-):
-    """Presence detection status page."""
-    return templates.TemplateResponse(request, "presence.html")
-
-
 @router.get("/timers", response_class=HTMLResponse)
 async def timers_page(
     request: Request,

@@ -1599,26 +1599,6 @@ class TestOrchestratorAgent:
         assert classifications[0][0] == "light-agent"
         assert routing_cached is False
 
-    @patch("app.agents.orchestrator.SettingsRepository")
-    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-    @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_presence_room_injected_into_context(self, mock_complete, mock_track, mock_settings):
-        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
-        orch, dispatcher, *_ = self._make_orchestrator()
-        mock_complete.return_value = "light-agent: Turn on light"
-
-        detector = MagicMock()
-        detector.get_most_likely_room.return_value = "kitchen"
-        orch._presence_detector = detector
-
-        task = _make_task("turn on the light")
-        await orch.handle_task(task)
-
-        # Check the dispatched task has presence_room in context
-        call_args = dispatcher.dispatch.call_args[0][0]
-        dispatched_task = call_args.params["task"]
-        assert dispatched_task["context"]["presence_room"] == "kitchen"
-
     def test_orchestrator_agent_card(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
         card = orch.agent_card

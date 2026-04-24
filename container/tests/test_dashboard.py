@@ -144,11 +144,6 @@ class TestDashboardPageAccessibility:
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
 
-    async def test_presence_page(self, dashboard_client: httpx.AsyncClient):
-        resp = await dashboard_client.get("/dashboard/presence")
-        assert resp.status_code == 200
-        assert "text/html" in resp.headers.get("content-type", "")
-
     async def test_settings_page(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/settings")
         assert resp.status_code == 200
@@ -177,12 +172,6 @@ class TestDashboardTemplateRendering:
         html = resp.text
         assert "window.dashboardApi" in html
         assert "dashboardApi.json('/api/admin/health/extended')" in html
-
-    async def test_presence_page_includes_dashboard_helper(self, dashboard_client: httpx.AsyncClient):
-        resp = await dashboard_client.get("/dashboard/presence")
-        html = resp.text
-        assert "window.dashboardApi" in html
-        assert "dashboardApi.json('/api/admin/presence/status')" in html
 
     async def test_agents_page_includes_dashboard_helper(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/agents")
@@ -313,7 +302,6 @@ class TestOverviewExtended:
             "agent_count",
             "entity_count",
             "mcp_server_count",
-            "presence_rooms",
             "avg_latency_ms",
             "total_conversations",
             "agent_distribution",

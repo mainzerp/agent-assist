@@ -525,7 +525,7 @@ class TestSetupXSSPrevention:
 @pytest.mark.asyncio
 async def test_initialize_setup_dependent_services_is_idempotent():
     """FLOW-SETUP-1 (P1-2): calling the shared init helper twice must not
-    re-instantiate HA client / cache manager / presence detector, and must
+    re-instantiate HA client / cache manager, and must
     not duplicate the DuckDuckGo MCP server registration."""
     import contextlib
     from types import SimpleNamespace
@@ -565,9 +565,6 @@ async def test_initialize_setup_dependent_services_is_idempotent():
     fake_entity_index = MagicMock()
     fake_vector_store = MagicMock()
 
-    fake_presence = MagicMock()
-    fake_presence.initialize = AsyncMock()
-
     patches = [
         patch("app.runtime_setup.HARestClient", return_value=fake_ha_client),
         patch("app.runtime_setup.EntityIndex", return_value=fake_entity_index),
@@ -587,7 +584,6 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         patch("app.runtime_setup.EntityMatcher"),
         patch("app.runtime_setup.RewriteAgent"),
         patch("app.runtime_setup.CacheManager"),
-        patch("app.runtime_setup.PresenceDetector", return_value=fake_presence),
         patch(
             "app.db.repository.McpServerRepository.get",
             new_callable=AsyncMock,
@@ -621,7 +617,6 @@ async def test_initialize_setup_dependent_services_is_idempotent():
             mock_matcher_cls,
             mock_rewrite_cls,
             mock_cache_cls,
-            _presence_cls,
             _ddg_get,
             mock_orch_cls,
             mock_general_cls,
@@ -667,7 +662,6 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         await _initialize_setup_dependent_services(app, source="test-1")
         first_ha_calls = fake_ha_client.initialize.await_count
         first_cache_cls_calls = mock_cache_cls.call_count
-        first_presence_init = fake_presence.initialize.await_count
 
         await _initialize_setup_dependent_services(app, source="test-2")
 
@@ -677,8 +671,6 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         assert fake_ha_client.reload.await_count >= 1
         # CacheManager must only be constructed once.
         assert mock_cache_cls.call_count == first_cache_cls_calls
-        # PresenceDetector must only be initialized once.
-        assert fake_presence.initialize.await_count == first_presence_init
 
 
 # ===================================================================

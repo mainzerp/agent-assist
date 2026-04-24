@@ -137,14 +137,12 @@ class OrchestratorAgent(BaseAgent):
         cache_manager=None,
         ha_client=None,
         entity_index=None,
-        presence_detector=None,
         filler_agent=None,
     ) -> None:
         super().__init__(ha_client=ha_client, entity_index=entity_index)
         self._dispatcher = dispatcher
         self._registry = registry
         self._cache_manager = cache_manager
-        self._presence_detector = presence_detector
         self._filler_agent = filler_agent
         self._conversations: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
         self._default_timeout: int = 5
@@ -355,10 +353,6 @@ class OrchestratorAgent(BaseAgent):
         """Dispatch a single task to one agent and return (agent_id, speech, result_dict)."""
         t_dispatch = time.perf_counter()
         context = TaskContext(conversation_turns=turns)
-        if self._presence_detector:
-            room = self._presence_detector.get_most_likely_room()
-            if room:
-                context.presence_room = room
         if incoming_context:
             context.device_id = incoming_context.device_id
             context.area_id = incoming_context.area_id
@@ -609,10 +603,6 @@ class OrchestratorAgent(BaseAgent):
                 language=content_language,
                 sequential_send=True,
             )
-            if self._presence_detector:
-                room = self._presence_detector.get_most_likely_room()
-                if room:
-                    content_context.presence_room = room
 
             # Populate home location/time context
             if self._ha_client:
@@ -1952,10 +1942,6 @@ class OrchestratorAgent(BaseAgent):
             context.device_name = task.context.device_name
             context.area_name = task.context.area_name
             context.source = task.context.source
-        if self._presence_detector:
-            room = self._presence_detector.get_most_likely_room()
-            if room:
-                context.presence_room = room
         if self._ha_client:
             try:
                 from zoneinfo import ZoneInfo

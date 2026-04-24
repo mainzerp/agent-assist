@@ -88,7 +88,6 @@ def build_integration_test_app(
         "mcp_registry": mcp_registry,
         "mcp_tool_manager": mcp_tool_manager,
         "ws_client": None,
-        "presence_detector": None,
         "plugin_loader": plugin_loader,
         "setup_runtime_initialized": setup_complete,
     }
@@ -333,7 +332,6 @@ async def app_client(mock_ha_rest_client, db_repository, mock_chromadb):
             app.state.mcp_registry = MagicMock()
             app.state.mcp_tool_manager = MagicMock()
             app.state.ws_client = None
-            app.state.presence_detector = None
             app.state.plugin_loader = MagicMock()
             yield
 
@@ -407,8 +405,6 @@ def mock_settings() -> dict[str, str]:
         "entity_matching.confidence_threshold": "0.60",
         "entity_matching.top_n_candidates": "3",
         "entity_matching.oversample_factor": "20",
-        "presence.enabled": "true",
-        "presence.decay_timeout": "300",
         "rewrite.model": "groq/llama-3.1-8b-instant",
         "rewrite.temperature": "0.8",
         "personality.prompt": "",

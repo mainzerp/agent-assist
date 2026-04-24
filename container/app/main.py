@@ -233,7 +233,6 @@ async def lifespan(app: FastAPI):
             dispatcher=dispatcher,
             registry=registry,
             cache_manager=None,
-            presence_detector=None,
             ha_client=None,
             entity_index=None,
             filler_agent=filler_agent,
@@ -285,7 +284,7 @@ async def lifespan(app: FastAPI):
     # Store on app.state for access elsewhere if needed. The
     # ``_initialize_setup_dependent_services`` helper already wrote
     # ``ha_client``/``entity_index``/``cache_manager``/``entity_matcher``/
-    # ``alias_resolver``/``custom_loader``/``ws_client``/``presence_detector``/
+    # ``alias_resolver``/``custom_loader``/``ws_client``/
     # ``sync_task``/``alarm_monitor`` when setup was complete. For the
     # non-setup path those stay ``None``/absent which downstream routes
     # already tolerate.
@@ -298,7 +297,6 @@ async def lifespan(app: FastAPI):
         "entity_matcher",
         "alias_resolver",
         "ws_client",
-        "presence_detector",
         "sync_task",
         "alarm_monitor",
     ):
@@ -436,13 +434,11 @@ def create_app() -> FastAPI:
     from app.api.routes import domain_agent_map_api as domain_agent_map_api_routes
     from app.api.routes import entity_visibility_api as entity_visibility_api_routes
     from app.api.routes import mcp_api as mcp_api_routes
-    from app.api.routes import presence_api as presence_api_routes
 
     app.include_router(mcp_api_routes.router)
     app.include_router(custom_agents_api_routes.router)
     app.include_router(entity_visibility_api_routes.router)
     app.include_router(entity_visibility_api_routes.entities_router)
-    app.include_router(presence_api_routes.router)
     app.include_router(domain_agent_map_api_routes.router)
 
     # Batch F routers

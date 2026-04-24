@@ -525,31 +525,6 @@ class TestPluginsAPI:
 
 
 # ===================================================================
-# Presence API
-# ===================================================================
-
-
-@pytest.mark.integration
-class TestPresenceAPI:
-    async def test_get_presence_status_returns_200(self, authed_client: httpx.AsyncClient):
-        resp = await authed_client.get("/api/admin/presence/status")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "enabled" in data
-        assert "room_confidence" in data
-        assert "sensors" in data
-
-    async def test_update_presence_config_returns_200(self, authed_client: httpx.AsyncClient):
-        resp = await authed_client.put(
-            "/api/admin/presence/config",
-            json={"enabled": False, "decay_timeout": 600.0},
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "updated"
-
-
-# ===================================================================
 # Analytics API
 # ===================================================================
 

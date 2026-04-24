@@ -16,8 +16,7 @@ A multi-agent AI assistant for Home Assistant with container-based A2A orchestra
 - **Hybrid entity matching** -- Five-signal weighted matcher (Levenshtein, Jaro-Winkler, phonetic, embedding similarity, alias lookup) with LLM disambiguation fallback
 - **MCP tool integration** -- Connect external tool servers via Model Context Protocol (stdio and SSE transports) and assign tools to agents
 - **Plugin system** -- Extend functionality with Python plugins that register agents, subscribe to events, add dashboard routes, and access settings
-- **Admin dashboard** -- HTMX-powered admin dashboard for managing agents, entities, cache, MCP servers, analytics, traces, presence, and plugins
-- **Presence detection** -- Room-level presence awareness using motion, occupancy, and mmWave sensors with weighted scoring and decay
+- **Admin dashboard** -- HTMX-powered admin dashboard for managing agents, entities, cache, MCP servers, analytics, traces, and plugins
 - **Custom agents** -- Create LLM-powered agents via the dashboard with custom system prompts, model selection, MCP tools, and intent patterns
 - **Rewrite agent** -- Optional response variation for cached responses (driven by the personality prompt) to avoid repetitive answers
 - **Setup wizard** -- Guided 5-step first-launch configuration (admin account, HA connection, API key, LLM providers, review)
@@ -168,7 +167,6 @@ container/          Docker container (FastAPI backend)
     middleware/     Auth + tracing middleware
     models/         Pydantic models
     plugins/        Plugin system
-    presence/       Presence detection
     prompts/        System prompts for orchestrator and domain agents
     security/       Encryption, hashing, sanitization
     setup/          Setup wizard

@@ -1,8 +1,52 @@
 # Version
 
-**Current Version:** 0.23.2
+**Current Version:** 0.24.0
 
 ## Version History
+
+### 0.24.0 (MINOR) -- Removed dedicated presence detection module
+
+Replaces inferred room-presence with the originating Home Assistant
+device/satellite area (`TaskContext.area_id` / `area_name`) that is
+already populated by the conversation API. Domain agents already use
+`ctx.area_id` as `preferred_area_id`, so command routing is unchanged.
+
+Breaking changes:
+- Removed admin endpoints `GET /api/admin/presence/status` and
+  `PUT /api/admin/presence/config`.
+- Removed dashboard page `/dashboard/presence` and its sidebar nav
+  entry.
+- Removed `TaskContext.presence_room`. Inbound A2A payloads that still
+  send this key are silently ignored by Pydantic; outbound payloads
+  no longer include it.
+- Dashboard overview JSON (`/api/admin/dashboard/overview` and
+  `.../overview/extended`) no longer includes `presence_rooms`.
+
+Removed code:
+- `container/app/presence/` package (detector, sensors, scoring).
+- `container/app/api/routes/presence_api.py`.
+- `container/app/dashboard/templates/presence.html`.
+- Presence wiring in `runtime_setup.py`, `main.py`,
+  `agents/orchestrator.py`, `dashboard/routes.py`,
+  `api/routes/dashboard_api.py`.
+
+Settings cleanup:
+- Schema seeds for `presence.enabled` and `presence.decay_timeout` were
+  removed. Existing rows from prior installations remain in the
+  `settings` table but are no longer read; admins may delete them
+  manually via the settings API.
+
+Tests:
+- Deleted `container/tests/test_presence.py`.
+- Removed presence-related cases from `test_api.py`,
+  `test_dashboard.py`, `test_agents.py`, `test_setup.py`, and
+  fixtures in `conftest.py`.
+
+Docs:
+- Updated `README.md`, `TODO.md`, `docs/configuration.md`,
+  `docs/api-reference.md`, `docs/architecture.md`, and
+  `.github/instructions/project-definition.md` to drop presence as a
+  feature.
 
 ### 0.23.2 (PATCH) -- Lint cleanup; pre-commit hook for ruff added
 
@@ -1535,8 +1579,9 @@ New send-agent enables content delivery to smartphones (via HA notify) and satel
 - Project scaffolding and directory structure
 - Project definition document
 
-## Recent Changes (since 0.21.1)
+## Recent Changes (since 0.24.0)
 
+- Removed dedicated presence detection module
 - Lint cleanup; pre-commit hook for ruff added
 - Match-preview empty-state diagnostics: when
   `/api/admin/entity-index/match-preview` returns zero hybrid

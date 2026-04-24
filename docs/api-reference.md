@@ -79,7 +79,7 @@ Send a natural language command and receive a full response.
 | `conversation_id` | string | no | Reuse a prior turn's conversation thread. |
 | `device_id` | string | no | HA device id of the calling satellite/voice device. |
 | `area_id` | string | no | HA area id derived from the calling device. |
-| `device_name` | string | no | Friendly device name (used by send-agent and presence). |
+| `device_name` | string | no | Friendly device name (used by send-agent). |
 | `area_name` | string | no | Friendly area name (used for context and routing). |
 | `language` | string | no | Per-turn language override; falls back to the `language` setting (default `auto`). |
 
@@ -180,7 +180,7 @@ Update multiple settings.
 ```json
 {
   "cache.routing.threshold": "0.90",
-  "presence.enabled": "true"
+  "cache.action.threshold": "0.90"
 }
 ```
 
@@ -587,7 +587,7 @@ Auth: admin session.
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/admin/dashboard/overview` | Compact JSON used by the dashboard landing page. |
-| GET | `/api/admin/dashboard/overview/extended` | Extended dashboard overview (presence, MCP, plugin status). |
+| GET | `/api/admin/dashboard/overview/extended` | Extended dashboard overview (MCP, plugin status). |
 | GET | `/api/admin/dashboard/health/extended` | Extended health snapshot for the System Health page. |
 
 Auth: admin session.
@@ -679,27 +679,6 @@ List recent traces with pagination.
 ### GET /api/admin/traces/{trace_id}
 
 Get all spans for a specific trace (for Gantt visualization).
-
----
-
-## Admin -- Presence
-
-### GET /api/admin/presence/status
-
-Get current room confidence scores, sensors, and configuration.
-
-### PUT /api/admin/presence/config
-
-Update presence detection settings.
-
-**Request body:**
-
-```json
-{
-  "enabled": true,
-  "decay_timeout": 300
-}
-```
 
 ---
 

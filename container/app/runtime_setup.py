@@ -30,7 +30,6 @@ from app.entity.ingest import parse_ha_states, state_to_entity_index_entry
 from app.entity.matcher import EntityMatcher
 from app.ha_client.home_context import home_context_provider
 from app.ha_client.rest import HARestClient
-from app.presence.detector import PresenceDetector
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -475,12 +474,6 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
     if purge_task is None or purge_task.done():
         app.state.purge_task = asyncio.create_task(_purge_stale_response_cache(cache_manager))
 
-    presence_detector = getattr(app.state, "presence_detector", None)
-    if presence_detector is None:
-        presence_detector = PresenceDetector(ha_client)
-        await presence_detector.initialize()
-        app.state.presence_detector = presence_detector
-
     try:
         await mcp_registry.load_from_db()
     except Exception:
@@ -525,7 +518,6 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
         dispatcher=dispatcher,
         registry=registry,
         cache_manager=cache_manager,
-        presence_detector=presence_detector,
         ha_client=ha_client,
         entity_index=entity_index,
         filler_agent=filler_agent,
@@ -617,14 +609,6 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
                 )
                 entity_update_queue.put_nowait(entry)
 
-        def on_state_changed_presence(event: dict) -> None:
-            data = event.get("data", {})
-            entity_id = data.get("entity_id", "")
-            new_state = data.get("new_state")
-            if new_state and entity_id.startswith("binary_sensor."):
-                area = new_state.get("attributes", {}).get("area_id")
-                presence_detector.on_sensor_state_change(entity_id, new_state.get("state", "off"), area)
-
         async def _on_timer_finished_event(event: dict) -> None:
             data = event.get("data", {})
             entity_id = data.get("entity_id", "")
@@ -642,7 +626,6 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
                 _timer_pool.release(entity_id)
 
         ws_client.on_event("state_changed", on_state_changed)
-        ws_client.on_event("state_changed", on_state_changed_presence)
         ws_client.on_event("timer.finished", _on_timer_finished_event)
         ws_client.on_event("timer.cancelled", _on_timer_cancelled_event)
 

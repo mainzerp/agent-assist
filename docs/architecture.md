@@ -37,10 +37,10 @@ All configuration, secrets, and state are stored in SQLite. ChromaDB provides ve
 |  | Agent  |  | Dispatch |   | Agents    |        |
 |  +---+---+   +----------+   +-----------+        |
 |      |                                            |
-|  +---v-----------+   +----------+  +----------+  |
-|  | Two-Tier Cache|   | Entity   |  | Presence |  |
-|  | (routing +    |   | Matcher  |  | Detector |  |
-|  |  response)    |   | (5 sig.) |  +----------+  |
+|  +---v-----------+   +----------+                 |
+|  | Two-Tier Cache|   | Entity   |                 |
+|  | (routing +    |   | Matcher  |                 |
+|  |  response)    |   | (5 sig.) |                 |
 |  +---------------+   +----------+                 |
 |                                                   |
 |  +---------------+   +----------+  +----------+  |

@@ -158,9 +158,9 @@ class TestAgentTask:
         assert task.context is None
 
     def test_task_with_context(self):
-        ctx = TaskContext(presence_room="kitchen")
+        ctx = TaskContext(area_id="kitchen")
         task = make_agent_task(context=ctx)
-        assert task.context.presence_room == "kitchen"
+        assert task.context.area_id == "kitchen"
 
     def test_task_context_language_default(self):
         ctx = TaskContext()

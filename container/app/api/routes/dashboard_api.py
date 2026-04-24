@@ -142,7 +142,6 @@ async def get_overview(request: Request):
     entity_index = request.app.state.entity_index
     cache_manager = request.app.state.cache_manager
     mcp_registry = request.app.state.mcp_registry
-    presence_detector = request.app.state.presence_detector
 
     agents = await registry.list_agents() if registry else []
 
@@ -163,14 +162,6 @@ async def get_overview(request: Request):
         try:
             servers = mcp_registry.list_servers()
             mcp_count = len(servers)
-        except Exception:
-            pass
-
-    presence_rooms = 0
-    if presence_detector:
-        try:
-            room_conf = presence_detector.get_room_confidence()
-            presence_rooms = len(room_conf)
         except Exception:
             pass
 
@@ -216,7 +207,6 @@ async def get_overview(request: Request):
         "agent_count": len(agents),
         "entity_count": entity_count,
         "mcp_server_count": mcp_count,
-        "presence_rooms": presence_rooms,
     }
 
 
@@ -231,7 +221,6 @@ async def get_overview_extended(request: Request):
     registry = request.app.state.registry
     entity_index = request.app.state.entity_index
     mcp_registry = request.app.state.mcp_registry
-    presence_detector = request.app.state.presence_detector
 
     from collections import defaultdict
     from datetime import datetime, timedelta
@@ -254,14 +243,6 @@ async def get_overview_extended(request: Request):
         try:
             servers = mcp_registry.list_servers()
             mcp_count = len(servers)
-        except Exception:
-            pass
-
-    presence_rooms = 0
-    if presence_detector:
-        try:
-            room_conf = presence_detector.get_room_confidence()
-            presence_rooms = len(room_conf)
         except Exception:
             pass
 
@@ -383,7 +364,6 @@ async def get_overview_extended(request: Request):
         "agent_count": len(agents),
         "entity_count": entity_count,
         "mcp_server_count": mcp_count,
-        "presence_rooms": presence_rooms,
         "avg_latency_ms": avg_latency,
         "total_conversations": total_conversations,
         "agent_distribution": agent_distribution,

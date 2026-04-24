@@ -427,9 +427,6 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "agents",
             "Primary user message for actionable agents: 'original_when_translated' or 'description_first'",
         ),
-        # Presence settings
-        ("presence.enabled", "true", "bool", "presence", "Enable presence detection"),
-        ("presence.decay_timeout", "300", "int", "presence", "Presence decay timeout in seconds"),
         # Rewrite agent settings
         ("rewrite.model", "groq/llama-3.1-8b-instant", "string", "rewrite", "LLM model for rewrite agent"),
         ("rewrite.temperature", "0.8", "float", "rewrite", "Temperature for rewrite agent"),

@@ -63,13 +63,6 @@ accepted as a legacy alias on read).
 | `entity_matching.top_n_candidates` | `3` | int | Number of candidates for LLM disambiguation |
 | `entity_matching.oversample_factor` | `20` | int | Embedding shortlist multiplier when agent visibility/preferred-domain hints are present |
 
-### Presence Settings
-
-| Key | Default | Type | Description |
-|-----|---------|------|-------------|
-| `presence.enabled` | `true` | bool | Enable presence detection |
-| `presence.decay_timeout` | `300` | int | Seconds before presence confidence decays |
-
 ### Rewrite Agent Settings
 
 The rewrite agent runs only when `personality.prompt` (see
