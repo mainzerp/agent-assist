@@ -2,7 +2,7 @@
 
 from app.agents.actionable import ActionableAgent
 from app.agents.timer_executor import execute_timer_action
-from app.models.agent import AgentCard
+from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
 
 
 class TimerAgent(ActionableAgent):
@@ -26,6 +26,12 @@ class TimerAgent(ActionableAgent):
             device_id=device_id,
             area_id=area_id,
             span_collector=span_collector,
+        )
+
+    def _handle_parse_miss(self, task: AgentTask, response: str) -> TaskResult:
+        return self._error_result(
+            AgentErrorCode.PARSE_ERROR,
+            "I could not understand the timer command well enough to run it. Please try again.",
         )
 
     @property

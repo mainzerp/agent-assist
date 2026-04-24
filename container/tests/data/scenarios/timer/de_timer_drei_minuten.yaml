@@ -1,0 +1,41 @@
+id: timer.de_timer_drei_minuten
+agent: timer-agent
+description: German request to start a generic 3 minute timer
+snapshot: home_default
+language: de
+
+context:
+  source: ha
+  area_id: kitchen
+  area_name: "Kueche"
+  device_id: satellite_kitchen
+
+request:
+  text: "Stelle einen Timer auf 3 Minuten."
+
+preconditions:
+  entity_overrides:
+    - entity_id: timer.kitchen_5min
+      state: "idle"
+    - entity_id: timer.bedroom_sleep
+      state: "active"
+
+llm:
+  classify: |
+    timer-agent (95%): Stelle einen Timer auf 3 Minuten
+  agents:
+    timer-agent: |
+      ```json
+      {"action": "start_timer", "entity": "Dreiminutentimer", "parameters": {"duration": "00:03:00"}}
+      ```
+      Ich starte den Timer.
+
+expected:
+  routed_agent: timer-agent
+  service_calls:
+    - domain: timer
+      service: start
+      target_entity: timer.kitchen_5min
+      service_data: {duration: "00:03:00"}
+  speech_contains: ["timer"]
+  speech_excludes: ["could not verify", "could not understand"]

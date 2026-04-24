@@ -532,7 +532,28 @@ class TestTimerExecutorVerification:
         assert "active" in result["speech"] or "started" in result["speech"]
 
     @pytest.mark.asyncio
-    async def test_cancel_timer_stale_active_does_not_speak_active(self):
+    async def test_start_timer_unverified_returns_failure(self):
+        from app.agents.timer_executor import execute_timer_action
+
+        ha_client = _make_ha_client(call_result=[], observed_state=None)
+        matcher = _make_matcher("timer.pasta", "Pasta")
+        result = await execute_timer_action(
+            {
+                "action": "start_timer",
+                "entity": "pasta",
+                "parameters": {"duration": "00:05:00"},
+            },
+            ha_client,
+            MagicMock(),
+            matcher,
+        )
+        assert result["success"] is False
+        assert result["new_state"] is None
+        assert "could not verify" in result["speech"].lower()
+        assert "active" in result["speech"].lower()
+
+    @pytest.mark.asyncio
+    async def test_cancel_timer_stale_active_returns_failure(self):
         from app.agents.timer_executor import execute_timer_action
 
         ha_client = _make_ha_client(call_result=[], observed_state="active")
@@ -543,5 +564,7 @@ class TestTimerExecutorVerification:
             MagicMock(),
             matcher,
         )
-        assert result["success"] is True
-        assert "is now active" not in result["speech"]
+        assert result["success"] is False
+        assert result["new_state"] == "active"
+        assert "could not verify" in result["speech"].lower()
+        assert "active instead of idle" in result["speech"].lower()

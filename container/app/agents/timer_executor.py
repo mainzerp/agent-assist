@@ -361,6 +361,21 @@ def _format_timer_state(entity_id: str, state_resp: dict) -> str:
     return f"{friendly_name}: {state}."
 
 
+def _build_unverified_timer_speech(
+    *,
+    friendly_name: str,
+    expected_state: str,
+    observed_state: str | None,
+) -> str:
+    """Build non-optimistic speech for unverified timer state changes."""
+    if observed_state:
+        return (
+            f"I could not verify {friendly_name}. "
+            f"Home Assistant reported {observed_state} instead of {expected_state}."
+        )
+    return f"I could not verify that {friendly_name} reached {expected_state}."
+
+
 # ---------------------------------------------------------------------------
 # Read-only action handlers
 # ---------------------------------------------------------------------------
@@ -1252,6 +1267,18 @@ async def execute_timer_action(
         }
 
     new_state = verify["observed_state"]
+
+    if expected_state and not verify["verified"]:
+        return {
+            "success": False,
+            "entity_id": entity_id,
+            "new_state": new_state,
+            "speech": _build_unverified_timer_speech(
+                friendly_name=friendly_name,
+                expected_state=expected_state,
+                observed_state=new_state,
+            ),
+        }
 
     # Release pool mapping and cancel delayed tasks when timer is cancelled or finished
     if action_name in ("cancel_timer", "finish_timer") and entity_id:

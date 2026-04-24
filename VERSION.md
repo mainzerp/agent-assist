@@ -2,6 +2,13 @@
 
 **Current Version:** 0.24.0
 
+## Recent Changes (since 0.24.0)
+
+- Timer-agent hardening: generic timer prompts now align with the structured
+  action parser, timer-agent no longer falls back to success-sounding prose
+  when timer JSON is malformed or unusable, and deterministic timer state
+  changes only report success after Home Assistant verification.
+
 ## Version History
 
 ### 0.24.0 (MINOR) -- Removed dedicated presence detection module

@@ -43,6 +43,10 @@ class ActionableAgent(BaseAgent):
         """Execute the parsed action. Subclasses must override."""
         raise NotImplementedError
 
+    def _handle_parse_miss(self, task: AgentTask, response: str) -> TaskResult:
+        """Return the fallback result when the LLM response has no valid action."""
+        return TaskResult(speech=strip_json_blocks(response))
+
     async def handle_task(self, task: AgentTask) -> TaskResult:
         # FLOW-CTX-1 (0.18.6): expose the incoming TaskContext so
         # domain-specific ``_do_execute`` implementations can pick up
@@ -220,4 +224,4 @@ class ActionableAgent(BaseAgent):
             )
 
         # Path C: No action (informational)
-        return TaskResult(speech=strip_json_blocks(response))
+        return self._handle_parse_miss(task, response)

@@ -172,6 +172,12 @@ class TestParseAction:
         result = parse_action(response)
         assert result is None
 
+    def test_parse_action_rejects_entityless_start_timer(self):
+        """Timer writes stay aligned with the shared entity-required contract."""
+        response = '```json\n{"action": "start_timer", "parameters": {"duration": "00:05:00"}}\n```'
+        result = parse_action(response)
+        assert result is None
+
     def test_parse_action_rejects_empty_action_string(self):
         """P2-6 (FLOW-PARSE-1): the schema requires ``action`` to be a
         non-empty string."""

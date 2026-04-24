@@ -619,12 +619,30 @@ class TestMediaAgent:
 
 
 class TestTimerAgent:
-    @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="The timer has 3 minutes left.")
-    async def test_handle_task_returns_speech(self, mock_complete):
-        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock())
+    @patch(
+        "app.agents.timer.execute_timer_action",
+        new_callable=AsyncMock,
+        return_value={
+            "success": True,
+            "entity_id": "timer.kitchen",
+            "new_state": "active",
+            "speech": "Kitchen Timer is active with 3 minutes left.",
+        },
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "query_timer", "entity": "kitchen timer", "parameters": {}}\n```\nChecking timer.',
+    )
+    async def test_handle_task_structured_query_timer_executes(self, mock_complete, mock_exec):
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
         result = await agent.handle_task(_make_task("how much time is left?"))
+        assert result.action_executed is not None
+        assert result.action_executed.action == "query_timer"
+        assert result.action_executed.success is True
         assert "3 minutes" in result.speech
         mock_complete.assert_awaited_once()
+        mock_exec.assert_awaited_once()
 
     @patch(
         "app.llm.client.complete",
@@ -673,14 +691,15 @@ class TestTimerAgent:
     @patch(
         "app.llm.client.complete",
         new_callable=AsyncMock,
-        return_value='Timer is running. {"action": "start_timer", "entity": "x", "parameters": {}} All set.',
+        return_value='```json\n{"action": "start_timer", "parameters": {"duration": "00:05:00"}}\n```\nStarting the timer now.',
     )
-    async def test_handle_task_strips_json_from_fallback(self, mock_complete):
-        with patch("app.agents.actionable.parse_action", return_value=None):
-            agent = TimerAgent()
-            result = await agent.handle_task(_make_task("how much time is left?"))
-            assert "{" not in result.speech
-            assert "action" not in result.speech
+    async def test_handle_task_parse_miss_returns_explicit_failure(self, mock_complete):
+        agent = TimerAgent()
+        result = await agent.handle_task(_make_task("set a timer for 5 minutes"))
+        assert result.action_executed is None
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.PARSE_ERROR
+        assert "could not understand the timer command" in result.speech.lower()
 
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="")
     async def test_handle_task_empty_llm_response(self, mock_complete):
