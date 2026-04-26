@@ -1024,119 +1024,133 @@ class TestTimerExecutor:
         scheduler.schedule.assert_awaited_once()
         assert scheduler.schedule.await_args.kwargs["kind"] == "snooze"
 
-    async def test_set_datetime_unresolved_single_visible_target_auto_selects(self):
-        """Unresolved set_datetime auto-selects exactly one visible input_datetime target."""
+    async def test_set_datetime_schedules_internal_alarm(self):
+        """set_datetime creates an internal scheduler-backed alarm."""
         from unittest.mock import patch as _patch
 
-        matcher = MagicMock()
-        matcher.match = AsyncMock(return_value=[])
-        matcher.filter_visible_results = AsyncMock(
-            return_value=[MagicMock(entity_id="input_datetime.morning_alarm")]
-        )
-        entity_index = MagicMock()
-        entity_index.list_entries_async = AsyncMock(
-            return_value=[self._Entry("input_datetime.morning_alarm", "Morning Alarm")]
-        )
+        scheduler = MagicMock()
+        scheduler.schedule = AsyncMock(return_value="alarm-123")
 
-        with _patch(
-            "app.agents.timer_executor.call_service_with_verification",
-            new_callable=AsyncMock,
-            return_value={"success": True, "observed_state": "07:00:00"},
-        ) as verify_call:
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
-                {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "07:00:00"}},
+                {"action": "set_datetime", "entity": "Morning Alarm", "parameters": {"time": "07:00:00"}},
                 AsyncMock(),
-                entity_index,
-                matcher,
+                None,
+                None,
+                agent_id="timer-agent",
+                device_id="device-1",
+                area_id="bedroom",
+                language="de",
+            )
+
+        assert result["success"] is True
+        assert result["new_state"] == "scheduled"
+        assert result["metadata"]["scheduler_alarm_id"] == "alarm-123"
+        scheduler.schedule.assert_awaited_once()
+        kwargs = scheduler.schedule.await_args.kwargs
+        assert kwargs["kind"] == "alarm"
+        assert kwargs["logical_name"] == "Morning Alarm"
+        assert kwargs["origin_device_id"] == "device-1"
+        assert kwargs["origin_area"] == "bedroom"
+        assert kwargs["payload"]["alarm_label"] == "Morning Alarm"
+        assert kwargs["payload"]["language"] == "de"
+
+    async def test_set_datetime_time_only_rolls_over_to_next_day_when_needed(self):
+        """time-only set_datetime schedules for next day if the time already passed today."""
+        from datetime import datetime, timedelta
+        from unittest.mock import patch as _patch
+
+        scheduler = MagicMock()
+        scheduler.schedule = AsyncMock(return_value="alarm-124")
+        now = datetime.now().replace(microsecond=0)
+        past_time = (now - timedelta(minutes=1)).strftime("%H:%M:%S")
+
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "set_datetime", "entity": "Alarm", "parameters": {"time": past_time}},
+                AsyncMock(),
+                None,
+                None,
                 agent_id="timer-agent",
             )
 
         assert result["success"] is True
-        assert result["entity_id"] == "input_datetime.morning_alarm"
-        assert "Updated Morning Alarm" in result["speech"]
-        assert verify_call.await_args.args[3] == "input_datetime.morning_alarm"
+        kwargs = scheduler.schedule.await_args.kwargs
+        assert kwargs["duration_seconds"] > 23 * 3600
 
-    async def test_set_datetime_unresolved_multiple_visible_targets_requires_disambiguation(self):
-        """Unresolved set_datetime returns disambiguation when multiple visible targets exist."""
+    async def test_list_alarms_returns_internal_sorted_rows(self):
+        """list_alarms queries internal alarm rows and exposes source metadata."""
         from unittest.mock import patch as _patch
 
-        matcher = MagicMock()
-        matcher.match = AsyncMock(return_value=[])
-        matcher.filter_visible_results = AsyncMock(
+        scheduler = MagicMock()
+        scheduler.list = AsyncMock(
             return_value=[
-                MagicMock(entity_id="input_datetime.morning_alarm"),
-                MagicMock(entity_id="input_datetime.work_alarm"),
-            ]
-        )
-        entity_index = MagicMock()
-        entity_index.list_entries_async = AsyncMock(
-            return_value=[
-                self._Entry("input_datetime.morning_alarm", "Morning Alarm"),
-                self._Entry("input_datetime.work_alarm", "Work Alarm"),
+                {"id": "a1", "logical_name": "Wake", "fires_at": 200, "state": "pending"},
+                {"id": "a2", "logical_name": "Work", "fires_at": 400, "state": "pending"},
             ]
         )
 
-        with _patch("app.agents.timer_executor.call_service_with_verification", new_callable=AsyncMock) as verify_call:
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
-                {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "07:00:00"}},
+                {"action": "list_alarms", "entity": ""},
                 AsyncMock(),
-                entity_index,
-                matcher,
-                agent_id="timer-agent",
-            )
-
-        assert result["success"] is False
-        assert "Multiple alarm targets are available" in result["speech"]
-        assert "Morning Alarm" in result["speech"]
-        assert "Work Alarm" in result["speech"]
-        verify_call.assert_not_awaited()
-
-    async def test_set_datetime_unresolved_no_visible_target_returns_setup_guidance(self):
-        """Unresolved set_datetime returns setup guidance when no visible target exists."""
-        matcher = MagicMock()
-        matcher.match = AsyncMock(return_value=[])
-        matcher.filter_visible_results = AsyncMock(return_value=[])
-        entity_index = MagicMock()
-        entity_index.list_entries_async = AsyncMock(return_value=[])
-
-        result = await execute_timer_action(
-            {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "07:00:00"}},
-            AsyncMock(),
-            entity_index,
-            matcher,
-            agent_id="timer-agent",
-        )
-
-        assert result["success"] is False
-        assert "input_datetime" in result["speech"]
-
-    async def test_set_datetime_explicit_resolved_entity_path_unchanged(self):
-        """Resolved explicit set_datetime target keeps existing behavior and bypasses fallback listing."""
-        from unittest.mock import patch as _patch
-
-        matcher = MagicMock()
-        matcher.match = AsyncMock(
-            return_value=[MagicMock(entity_id="input_datetime.morning_alarm", friendly_name="Morning Alarm", score=0.99)]
-        )
-        entity_index = MagicMock()
-        entity_index.list_entries_async = AsyncMock(side_effect=AssertionError("fallback listing should not run"))
-
-        with _patch(
-            "app.agents.timer_executor.call_service_with_verification",
-            new_callable=AsyncMock,
-            return_value={"success": True, "observed_state": "07:00:00"},
-        ) as verify_call:
-            result = await execute_timer_action(
-                {"action": "set_datetime", "entity": "morning alarm", "parameters": {"time": "07:00:00"}},
-                AsyncMock(),
-                entity_index,
-                matcher,
+                None,
+                None,
                 agent_id="timer-agent",
             )
 
         assert result["success"] is True
-        assert result["entity_id"] == "input_datetime.morning_alarm"
-        verify_call.assert_awaited_once()
+        assert "Internal alarms" in result["speech"]
+        assert result["metadata"]["alarms"][0]["source"] == "internal"
+        scheduler.list.assert_awaited_once_with(area=None, kinds={"alarm"})
+
+    async def test_cancel_alarm_by_id_success(self):
+        """cancel_alarm cancels a matching internal alarm by id."""
+        from unittest.mock import patch as _patch
+
+        scheduler = MagicMock()
+        scheduler.list = AsyncMock(return_value=[{"id": "alarm-1", "logical_name": "Wake", "fires_at": 9999999999}])
+        scheduler.cancel = AsyncMock(return_value=1)
+
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "cancel_alarm", "entity": "", "parameters": {"id": "alarm-1"}},
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+            )
+
+        assert result["success"] is True
+        scheduler.cancel.assert_awaited_once_with(id_="alarm-1")
+
+    async def test_cancel_alarm_by_name_ambiguous_returns_candidates_without_cancel(self):
+        """cancel_alarm ambiguity never cancels implicitly."""
+        from unittest.mock import patch as _patch
+
+        scheduler = MagicMock()
+        scheduler.list = AsyncMock(
+            return_value=[
+                {"id": "alarm-1", "logical_name": "Morning Alarm", "fires_at": 1000, "origin_area": "bedroom"},
+                {"id": "alarm-2", "logical_name": "morning-alarm", "fires_at": 1200, "origin_area": "bedroom"},
+            ]
+        )
+        scheduler.cancel = AsyncMock(return_value=0)
+
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "cancel_alarm", "entity": "morning alarm", "parameters": {}},
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+                area_id="bedroom",
+            )
+
+        assert result["success"] is False
+        assert result["metadata"]["status"] == "ambiguous"
+        assert len(result["metadata"]["candidates"]) == 2
+        scheduler.cancel.assert_not_awaited()
 
     async def test_unknown_action(self):
         """Unknown action returns error."""

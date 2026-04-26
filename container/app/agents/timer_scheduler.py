@@ -25,7 +25,7 @@ from app.db.repository import ScheduledTimersRepository
 logger = logging.getLogger(__name__)
 
 
-_VALID_KINDS = frozenset({"plain", "notification", "delayed_action", "sleep", "snooze"})
+_VALID_KINDS = frozenset({"plain", "notification", "delayed_action", "sleep", "snooze", "alarm"})
 
 
 class TimerScheduler:
@@ -180,9 +180,15 @@ class TimerScheduler:
             count += 1
         return count
 
-    async def list(self, *, logical_name: str | None = None, area: str | None = None) -> list[dict]:
+    async def list(
+        self,
+        *,
+        logical_name: str | None = None,
+        area: str | None = None,
+        kinds: set[str] | frozenset[str] | None = None,
+    ) -> list[dict]:
         """Return pending timers, optionally filtered by logical_name and/or area."""
-        return await self._repo.list_pending_for(logical_name=logical_name, area=area)
+        return await self._repo.list_pending_for(logical_name=logical_name, area=area, kinds=kinds)
 
     # ------------------------------------------------------------------
     # Internals
@@ -265,6 +271,23 @@ class TimerScheduler:
                     "language": language,
                 },
                 description=f"Dispatch timer notification for {display_name or 'timer'}",
+            )
+            return
+
+        if kind == "alarm":
+            alarm_name = (payload.get("alarm_label") or logical_name or "alarm").strip() or "alarm"
+            synthetic_entity_id = f"agenthub_alarm:{row['id']}"
+            await gateway.dispatch_background_event(
+                "alarm_notification",
+                {
+                    "alarm_name": alarm_name,
+                    "entity_id": synthetic_entity_id,
+                    "media_player": payload.get("media_player"),
+                    "origin_device_id": origin_device_id,
+                    "origin_area": origin_area,
+                    "language": language,
+                },
+                description=f"Dispatch alarm notification for {alarm_name}",
             )
             return
 

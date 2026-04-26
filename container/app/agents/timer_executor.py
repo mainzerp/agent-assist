@@ -8,8 +8,9 @@ AgentHub-managed ``TimerScheduler`` (``app.agents.timer_scheduler``).
 
 This module retains:
 - read-only handlers (``query_timer``, ``list_timers`` against the
-  scheduler; ``list_alarms`` against ``input_datetime.*`` HA entities)
-- ``set_datetime`` (HA ``input_datetime.set_datetime``)
+    scheduler; ``list_alarms`` against internal scheduler alarms)
+- ``set_datetime`` (internal scheduler-backed alarm create)
+- ``cancel_alarm`` (internal scheduler-backed alarm cancel)
 - ``create_reminder`` / ``create_recurring_reminder`` (HA
   ``calendar.create_event``)
 
@@ -22,8 +23,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from app.agents.action_executor import (
@@ -36,17 +38,14 @@ logger = logging.getLogger(__name__)
 
 
 _TIMER_ACTION_MAP: dict[str, tuple[str, str]] = {
-    "set_datetime": ("input_datetime", "set_datetime"),
 }
 
 _ACTION_PHRASES: dict[str, str] = {
-    "set_datetime": "updated",
 }
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"input_datetime"})
 
 _ACTION_DOMAINS: dict[str, frozenset[str]] = {
-    "set_datetime": frozenset({"input_datetime"}),
 }
 
 _INPUT_DATETIME_DOMAINS: frozenset[str] = frozenset({"input_datetime"})
@@ -116,10 +115,7 @@ async def _list_visible_input_datetime_targets(
 
 def _should_attempt_set_datetime_fallback(action_name: str, action: dict) -> bool:
     """Gate unresolved set_datetime fallback without keyword heuristics."""
-    if action_name != "set_datetime":
-        return False
-    params = action.get("parameters") or {}
-    return any(str(params.get(key, "")).strip() for key in ("datetime", "time", "date"))
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +210,64 @@ def _normalize_timer_name(s: str) -> str:
     return normalized
 
 
+def _normalize_alarm_name(s: str) -> str:
+    """Normalize alarm names for deterministic cancellation matching."""
+    text = str(s or "").strip().casefold()
+    text = re.sub(r"[_\-]+", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def _format_alarm_time_local(epoch: int) -> str:
+    return datetime.fromtimestamp(int(epoch)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _parse_alarm_target_epoch(params: dict[str, Any], *, now_ts: int) -> tuple[int | None, str | None]:
+    raw_datetime = str(params.get("datetime", "")).strip()
+    raw_time = str(params.get("time", "")).strip()
+    raw_date = str(params.get("date", "")).strip()
+
+    if raw_datetime:
+        candidate = raw_datetime.replace("T", " ")
+        try:
+            dt = datetime.fromisoformat(candidate)
+        except ValueError:
+            return None, "Invalid datetime format. Use YYYY-MM-DD HH:MM:SS."
+        epoch = int(dt.timestamp())
+        if epoch <= now_ts:
+            return None, "Alarm datetime must be in the future."
+        return epoch, None
+
+    if raw_time:
+        parsed_time = None
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                parsed_time = datetime.strptime(raw_time, fmt).time()
+                break
+            except ValueError:
+                continue
+        if parsed_time is None:
+            return None, "Invalid time format. Use HH:MM or HH:MM:SS."
+        now_local = datetime.fromtimestamp(now_ts)
+        scheduled = datetime.combine(now_local.date(), parsed_time)
+        if int(scheduled.timestamp()) <= now_ts:
+            scheduled = scheduled + timedelta(days=1)
+        return int(scheduled.timestamp()), None
+
+    if raw_date:
+        try:
+            target_date = datetime.fromisoformat(raw_date).date()
+        except ValueError:
+            return None, "Invalid date format. Use YYYY-MM-DD."
+        scheduled = datetime.combine(target_date, datetime.min.time())
+        epoch = int(scheduled.timestamp())
+        if epoch <= now_ts:
+            return None, "Alarm date must be in the future."
+        return epoch, None
+
+    return None, "Provide one of datetime, time, or date for set_datetime."
+
+
 # ---------------------------------------------------------------------------
 # Read-only action handlers
 # ---------------------------------------------------------------------------
@@ -235,7 +289,7 @@ async def _handle_read_action(
     if action_name == "list_timers":
         return await _list_timers(area_id=area_id)
     if action_name == "list_alarms":
-        return await _list_alarms(ha_client)
+        return await _list_alarms(area_id=area_id)
     return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}
 
 
@@ -303,33 +357,197 @@ async def _list_timers(*, area_id: str | None = None) -> dict:
     }
 
 
-async def _list_alarms(ha_client: Any) -> dict:
-    try:
-        states = await ha_client.get_states()
-    except Exception as exc:
-        logger.error("Failed to fetch states for list_alarms", exc_info=True)
-        return {"success": False, "entity_id": "", "new_state": None, "speech": f"Failed to list alarms: {exc}"}
+async def _list_alarms(*, area_id: str | None = None) -> dict:
+    scheduler = _get_scheduler()
+    if scheduler is None:
+        return {
+            "success": False,
+            "entity_id": "",
+            "new_state": None,
+            "speech": "Timer scheduler is unavailable.",
+            "cacheable": False,
+        }
 
-    alarms = [s for s in states if s.get("entity_id", "").startswith("input_datetime.")]
-    if not alarms:
+    rows = await scheduler.list(area=area_id, kinds={"alarm"})
+    if not rows:
         return {
             "success": True,
             "entity_id": "",
             "new_state": None,
-            "speech": "No alarm or input_datetime entities found.",
+            "speech": "No internal alarms are currently scheduled.",
+            "cacheable": False,
         }
-    lines = []
-    for a in alarms:
-        state = a.get("state", "unknown")
-        attrs = a.get("attributes", {})
-        friendly_name = attrs.get("friendly_name", a.get("entity_id", ""))
-        lines.append(f"{friendly_name}: {state}")
+
+    alarm_rows: list[dict[str, Any]] = []
+    lines: list[str] = []
+    for row in rows:
+        fires_at = int(row.get("fires_at") or 0)
+        local_time = _format_alarm_time_local(fires_at)
+        alarm_rows.append(
+            {
+                "id": row.get("id"),
+                "logical_name": row.get("logical_name") or "alarm",
+                "fires_at": fires_at,
+                "local_time": local_time,
+                "state": row.get("state") or "pending",
+                "source": "internal",
+            }
+        )
+        lines.append(f"{row.get('logical_name') or 'alarm'} at {local_time} (id {row.get('id')})")
+
     return {
         "success": True,
         "entity_id": "",
         "new_state": None,
-        "speech": "Alarms: " + "; ".join(lines) + ".",
+        "speech": "Internal alarms: " + "; ".join(lines) + ".",
         "cacheable": False,
+        "metadata": {"alarms": alarm_rows},
+    }
+
+
+async def _set_alarm(
+    action: dict,
+    *,
+    device_id: str | None,
+    area_id: str | None,
+    language: str | None,
+) -> dict:
+    scheduler = _get_scheduler()
+    if scheduler is None:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "Timer scheduler is unavailable.",
+        }
+
+    params = action.get("parameters") or {}
+    now_ts = int(time.time())
+    target_epoch, error = _parse_alarm_target_epoch(params, now_ts=now_ts)
+    if target_epoch is None:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": error or "Could not parse alarm target time.",
+        }
+
+    entity_query = (action.get("entity") or "").strip()
+    logical_name = entity_query or str(params.get("label", "")).strip() or "alarm"
+    duration_seconds = max(0, int(target_epoch) - now_ts)
+    timer_id = await scheduler.schedule(
+        logical_name=logical_name,
+        kind="alarm",
+        duration_seconds=duration_seconds,
+        origin_device_id=device_id,
+        origin_area=area_id,
+        payload={
+            "alarm_label": logical_name,
+            "language": language,
+            "scheduled_for_epoch": int(target_epoch),
+        },
+    )
+    local_time = _format_alarm_time_local(target_epoch)
+    return {
+        "success": True,
+        "entity_id": None,
+        "new_state": "scheduled",
+        "speech": f"Scheduled alarm '{logical_name}' for {local_time}.",
+        "metadata": {
+            "scheduler_alarm_id": timer_id,
+            "fires_at": int(target_epoch),
+            "source": "internal",
+        },
+    }
+
+
+async def _cancel_alarm(action: dict, *, area_id: str | None) -> dict:
+    scheduler = _get_scheduler()
+    if scheduler is None:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "Timer scheduler is unavailable.",
+        }
+
+    params = action.get("parameters") or {}
+    raw_id = str(params.get("id") or "").strip()
+    pending = await scheduler.list(kinds={"alarm"})
+
+    if raw_id:
+        by_id = [row for row in pending if str(row.get("id")) == raw_id]
+        if not by_id:
+            return {
+                "success": False,
+                "entity_id": None,
+                "new_state": None,
+                "speech": f"No pending internal alarm found for id {raw_id}.",
+                "metadata": {"status": "not_found", "source": "internal"},
+            }
+        await scheduler.cancel(id_=raw_id)
+        logical_name = by_id[0].get("logical_name") or "alarm"
+        return {
+            "success": True,
+            "entity_id": None,
+            "new_state": "cancelled",
+            "speech": f"Cancelled alarm '{logical_name}' ({raw_id}).",
+            "metadata": {"status": "cancelled", "id": raw_id, "source": "internal"},
+        }
+
+    target_name = str(params.get("name") or action.get("entity") or "").strip()
+    if not target_name:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "Please provide an alarm id or alarm name to cancel.",
+        }
+
+    scope = [row for row in pending if (area_id is None or row.get("origin_area") == area_id)]
+    normalized_target = _normalize_alarm_name(target_name)
+    matches = [row for row in scope if _normalize_alarm_name(str(row.get("logical_name") or "")) == normalized_target]
+    matches.sort(key=lambda r: (int(r.get("fires_at") or 0), str(r.get("id") or "")))
+
+    if not matches:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": f"No pending internal alarm named '{target_name}' was found.",
+            "metadata": {"status": "not_found", "source": "internal"},
+        }
+
+    if len(matches) > 1:
+        candidates = [
+            {
+                "id": row.get("id"),
+                "logical_name": row.get("logical_name") or "alarm",
+                "fires_at": int(row.get("fires_at") or 0),
+                "local_time": _format_alarm_time_local(int(row.get("fires_at") or 0)),
+            }
+            for row in matches
+        ]
+        choices = "; ".join(f"{c['logical_name']} at {c['local_time']} (id {c['id']})" for c in candidates)
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": (
+                f"Multiple alarms match '{target_name}': {choices}. "
+                "Please specify the alarm id or exact scheduled time."
+            ),
+            "metadata": {"status": "ambiguous", "candidates": candidates, "source": "internal"},
+        }
+
+    match = matches[0]
+    await scheduler.cancel(id_=str(match.get("id")))
+    return {
+        "success": True,
+        "entity_id": None,
+        "new_state": "cancelled",
+        "speech": f"Cancelled alarm '{match.get('logical_name') or 'alarm'}'.",
+        "metadata": {"status": "cancelled", "id": match.get("id"), "source": "internal"},
     }
 
 
@@ -1055,8 +1273,12 @@ async def execute_timer_action(
         return await _create_recurring_reminder(
             action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
         )
+    if action_name == "set_datetime":
+        return await _set_alarm(action, device_id=device_id, area_id=area_id, language=language)
+    if action_name == "cancel_alarm":
+        return await _cancel_alarm(action, area_id=area_id)
 
-    # Fall through: simple HA service-call actions (input_datetime only).
+    # Fall through: legacy mapped actions (currently none).
     mapping = _TIMER_ACTION_MAP.get(action_name)
     if not mapping:
         return {

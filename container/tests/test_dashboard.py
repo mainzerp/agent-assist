@@ -338,6 +338,39 @@ class TestTimerDashboardApiContract:
         assert rows[0]["origin_label"] == "Kitchen"
         assert rows[1]["origin_label"] == "attic"
 
+    async def test_admin_timers_alarm_sources_include_internal_and_ha_legacy(self, dashboard_client: httpx.AsyncClient):
+        app = dashboard_client._transport.app
+        app.state.timer_scheduler = MagicMock()
+        app.state.timer_scheduler.list = AsyncMock(
+            return_value=[
+                {
+                    "id": "alarm-1",
+                    "logical_name": "Morning Alarm",
+                    "kind": "alarm",
+                    "fires_at": 9999999999,
+                    "duration_seconds": 300,
+                    "origin_area": "bedroom",
+                    "origin_device_id": "device-1",
+                    "state": "pending",
+                }
+            ]
+        )
+        app.state.ha_client.get_states = AsyncMock(
+            return_value=[
+                {
+                    "entity_id": "input_datetime.legacy_alarm",
+                    "state": "07:00:00",
+                    "attributes": {"friendly_name": "Legacy Alarm", "has_date": False, "has_time": True},
+                }
+            ]
+        )
+
+        resp = await dashboard_client.get("/api/admin/timers")
+        assert resp.status_code == 200
+        alarms = resp.json()["alarms"]
+        assert any(a.get("source") == "internal" and a.get("name") == "Morning Alarm" for a in alarms)
+        assert any(a.get("source") == "ha_legacy" and a.get("entity_id") == "input_datetime.legacy_alarm" for a in alarms)
+
 
 # ===================================================================
 # Personality page

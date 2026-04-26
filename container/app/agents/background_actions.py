@@ -58,10 +58,19 @@ async def handle_background_event(
     payload = dict(event.payload or {})
 
     if event.event_type == "alarm_notification":
+        metadata = NotificationMetadata(
+            media_player_entity=payload.get("media_player"),
+            origin_device_id=payload.get("origin_device_id") or getattr(context, "device_id", None),
+            origin_area=payload.get("origin_area") or getattr(context, "area_id", None),
+            duration=None,
+            language=payload.get("language"),
+        )
         await dispatch_alarm_notification(
             ha_client=ha_client,
             alarm_name=payload.get("alarm_name") or "Alarm",
             entity_id=payload.get("entity_id") or "",
+            metadata=metadata,
+            entity_index=entity_index,
         )
         return {"speech": ""}
 
@@ -362,17 +371,62 @@ async def dispatch_alarm_notification(
     ha_client: Any,
     alarm_name: str,
     entity_id: str,
+    metadata: Any = None,
+    entity_index: Any = None,
 ) -> None:
     """Dispatch notifications for an alarm that has fired."""
     profile = await _load_notification_profile()
-    language = await SettingsRepository.get_value("language") or "en"
+    language = await _resolve_notification_language(ha_client, metadata)
     lang_key = "de" if language.startswith("de") else "en"
+    media_player = metadata.media_player_entity if metadata else None
+    origin_device_id = metadata.origin_device_id if metadata else None
+    area = metadata.origin_area if metadata else None
+
+    satellite_entity = await _resolve_satellite_from_origin_device(ha_client, origin_device_id)
+    if not satellite_entity:
+        satellite_entity = await _resolve_satellite_device(ha_client, area, entity_index=entity_index)
+
+    if not media_player and not satellite_entity:
+        media_player = await _resolve_timer_playback_target(
+            ha_client,
+            origin_device_id=origin_device_id,
+            area=area,
+            entity_index=entity_index,
+        )
 
     alarm_messages = {
         "de": "Alarm {name} ist ausgeloest",
         "en": "Alarm {name} has triggered",
     }
     message = alarm_messages.get(lang_key, alarm_messages["en"]).format(name=alarm_name)
+
+    if profile.get("tts_enabled", True):
+        if satellite_entity and message:
+            await _notify_satellite_announce(ha_client, satellite_entity, message)
+            spawn(
+                _trigger_conversation_continuation(
+                    ha_client,
+                    satellite_entity,
+                    area,
+                    profile,
+                    entity_index=entity_index,
+                ),
+                name="alarm-tts-followup",
+            )
+        elif media_player and message:
+            if profile.get("chime_enabled", True):
+                await _play_chime(ha_client, media_player, profile)
+            await _notify_tts(ha_client, media_player, message, profile)
+            spawn(
+                _trigger_conversation_continuation(
+                    ha_client,
+                    media_player,
+                    area,
+                    profile,
+                    entity_index=entity_index,
+                ),
+                name="alarm-tts-followup",
+            )
 
     if profile.get("persistent_enabled", True):
         await _notify_persistent(ha_client, alarm_name, message)

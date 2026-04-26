@@ -1835,22 +1835,41 @@ class ScheduledTimersRepository:
             await db.commit()
 
     @staticmethod
-    async def list_pending() -> list[dict]:
+    async def list_pending(*, kinds: set[str] | frozenset[str] | None = None) -> list[dict]:
         async with get_db_read() as db:
-            cursor = await db.execute("SELECT * FROM scheduled_timers WHERE state = 'pending' ORDER BY fires_at ASC")
+            if kinds:
+                placeholders = ",".join("?" for _ in kinds)
+                sql = (
+                    "SELECT * FROM scheduled_timers WHERE state = 'pending' "
+                    f"AND kind IN ({placeholders}) ORDER BY fires_at ASC, id ASC"
+                )
+                cursor = await db.execute(sql, tuple(sorted(kinds)))
+            else:
+                cursor = await db.execute(
+                    "SELECT * FROM scheduled_timers WHERE state = 'pending' ORDER BY fires_at ASC, id ASC"
+                )
             return [dict(row) for row in await cursor.fetchall()]
 
     @staticmethod
-    async def list_pending_for(*, logical_name: str | None = None, area: str | None = None) -> list[dict]:
+    async def list_pending_for(
+        *,
+        logical_name: str | None = None,
+        area: str | None = None,
+        kinds: set[str] | frozenset[str] | None = None,
+    ) -> list[dict]:
         clauses = ["state = 'pending'"]
         params: list[Any] = []
+        if kinds:
+            placeholders = ",".join("?" for _ in kinds)
+            clauses.append(f"kind IN ({placeholders})")
+            params.extend(sorted(kinds))
         if logical_name is not None:
             clauses.append("LOWER(logical_name) = LOWER(?)")
             params.append(logical_name)
         if area is not None:
             clauses.append("origin_area = ?")
             params.append(area)
-        sql = "SELECT * FROM scheduled_timers WHERE " + " AND ".join(clauses) + " ORDER BY fires_at ASC"
+        sql = "SELECT * FROM scheduled_timers WHERE " + " AND ".join(clauses) + " ORDER BY fires_at ASC, id ASC"
         async with get_db_read() as db:
             cursor = await db.execute(sql, tuple(params))
             return [dict(row) for row in await cursor.fetchall()]

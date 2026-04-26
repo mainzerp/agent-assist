@@ -1,12 +1,34 @@
 # Version
 
-**Current Version:** 0.27.10
+**Current Version:** 0.27.11
 
-## Recent Changes (since 0.27.10)
+## Recent Changes (since 0.27.11)
 
 (none yet)
 
 ## Version History
+
+### 0.27.11 (PATCH) -- Internal alarm CRUD via scheduler and source-labeled visibility
+
+- Internalized timer-agent alarm CRUD in `container/app/agents/timer_executor.py`:
+  `set_datetime`, `list_alarms`, and new `cancel_alarm` now use scheduler-backed
+  `kind="alarm"` rows with deterministic matching and ambiguity behavior.
+- Extended scheduler/repository alarm support in
+  `container/app/agents/timer_scheduler.py` and `container/app/db/repository.py`
+  with `alarm` kind handling, alarm-fire background dispatch, and optional kind filters.
+- Aligned alarm notification dispatch in `container/app/agents/background_actions.py`
+  with timer origin-aware audio routing (origin satellite first, media fallback,
+  persistent/push retained).
+- Updated admin/dashboard alarm observability in
+  `container/app/api/routes/admin.py` and
+  `container/app/dashboard/templates/timers.html` to show internal and
+  legacy alarm sources (`internal` vs `ha_legacy`).
+- Updated timer prompt action surface in `container/app/prompts/timer.txt`
+  to include scheduler-backed alarm semantics and `cancel_alarm`.
+- Added focused regression tests for scheduler alarm dispatch, timer executor
+  internal alarm CRUD behavior, alarm notification origin routing, and
+  admin source labels.
+- Bumped `container/app/__init__.py` runtime version to `0.27.11`.
 
 ### 0.27.10 (PATCH) -- set_datetime unresolved alarm-target fallback
 

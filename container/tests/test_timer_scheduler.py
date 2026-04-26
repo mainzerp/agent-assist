@@ -150,6 +150,31 @@ class TestList:
         finally:
             await sched.stop()
 
+    async def test_list_filters_by_kind(self, db_repository):
+        sched, _gateway = _make_scheduler()
+        try:
+            await sched.schedule(
+                logical_name="kitchen alarm",
+                kind="alarm",
+                duration_seconds=3600,
+                origin_area="kitchen",
+                payload={"alarm_label": "Kitchen Alarm"},
+            )
+            await sched.schedule(
+                logical_name="kitchen timer",
+                kind="notification",
+                duration_seconds=3600,
+                origin_area="kitchen",
+                payload={"notification_message": "done"},
+            )
+
+            alarms = await sched.list(area="kitchen", kinds={"alarm"})
+            assert len(alarms) == 1
+            assert alarms[0]["kind"] == "alarm"
+            assert alarms[0]["logical_name"] == "kitchen alarm"
+        finally:
+            await sched.stop()
+
 
 class TestRestartRecovery:
     async def test_restart_recovery(self, db_repository):
@@ -262,5 +287,33 @@ class TestKindDispatch:
             gateway.dispatch_background_event.assert_awaited_once()
             assert gateway.dispatch_background_event.await_args.args[0] == "sleep_media_stop"
             assert gateway.dispatch_background_event.await_args.args[1]["media_player"] == "media_player.bedroom"
+        finally:
+            await sched.stop()
+
+    async def test_alarm_kind_dispatches_alarm_notification_with_origin_metadata(self, db_repository):
+        sched, gateway = _make_scheduler()
+        try:
+            tid = await sched.schedule(
+                logical_name="Morning Alarm",
+                kind="alarm",
+                duration_seconds=0,
+                origin_device_id="device-123",
+                origin_area="bedroom",
+                payload={"alarm_label": "Morning Alarm", "language": "de"},
+            )
+            for _ in range(20):
+                await asyncio.sleep(0.02)
+                row = await ScheduledTimersRepository.get(tid)
+                if row and row["state"] == "fired":
+                    break
+
+            gateway.dispatch_background_event.assert_awaited_once()
+            assert gateway.dispatch_background_event.await_args.args[0] == "alarm_notification"
+            payload = gateway.dispatch_background_event.await_args.args[1]
+            assert payload["alarm_name"] == "Morning Alarm"
+            assert payload["entity_id"].startswith("agenthub_alarm:")
+            assert payload["origin_device_id"] == "device-123"
+            assert payload["origin_area"] == "bedroom"
+            assert payload["language"] == "de"
         finally:
             await sched.stop()

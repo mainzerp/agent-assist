@@ -7,7 +7,7 @@
 
     <div class="page-header">
         <div class="page-header-text">
-            <p class="page-subtitle">Scheduler-managed timers and Home Assistant input_datetime alarms. Auto-refreshes every 5s.</p>
+            <p class="page-subtitle">Scheduler-managed timers and source-labeled alarms (internal scheduler and HA legacy visibility). Auto-refreshes every 5s.</p>
         </div>
         <div class="page-actions">
             <span class="text-muted" x-text="timers.length + ' timer(s), ' + alarms.length + ' alarm(s)'"></span>
@@ -73,10 +73,11 @@
                     <th>Entity ID</th>
                     <th>Scheduled Time</th>
                     <th>Type</th>
+                    <th>Source</th>
                 </tr>
             </thead>
             <tbody>
-                <template x-for="a in alarms" :key="a.entity_id">
+                <template x-for="a in alarms" :key="alarmRowKey(a)">
                     <tr>
                         <td x-text="a.name"></td>
                         <td class="text-mono" x-text="a.entity_id"></td>
@@ -89,6 +90,14 @@
                                       'badge-muted': a.type === 'date'
                                   }"
                                   x-text="a.type"></span>
+                        </td>
+                        <td>
+                            <span class="badge"
+                                  :class="{
+                                      'badge-green': a.source === 'internal',
+                                      'badge-muted': a.source !== 'internal'
+                                  }"
+                                  x-text="a.source || 'ha_legacy'"></span>
                         </td>
                     </tr>
                 </template>
@@ -141,6 +150,11 @@ function timersPage() {
         displayTimerName(timer) {
             const logical = (timer && timer.logical_name ? String(timer.logical_name).trim() : '');
             return logical || 'unnamed timer';
+        },
+
+        alarmRowKey(alarm) {
+            if (!alarm) return 'alarm-unknown';
+            return String(alarm.id || alarm.entity_id || `${alarm.name || 'alarm'}-${alarm.state || '-'}`);
         },
 
         displayOrigin(timer) {

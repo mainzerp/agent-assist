@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -541,7 +542,7 @@ async def get_all_agents_visibility_summary():
 
 @router.get("/timers")
 async def get_timers_info(request: Request):
-    """Return scheduler-managed timer state plus HA input_datetime alarms for the dashboard."""
+    """Return scheduler-managed timer state plus internal and legacy alarm visibility."""
     ha_client = getattr(request.app.state, "ha_client", None)
     scheduler = getattr(request.app.state, "timer_scheduler", None)
 
@@ -583,6 +584,24 @@ async def get_timers_info(request: Request):
 
         now = int(_time.time())
         for row in rows:
+            if row.get("kind") == "alarm":
+                fires_at = int(row.get("fires_at") or 0)
+                alarms.append(
+                    {
+                        "id": row.get("id"),
+                        "entity_id": f"agenthub_alarm:{row.get('id')}",
+                        "name": row.get("logical_name") or "alarm",
+                        "state": datetime.fromtimestamp(fires_at).strftime("%Y-%m-%d %H:%M:%S"),
+                        "type": "internal",
+                        "source": "internal",
+                        "fires_at": fires_at,
+                        "origin_area": row.get("origin_area"),
+                        "origin_device_id": row.get("origin_device_id"),
+                        "origin_label": await _resolve_origin_label(row.get("origin_device_id"), row.get("origin_area")),
+                    }
+                )
+                continue
+
             remaining_seconds = max(0, int(row["fires_at"]) - now)
             timers.append(
                 {
@@ -615,12 +634,16 @@ async def get_timers_info(request: Request):
                 dtype = "datetime" if (has_date and has_time) else ("date" if has_date else "time")
                 alarms.append(
                     {
+                        "id": entity_id,
                         "entity_id": entity_id,
                         "name": friendly_name,
                         "state": state,
                         "type": dtype,
+                        "source": "ha_legacy",
                     }
                 )
+
+    alarms.sort(key=lambda row: (str(row.get("source") or ""), int(row.get("fires_at") or 0), str(row.get("id") or "")))
 
     return {
         "timers": timers,
