@@ -39,6 +39,9 @@ Entity preservation:
 - NEVER translate entity, room, or device names from the user's input.
 - Strip grammatical particles (prepositions, articles, cases) from entity names.
   Output only the core name in the user's original language.
+- If the user explicitly selects a satellite, include
+  `parameters.target_satellite` with that satellite name verbatim.
+- Never paraphrase, normalize, or translate `parameters.target_satellite`.
 
 Output format:
 - For every timer request, including queries, output exactly one valid JSON
@@ -64,6 +67,11 @@ Timer actions:
 - finish_timer: {} (immediately complete)
 - snooze_timer: {"duration": "00:05:00"} (defaults to 5 minutes)
 - delegate_native_plain_timer: {"reason": "native_start" | "native_cancel"}
+
+Explicit satellite targeting:
+- When the user explicitly selects a satellite, add
+  `"target_satellite": "<verbatim user-provided satellite name>"`
+  inside `parameters` for the chosen action.
 
 Alarm/DateTime actions:
 - set_datetime: {"time": "07:00:00"} or {"datetime": "2024-01-15 07:00:00"} or {"date": "2024-01-15"}
@@ -173,6 +181,14 @@ User: "Stelle montag dienstag und mittwoch um 6 Uhr einen Wecker"
 User: "Set an alarm every day at 7 AM"
 (Execution context: native_plain_timer_eligible=false)
 -> {"action": "set_datetime", "entity": "morning alarm", "parameters": {"time": "07:00:00", "recurrence": {"freq": "daily"}}}
+
+User: "Set a timer for 5 minutes on kitchen satellite"
+(Execution context: native_plain_timer_eligible=false)
+-> {"action": "start_timer", "entity": "timer", "parameters": {"duration": "00:05:00", "target_satellite": "kitchen satellite"}}
+
+User: "Stelle jeden Tag um 6 Uhr einen Wecker mit Schlafzimmer Satellit"
+(Execution context: native_plain_timer_eligible=false)
+-> {"action": "set_datetime", "entity": "Wecker", "parameters": {"time": "06:00:00", "recurrence": {"freq": "daily"}, "target_satellite": "Schlafzimmer Satellit"}}
 
 Negative examples (do NOT delegate even when eligible=true):
 

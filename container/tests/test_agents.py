@@ -813,6 +813,156 @@ class TestTimerAgent:
         _args, kwargs = mock_exec.call_args
         assert kwargs.get("timezone") == "Europe/Berlin"
 
+    @patch(
+        "app.agents.timer.execute_timer_action",
+        new_callable=AsyncMock,
+        return_value={"success": True, "entity_id": None, "new_state": "active", "speech": "Done."},
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "start_timer", "entity": "timer", "parameters": {"duration": "00:05:00", "target_satellite": "Kitchen"}}\n```\nDone.',
+    )
+    async def test_explicit_satellite_target_overrides_context(self, _mock_complete, mock_exec):
+        entry = MagicMock()
+        entry.entity_id = "assist_satellite.kitchen"
+        entry.friendly_name = "Kitchen"
+        entry.device_name = "Kitchen Satellite"
+        entry.area = "kitchen-area"
+        entry.area_name = "Kitchen"
+        entry.aliases = []
+
+        entity_index = MagicMock()
+        entity_index.list_entries_async = AsyncMock(return_value=[entry])
+
+        ha_client = MagicMock()
+        ha_client.render_template = AsyncMock(return_value="dev-kitchen")
+
+        agent = TimerAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=MagicMock())
+        await agent.handle_task(
+            _make_task(
+                "set a timer for five minutes",
+                context=TaskContext(device_id="ctx-dev", area_id="ctx-area"),
+            )
+        )
+
+        _args, kwargs = mock_exec.call_args
+        assert kwargs.get("device_id") == "dev-kitchen"
+        assert kwargs.get("area_id") == "kitchen-area"
+
+    @patch(
+        "app.agents.timer.execute_timer_action",
+        new_callable=AsyncMock,
+        return_value={"success": True, "entity_id": None, "new_state": "active", "speech": "Done."},
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "start_timer", "entity": "timer", "parameters": {"duration": "00:05:00"}}\n```\nDone.',
+    )
+    async def test_no_explicit_satellite_keeps_context(self, _mock_complete, mock_exec):
+        entity_index = MagicMock()
+        entity_index.list_entries_async = AsyncMock(return_value=[])
+
+        ha_client = MagicMock()
+        ha_client.render_template = AsyncMock(return_value="should-not-be-used")
+
+        agent = TimerAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=MagicMock())
+        await agent.handle_task(
+            _make_task(
+                "set a timer for five minutes",
+                context=TaskContext(device_id="ctx-dev", area_id="ctx-area"),
+            )
+        )
+
+        _args, kwargs = mock_exec.call_args
+        assert kwargs.get("device_id") == "ctx-dev"
+        assert kwargs.get("area_id") == "ctx-area"
+
+    @patch("app.agents.timer.execute_timer_action", new_callable=AsyncMock)
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "set_datetime", "entity": "alarm", "parameters": {"time": "07:00:00", "target_satellite": "Kitchen"}}\n```\nDone.',
+    )
+    async def test_ambiguous_explicit_satellite_returns_disambiguation_error(self, _mock_complete, mock_exec):
+        entry_one = MagicMock()
+        entry_one.entity_id = "assist_satellite.kitchen_a"
+        entry_one.friendly_name = "Kitchen Left"
+        entry_one.device_name = "Kitchen"
+        entry_one.area = "kitchen"
+        entry_one.area_name = "Kitchen"
+        entry_one.aliases = []
+
+        entry_two = MagicMock()
+        entry_two.entity_id = "assist_satellite.kitchen_b"
+        entry_two.friendly_name = "Kitchen Right"
+        entry_two.device_name = "Kitchen"
+        entry_two.area = "kitchen"
+        entry_two.area_name = "Kitchen"
+        entry_two.aliases = []
+
+        entity_index = MagicMock()
+        entity_index.list_entries_async = AsyncMock(return_value=[entry_one, entry_two])
+
+        ha_client = MagicMock()
+        ha_client.render_template = AsyncMock(return_value="unused")
+
+        agent = TimerAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=MagicMock())
+        result = await agent.handle_task(
+            _make_task(
+                "set an alarm at 7",
+                context=TaskContext(device_id="ctx-dev", area_id="ctx-area"),
+            )
+        )
+
+        assert result.error is not None
+        assert result.error.code == AgentErrorCode.ENTITY_NOT_FOUND
+        assert "multiple satellites match" in result.speech.lower()
+        mock_exec.assert_not_awaited()
+
+    @patch(
+        "app.agents.timer.execute_timer_action",
+        new_callable=AsyncMock,
+        return_value={"success": True, "entity_id": None, "new_state": "scheduled", "speech": "Done."},
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value=(
+            '```json\n{"action": "create_recurring_reminder", "entity": "Wecker", "parameters": '
+            '{"summary": "Work alarm", "start_date_time": "2026-04-27 06:30:00", '
+            '"rrule": "FREQ=WEEKLY;BYDAY=MO,WE,FR", "target_satellite": "Bedroom"}}\n```\nDone.'
+        ),
+    )
+    async def test_explicit_satellite_override_is_forwarded_for_recurring_alarm_path(self, _mock_complete, mock_exec):
+        entry = MagicMock()
+        entry.entity_id = "assist_satellite.bedroom"
+        entry.friendly_name = "Bedroom"
+        entry.device_name = "Bedroom Satellite"
+        entry.area = "bedroom-area"
+        entry.area_name = "Bedroom"
+        entry.aliases = []
+
+        entity_index = MagicMock()
+        entity_index.list_entries_async = AsyncMock(return_value=[entry])
+
+        ha_client = MagicMock()
+        ha_client.render_template = AsyncMock(return_value="dev-bedroom")
+
+        agent = TimerAgent(ha_client=ha_client, entity_index=entity_index, entity_matcher=MagicMock())
+        await agent.handle_task(
+            _make_task(
+                "set a recurring work alarm",
+                context=TaskContext(device_id="ctx-dev", area_id="ctx-area", timezone="Europe/Berlin"),
+            )
+        )
+
+        _args, kwargs = mock_exec.call_args
+        assert kwargs.get("device_id") == "dev-bedroom"
+        assert kwargs.get("area_id") == "bedroom-area"
+        assert kwargs.get("timezone") == "Europe/Berlin"
+
     # --- Extension 1: Query Timer ---
 
     @patch(

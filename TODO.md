@@ -16,21 +16,14 @@
 
 - [x] **Einheitliches Control-Tool und parallele Ausfuehrung**: **Umgesetzt (Parallelitaet):** (1) Orchestrator dispatcht mehrere unabhaengige Intents parallel an Domain-Agenten (`asyncio.gather`). (2) `complete_with_tools` fuehrt mehrere `tool_calls` einer LLM-Runde parallel (`asyncio.gather`, **0.18.18**); Tool-Messages bleiben in ``tool_calls``-Reihenfolge. **Bewusst nicht:** ein einziges generisches HA-**Batch**-Tool (eine Function-Invocation mit vielen HA-Aktionen); stattdessen Mehrfach-Steuerung ueber Orchestrator-Mehrzeilen bzw. kuenftig optional gebundelte JSON-Actions im Domain-Agent.
 
-
 wecker:
-standard einmalig, wiederkehrend konfigurierbar.
-
-wecker:
-wecken mit infos anreichern, wetter, news usw. (bereistellung der daten durch div. agents)
+wecken mit infos anreichern, wetter, news usw. (bereistellung der daten durch div. agents) dann rewite-agent um einen gelungenen text zu bilden.
 
 beisp.
 
 Guten Morgen! Heite ist Sonntag der 26. April 2026
 draußen ist, Strahlender Sonnenschein, aktuell 19 °C – heute bleibt es trocken und schön. Die Woche startet ähnlich mild, perfektes Frühlingswetter!
 Kurze News
-Syrien: Ein ehemaliger General der Assad-Armee steht vor Gericht – er muss sich wegen Verbrechen gegen das syrische Volk verantworten.
-Nahost: Im Korruptionsverfahren gegen Israels Premier Netanjahu spricht sich Staatspräsident Herzog für eine außergerichtliche Einigung aus – Netanjahu lehnt dies bislang ab.
-Iran: Trotz der seit dem 8. April geltenden Feuerpause hat sich die humanitäre Lage im Iran laut UN weiter verschlechtert.
 USA: Beim White House Correspondents' Dinner in Washington gab es einen Zwischenfall – ein Verdächtiger eröffnete das Feuer und verletzte einen Secret-Service-Agenten, bevor er gestoppt wurde.
 Jahrestag: Heute vor 40 Jahren ereignete sich die Katastrophe von Tschernobyl – ein Datum, das Deutschlands Energiepolitik bis heute prägt.
 Schönen Sonntag!

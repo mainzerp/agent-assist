@@ -1,12 +1,45 @@
 # Version
 
-**Current Version:** 0.28.1
+**Current Version:** 0.29.1
 
-## Recent Changes (since 0.28.1)
+## Recent Changes (since 0.29.1)
 
 (none yet)
 
 ## Version History
+
+### 0.29.1 (PATCH) -- Structured explicit satellite override for timer actions
+
+- Updated timer prompt contract in
+  `container/app/prompts/timer.txt` to require
+  `parameters.target_satellite` when a user explicitly selects a
+  satellite, without relying on hardcoded textual cue matching.
+- Updated timer-agent execution flow in `container/app/agents/timer.py`
+  to prefer `action.parameters.target_satellite` as the explicit
+  override source for satellite resolution, while preserving existing
+  context fallback and deterministic ambiguity/not-found resolver errors.
+- Updated focused timer-agent tests in `container/tests/test_agents.py`
+  to validate structured override precedence, fallback-to-context
+  behavior, ambiguity errors, and recurring-reminder reroute forwarding.
+
+### 0.29.0 (MINOR) -- Explicit satellite override for timer/alarm targeting
+
+- Added deterministic explicit satellite target handling in
+  `container/app/agents/satellite_targeting.py` with conservative
+  extraction patterns and strict assist-satellite resolution.
+- Integrated explicit-target context override into
+  `container/app/agents/timer.py`: when a satellite is explicitly named
+  in the utterance, timer/alarm execution now uses the resolved
+  satellite device/area context; when not explicitly named, existing
+  request context behavior remains unchanged.
+- Included recurring alarm reroute compatibility by forwarding the same
+  effective context into `create_recurring_reminder` execution paths.
+- Updated timer prompt guidance/examples in
+  `container/app/prompts/timer.txt` to preserve explicit satellite names
+  verbatim in timer/alarm intents.
+- Added focused coverage in `container/tests/test_agents.py` for
+  explicit override, fallback-to-context behavior, ambiguity handling,
+  and recurring-path context propagation.
 
 ### 0.28.1 (PATCH) -- Recurring alarm/wecker reroute hotfix
 
