@@ -1,12 +1,25 @@
 # Version
 
-**Current Version:** 0.27.16
+**Current Version:** 0.27.17
 
-## Recent Changes (since 0.27.16)
+## Recent Changes (since 0.27.17)
 
 (none yet)
 
 ## Version History
+
+### 0.27.17 (PATCH) -- Timers dashboard switched to edit/delete-only entries
+
+- Removed Timers dashboard creation controls in
+  `container/app/dashboard/templates/timers.html` by deleting Add Timer/
+  Add Alarm buttons, creation modals, and add-flow Alpine state/methods.
+- Preserved existing update and cancel behavior for scheduler timers and
+  internal alarms while retaining read-only display behavior for alarms
+  where `source != "internal"`.
+- Kept backend admin timer endpoints unchanged (including create and
+  satellites routes) and removed only now-dead frontend references to
+  add-flow APIs.
+- Bumped `container/app/__init__.py` runtime version to `0.27.17`.
 
 ### 0.27.16 (PATCH) -- Timers modal centering and assist-satellite filtering
 
