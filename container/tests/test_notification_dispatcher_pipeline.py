@@ -212,8 +212,12 @@ async def test_timer_prefers_satellite_from_origin_device_over_media_player() ->
             "_resolve_satellite_from_origin_device",
             new=AsyncMock(return_value="assist_satellite.office"),
         ) as from_origin_satellite,
-        patch.object(nd, "_resolve_satellite_device", new=AsyncMock(return_value="assist_satellite.area")) as from_area_satellite,
-        patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.office")) as media_fallback,
+        patch.object(
+            nd, "_resolve_satellite_device", new=AsyncMock(return_value="assist_satellite.area")
+        ) as from_area_satellite,
+        patch.object(
+            nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.office")
+        ) as media_fallback,
         patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value="Timer done")),
         patch.object(nd, "_notify_satellite_announce", new=AsyncMock()) as notify_satellite,
         patch.object(nd, "_play_chime", new=AsyncMock()) as play_chime,
@@ -249,7 +253,9 @@ async def test_dispatch_timer_notification_prefers_explicit_media_player_target(
     with (
         patch.object(nd, "_load_notification_profile", new=AsyncMock(return_value={"tts_enabled": True})),
         patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
-        patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.fallback")) as fallback,
+        patch.object(
+            nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.fallback")
+        ) as fallback,
         patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value="Timer done")),
         patch.object(nd, "_play_chime", new=AsyncMock()),
         patch.object(nd, "_notify_tts", new=AsyncMock()) as notify_tts,
@@ -278,9 +284,15 @@ async def test_timer_uses_area_satellite_when_origin_device_satellite_missing() 
     with (
         patch.object(nd, "_load_notification_profile", new=AsyncMock(return_value={"tts_enabled": True})),
         patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
-        patch.object(nd, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value=None)) as from_origin_satellite,
-        patch.object(nd, "_resolve_satellite_device", new=AsyncMock(return_value="assist_satellite.kitchen")) as from_area_satellite,
-        patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.kitchen")) as media_fallback,
+        patch.object(
+            nd, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value=None)
+        ) as from_origin_satellite,
+        patch.object(
+            nd, "_resolve_satellite_device", new=AsyncMock(return_value="assist_satellite.kitchen")
+        ) as from_area_satellite,
+        patch.object(
+            nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.kitchen")
+        ) as media_fallback,
         patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value="Timer done")),
         patch.object(nd, "_notify_satellite_announce", new=AsyncMock()) as notify_satellite,
         patch.object(nd, "_notify_tts", new=AsyncMock()) as notify_tts,
@@ -313,9 +325,13 @@ async def test_timer_falls_back_to_media_player_when_no_satellite_target() -> No
     with (
         patch.object(nd, "_load_notification_profile", new=AsyncMock(return_value={"tts_enabled": True})),
         patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
-        patch.object(nd, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value=None)) as from_origin_satellite,
+        patch.object(
+            nd, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value=None)
+        ) as from_origin_satellite,
         patch.object(nd, "_resolve_satellite_device", new=AsyncMock(return_value=None)) as from_area_satellite,
-        patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.office")) as media_fallback,
+        patch.object(
+            nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.office")
+        ) as media_fallback,
         patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value="Timer done")),
         patch.object(nd, "_notify_satellite_announce", new=AsyncMock()) as notify_satellite,
         patch.object(nd, "_play_chime", new=AsyncMock()) as play_chime,
@@ -528,9 +544,15 @@ async def test_alarm_prefers_origin_satellite_over_media_player() -> None:
             new=AsyncMock(return_value={"tts_enabled": True, "persistent_enabled": False, "push_enabled": False}),
         ),
         patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
-        patch.object(nd, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value="assist_satellite.office")) as from_origin_satellite,
-        patch.object(nd, "_resolve_satellite_device", new=AsyncMock(return_value="assist_satellite.area")) as from_area_satellite,
-        patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.office")) as media_fallback,
+        patch.object(
+            nd, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value="assist_satellite.office")
+        ) as from_origin_satellite,
+        patch.object(
+            nd, "_resolve_satellite_device", new=AsyncMock(return_value="assist_satellite.area")
+        ) as from_area_satellite,
+        patch.object(
+            nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.office")
+        ) as media_fallback,
         patch.object(nd, "_notify_satellite_announce", new=AsyncMock()) as notify_satellite,
         patch.object(nd, "_play_chime", new=AsyncMock()) as play_chime,
         patch.object(nd, "_notify_tts", new=AsyncMock()) as notify_tts,
@@ -569,9 +591,15 @@ async def test_alarm_uses_area_satellite_when_origin_device_satellite_missing() 
             new=AsyncMock(return_value={"tts_enabled": True, "persistent_enabled": False, "push_enabled": False}),
         ),
         patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
-        patch.object(nd, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value=None)) as from_origin_satellite,
-        patch.object(nd, "_resolve_satellite_device", new=AsyncMock(return_value="assist_satellite.bedroom")) as from_area_satellite,
-        patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.bedroom")) as media_fallback,
+        patch.object(
+            nd, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value=None)
+        ) as from_origin_satellite,
+        patch.object(
+            nd, "_resolve_satellite_device", new=AsyncMock(return_value="assist_satellite.bedroom")
+        ) as from_area_satellite,
+        patch.object(
+            nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.bedroom")
+        ) as media_fallback,
         patch.object(nd, "_notify_satellite_announce", new=AsyncMock()) as notify_satellite,
         patch.object(nd, "_notify_tts", new=AsyncMock()) as notify_tts,
         patch.object(nd, "spawn", side_effect=lambda coro, name=None: coro.close()),
@@ -607,9 +635,13 @@ async def test_alarm_falls_back_to_media_player_when_no_satellite_target() -> No
             new=AsyncMock(return_value={"tts_enabled": True, "persistent_enabled": False, "push_enabled": False}),
         ),
         patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
-        patch.object(nd, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value=None)) as from_origin_satellite,
+        patch.object(
+            nd, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value=None)
+        ) as from_origin_satellite,
         patch.object(nd, "_resolve_satellite_device", new=AsyncMock(return_value=None)) as from_area_satellite,
-        patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.office")) as media_fallback,
+        patch.object(
+            nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.office")
+        ) as media_fallback,
         patch.object(nd, "_notify_satellite_announce", new=AsyncMock()) as notify_satellite,
         patch.object(nd, "_play_chime", new=AsyncMock()) as play_chime,
         patch.object(nd, "_notify_tts", new=AsyncMock()) as notify_tts,
@@ -693,8 +725,12 @@ async def test_resolve_satellite_matches_case_and_whitespace_with_entity_index()
 @pytest.mark.asyncio
 async def test_resolve_timer_playback_target_prefers_origin_device_then_area_fallback() -> None:
     with (
-        patch.object(nd, "_resolve_media_player_from_origin_device", new=AsyncMock(return_value="media_player.device")) as from_device,
-        patch.object(nd, "_resolve_media_player_from_area", new=AsyncMock(return_value="media_player.area")) as from_area,
+        patch.object(
+            nd, "_resolve_media_player_from_origin_device", new=AsyncMock(return_value="media_player.device")
+        ) as from_device,
+        patch.object(
+            nd, "_resolve_media_player_from_area", new=AsyncMock(return_value="media_player.area")
+        ) as from_area,
     ):
         got = await nd._resolve_timer_playback_target(
             MagicMock(),
@@ -712,7 +748,9 @@ async def test_resolve_timer_playback_target_prefers_origin_device_then_area_fal
 async def test_resolve_timer_playback_target_uses_area_when_device_resolution_fails() -> None:
     with (
         patch.object(nd, "_resolve_media_player_from_origin_device", new=AsyncMock(return_value=None)) as from_device,
-        patch.object(nd, "_resolve_media_player_from_area", new=AsyncMock(return_value="media_player.area")) as from_area,
+        patch.object(
+            nd, "_resolve_media_player_from_area", new=AsyncMock(return_value="media_player.area")
+        ) as from_area,
     ):
         got = await nd._resolve_timer_playback_target(
             MagicMock(),

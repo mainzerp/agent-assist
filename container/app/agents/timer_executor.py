@@ -38,16 +38,13 @@ from app.analytics.tracer import _optional_span
 logger = logging.getLogger(__name__)
 
 
-_TIMER_ACTION_MAP: dict[str, tuple[str, str]] = {
-}
+_TIMER_ACTION_MAP: dict[str, tuple[str, str]] = {}
 
-_ACTION_PHRASES: dict[str, str] = {
-}
+_ACTION_PHRASES: dict[str, str] = {}
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"input_datetime"})
 
-_ACTION_DOMAINS: dict[str, frozenset[str]] = {
-}
+_ACTION_DOMAINS: dict[str, frozenset[str]] = {}
 
 _INPUT_DATETIME_DOMAINS: frozenset[str] = frozenset({"input_datetime"})
 _CALENDAR_DOMAINS: frozenset[str] = frozenset({"calendar"})
@@ -190,12 +187,25 @@ def _get_scheduler() -> Any | None:
 
 
 _WORD_DIGIT_MAP = {
-    "ein": "1", "eine": "1", "einminuten": "1minuten",
-    "zwei": "2", "drei": "3", "vier": "4", "funf": "5", "f\u00fcnf": "5",
-    "sechs": "6", "sieben": "7", "acht": "8", "neun": "9", "zehn": "10",
-    "minuten": "min", "minute": "min",
-    "stunden": "h", "stunde": "h",
-    "sekunden": "s", "sekunde": "s",
+    "ein": "1",
+    "eine": "1",
+    "einminuten": "1minuten",
+    "zwei": "2",
+    "drei": "3",
+    "vier": "4",
+    "funf": "5",
+    "f\u00fcnf": "5",
+    "sechs": "6",
+    "sieben": "7",
+    "acht": "8",
+    "neun": "9",
+    "zehn": "10",
+    "minuten": "min",
+    "minute": "min",
+    "stunden": "h",
+    "stunde": "h",
+    "sekunden": "s",
+    "sekunde": "s",
 }
 
 
@@ -653,8 +663,7 @@ async def _cancel_alarm(action: dict, *, area_id: str | None, timezone: str | No
                 "entity_id": None,
                 "new_state": None,
                 "speech": (
-                    f"Multiple alarms are scheduled for {target_datetime}: {choices}. "
-                    "Please specify the alarm id."
+                    f"Multiple alarms are scheduled for {target_datetime}: {choices}. Please specify the alarm id."
                 ),
                 "metadata": {"status": "ambiguous", "candidates": candidates, "source": "internal"},
             }
@@ -702,7 +711,9 @@ async def _cancel_alarm(action: dict, *, area_id: str | None, timezone: str | No
 
     if target_name:
         normalized_target = _normalize_alarm_name(target_name)
-        matches = [row for row in scope if _normalize_alarm_name(str(row.get("logical_name") or "")) == normalized_target]
+        matches = [
+            row for row in scope if _normalize_alarm_name(str(row.get("logical_name") or "")) == normalized_target
+        ]
         matches.sort(key=lambda r: (int(r.get("fires_at") or 0), str(r.get("id") or "")))
     else:
         return {
@@ -1110,8 +1121,13 @@ async def _extend_timer(
 ) -> dict:
     """Extend an active scheduler timer by a delta duration."""
     generic_entities = {
-        "timer", "current timer", "aktueller timer", "den timer",
-        "the timer", "my timer", "meinen timer",
+        "timer",
+        "current timer",
+        "aktueller timer",
+        "den timer",
+        "the timer",
+        "my timer",
+        "meinen timer",
     }
     entity_query = (action.get("entity") or "").strip()
     params = action.get("parameters") or {}
@@ -1545,10 +1561,7 @@ async def execute_timer_action(
                 "success": False,
                 "entity_id": None,
                 "new_state": None,
-                "speech": (
-                    f"Multiple alarm targets are available: {labels}. "
-                    "Please tell me which one to update."
-                ),
+                "speech": (f"Multiple alarm targets are available: {labels}. Please tell me which one to update."),
             }
         else:
             return {

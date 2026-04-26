@@ -223,7 +223,9 @@ class TestDashboardTemplateRendering:
         assert "Timer Pool" not in html
         assert "Pending Delayed Tasks" not in html
 
-    async def test_timers_page_origin_display_prefers_origin_label_then_fallbacks(self, dashboard_client: httpx.AsyncClient):
+    async def test_timers_page_origin_display_prefers_origin_label_then_fallbacks(
+        self, dashboard_client: httpx.AsyncClient
+    ):
         resp = await dashboard_client.get("/dashboard/timers")
         html = resp.text
         label_idx = html.find("if (timer.origin_label) return String(timer.origin_label);")
@@ -302,7 +304,9 @@ class TestTimerDashboardApiContract:
         row = resp.json()["timers"][0]
         assert row["origin_label"] == "Kitchen Satellite"
 
-    async def test_admin_timers_origin_label_falls_back_to_area_name_then_raw_id(self, dashboard_client: httpx.AsyncClient):
+    async def test_admin_timers_origin_label_falls_back_to_area_name_then_raw_id(
+        self, dashboard_client: httpx.AsyncClient
+    ):
         app = dashboard_client._transport.app
         app.state.timer_scheduler = MagicMock()
         app.state.timer_scheduler.list = AsyncMock(
@@ -369,7 +373,9 @@ class TestTimerDashboardApiContract:
         assert resp.status_code == 200
         alarms = resp.json()["alarms"]
         assert any(a.get("source") == "internal" and a.get("name") == "Morning Alarm" for a in alarms)
-        assert any(a.get("source") == "ha_legacy" and a.get("entity_id") == "input_datetime.legacy_alarm" for a in alarms)
+        assert any(
+            a.get("source") == "ha_legacy" and a.get("entity_id") == "input_datetime.legacy_alarm" for a in alarms
+        )
 
 
 # ===================================================================

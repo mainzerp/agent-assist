@@ -597,7 +597,9 @@ async def get_timers_info(request: Request):
                         "fires_at": fires_at,
                         "origin_area": row.get("origin_area"),
                         "origin_device_id": row.get("origin_device_id"),
-                        "origin_label": await _resolve_origin_label(row.get("origin_device_id"), row.get("origin_area")),
+                        "origin_label": await _resolve_origin_label(
+                            row.get("origin_device_id"), row.get("origin_area")
+                        ),
                     }
                 )
                 continue

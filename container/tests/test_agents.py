@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time as _time
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -1107,7 +1107,7 @@ class TestTimerExecutor:
 
         scheduler = MagicMock()
         scheduler.schedule = AsyncMock(return_value="alarm-berlin")
-        now_ts = int(datetime(2026, 1, 15, 8, 0, 0, tzinfo=datetime.UTC).timestamp())
+        now_ts = int(datetime(2026, 1, 15, 8, 0, 0, tzinfo=UTC).timestamp())
 
         with (
             _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler),
@@ -1134,9 +1134,7 @@ class TestTimerExecutor:
         fires_at = int(datetime(2026, 4, 26, 14, 35, 0, tzinfo=berlin).timestamp())
         scheduler = MagicMock()
         scheduler.list = AsyncMock(
-            return_value=[
-                {"id": "alarm-1", "logical_name": "Wake", "fires_at": fires_at, "origin_area": "bedroom"}
-            ]
+            return_value=[{"id": "alarm-1", "logical_name": "Wake", "fires_at": fires_at, "origin_area": "bedroom"}]
         )
         scheduler.cancel = AsyncMock(return_value=1)
 
@@ -2291,9 +2289,7 @@ class TestOrchestratorAgent:
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-    async def test_classify_routing_hit_uses_current_user_text_not_stale_condensed(
-        self, mock_track, mock_settings
-    ):
+    async def test_classify_routing_hit_uses_current_user_text_not_stale_condensed(self, mock_track, mock_settings):
         """Routing cache hit: condensed task returned must be user_text, not cached stale text."""
         orch, *_ = self._make_orchestrator()
         orch._cache_manager.process = AsyncMock(
@@ -2304,9 +2300,7 @@ class TestOrchestratorAgent:
                 condensed_task="set timer for 1 minute",
             )
         )
-        classifications, routing_cached = await orch._classify(
-            "Breche bitte den Einminutentimer ab."
-        )
+        classifications, routing_cached = await orch._classify("Breche bitte den Einminutentimer ab.")
         assert routing_cached is True
         assert classifications[0][0] == "timer-agent"
         _, condensed, _ = classifications[0]
@@ -2315,9 +2309,7 @@ class TestOrchestratorAgent:
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-    async def test_classify_precomputed_routing_hit_uses_current_user_text(
-        self, mock_track, mock_settings
-    ):
+    async def test_classify_precomputed_routing_hit_uses_current_user_text(self, mock_track, mock_settings):
         """Precomputed routing cache result: condensed must be user_text, not stale cached value."""
         orch, *_ = self._make_orchestrator()
         stale_cache = MagicMock(
@@ -2326,9 +2318,7 @@ class TestOrchestratorAgent:
             similarity=0.95,
             condensed_task="start a 5 minute timer",
         )
-        classifications, routing_cached = await orch._classify(
-            "cancel my timer", cache_result=stale_cache
-        )
+        classifications, routing_cached = await orch._classify("cancel my timer", cache_result=stale_cache)
         assert routing_cached is True
         _, condensed, _ = classifications[0]
         assert condensed == "cancel my timer"
