@@ -95,7 +95,7 @@ class AlarmMonitor:
                 self._fired.add(fire_key)
                 friendly_name = entry.friendly_name or entity_id
                 logger.info("Alarm triggered: %s (%s)", entity_id, friendly_name)
-                await self._fire_notification(entity_id, friendly_name)
+                await self._fire_notification(entry)
 
     def _parse_alarm_time(self, state_val: str, attrs: dict, now: datetime) -> datetime | None:
         """Parse input_datetime state into a datetime for comparison."""
@@ -117,14 +117,20 @@ class AlarmMonitor:
             return None
         return None
 
-    async def _fire_notification(self, entity_id: str, friendly_name: str) -> None:
+    async def _fire_notification(self, entry: Any) -> None:
         """Dispatch alarm notification through the orchestrator gateway."""
+        entity_id = entry.entity_id
+        friendly_name = entry.friendly_name or entity_id
         try:
             await self._orchestrator_gateway.dispatch_background_event(
                 "alarm_notification",
                 {
                     "alarm_name": friendly_name,
                     "entity_id": entity_id,
+                    "media_player": getattr(entry, "media_player", None),
+                    "origin_device_id": getattr(entry, "origin_device_id", None),
+                    "origin_area": getattr(entry, "area", None),
+                    "language": getattr(entry, "language", None),
                 },
                 description=f"Dispatch alarm notification for {friendly_name}",
             )

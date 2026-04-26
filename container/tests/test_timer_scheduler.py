@@ -299,7 +299,11 @@ class TestKindDispatch:
                 duration_seconds=0,
                 origin_device_id="device-123",
                 origin_area="bedroom",
-                payload={"alarm_label": "Morning Alarm", "language": "de"},
+                payload={
+                    "alarm_label": "Morning Alarm",
+                    "language": "de",
+                    "media_player": "media_player.bedroom",
+                },
             )
             for _ in range(20):
                 await asyncio.sleep(0.02)
@@ -315,5 +319,6 @@ class TestKindDispatch:
             assert payload["origin_device_id"] == "device-123"
             assert payload["origin_area"] == "bedroom"
             assert payload["language"] == "de"
+            assert payload["media_player"] == "media_player.bedroom"
         finally:
             await sched.stop()

@@ -18,6 +18,10 @@ async def test_alarm_monitor_reads_entity_index_and_dispatches_gateway() -> None
         state="08:30:00",
         has_date=False,
         has_time=True,
+        area="bedroom",
+        origin_device_id="device-bedroom",
+        media_player="media_player.bedroom",
+        language="de",
     )
     entity_index = MagicMock()
     entity_index.list_entries_async = AsyncMock(return_value=[entry])
@@ -35,7 +39,12 @@ async def test_alarm_monitor_reads_entity_index_and_dispatches_gateway() -> None
     entity_index.list_entries_async.assert_awaited()
     gateway.dispatch_background_event.assert_awaited_once()
     assert gateway.dispatch_background_event.await_args.args[0] == "alarm_notification"
-    assert gateway.dispatch_background_event.await_args.args[1]["entity_id"] == "input_datetime.morning_alarm"
+    payload = gateway.dispatch_background_event.await_args.args[1]
+    assert payload["entity_id"] == "input_datetime.morning_alarm"
+    assert payload["origin_area"] == "bedroom"
+    assert payload["origin_device_id"] == "device-bedroom"
+    assert payload["media_player"] == "media_player.bedroom"
+    assert payload["language"] == "de"
 
 
 async def test_alarm_monitor_resets_fired_set_on_new_day() -> None:

@@ -1,12 +1,30 @@
 # Version
 
-**Current Version:** 0.27.12
+**Current Version:** 0.27.13
 
-## Recent Changes (since 0.27.12)
+## Recent Changes (since 0.27.13)
 
 (none yet)
 
 ## Version History
+
+### 0.27.13 (PATCH) -- Alarm fire delivery metadata and dispatch parity
+
+- Extended alarm-fire producer payloads in `container/app/agents/alarm_monitor.py`
+  to always include delivery/origin metadata keys (`media_player`,
+  `origin_device_id`, `origin_area`, `language`) with safe `None` fallback
+  when not present on the source entry.
+- Aligned alarm and timer runtime audio target resolution in
+  `container/app/agents/background_actions.py` via shared origin-aware
+  resolver logic: origin-device satellite, area satellite fallback, then
+  media-player fallback.
+- Added parity logging for alarm/timer playback target resolution misses in
+  shared background notification target resolution.
+- Added focused runtime-path regression tests in:
+  `container/tests/test_alarm_monitor.py`,
+  `container/tests/test_timer_scheduler.py`, and
+  `container/tests/test_notification_dispatcher_pipeline.py`.
+- Bumped `container/app/__init__.py` runtime version to `0.27.13`.
 
 ### 0.27.12 (PATCH) -- Alarm cancel time matching and prompt regression coverage
 

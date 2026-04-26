@@ -288,31 +288,14 @@ async def dispatch_timer_notification(
     origin_device_id = metadata.origin_device_id if metadata else None
     area = metadata.origin_area if metadata else None
     duration = metadata.duration if metadata else None
-
-    satellite_entity = await _resolve_satellite_from_origin_device(ha_client, origin_device_id)
-    if not satellite_entity:
-        satellite_entity = await _resolve_satellite_device(ha_client, area, entity_index=entity_index)
-
-    if not media_player and not satellite_entity:
-        media_player = await _resolve_timer_playback_target(
-            ha_client,
-            origin_device_id=origin_device_id,
-            area=area,
-            entity_index=entity_index,
-        )
-        if media_player:
-            logger.info(
-                "Timer notification playback target resolved from origin metadata (device_id=%s, area=%s): %s",
-                origin_device_id,
-                area,
-                media_player,
-            )
-        else:
-            logger.warning(
-                "Timer notification has no resolvable playback target (device_id=%s, area=%s)",
-                origin_device_id,
-                area,
-            )
+    satellite_entity, media_player = await _resolve_notification_audio_target(
+        ha_client,
+        media_player=media_player,
+        origin_device_id=origin_device_id,
+        area=area,
+        entity_index=entity_index,
+        kind_label="Timer",
+    )
 
     has_meaningful_name = _has_meaningful_timer_name(timer_name, entity_id)
     message = await _generate_tts_message(
@@ -381,18 +364,14 @@ async def dispatch_alarm_notification(
     media_player = metadata.media_player_entity if metadata else None
     origin_device_id = metadata.origin_device_id if metadata else None
     area = metadata.origin_area if metadata else None
-
-    satellite_entity = await _resolve_satellite_from_origin_device(ha_client, origin_device_id)
-    if not satellite_entity:
-        satellite_entity = await _resolve_satellite_device(ha_client, area, entity_index=entity_index)
-
-    if not media_player and not satellite_entity:
-        media_player = await _resolve_timer_playback_target(
-            ha_client,
-            origin_device_id=origin_device_id,
-            area=area,
-            entity_index=entity_index,
-        )
+    satellite_entity, media_player = await _resolve_notification_audio_target(
+        ha_client,
+        media_player=media_player,
+        origin_device_id=origin_device_id,
+        area=area,
+        entity_index=entity_index,
+        kind_label="Alarm",
+    )
 
     alarm_messages = {
         "de": "Alarm {name} ist ausgeloest",
@@ -788,6 +767,46 @@ async def _resolve_timer_playback_target(
     if media_player:
         return media_player
     return await _resolve_media_player_from_area(ha_client, area, entity_index=entity_index)
+
+
+async def _resolve_notification_audio_target(
+    ha_client: Any,
+    *,
+    media_player: str | None,
+    origin_device_id: str | None,
+    area: str | None,
+    entity_index: Any = None,
+    kind_label: str,
+) -> tuple[str | None, str | None]:
+    satellite_entity = await _resolve_satellite_from_origin_device(ha_client, origin_device_id)
+    if not satellite_entity:
+        satellite_entity = await _resolve_satellite_device(ha_client, area, entity_index=entity_index)
+
+    resolved_media_player = media_player
+    if not resolved_media_player and not satellite_entity:
+        resolved_media_player = await _resolve_timer_playback_target(
+            ha_client,
+            origin_device_id=origin_device_id,
+            area=area,
+            entity_index=entity_index,
+        )
+        if resolved_media_player:
+            logger.info(
+                "%s notification playback target resolved from origin metadata (device_id=%s, area=%s): %s",
+                kind_label,
+                origin_device_id,
+                area,
+                resolved_media_player,
+            )
+        else:
+            logger.warning(
+                "%s notification has no resolvable playback target (device_id=%s, area=%s)",
+                kind_label,
+                origin_device_id,
+                area,
+            )
+
+    return satellite_entity, resolved_media_player
 
 
 async def _resolve_ha_device_id(
