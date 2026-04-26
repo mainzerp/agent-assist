@@ -1,12 +1,39 @@
 # Version
 
-**Current Version:** 0.27.7
+**Current Version:** 0.27.8
 
-## Recent Changes (since 0.27.7)
+## Recent Changes (since 0.27.8)
 
 (none yet)
 
 ## Version History
+
+### 0.27.8 (PATCH) -- Timer language metadata and origin labels
+
+Patch fix for scheduler timer expiry localization when settings use
+`language=auto`, plus timers API/dashboard origin label enrichment.
+
+Changes:
+
+- Propagated per-turn timer language into scheduler payload metadata in
+  `container/app/agents/timer.py` and `container/app/agents/timer_executor.py`.
+- Forwarded persisted timer language at fire-time in
+  `container/app/agents/timer_scheduler.py` so background timer events
+  carry stable language metadata.
+- Added robust notification language resolution in
+  `container/app/agents/background_actions.py` with precedence:
+  event metadata language, explicit settings language, HA user language
+  when settings are `auto`, then English fallback.
+- Added `origin_label` enrichment in `container/app/api/routes/admin.py`
+  for scheduler timers (friendly device name when resolvable, area
+  registry name fallback, then raw origin identifiers).
+- Updated `container/app/dashboard/templates/timers.html` to prefer
+  API-provided `origin_label` while preserving existing device/area
+  fallback formatting behavior.
+- Added focused tests covering timer notification language
+  precedence/fallback, scheduler language metadata forwarding, and
+  origin label resolution/fallback behavior.
+- Bumped `container/app/__init__.py` runtime version to `0.27.8`.
 
 ### 0.27.7 (PATCH) -- Timer expiry satellite announce preference
 

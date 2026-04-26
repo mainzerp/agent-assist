@@ -449,6 +449,7 @@ async def _start_timer(
     *,
     device_id: str | None,
     area_id: str | None,
+    language: str | None,
 ) -> dict:
     entity_query = (action.get("entity") or "").strip()
     params = action.get("parameters") or {}
@@ -476,7 +477,7 @@ async def _start_timer(
         duration_seconds=seconds,
         origin_device_id=device_id,
         origin_area=area_id,
-        payload={"duration": duration},
+        payload={"duration": duration, "language": language},
     )
     human = _format_duration_human(seconds)
     return {
@@ -530,6 +531,7 @@ async def _snooze_timer(
     *,
     device_id: str | None,
     area_id: str | None,
+    language: str | None,
 ) -> dict:
     entity_query = (action.get("entity") or "").strip()
     params = action.get("parameters") or {}
@@ -559,7 +561,7 @@ async def _snooze_timer(
         duration_seconds=seconds,
         origin_device_id=device_id,
         origin_area=area_id,
-        payload={"snooze_seconds": seconds},
+        payload={"snooze_seconds": seconds, "language": language},
     )
     human = _format_duration_human(seconds)
     return {
@@ -575,6 +577,7 @@ async def _start_timer_with_notification(
     *,
     device_id: str | None,
     area_id: str | None,
+    language: str | None,
 ) -> dict:
     entity_query = (action.get("entity") or "").strip()
     params = action.get("parameters") or {}
@@ -603,7 +606,7 @@ async def _start_timer_with_notification(
         duration_seconds=seconds,
         origin_device_id=device_id,
         origin_area=area_id,
-        payload={"notification_message": notification_message, "duration": duration},
+        payload={"notification_message": notification_message, "duration": duration, "language": language},
     )
     human = _format_duration_human(seconds)
     return {
@@ -619,6 +622,7 @@ async def _delayed_action(
     *,
     device_id: str | None,
     area_id: str | None,
+    language: str | None,
 ) -> dict:
     entity_query = (action.get("entity") or "delay timer").strip() or "delay timer"
     params = action.get("parameters") or {}
@@ -669,7 +673,7 @@ async def _delayed_action(
         duration_seconds=seconds,
         origin_device_id=device_id,
         origin_area=area_id,
-        payload={"target_entity": target_entity, "target_action": target_action},
+        payload={"target_entity": target_entity, "target_action": target_action, "language": language},
     )
     human = _format_duration_human(seconds)
     return {
@@ -685,6 +689,7 @@ async def _sleep_timer(
     *,
     device_id: str | None,
     area_id: str | None,
+    language: str | None,
 ) -> dict:
     entity_query = (action.get("entity") or "sleep timer").strip() or "sleep timer"
     params = action.get("parameters") or {}
@@ -719,7 +724,7 @@ async def _sleep_timer(
         duration_seconds=seconds,
         origin_device_id=device_id,
         origin_area=area_id,
-        payload={"media_player": media_player_entity, "duration": duration},
+        payload={"media_player": media_player_entity, "duration": duration, "language": language},
     )
     human = _format_duration_human(seconds)
     return {
@@ -802,6 +807,7 @@ async def execute_timer_action(
     agent_id: str | None = None,
     device_id: str | None = None,
     area_id: str | None = None,
+    language: str | None = None,
     span_collector=None,
 ) -> dict:
     """Dispatch a parsed timer action.
@@ -826,19 +832,19 @@ async def execute_timer_action(
         )
 
     if action_name == "start_timer":
-        return await _start_timer(action, device_id=device_id, area_id=area_id)
+        return await _start_timer(action, device_id=device_id, area_id=area_id, language=language)
     if action_name == "cancel_timer":
         return await _cancel_timer(action, area_id=area_id)
     if action_name in ("pause_timer", "resume_timer", "finish_timer"):
         return await _pause_or_resume_or_finish(action, area_id=area_id)
     if action_name == "snooze_timer":
-        return await _snooze_timer(action, device_id=device_id, area_id=area_id)
+        return await _snooze_timer(action, device_id=device_id, area_id=area_id, language=language)
     if action_name == "start_timer_with_notification":
-        return await _start_timer_with_notification(action, device_id=device_id, area_id=area_id)
+        return await _start_timer_with_notification(action, device_id=device_id, area_id=area_id, language=language)
     if action_name == "delayed_action":
-        return await _delayed_action(action, device_id=device_id, area_id=area_id)
+        return await _delayed_action(action, device_id=device_id, area_id=area_id, language=language)
     if action_name == "sleep_timer":
-        return await _sleep_timer(action, device_id=device_id, area_id=area_id)
+        return await _sleep_timer(action, device_id=device_id, area_id=area_id, language=language)
     if action_name == "create_reminder":
         return await _create_reminder(
             action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector

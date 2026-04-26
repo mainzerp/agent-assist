@@ -223,13 +223,16 @@ class TestDashboardTemplateRendering:
         assert "Timer Pool" not in html
         assert "Pending Delayed Tasks" not in html
 
-    async def test_timers_page_origin_display_prefers_device_before_area(self, dashboard_client: httpx.AsyncClient):
+    async def test_timers_page_origin_display_prefers_origin_label_then_fallbacks(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/timers")
         html = resp.text
+        label_idx = html.find("if (timer.origin_label) return String(timer.origin_label);")
         device_idx = html.find("if (timer.origin_device_id) return `device:${timer.origin_device_id}`;")
         area_idx = html.find("if (timer.origin_area) return `area:${timer.origin_area}`;")
+        assert label_idx != -1
         assert device_idx != -1
         assert area_idx != -1
+        assert label_idx < device_idx
         assert device_idx < area_idx
 
 
@@ -269,8 +272,71 @@ class TestTimerDashboardApiContract:
         assert row["state"] == "pending"
         assert row["origin_area"] == "kitchen"
         assert row["origin_device_id"] == "device-1"
+        assert row["origin_label"] == "device-1"
         assert "entity_id" not in row
         assert "name" not in row
+
+    async def test_admin_timers_origin_label_uses_device_name_when_resolved(self, dashboard_client: httpx.AsyncClient):
+        app = dashboard_client._transport.app
+        app.state.timer_scheduler = MagicMock()
+        app.state.timer_scheduler.list = AsyncMock(
+            return_value=[
+                {
+                    "id": "timer-1",
+                    "logical_name": "tea timer",
+                    "kind": "plain",
+                    "fires_at": 9999999999,
+                    "duration_seconds": 120,
+                    "origin_area": "kitchen",
+                    "origin_device_id": "device-1",
+                    "state": "pending",
+                }
+            ]
+        )
+        app.state.ha_client.get_states = AsyncMock(return_value=[])
+        app.state.ha_client.get_area_registry = AsyncMock(return_value={"kitchen": "Kitchen"})
+        app.state.ha_client.render_template = AsyncMock(return_value="Kitchen Satellite")
+
+        resp = await dashboard_client.get("/api/admin/timers")
+        assert resp.status_code == 200
+        row = resp.json()["timers"][0]
+        assert row["origin_label"] == "Kitchen Satellite"
+
+    async def test_admin_timers_origin_label_falls_back_to_area_name_then_raw_id(self, dashboard_client: httpx.AsyncClient):
+        app = dashboard_client._transport.app
+        app.state.timer_scheduler = MagicMock()
+        app.state.timer_scheduler.list = AsyncMock(
+            return_value=[
+                {
+                    "id": "timer-1",
+                    "logical_name": "tea timer",
+                    "kind": "plain",
+                    "fires_at": 9999999999,
+                    "duration_seconds": 120,
+                    "origin_area": "kitchen",
+                    "origin_device_id": None,
+                    "state": "pending",
+                },
+                {
+                    "id": "timer-2",
+                    "logical_name": "pasta timer",
+                    "kind": "plain",
+                    "fires_at": 9999999999,
+                    "duration_seconds": 240,
+                    "origin_area": "attic",
+                    "origin_device_id": None,
+                    "state": "pending",
+                },
+            ]
+        )
+        app.state.ha_client.get_states = AsyncMock(return_value=[])
+        app.state.ha_client.get_area_registry = AsyncMock(return_value={"kitchen": "Kitchen"})
+
+        resp = await dashboard_client.get("/api/admin/timers")
+        assert resp.status_code == 200
+        rows = resp.json()["timers"]
+        assert rows[0]["origin_label"] == "Kitchen"
+        assert rows[1]["origin_label"] == "attic"
 
 
 # ===================================================================

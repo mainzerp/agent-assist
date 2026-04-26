@@ -241,6 +241,7 @@ class TimerScheduler:
         origin_area = row.get("origin_area")
         duration_seconds = int(row.get("duration_seconds") or 0)
         duration_str = _seconds_to_hms(duration_seconds)
+        language = payload.get("language")
         gateway = self._orchestrator_gateway
         if gateway is None and kind != "snooze":
             logger.warning("TimerScheduler fire skipped for %s: no orchestrator gateway", row["id"])
@@ -261,6 +262,7 @@ class TimerScheduler:
                     "origin_device_id": origin_device_id,
                     "origin_area": origin_area,
                     "duration": duration_str,
+                    "language": language,
                 },
                 description=f"Dispatch timer notification for {display_name or 'timer'}",
             )
@@ -302,7 +304,7 @@ class TimerScheduler:
                 duration_seconds=snooze_seconds,
                 origin_device_id=origin_device_id,
                 origin_area=origin_area,
-                payload={"snoozed_from": row["id"]},
+                payload={"snoozed_from": row["id"], "language": language},
             )
             return
 

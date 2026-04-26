@@ -547,6 +547,32 @@ async def get_timers_info(request: Request):
 
     timers: list[dict] = []
     alarms: list[dict] = []
+    area_registry: dict[str, str] = {}
+
+    async def _resolve_origin_label(origin_device_id: str | None, origin_area: str | None) -> str | None:
+        if not ha_client:
+            return origin_device_id or origin_area
+        if origin_device_id:
+            try:
+                raw = await ha_client.render_template(
+                    "{{ device_attr('" + str(origin_device_id) + "', 'name_by_user') or "
+                    "device_attr('" + str(origin_device_id) + "', 'name') or '' }}"
+                )
+                name = (str(raw or "")).strip()
+                if name and name.lower() != "none":
+                    return name
+            except Exception:
+                logger.debug("Failed to resolve timer origin device label for %s", origin_device_id, exc_info=True)
+            return origin_device_id
+        if origin_area:
+            return area_registry.get(origin_area) or origin_area
+        return None
+
+    if ha_client:
+        try:
+            area_registry = await ha_client.get_area_registry()
+        except Exception:
+            area_registry = {}
 
     if scheduler is not None:
         try:
@@ -567,6 +593,7 @@ async def get_timers_info(request: Request):
                     "remaining_seconds": remaining_seconds,
                     "origin_area": row.get("origin_area"),
                     "origin_device_id": row.get("origin_device_id"),
+                    "origin_label": await _resolve_origin_label(row.get("origin_device_id"), row.get("origin_area")),
                     "state": row["state"],
                 }
             )

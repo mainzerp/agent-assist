@@ -24,6 +24,7 @@ class NotificationMetadata:
     origin_device_id: str | None
     origin_area: str | None
     duration: str | None
+    language: str | None = None
 
 
 def _normalize_area_for_match(area: str | None) -> str | None:
@@ -70,6 +71,7 @@ async def handle_background_event(
             origin_device_id=payload.get("origin_device_id") or getattr(context, "device_id", None),
             origin_area=payload.get("origin_area") or getattr(context, "area_id", None),
             duration=payload.get("duration"),
+            language=payload.get("language"),
         )
         await dispatch_timer_notification(
             ha_client=ha_client,
@@ -235,6 +237,32 @@ _DEFAULT_CHIME_URL = "media-source://media_source/local/notification.mp3"
 _CHIME_TO_TTS_DELAY = 1.5
 
 
+async def _resolve_notification_language(ha_client: Any, metadata: Any = None) -> str:
+    """Resolve language for background timer notifications.
+
+    Precedence:
+    1) event metadata language
+    2) explicit settings language when not 'auto'
+    3) HA user language when settings language is 'auto'
+    4) 'en' fallback
+    """
+    metadata_language = (getattr(metadata, "language", None) or "").strip()
+    if metadata_language:
+        return metadata_language
+
+    setting_value = await SettingsRepository.get_value("language", "auto")
+    setting = str(setting_value or "auto").strip()
+    if setting and setting.lower() != "auto":
+        return setting
+
+    try:
+        ha_language = await ha_client.get_user_language() if ha_client else None
+    except Exception:
+        ha_language = None
+    resolved = str(ha_language or "").strip()
+    return resolved or "en"
+
+
 async def dispatch_timer_notification(
     ha_client: Any,
     timer_name: str,
@@ -244,7 +272,7 @@ async def dispatch_timer_notification(
 ) -> None:
     """Dispatch timer notifications across all configured channels."""
     profile = await _load_notification_profile()
-    language = await SettingsRepository.get_value("language") or "en"
+    language = await _resolve_notification_language(ha_client, metadata)
     lang_key = "de" if language.startswith("de") else "en"
 
     media_player = metadata.media_player_entity if metadata else None

@@ -46,6 +46,7 @@ class TimerAgent(ActionableAgent):
             }
         device_id = ctx.device_id if ctx else None
         area_id = ctx.area_id if ctx else None
+        language = ctx.language if ctx else None
         return await execute_timer_action(
             action,
             ha_client,
@@ -54,6 +55,7 @@ class TimerAgent(ActionableAgent):
             agent_id=agent_id,
             device_id=device_id,
             area_id=area_id,
+            language=language,
             span_collector=span_collector,
         )
 

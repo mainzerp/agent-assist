@@ -391,6 +391,105 @@ async def test_timer_without_satellite_or_media_player_keeps_non_audio_notificat
 
 
 @pytest.mark.asyncio
+async def test_timer_notification_language_prefers_event_metadata() -> None:
+    ha_client = MagicMock()
+    ha_client.get_user_language = AsyncMock(return_value="en")
+
+    with (
+        patch.object(
+            nd,
+            "_load_notification_profile",
+            new=AsyncMock(return_value={"tts_enabled": False, "persistent_enabled": True, "push_enabled": False}),
+        ),
+        patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
+        patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value=None)),
+        patch.object(nd, "_notify_persistent", new=AsyncMock()) as notify_persistent,
+    ):
+        metadata = SimpleNamespace(
+            media_player_entity=None,
+            origin_device_id="device-abc",
+            origin_area="office",
+            duration="00:03:00",
+            language="de",
+        )
+        await nd.dispatch_timer_notification(
+            ha_client=ha_client,
+            timer_name="Timer",
+            entity_id="agenthub_internal:3",
+            metadata=metadata,
+            entity_index=None,
+        )
+
+    assert notify_persistent.await_args.args[2] == "Der Timer ist abgelaufen"
+
+
+@pytest.mark.asyncio
+async def test_timer_notification_language_auto_uses_ha_user_language() -> None:
+    ha_client = MagicMock()
+    ha_client.get_user_language = AsyncMock(return_value="de")
+
+    with (
+        patch.object(
+            nd,
+            "_load_notification_profile",
+            new=AsyncMock(return_value={"tts_enabled": False, "persistent_enabled": True, "push_enabled": False}),
+        ),
+        patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="auto")),
+        patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value=None)),
+        patch.object(nd, "_notify_persistent", new=AsyncMock()) as notify_persistent,
+    ):
+        metadata = SimpleNamespace(
+            media_player_entity=None,
+            origin_device_id="device-abc",
+            origin_area="office",
+            duration="00:03:00",
+            language=None,
+        )
+        await nd.dispatch_timer_notification(
+            ha_client=ha_client,
+            timer_name="Timer",
+            entity_id="agenthub_internal:4",
+            metadata=metadata,
+            entity_index=None,
+        )
+
+    assert notify_persistent.await_args.args[2] == "Der Timer ist abgelaufen"
+
+
+@pytest.mark.asyncio
+async def test_timer_notification_language_auto_falls_back_to_english_when_unresolved() -> None:
+    ha_client = MagicMock()
+    ha_client.get_user_language = AsyncMock(return_value=None)
+
+    with (
+        patch.object(
+            nd,
+            "_load_notification_profile",
+            new=AsyncMock(return_value={"tts_enabled": False, "persistent_enabled": True, "push_enabled": False}),
+        ),
+        patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="auto")),
+        patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value=None)),
+        patch.object(nd, "_notify_persistent", new=AsyncMock()) as notify_persistent,
+    ):
+        metadata = SimpleNamespace(
+            media_player_entity=None,
+            origin_device_id="device-abc",
+            origin_area="office",
+            duration="00:03:00",
+            language=None,
+        )
+        await nd.dispatch_timer_notification(
+            ha_client=ha_client,
+            timer_name="Timer",
+            entity_id="agenthub_internal:5",
+            metadata=metadata,
+            entity_index=None,
+        )
+
+    assert notify_persistent.await_args.args[2] == "The timer has finished"
+
+
+@pytest.mark.asyncio
 async def test_resolve_media_player_from_area_matches_case_and_whitespace_with_entity_index() -> None:
     entry = SimpleNamespace(
         entity_id="media_player.kitchen_speaker",

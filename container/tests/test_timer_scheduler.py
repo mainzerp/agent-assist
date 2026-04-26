@@ -41,7 +41,7 @@ class TestSchedulePersistence:
                 duration_seconds=60,
                 origin_device_id="dev-1",
                 origin_area="kitchen",
-                payload={"notification_message": "Eggs done!"},
+                payload={"notification_message": "Eggs done!", "language": "de"},
             )
             assert timer_id
             rows = await ScheduledTimersRepository.list_pending()
@@ -51,6 +51,7 @@ class TestSchedulePersistence:
             assert row["kind"] == "notification"
             assert row["origin_area"] == "kitchen"
             assert json.loads(row["payload_json"])["notification_message"] == "Eggs done!"
+            assert json.loads(row["payload_json"])["language"] == "de"
             assert row["state"] == "pending"
         finally:
             await sched.stop()
@@ -205,7 +206,7 @@ class TestKindDispatch:
                 duration_seconds=0,
                 origin_device_id="device-123",
                 origin_area="kitchen",
-                payload={},
+                payload={"language": "de"},
             )
             for _ in range(20):
                 await asyncio.sleep(0.02)
@@ -217,6 +218,7 @@ class TestKindDispatch:
             payload = gateway.dispatch_background_event.await_args.args[1]
             assert payload["origin_device_id"] == "device-123"
             assert payload["origin_area"] == "kitchen"
+            assert payload["language"] == "de"
         finally:
             await sched.stop()
 
