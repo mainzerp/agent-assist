@@ -1,12 +1,32 @@
 # Version
 
-**Current Version:** 0.27.17
+**Current Version:** 0.28.0
 
-## Recent Changes (since 0.27.17)
+## Recent Changes (since 0.28.0)
 
 (none yet)
 
 ## Version History
+
+### 0.28.0 (MINOR) -- Recurring internal alarms (daily and weekday sets)
+
+- Added recurring internal alarm support to timer-agent `set_datetime` in
+  `container/app/agents/timer_executor.py` with normalized
+  `parameters.recurrence` validation and persistence inside scheduler
+  `payload_json` only (no schema changes).
+- Added recurring alarm examples and weekday normalization guidance in
+  `container/app/prompts/timer.txt` for daily recurrence and selected
+  weekday recurrence (`MO..SU`).
+- Extended scheduler alarm fire path in
+  `container/app/agents/timer_scheduler.py` to auto-schedule the next
+  recurring occurrence after each firing while preserving origin and
+  delivery metadata.
+- Kept one-time alarm/list/cancel behavior backward compatible and added
+  optional recurrence metadata exposure in alarm listing responses.
+- Added focused coverage in `container/tests/test_agents.py`,
+  `container/tests/test_timer_scheduler.py`, and timer scenario fixtures
+  under `container/tests/data/scenarios/timer/`.
+- Bumped `container/app/__init__.py` runtime version to `0.28.0`.
 
 ### 0.27.17 (PATCH) -- Timers dashboard switched to edit/delete-only entries
 

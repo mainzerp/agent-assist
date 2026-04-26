@@ -463,3 +463,101 @@ class TestKindDispatch:
             assert payload["media_player"] == "media_player.bedroom"
         finally:
             await sched.stop()
+
+    async def test_recurring_alarm_fire_schedules_next_occurrence_with_preserved_metadata(self, db_repository):
+        sched, gateway = _make_scheduler()
+        try:
+            now = int(time.time())
+            next_fire = now + 600
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(
+                    "app.agents.timer_scheduler._compute_next_recurring_fire_epoch", lambda *_args, **_kwargs: next_fire
+                )
+                tid = await sched.schedule(
+                    logical_name="Morning Alarm",
+                    kind="alarm",
+                    duration_seconds=0,
+                    origin_device_id="device-123",
+                    origin_area="bedroom",
+                    payload={
+                        "alarm_label": "Morning Alarm",
+                        "language": "de",
+                        "recurrence": {
+                            "freq": "daily",
+                            "interval": 1,
+                            "anchor_time": "07:00:00",
+                            "timezone": "Europe/Berlin",
+                        },
+                    },
+                )
+
+                for _ in range(30):
+                    await asyncio.sleep(0.02)
+                    row = await ScheduledTimersRepository.get(tid)
+                    if row and row["state"] == "fired":
+                        break
+
+            row = await ScheduledTimersRepository.get(tid)
+            assert row and row["state"] == "fired"
+            pending = await ScheduledTimersRepository.list_pending_for(logical_name="Morning Alarm", kinds={"alarm"})
+            assert len(pending) == 1
+            next_row = pending[0]
+            assert next_row["origin_device_id"] == "device-123"
+            assert next_row["origin_area"] == "bedroom"
+
+            next_payload = json.loads(next_row["payload_json"])
+            assert next_payload["alarm_label"] == "Morning Alarm"
+            assert next_payload["language"] == "de"
+            assert next_payload["recurrence"]["freq"] == "daily"
+            assert int(next_payload["scheduled_for_epoch"]) == next_fire
+
+            gateway.dispatch_background_event.assert_awaited_once()
+            assert gateway.dispatch_background_event.await_args.args[0] == "alarm_notification"
+        finally:
+            await sched.stop()
+
+
+class TestRecurringRecovery:
+    async def test_overdue_recurring_alarm_recovery_schedules_exactly_one_next_pending(self, db_repository):
+        now = int(time.time())
+        await ScheduledTimersRepository.insert(
+            id="overdue-recurring-id",
+            logical_name="Recurring Wake",
+            kind="alarm",
+            created_at=now - 3600,
+            fires_at=now - 60,
+            duration_seconds=300,
+            origin_device_id="device-777",
+            origin_area="bedroom",
+            payload_json=json.dumps(
+                {
+                    "alarm_label": "Recurring Wake",
+                    "language": "en",
+                    "recurrence": {
+                        "freq": "daily",
+                        "interval": 1,
+                        "anchor_time": "07:00:00",
+                        "timezone": "UTC",
+                    },
+                }
+            ),
+        )
+
+        sched, gateway = _make_scheduler()
+        try:
+            await sched.start()
+
+            original = await ScheduledTimersRepository.get("overdue-recurring-id")
+            assert original and original["state"] == "fired"
+
+            pending = await ScheduledTimersRepository.list_pending_for(logical_name="Recurring Wake", kinds={"alarm"})
+            assert len(pending) == 1
+            pending_payload = json.loads(pending[0]["payload_json"])
+            assert pending_payload["recurrence"]["freq"] == "daily"
+            assert pending[0]["origin_device_id"] == "device-777"
+            assert pending[0]["origin_area"] == "bedroom"
+
+            gateway.dispatch_background_event.assert_awaited_once()
+            assert gateway.dispatch_background_event.await_args.args[0] == "alarm_notification"
+        finally:
+            await sched.stop()

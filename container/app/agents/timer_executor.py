@@ -48,6 +48,7 @@ _ACTION_DOMAINS: dict[str, frozenset[str]] = {}
 
 _INPUT_DATETIME_DOMAINS: frozenset[str] = frozenset({"input_datetime"})
 _CALENDAR_DOMAINS: frozenset[str] = frozenset({"calendar"})
+_ALARM_WEEKDAY_CODES: frozenset[str] = frozenset({"MO", "TU", "WE", "TH", "FR", "SA", "SU"})
 
 
 def _validate_domain(entity_id: str) -> bool:
@@ -390,6 +391,66 @@ def _parse_alarm_target_epoch(
     return None, "Provide one of datetime, time, or date for set_datetime."
 
 
+def _build_recurring_alarm_payload(
+    params: dict[str, Any],
+    *,
+    target_epoch: int,
+    timezone: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    recurrence = params.get("recurrence")
+    if recurrence is None:
+        return None, None
+    if not isinstance(recurrence, dict):
+        return None, 'Invalid recurrence payload. Use an object like {"freq": "daily"}.'
+
+    raw_freq = str(recurrence.get("freq") or "").strip().casefold()
+    if raw_freq not in {"daily", "weekly"}:
+        return None, "Invalid recurrence frequency. Supported values are 'daily' and 'weekly'."
+
+    try:
+        interval = int(recurrence.get("interval", 1))
+    except (TypeError, ValueError):
+        return None, "Invalid recurrence interval. Use a positive integer."
+    if interval < 1:
+        return None, "Invalid recurrence interval. Use a positive integer."
+
+    tz = _get_timezone_info(timezone)
+    target_dt = (
+        datetime.fromtimestamp(int(target_epoch), tz=tz)
+        if tz is not None
+        else datetime.fromtimestamp(int(target_epoch))
+    )
+    normalized: dict[str, Any] = {
+        "freq": raw_freq,
+        "interval": interval,
+        "anchor_time": target_dt.strftime("%H:%M:%S"),
+    }
+    if timezone:
+        normalized["timezone"] = str(timezone)
+
+    if raw_freq == "weekly":
+        raw_byweekday = recurrence.get("byweekday")
+        if not isinstance(raw_byweekday, list) or not raw_byweekday:
+            return None, "Weekly recurrence requires a non-empty byweekday list (e.g. ['MO','WE'])."
+
+        seen: set[str] = set()
+        normalized_weekdays: list[str] = []
+        for item in raw_byweekday:
+            code = str(item or "").strip().upper()
+            if code not in _ALARM_WEEKDAY_CODES:
+                return None, "Invalid weekday code in recurrence.byweekday. Use MO,TU,WE,TH,FR,SA,SU."
+            if code in seen:
+                continue
+            seen.add(code)
+            normalized_weekdays.append(code)
+
+        if not normalized_weekdays:
+            return None, "Weekly recurrence requires at least one valid weekday code."
+        normalized["byweekday"] = normalized_weekdays
+
+    return normalized, None
+
+
 # ---------------------------------------------------------------------------
 # Read-only action handlers
 # ---------------------------------------------------------------------------
@@ -506,6 +567,12 @@ async def _list_alarms(*, area_id: str | None = None, timezone: str | None = Non
     for row in rows:
         fires_at = int(row.get("fires_at") or 0)
         local_time = _format_alarm_time_local(fires_at, timezone=timezone)
+        payload: dict[str, Any] = {}
+        try:
+            payload = json.loads(row.get("payload_json") or "{}")
+        except Exception:
+            payload = {}
+
         alarm_rows.append(
             {
                 "id": row.get("id"),
@@ -514,6 +581,7 @@ async def _list_alarms(*, area_id: str | None = None, timezone: str | None = Non
                 "local_time": local_time,
                 "state": row.get("state") or "pending",
                 "source": "internal",
+                **({"recurrence": payload.get("recurrence")} if isinstance(payload.get("recurrence"), dict) else {}),
             }
         )
         lines.append(f"{row.get('logical_name') or 'alarm'} at {local_time} (id {row.get('id')})")
@@ -556,6 +624,19 @@ async def _set_alarm(
             "speech": error or "Could not parse alarm target time.",
         }
 
+    recurrence_payload, recurrence_error = _build_recurring_alarm_payload(
+        params,
+        target_epoch=int(target_epoch),
+        timezone=timezone,
+    )
+    if recurrence_error:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": recurrence_error,
+        }
+
     entity_query = (action.get("entity") or "").strip()
     logical_name = entity_query or str(params.get("label", "")).strip() or "alarm"
     duration_seconds = max(0, int(target_epoch) - now_ts)
@@ -569,6 +650,7 @@ async def _set_alarm(
             "alarm_label": logical_name,
             "language": language,
             "scheduled_for_epoch": int(target_epoch),
+            **({"recurrence": recurrence_payload} if recurrence_payload is not None else {}),
         },
     )
     local_time = _format_alarm_time_local(target_epoch, timezone=timezone)
@@ -581,6 +663,7 @@ async def _set_alarm(
             "scheduler_alarm_id": timer_id,
             "fires_at": int(target_epoch),
             "source": "internal",
+            **({"recurrence": recurrence_payload} if recurrence_payload is not None else {}),
         },
     }
 

@@ -17,7 +17,9 @@ import json
 import logging
 import time
 import uuid
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.a2a.orchestrator_gateway import OrchestratorGateway
 from app.db.repository import ScheduledTimersRepository
@@ -27,6 +29,120 @@ logger = logging.getLogger(__name__)
 
 _VALID_KINDS = frozenset({"plain", "notification", "delayed_action", "sleep", "snooze", "alarm"})
 _STARTUP_RECOVERY_RETRY_DELAY_SECONDS = 2.0
+_RECURRING_WEEKDAY_INDEX: dict[str, int] = {
+    "MO": 0,
+    "TU": 1,
+    "WE": 2,
+    "TH": 3,
+    "FR": 4,
+    "SA": 5,
+    "SU": 6,
+}
+
+
+def _load_recurrence(payload: dict[str, Any]) -> dict[str, Any] | None:
+    recurrence = payload.get("recurrence")
+    if not isinstance(recurrence, dict):
+        return None
+
+    freq = str(recurrence.get("freq") or "").strip().casefold()
+    if freq not in {"daily", "weekly"}:
+        return None
+
+    try:
+        interval = int(recurrence.get("interval", 1))
+    except (TypeError, ValueError):
+        return None
+    if interval < 1:
+        return None
+
+    anchor_text = str(recurrence.get("anchor_time") or "").strip()
+    try:
+        anchor_time = datetime.strptime(anchor_text, "%H:%M:%S").time()
+    except ValueError:
+        return None
+
+    normalized: dict[str, Any] = {
+        "freq": freq,
+        "interval": interval,
+        "anchor_time": anchor_text,
+        "_anchor_time_obj": anchor_time,
+    }
+
+    timezone_name = recurrence.get("timezone")
+    if timezone_name:
+        timezone_name = str(timezone_name)
+        try:
+            normalized["_tz"] = ZoneInfo(timezone_name)
+            normalized["timezone"] = timezone_name
+        except Exception:
+            normalized["_tz"] = None
+    else:
+        normalized["_tz"] = None
+
+    if freq == "weekly":
+        byweekday = recurrence.get("byweekday")
+        if not isinstance(byweekday, list) or not byweekday:
+            return None
+        weekday_indexes: list[int] = []
+        for item in byweekday:
+            key = str(item or "").strip().upper()
+            if key not in _RECURRING_WEEKDAY_INDEX:
+                return None
+            idx = _RECURRING_WEEKDAY_INDEX[key]
+            if idx not in weekday_indexes:
+                weekday_indexes.append(idx)
+        if not weekday_indexes:
+            return None
+        normalized["_weekday_indexes"] = weekday_indexes
+        normalized["byweekday"] = [
+            str(item or "").strip().upper()
+            for item in byweekday
+            if str(item or "").strip().upper() in _RECURRING_WEEKDAY_INDEX
+        ]
+
+    return normalized
+
+
+def _compute_next_recurring_fire_epoch(row: dict[str, Any], recurrence: dict[str, Any], now_ts: int) -> int | None:
+    tz = recurrence.get("_tz")
+    anchor_time = recurrence.get("_anchor_time_obj")
+    freq = recurrence.get("freq")
+    interval = int(recurrence.get("interval") or 1)
+    if anchor_time is None or freq not in {"daily", "weekly"}:
+        return None
+
+    current_local = (
+        datetime.fromtimestamp(int(row.get("fires_at") or 0), tz=tz)
+        if tz is not None
+        else datetime.fromtimestamp(int(row.get("fires_at") or 0))
+    )
+    now_local = datetime.fromtimestamp(int(now_ts), tz=tz) if tz is not None else datetime.fromtimestamp(int(now_ts))
+
+    if freq == "daily":
+        next_date = current_local.date() + timedelta(days=interval)
+        next_local = datetime.combine(next_date, anchor_time, tzinfo=tz)
+        while next_local <= now_local:
+            next_date = next_date + timedelta(days=interval)
+            next_local = datetime.combine(next_date, anchor_time, tzinfo=tz)
+        return int(next_local.timestamp())
+
+    weekdays: list[int] = list(recurrence.get("_weekday_indexes") or [])
+    if not weekdays:
+        return None
+    base_date = current_local.date()
+    for day_offset in range(1, 366 * max(1, interval)):
+        candidate_date = base_date + timedelta(days=day_offset)
+        weeks_since_base = (candidate_date - base_date).days // 7
+        if weeks_since_base % interval != 0:
+            continue
+        if candidate_date.weekday() not in weekdays:
+            continue
+        candidate_local = datetime.combine(candidate_date, anchor_time, tzinfo=tz)
+        if candidate_local <= now_local:
+            continue
+        return int(candidate_local.timestamp())
+    return None
 
 
 class TimerScheduler:
@@ -384,6 +500,27 @@ class TimerScheduler:
                     "language": language,
                 },
                 description=f"Dispatch alarm notification for {alarm_name}",
+            )
+
+            recurrence = _load_recurrence(payload)
+            if recurrence is None:
+                return
+
+            next_fire_epoch = _compute_next_recurring_fire_epoch(row, recurrence, int(time.time()))
+            if next_fire_epoch is None:
+                logger.warning("Recurring alarm %s has invalid/unschedulable recurrence payload", row["id"])
+                return
+
+            next_payload = dict(payload)
+            next_payload["scheduled_for_epoch"] = int(next_fire_epoch)
+            duration_seconds = max(0, int(next_fire_epoch) - int(time.time()))
+            await self.schedule(
+                logical_name=logical_name,
+                kind="alarm",
+                duration_seconds=duration_seconds,
+                origin_device_id=origin_device_id,
+                origin_area=origin_area,
+                payload=next_payload,
             )
             return
 

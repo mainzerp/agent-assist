@@ -1187,14 +1187,121 @@ class TestTimerExecutor:
         assert result["success"] is True
         scheduler.schedule.assert_awaited_once()
 
+    async def test_set_datetime_daily_recurrence_normalizes_payload(self):
+        """Daily recurrence is normalized and stored in scheduler payload_json metadata."""
+        from unittest.mock import patch as _patch
+
+        scheduler = MagicMock()
+        scheduler.schedule = AsyncMock(return_value="alarm-rec-daily")
+        now_ts = int(datetime(2026, 1, 15, 8, 0, 0, tzinfo=UTC).timestamp())
+
+        with (
+            _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler),
+            _patch("app.agents.timer_executor.time.time", return_value=now_ts),
+        ):
+            result = await execute_timer_action(
+                {
+                    "action": "set_datetime",
+                    "entity": "Morning Alarm",
+                    "parameters": {
+                        "time": "10:00:00",
+                        "recurrence": {"freq": "daily"},
+                    },
+                },
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+                timezone="Europe/Berlin",
+                language="de",
+            )
+
+        assert result["success"] is True
+        kwargs = scheduler.schedule.await_args.kwargs
+        recurrence = kwargs["payload"]["recurrence"]
+        assert recurrence["freq"] == "daily"
+        assert recurrence["interval"] == 1
+        assert recurrence["anchor_time"] == "10:00:00"
+        assert recurrence["timezone"] == "Europe/Berlin"
+        assert result["metadata"]["recurrence"]["freq"] == "daily"
+
+    async def test_set_datetime_weekly_recurrence_normalizes_byweekday(self):
+        """Weekly recurrence validates and normalizes weekday codes."""
+        from unittest.mock import patch as _patch
+
+        scheduler = MagicMock()
+        scheduler.schedule = AsyncMock(return_value="alarm-rec-weekly")
+
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {
+                    "action": "set_datetime",
+                    "entity": "Work Alarm",
+                    "parameters": {
+                        "time": "06:30:00",
+                        "recurrence": {"freq": "weekly", "byweekday": ["mo", "WE", "MO", "FR"]},
+                    },
+                },
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+            )
+
+        assert result["success"] is True
+        recurrence = scheduler.schedule.await_args.kwargs["payload"]["recurrence"]
+        assert recurrence["freq"] == "weekly"
+        assert recurrence["byweekday"] == ["MO", "WE", "FR"]
+
+    @pytest.mark.parametrize(
+        "recurrence,expected_message",
+        [
+            ({"freq": "monthly"}, "Invalid recurrence frequency"),
+            ({"freq": "weekly"}, "requires a non-empty byweekday"),
+            ({"freq": "weekly", "byweekday": ["XX"]}, "Invalid weekday code"),
+        ],
+    )
+    async def test_set_datetime_invalid_recurrence_payloads_fail(self, recurrence, expected_message):
+        from unittest.mock import patch as _patch
+
+        scheduler = MagicMock()
+        scheduler.schedule = AsyncMock(return_value="alarm-should-not-schedule")
+
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {
+                    "action": "set_datetime",
+                    "entity": "Alarm",
+                    "parameters": {
+                        "time": "07:00:00",
+                        "recurrence": recurrence,
+                    },
+                },
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+            )
+
+        assert result["success"] is False
+        assert expected_message in result["speech"]
+        scheduler.schedule.assert_not_awaited()
+
     async def test_list_alarms_returns_internal_sorted_rows(self):
         """list_alarms queries internal alarm rows and exposes source metadata."""
+        import json as _json
         from unittest.mock import patch as _patch
 
         scheduler = MagicMock()
         scheduler.list = AsyncMock(
             return_value=[
-                {"id": "a1", "logical_name": "Wake", "fires_at": 200, "state": "pending"},
+                {
+                    "id": "a1",
+                    "logical_name": "Wake",
+                    "fires_at": 200,
+                    "state": "pending",
+                    "payload_json": _json.dumps({"recurrence": {"freq": "daily", "interval": 1}}),
+                },
                 {"id": "a2", "logical_name": "Work", "fires_at": 400, "state": "pending"},
             ]
         )
@@ -1211,6 +1318,8 @@ class TestTimerExecutor:
         assert result["success"] is True
         assert "Internal alarms" in result["speech"]
         assert result["metadata"]["alarms"][0]["source"] == "internal"
+        assert result["metadata"]["alarms"][0]["recurrence"] == {"freq": "daily", "interval": 1}
+        assert "recurrence" not in result["metadata"]["alarms"][1]
         scheduler.list.assert_awaited_once_with(area=None, kinds={"alarm"})
 
     async def test_cancel_alarm_by_id_success(self):
@@ -1429,6 +1538,10 @@ class TestTimerPromptSnapshot:
             "Cancel the alarm for 14:35",
             "Cancel my morning alarm",
             "Cancel my alarm scheduled for 2026-04-26 14:35:00",
+            "Set an alarm every day at 7 AM",
+            "Stelle jeden Tag um 7 Uhr einen Wecker",
+            '"recurrence": {"freq": "daily"}',
+            '"recurrence": {"freq": "weekly", "byweekday": ["MO", "TU", "WE"]}',
             '"action": "cancel_alarm"',
         ):
             assert needle in prompt, f"missing required few-shot substring: {needle}"
@@ -1437,6 +1550,7 @@ class TestTimerPromptSnapshot:
     def test_prompt_contains_native_policy_block(self):
         prompt = self._read_prompt()
         assert "PLAIN, UNNAMED, RELATIVE" in prompt
+        assert "German weekday mapping guidance" in prompt
 
     async def test_non_timer_prompt_does_not_inject_eligibility(self):
         from app.models.agent import TaskContext

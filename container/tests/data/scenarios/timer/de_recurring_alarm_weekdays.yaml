@@ -1,0 +1,21 @@
+id: timer.de_recurring_alarm_weekdays
+agent: timer-agent
+description: German weekday recurring alarm setup via internal scheduler
+snapshot: home_default
+language: de
+context: {source: ha, area_id: bedroom, area_name: "Schlafzimmer", device_id: satellite_bedroom}
+llm:
+  classify: |
+    timer-agent (95%): Wecker montag dienstag mittwoch 6 Uhr
+  agents:
+    timer-agent: |
+      Ich stelle den Wecker auf Montag, Dienstag und Mittwoch um 6 Uhr.
+      ```json
+      {"action": "set_datetime", "entity": "Wecker", "parameters": {"time": "06:00:00", "recurrence": {"freq": "weekly", "byweekday": ["MO", "TU", "WE"]}}}
+      ```
+request:
+  text: "stelle montag dienstag und mittwoch um sechs uhr einen wecker"
+expected:
+  routed_agent: timer-agent
+  service_calls: []
+  speech_contains: ["scheduler"]

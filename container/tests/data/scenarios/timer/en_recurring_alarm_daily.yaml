@@ -1,0 +1,21 @@
+id: timer.en_recurring_alarm_daily
+agent: timer-agent
+description: English daily recurring alarm setup via internal scheduler
+snapshot: home_default
+language: en
+context: {source: ha, area_id: bedroom, device_id: satellite_bedroom}
+llm:
+  classify: |
+    timer-agent (95%): Set daily alarm for 7 AM
+  agents:
+    timer-agent: |
+      I will set a daily alarm at 7 AM.
+      ```json
+      {"action": "set_datetime", "entity": "morning alarm", "parameters": {"time": "07:00:00", "recurrence": {"freq": "daily"}}}
+      ```
+request:
+  text: "set an alarm every day at 7"
+expected:
+  routed_agent: timer-agent
+  service_calls: []
+  speech_contains: ["scheduler"]
