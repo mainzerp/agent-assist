@@ -532,7 +532,6 @@ def test_custom_agent_loader_accepts_mcp_tool_manager_for_setup_runtime():
     assert loader._mcp_tool_manager is mcp_tool_manager
 
 
-
 @pytest.mark.asyncio
 async def test_initialize_setup_dependent_services_is_idempotent():
     """FLOW-SETUP-1 (P1-2): calling the shared init helper twice must not

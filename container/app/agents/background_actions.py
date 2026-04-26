@@ -71,7 +71,9 @@ async def handle_background_event(
 
     if event.event_type == "delayed_action":
         if ha_client is None:
-            return _error_result("Background delayed action requires Home Assistant connectivity.", code="ha_unavailable")
+            return _error_result(
+                "Background delayed action requires Home Assistant connectivity.", code="ha_unavailable"
+            )
         target_entity = payload.get("target_entity") or ""
         target_action = payload.get("target_action") or ""
         if not target_entity or "/" not in target_action:

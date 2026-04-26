@@ -38,9 +38,7 @@ def set_dispatcher(dispatcher) -> None:
     _dispatcher = dispatcher
 
 
-def _native_plain_timer_eligible(
-    conv_request: ConversationRequest, request: Request | None = None
-) -> bool:
+def _native_plain_timer_eligible(conv_request: ConversationRequest, request: Request | None = None) -> bool:
     """Return True when the integration explicitly opted this turn into the
     native plain-timer delegation path. The flag on the request is the
     authoritative signal; the REST header is an additive hint and is

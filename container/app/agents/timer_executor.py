@@ -726,10 +726,7 @@ async def _sleep_timer(
         "success": True,
         "entity_id": None,
         "new_state": "active",
-        "speech": (
-            f"Sleep timer set for {human}. Media on {media_player_entity} will stop "
-            "when the timer ends."
-        ),
+        "speech": (f"Sleep timer set for {human}. Media on {media_player_entity} will stop when the timer ends."),
     }
 
 

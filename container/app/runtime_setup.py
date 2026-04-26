@@ -26,8 +26,8 @@ from app.agents.timer import TimerAgent
 from app.cache.cache_manager import CacheManager
 from app.cache.embedding import get_embedding_engine
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX, get_vector_store
-from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.db.repository import AgentConfigRepository, SettingsRepository, SetupStateRepository
+from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.entity.aliases import AliasResolver
 from app.entity.index import EntityIndex
 from app.entity.ingest import parse_ha_states, state_to_entity_index_entry
@@ -120,10 +120,13 @@ async def _resolve_active_embedding_model() -> str:
     try:
         provider = await SettingsRepository.get_value("embedding.provider", "local")
         if provider == "local":
-            return await SettingsRepository.get_value(
-                "embedding.local_model",
-                DEFAULT_LOCAL_EMBEDDING_MODEL,
-            ) or ""
+            return (
+                await SettingsRepository.get_value(
+                    "embedding.local_model",
+                    DEFAULT_LOCAL_EMBEDDING_MODEL,
+                )
+                or ""
+            )
         return await SettingsRepository.get_value("embedding.external_model", "") or ""
     except Exception:
         logger.debug("Could not resolve active embedding model", exc_info=True)

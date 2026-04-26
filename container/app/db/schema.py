@@ -357,13 +357,9 @@ async def _create_indexes(db: aiosqlite.Connection) -> None:
     await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_routing_agent ON trace_summary(routing_agent)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_trace_summary_label ON trace_summary(label)")
     await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_scheduled_timers_state_fires_at "
-        "ON scheduled_timers(state, fires_at)"
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_timers_state_fires_at ON scheduled_timers(state, fires_at)"
     )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_scheduled_timers_logical_name "
-        "ON scheduled_timers(logical_name)"
-    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_timers_logical_name ON scheduled_timers(logical_name)")
 
 
 async def _seed_defaults(db: aiosqlite.Connection) -> None:
@@ -934,12 +930,10 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             )
         """)
         await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_scheduled_timers_state_fires_at "
-            "ON scheduled_timers(state, fires_at)"
+            "CREATE INDEX IF NOT EXISTS idx_scheduled_timers_state_fires_at ON scheduled_timers(state, fires_at)"
         )
         await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_scheduled_timers_logical_name "
-            "ON scheduled_timers(logical_name)"
+            "CREATE INDEX IF NOT EXISTS idx_scheduled_timers_logical_name ON scheduled_timers(logical_name)"
         )
         await db.execute(
             "DELETE FROM entity_visibility_rules "

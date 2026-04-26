@@ -32,14 +32,10 @@ class TestRouteEligibilityPropagation:
         from tests.conftest import build_integration_test_app
 
         dispatcher = MagicMock()
-        dispatcher.dispatch = AsyncMock(
-            return_value=MagicMock(error=None, result={"speech": "fallback orchestrator"})
-        )
+        dispatcher.dispatch = AsyncMock(return_value=MagicMock(error=None, result={"speech": "fallback orchestrator"}))
         conv_routes.set_dispatcher(dispatcher)
 
-        app = build_integration_test_app(
-            setup_complete=True, override_api_key=True, dispatcher=dispatcher
-        )
+        app = build_integration_test_app(setup_complete=True, override_api_key=True, dispatcher=dispatcher)
 
         @asynccontextmanager
         async def _client_ctx():
@@ -59,6 +55,7 @@ class TestRouteEligibilityPropagation:
         captured: dict = {}
 
         async with ctx as (client, dispatcher):
+
             async def _dispatch(request):
                 captured["task"] = request.params["task"]
                 response = MagicMock()
@@ -83,6 +80,7 @@ class TestRouteEligibilityPropagation:
         captured: dict = {}
 
         async with ctx as (client, dispatcher):
+
             async def _dispatch(request):
                 captured["task"] = request.params["task"]
                 response = MagicMock()
@@ -170,9 +168,7 @@ def _ha_stubs():
     )
     conv_mod.async_converse = AsyncMock(name="async_converse_stub")
     sys.modules["homeassistant.components"].conversation = conv_mod
-    sys.modules["homeassistant.components"].assist_pipeline = sys.modules[
-        "homeassistant.components.assist_pipeline"
-    ]
+    sys.modules["homeassistant.components"].assist_pipeline = sys.modules["homeassistant.components.assist_pipeline"]
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1].parent))
 
@@ -236,9 +232,7 @@ class TestIntegrationDirectiveFlow:
         entity, bridge = _build_entity(_ha_stubs, native_enabled=True, native_delegate=native)
         bridge.return_value = _directive("native_start")
 
-        result = await entity._async_handle_message(
-            _user_input("Set a timer for 5 minutes"), MagicMock()
-        )
+        result = await entity._async_handle_message(_user_input("Set a timer for 5 minutes"), MagicMock())
 
         assert result == "native-result"
         bridge.assert_awaited_once()
@@ -251,9 +245,7 @@ class TestIntegrationDirectiveFlow:
         entity, bridge = _build_entity(_ha_stubs, native_enabled=True, native_delegate=native)
         bridge.return_value = _directive("native_cancel")
 
-        result = await entity._async_handle_message(
-            _user_input("Cancel my timer"), MagicMock()
-        )
+        result = await entity._async_handle_message(_user_input("Cancel my timer"), MagicMock())
 
         assert result == "native-cancel-result"
         native.assert_awaited_once()
@@ -282,9 +274,7 @@ class TestIntegrationDirectiveFlow:
         entity, bridge = _build_entity(_ha_stubs, native_enabled=True, native_delegate=native)
         bridge.return_value = "bridge-result"
 
-        result = await entity._async_handle_message(
-            _user_input(f"utterance for {reason}"), MagicMock()
-        )
+        result = await entity._async_handle_message(_user_input(f"utterance for {reason}"), MagicMock())
 
         assert result == "bridge-result"
         bridge.assert_awaited_once()
@@ -403,9 +393,7 @@ class TestIntegrationDirectiveFlow:
         # a normal result (because eligibility is suppressed).
         bridge.side_effect = [_directive("native_start"), "fallback-result"]
 
-        result = await entity._async_handle_message(
-            _user_input("Set a timer for 5 minutes"), MagicMock()
-        )
+        result = await entity._async_handle_message(_user_input("Set a timer for 5 minutes"), MagicMock())
 
         assert result == "fallback-result"
         assert bridge.await_count == 2
@@ -432,9 +420,7 @@ class TestIntegrationDirectiveFlow:
 
         entity._async_bridge_to_container = AsyncMock(side_effect=_bridge)
 
-        result = await entity._async_handle_message(
-            _user_input("Set a timer for 5 minutes"), MagicMock()
-        )
+        result = await entity._async_handle_message(_user_input("Set a timer for 5 minutes"), MagicMock())
 
         assert result == "fallback-after-native-error"
         # First call: from inside _async_bridge_with_cleanup (not suppressed).
@@ -449,9 +435,7 @@ class TestIntegrationDirectiveFlow:
         entity, bridge = _build_entity(_ha_stubs, native_enabled=True, native_delegate=native)
         bridge.return_value = _directive("native_start")
 
-        await entity._async_handle_message(
-            _user_input("Set a timer for 5 minutes"), MagicMock()
-        )
+        await entity._async_handle_message(_user_input("Set a timer for 5 minutes"), MagicMock())
 
         log_text = "\n".join(rec.getMessage() for rec in caplog.records)
         assert "path=native" in log_text
@@ -466,9 +450,7 @@ class TestIntegrationDirectiveFlow:
             "fallback-result",
         ]
 
-        result = await entity._async_handle_message(
-            _user_input("Set a timer for 5 minutes"), MagicMock()
-        )
+        result = await entity._async_handle_message(_user_input("Set a timer for 5 minutes"), MagicMock())
 
         assert result == "fallback-result"
         assert bridge.await_count == 2
@@ -491,9 +473,7 @@ class TestConversationModelDirectiveFields:
     def test_response_directive_round_trip(self):
         from app.models.conversation import ConversationResponse
 
-        resp = ConversationResponse(
-            speech="", directive="delegate_native_plain_timer", reason="native_start"
-        )
+        resp = ConversationResponse(speech="", directive="delegate_native_plain_timer", reason="native_start")
         data = resp.model_dump_json()
         restored = ConversationResponse.model_validate_json(data)
         assert restored.directive == "delegate_native_plain_timer"
@@ -502,9 +482,7 @@ class TestConversationModelDirectiveFields:
     def test_stream_token_directive_round_trip(self):
         from app.models.conversation import StreamToken
 
-        tok = StreamToken(
-            token="", done=True, directive="delegate_native_plain_timer", reason="native_cancel"
-        )
+        tok = StreamToken(token="", done=True, directive="delegate_native_plain_timer", reason="native_cancel")
         data = tok.model_dump_json()
         restored = StreamToken.model_validate_json(data)
         assert restored.done is True
@@ -529,9 +507,7 @@ class TestLLMDelegationContract:
     def _agent(self):
         from app.agents.timer import TimerAgent
 
-        agent = TimerAgent(
-            ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock()
-        )
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
         agent._call_llm = AsyncMock(
             return_value='```json\n{"action": "list_timers", "entity": "", "parameters": {}}\n```'
         )
@@ -551,9 +527,7 @@ class TestLLMDelegationContract:
         agent._call_llm.assert_awaited_once()
         messages = agent._call_llm.await_args.args[0]
         last_user = [m for m in messages if m["role"] == "user"][-1]
-        assert last_user["content"].rstrip().endswith(
-            "(Execution context: native_plain_timer_eligible=true)"
-        )
+        assert last_user["content"].rstrip().endswith("(Execution context: native_plain_timer_eligible=true)")
 
     async def test_eligibility_line_present_when_false(self):
         agent = self._agent()
@@ -561,9 +535,7 @@ class TestLLMDelegationContract:
         await agent.handle_task(task)
         messages = agent._call_llm.await_args.args[0]
         last_user = [m for m in messages if m["role"] == "user"][-1]
-        assert last_user["content"].rstrip().endswith(
-            "(Execution context: native_plain_timer_eligible=false)"
-        )
+        assert last_user["content"].rstrip().endswith("(Execution context: native_plain_timer_eligible=false)")
 
     async def test_system_prompt_contains_eligibility_aware_few_shots(self):
         agent = self._agent()
@@ -653,5 +625,3 @@ class TestHelperPoolRemoval:
         src = Path(__file__).resolve().parents[1] / "app" / "agents" / "timer_executor.py"
         text = src.read_text(encoding="utf-8")
         assert "no idle timer entities are available for pool allocation" not in text
-
-

@@ -21,9 +21,9 @@ from app.security.user_input import PreparedUserInput, prepare_user_text
 
 __all__ = [
     "MAX_INPUT_LENGTH",
-    "PreparedUserInput",
     "USER_INPUT_END",
     "USER_INPUT_START",
+    "PreparedUserInput",
     "check_injection_patterns",
     "decrypt",
     "delete_secret",

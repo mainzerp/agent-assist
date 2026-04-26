@@ -78,9 +78,7 @@ class QueryExpansionService:
         self._llm_call = llm_call
         self._prompt_path = prompt_path or _PROMPT_PATH
         self._prompt_template = (
-            prompt_template
-            if prompt_template is not None
-            else load_query_expansion_prompt_template(self._prompt_path)
+            prompt_template if prompt_template is not None else load_query_expansion_prompt_template(self._prompt_path)
         )
         self._inflight: dict[tuple[str, str], asyncio.Lock] = {}
         self._lock_guard = asyncio.Lock()

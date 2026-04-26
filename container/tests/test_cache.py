@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -999,7 +1000,7 @@ class TestCacheManager:
 
 
 class TestEmbeddingEngine:
-    _startup_logger_levels = {
+    _startup_logger_levels: ClassVar[dict[str, int]] = {
         "httpx": logging.WARNING,
         "huggingface_hub.utils._http": logging.ERROR,
         "transformers.modeling_utils": logging.ERROR,
@@ -1068,9 +1069,11 @@ class TestEmbeddingEngine:
                 return default
             return default
 
-        with patch("app.cache.embedding.SettingsRepository.get_value", new=AsyncMock(side_effect=_get_value)):
-            with patch.object(engine, "_get_local_model", return_value=MagicMock()):
-                await engine.initialize()
+        with (
+            patch("app.cache.embedding.SettingsRepository.get_value", new=AsyncMock(side_effect=_get_value)),
+            patch.object(engine, "_get_local_model", return_value=MagicMock()),
+        ):
+            await engine.initialize()
 
         assert engine._provider == "local"
         assert engine._model_name == DEFAULT_LOCAL_EMBEDDING_MODEL
@@ -1152,15 +1155,17 @@ class TestEmbeddingEngine:
             for name, level in seeded_levels.items():
                 logging.getLogger(name).setLevel(level)
 
-            with patch.dict(
-                sys.modules,
-                {
-                    "sentence_transformers": sentence_transformers_module,
-                    "huggingface_hub": huggingface_hub_module,
-                },
+            with (
+                patch.dict(
+                    sys.modules,
+                    {
+                        "sentence_transformers": sentence_transformers_module,
+                        "huggingface_hub": huggingface_hub_module,
+                    },
+                ),
+                pytest.raises(RuntimeError, match="model load failed"),
             ):
-                with pytest.raises(RuntimeError, match="model load failed"):
-                    engine._get_local_model()
+                engine._get_local_model()
 
             assert seen_levels == self._startup_logger_levels
             assert engine._local_model is None

@@ -71,11 +71,7 @@ _SAFE_METADATA_KEYS = {
     "tool_name",
 }
 
-_SENSITIVE_QUERY_MARKERS = _SENSITIVE_KEY_MARKERS + (
-    "code",
-    "key",
-    "auth",
-)
+_SENSITIVE_QUERY_MARKERS = (*_SENSITIVE_KEY_MARKERS, "code", "key", "auth")
 _NORMALIZED_SENSITIVE_QUERY_MARKERS = tuple(marker.replace("_", "-") for marker in _SENSITIVE_QUERY_MARKERS)
 
 _URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
@@ -152,9 +148,11 @@ def _replace_contextual_secret(match: re.Match[str]) -> str:
     label = match.group(1)
     separator = match.group(2)
     normalized = _normalize_key(label)
-    placeholder = "[REDACTED_TOKEN]" if any(
-        marker in normalized for marker in ("authorization", "token", "api-key", "apikey")
-    ) else "[REDACTED]"
+    placeholder = (
+        "[REDACTED_TOKEN]"
+        if any(marker in normalized for marker in ("authorization", "token", "api-key", "apikey"))
+        else "[REDACTED]"
+    )
     return f"{label}{separator}{placeholder}"
 
 
@@ -219,10 +217,7 @@ def sanitize_trace_value(value: Any, *, key: str | None = None) -> Any:
         return _redacted_placeholder_for_key(key, value)
 
     if isinstance(value, dict):
-        return {
-            item_key: sanitize_trace_value(item_value, key=str(item_key))
-            for item_key, item_value in value.items()
-        }
+        return {item_key: sanitize_trace_value(item_value, key=str(item_key)) for item_key, item_value in value.items()}
     if isinstance(value, list):
         return [sanitize_trace_value(item) for item in value]
     if isinstance(value, tuple):
@@ -240,6 +235,7 @@ def sanitize_trace_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     sanitized = sanitize_trace_value(metadata)
     return sanitized if isinstance(sanitized, dict) else {"value": sanitized}
+
 
 # Parent-span tracking per async context (Q-8). A ContextVar is the
 # correct mechanism for nested spans under ``asyncio.gather`` so parallel

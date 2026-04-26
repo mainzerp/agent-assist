@@ -526,7 +526,7 @@ class QuerySynonymCacheRepository:
 class CustomAgentRepository:
     """CRUD for runtime-created custom agents."""
 
-    _VISIBILITY_RULE_TYPES = {
+    _VISIBILITY_RULE_TYPES: ClassVar[set[str]] = {
         "domain_include",
         "domain_exclude",
         "area_include",
@@ -1793,6 +1793,7 @@ class SendDeviceMappingRepository:
             await db.commit()
             return cursor.rowcount > 0
 
+
 class ScheduledTimersRepository:
     """CRUD for the AgentHub-managed timer scheduler.
 
@@ -1836,15 +1837,11 @@ class ScheduledTimersRepository:
     @staticmethod
     async def list_pending() -> list[dict]:
         async with get_db_read() as db:
-            cursor = await db.execute(
-                "SELECT * FROM scheduled_timers WHERE state = 'pending' ORDER BY fires_at ASC"
-            )
+            cursor = await db.execute("SELECT * FROM scheduled_timers WHERE state = 'pending' ORDER BY fires_at ASC")
             return [dict(row) for row in await cursor.fetchall()]
 
     @staticmethod
-    async def list_pending_for(
-        *, logical_name: str | None = None, area: str | None = None
-    ) -> list[dict]:
+    async def list_pending_for(*, logical_name: str | None = None, area: str | None = None) -> list[dict]:
         clauses = ["state = 'pending'"]
         params: list[Any] = []
         if logical_name is not None:
@@ -1878,8 +1875,7 @@ class ScheduledTimersRepository:
     async def mark_cancelled(id_: str, cancelled_at: int) -> None:
         async with get_db_write() as db:
             await db.execute(
-                "UPDATE scheduled_timers SET state = 'cancelled', cancelled_at = ? "
-                "WHERE id = ? AND state = 'pending'",
+                "UPDATE scheduled_timers SET state = 'cancelled', cancelled_at = ? WHERE id = ? AND state = 'pending'",
                 (int(cancelled_at), id_),
             )
             await db.commit()

@@ -2622,7 +2622,9 @@ class OrchestratorAgent(BaseAgent):
         if cache_result is not None:
             if cache_result.hit_type == "routing_hit" and cache_result.agent_id:
                 if cache_result.agent_id == "send-agent" or cache_result.agent_id in _INTERNAL_ONLY_AGENTS:
-                    logger.debug("Ignoring invalid routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
+                    logger.debug(
+                        "Ignoring invalid routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80]
+                    )
                 else:
                     # P3-10: per-request cache-hit log; debug.
                     logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 import logging
 import os
+from contextlib import contextmanager
 
 import chromadb
 
-from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.db.repository import SettingsRepository
+from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 
 logger = logging.getLogger(__name__)
 

@@ -1038,12 +1038,7 @@ class TestTimerPromptSnapshot:
     def _read_prompt(self) -> str:
         from pathlib import Path
 
-        return (
-            Path(__file__).resolve().parents[1]
-            / "app"
-            / "prompts"
-            / "timer.txt"
-        ).read_text(encoding="utf-8")
+        return (Path(__file__).resolve().parents[1] / "app" / "prompts" / "timer.txt").read_text(encoding="utf-8")
 
     def test_prompt_no_helper_pool_framing(self):
         prompt = self._read_prompt()
@@ -1421,7 +1416,7 @@ class TestGeneralAgent:
         assert mock_complete.call_args[1].get("max_tokens") == 2048
 
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="answer")
-    async def test_GeneralAgent_wraps_user_prompt_and_user_history(self, mock_complete):
+    async def test_general_agent_wraps_user_prompt_and_user_history(self, mock_complete):
         agent = GeneralAgent()
         ctx = TaskContext(
             conversation_turns=[
@@ -2144,7 +2139,7 @@ class TestOrchestratorAgent:
         sys_en = messages_en[0]["content"]
         assert "User language hint" not in sys_en
 
-    async def test_Orchestrator_classifier_wraps_user_text_and_user_history(self):
+    async def test_orchestrator_classifier_wraps_user_text_and_user_history(self):
         orch = OrchestratorAgent(dispatcher=AsyncMock())
         orch._registry = AsyncMock()
         orch._registry.list_agents = AsyncMock(
@@ -2173,7 +2168,7 @@ class TestOrchestratorAgent:
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_Orchestrator_mediation_wraps_user_text(self, mock_complete, mock_settings):
+    async def test_orchestrator_mediation_wraps_user_text(self, mock_complete, mock_settings):
         orch, *_ = self._make_orchestrator()
         mock_settings.get_value = AsyncMock(return_value="friendly")
         mock_complete.return_value = "Done, nicely."
@@ -2416,7 +2411,9 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_classify_repairs_singleton_send_agent_and_skips_cache_store(self, mock_complete, mock_track, mock_settings):
+    async def test_classify_repairs_singleton_send_agent_and_skips_cache_store(
+        self, mock_complete, mock_track, mock_settings
+    ):
         orch, *_ = self._make_orchestrator()
         orch._registry.list_agents = AsyncMock(
             return_value=[
@@ -2436,7 +2433,9 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_handle_task_rejects_unrepairable_singleton_send_agent(self, mock_complete, mock_track, mock_settings):
+    async def test_handle_task_rejects_unrepairable_singleton_send_agent(
+        self, mock_complete, mock_track, mock_settings
+    ):
         mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, *_ = self._make_orchestrator()
         orch._registry.list_agents = AsyncMock(
@@ -3251,7 +3250,7 @@ class TestDynamicAgent:
         assert "NEVER translate or normalize entity/room names" in system_msg
 
     @patch("app.llm.client.complete", new_callable=AsyncMock, return_value="resp")
-    async def test_DynamicAgent_wraps_user_prompt_and_user_history(self, mock_complete):
+    async def test_dynamic_agent_wraps_user_prompt_and_user_history(self, mock_complete):
         agent = DynamicAgent(name="x", description="", system_prompt="base", skills=[])
         ctx = TaskContext(
             conversation_turns=[
@@ -3264,7 +3263,7 @@ class TestDynamicAgent:
         user_messages = [msg for msg in messages if msg["role"] == "user"]
         assert all(USER_INPUT_START in msg["content"] and USER_INPUT_END in msg["content"] for msg in user_messages)
         assert "Büro" in user_messages[-1]["content"]
-        assert [msg for msg in messages if msg["role"] == "assistant"][0]["content"] == "assistant response"
+        assert next(msg for msg in messages if msg["role"] == "assistant")["content"] == "assistant response"
 
     async def test_handle_task_uses_real_custom_agent_config_lookup(self, db_repository, mock_litellm):
         from app.db.repository import AgentConfigRepository, CustomAgentRepository

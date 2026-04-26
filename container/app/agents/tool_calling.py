@@ -80,7 +80,7 @@ async def call_llm_with_mcp_tools(
             tool_info = tool_map.get(name) or {}
             tool_span["metadata"]["tool_name"] = name
             tool_span["metadata"]["server_name"] = tool_info.get("_server_name", "")
-            tool_span["metadata"]["argument_keys"] = sorted(str(key) for key in (arguments or {}).keys())
+            tool_span["metadata"]["argument_keys"] = sorted(str(key) for key in (arguments or {}))
             tool_span["metadata"]["argument_chars"] = _payload_char_count(arguments or {})
             if include_tool_payload_metadata:
                 tool_span["metadata"]["arguments"] = sanitize_trace_value(arguments or {})

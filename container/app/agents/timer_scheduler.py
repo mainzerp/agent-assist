@@ -180,9 +180,7 @@ class TimerScheduler:
             count += 1
         return count
 
-    async def list(
-        self, *, logical_name: str | None = None, area: str | None = None
-    ) -> list[dict]:
+    async def list(self, *, logical_name: str | None = None, area: str | None = None) -> list[dict]:
         """Return pending timers, optionally filtered by logical_name and/or area."""
         return await self._repo.list_pending_for(logical_name=logical_name, area=area)
 
@@ -271,9 +269,7 @@ class TimerScheduler:
             target_entity = payload.get("target_entity") or ""
             target_action = payload.get("target_action") or ""
             if not target_entity or "/" not in target_action:
-                logger.error(
-                    "delayed_action timer %s missing target_entity/target_action", row["id"]
-                )
+                logger.error("delayed_action timer %s missing target_entity/target_action", row["id"])
                 return
             await gateway.dispatch_background_event(
                 "delayed_action",
