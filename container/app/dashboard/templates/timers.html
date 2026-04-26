@@ -265,6 +265,7 @@ function timersPage() {
         addAlarmError: '',
         satelliteOptions: [],
         satellitesLoaded: false,
+        satellitesLoadPromise: null,
         addTimerOriginDeviceId: '',
         addAlarmOriginDeviceId: '',
 
@@ -391,8 +392,7 @@ function timersPage() {
             await this.loadData();
         },
 
-        async openAddTimer() {
-            await this.ensureSatelliteOptionsLoaded();
+        openAddTimer() {
             this.addTimerOriginDeviceId = '';
             this.addTimerName = '';
             this.addTimerHours = 0;
@@ -401,6 +401,7 @@ function timersPage() {
             this.addTimerKind = 'plain';
             this.addTimerError = '';
             this.showAddTimerModal = true;
+            this.ensureSatelliteOptionsLoaded();
         },
 
         async submitAddTimer() {
@@ -437,13 +438,13 @@ function timersPage() {
             await this.loadData();
         },
 
-        async openAddAlarm() {
-            await this.ensureSatelliteOptionsLoaded();
+        openAddAlarm() {
             this.addAlarmOriginDeviceId = '';
             this.addAlarmName = '';
             this.addAlarmFiresAt = '';
             this.addAlarmError = '';
             this.showAddAlarmModal = true;
+            this.ensureSatelliteOptionsLoaded();
         },
 
         async submitAddAlarm() {
@@ -489,15 +490,22 @@ function timersPage() {
 
         async ensureSatelliteOptionsLoaded() {
             if (this.satellitesLoaded) return;
-            try {
-                const resp = await fetch('/api/admin/timers/satellites', { credentials: 'same-origin' });
-                if (!resp.ok) return;
-                const data = await resp.json();
-                this.satelliteOptions = Array.isArray(data.satellites) ? data.satellites : [];
-                this.satellitesLoaded = true;
-            } catch (_) {
-                // Keep empty list on failure; modal can still create broadcast timers.
-            }
+            if (this.satellitesLoadPromise) return this.satellitesLoadPromise;
+            const loadPromise = (async () => {
+                try {
+                    const resp = await fetch('/api/admin/timers/satellites', { credentials: 'same-origin' });
+                    if (!resp.ok) return;
+                    const data = await resp.json();
+                    this.satelliteOptions = Array.isArray(data.satellites) ? data.satellites : [];
+                    this.satellitesLoaded = true;
+                } catch (_) {
+                    // Keep empty list on failure; modal can still create broadcast timers.
+                } finally {
+                    this.satellitesLoadPromise = null;
+                }
+            })();
+            this.satellitesLoadPromise = loadPromise;
+            return loadPromise;
         }
     };
 }
