@@ -584,6 +584,7 @@ class TestTimerExecutorVerification:
 
         scheduler = MagicMock()
         scheduler.cancel = AsyncMock(return_value=0)
+        scheduler.list = AsyncMock(return_value=[])
         with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
             result = await execute_timer_action(
                 {"action": "cancel_timer", "entity": "pasta"},
@@ -593,3 +594,153 @@ class TestTimerExecutorVerification:
             )
         assert result["success"] is False
         assert "no timer named" in result["speech"].lower()
+
+    @pytest.mark.asyncio
+    async def test_extend_timer_extends_existing_timer(self):
+        from unittest.mock import AsyncMock, patch
+
+        from app.agents.timer_executor import execute_timer_action
+
+        existing_row = {
+            "id": "t-001",
+            "logical_name": "pasta",
+            "kind": "plain",
+            "fires_at": int(__import__("time").time()) + 120,
+            "origin_device_id": None,
+            "origin_area": "kitchen",
+            "payload_json": '{"language": "en"}',
+        }
+        scheduler = MagicMock()
+        scheduler.list = AsyncMock(return_value=[existing_row])
+        scheduler.cancel = AsyncMock(return_value=1)
+        scheduler.schedule = AsyncMock(return_value="t-002")
+
+        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "extend_timer", "entity": "pasta", "parameters": {"duration": "00:01:00"}},
+                _make_ha_client(call_result=[], observed_state=None),
+                MagicMock(),
+                _make_matcher("timer.pasta", "Pasta"),
+                area_id="kitchen",
+            )
+        assert result["success"] is True
+        assert result["new_state"] == "active"
+        scheduler.cancel.assert_awaited_once_with(id_="t-001")
+        scheduler.schedule.assert_awaited_once()
+        kwargs = scheduler.schedule.await_args.kwargs
+        assert kwargs["logical_name"] == "pasta"
+        assert kwargs["duration_seconds"] >= 120 + 60 - 5
+
+    @pytest.mark.asyncio
+    async def test_extend_timer_with_omitted_entity_uses_single_running_timer(self):
+        from unittest.mock import AsyncMock, patch
+
+        from app.agents.timer_executor import execute_timer_action
+
+        existing_row = {
+            "id": "t-003",
+            "logical_name": "egg timer",
+            "kind": "plain",
+            "fires_at": int(__import__("time").time()) + 60,
+            "origin_device_id": None,
+            "origin_area": None,
+            "payload_json": "{}",
+        }
+        scheduler = MagicMock()
+        scheduler.list = AsyncMock(return_value=[existing_row])
+        scheduler.cancel = AsyncMock(return_value=1)
+        scheduler.schedule = AsyncMock(return_value="t-004")
+
+        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "extend_timer", "entity": "", "parameters": {"duration": "00:02:00"}},
+                _make_ha_client(call_result=[], observed_state=None),
+                MagicMock(),
+                _make_matcher("", ""),
+            )
+        assert result["success"] is True
+        scheduler.schedule.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_extend_timer_no_running_timers_fails(self):
+        from unittest.mock import AsyncMock, patch
+
+        from app.agents.timer_executor import execute_timer_action
+
+        scheduler = MagicMock()
+        scheduler.list = AsyncMock(return_value=[])
+
+        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "extend_timer", "entity": "", "parameters": {"duration": "00:01:00"}},
+                _make_ha_client(call_result=[], observed_state=None),
+                MagicMock(),
+                _make_matcher("", ""),
+            )
+        assert result["success"] is False
+        assert "no active timer" in result["speech"].lower()
+
+    @pytest.mark.asyncio
+    async def test_extend_timer_without_duration_fails(self):
+        from app.agents.timer_executor import execute_timer_action
+
+        result = await execute_timer_action(
+            {"action": "extend_timer", "entity": "pasta", "parameters": {}},
+            _make_ha_client(call_result=[], observed_state=None),
+            MagicMock(),
+            _make_matcher("timer.pasta", "Pasta"),
+        )
+        assert result["success"] is False
+        assert "duration" in result["speech"].lower()
+
+    @pytest.mark.asyncio
+    async def test_cancel_timer_spoken_variant_fallback(self):
+        """Einminutentimer (spoken) cancels a timer stored as 1-Minuten-Timer."""
+        from unittest.mock import AsyncMock, patch
+
+        from app.agents.timer_executor import execute_timer_action
+
+        stored_row = {
+            "id": "t-010",
+            "logical_name": "1-Minuten-Timer",
+            "kind": "plain",
+            "fires_at": int(__import__("time").time()) + 55,
+            "origin_device_id": None,
+            "origin_area": None,
+            "payload_json": "{}",
+        }
+        scheduler = MagicMock()
+        scheduler.cancel = AsyncMock(side_effect=[0, 1])
+        scheduler.list = AsyncMock(return_value=[stored_row])
+
+        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "cancel_timer", "entity": "Einminutentimer"},
+                _make_ha_client(call_result=[], observed_state=None),
+                MagicMock(),
+                _make_matcher("", ""),
+            )
+        assert result["success"] is True
+        second_call_kwargs = scheduler.cancel.await_args_list[1].kwargs
+        assert second_call_kwargs.get("id_") == "t-010"
+
+    @pytest.mark.asyncio
+    async def test_cancel_timer_exact_match_takes_precedence(self):
+        """When exact-match succeeds, list() is never called (no fallback executed)."""
+        from unittest.mock import AsyncMock, patch
+
+        from app.agents.timer_executor import execute_timer_action
+
+        scheduler = MagicMock()
+        scheduler.cancel = AsyncMock(return_value=1)
+        scheduler.list = AsyncMock()
+
+        with patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "cancel_timer", "entity": "pasta"},
+                _make_ha_client(call_result=[], observed_state=None),
+                MagicMock(),
+                _make_matcher("timer.pasta", "Pasta"),
+            )
+        assert result["success"] is True
+        scheduler.list.assert_not_awaited()

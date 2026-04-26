@@ -1,12 +1,22 @@
 # Version
 
-**Current Version:** 0.27.8
+**Current Version:** 0.27.9
 
-## Recent Changes (since 0.27.8)
+## Recent Changes (since 0.27.9)
 
 (none yet)
 
 ## Version History
+
+### 0.27.9 (PATCH) -- Timer extend, cancel variant robustness, routing cache fix
+
+- Fixed routing cache stale `condensed_task` reuse overriding current user intent
+  in `container/app/agents/orchestrator.py` (two call sites in `_classify`).
+- Added explicit `extend_timer` action to timer prompt and executor:
+  extends active timer by delta, supports omitted-entity single-timer inference.
+- Added `_normalize_timer_name` helper and fuzzy fallback to `_cancel_timer`
+  for spoken German compound timer names (e.g. `Einminutentimer` vs `1-Minuten-Timer`).
+- Added targeted regression tests in `test_agents.py` and `test_domain_executors_verify.py`.
 
 ### 0.27.8 (PATCH) -- Timer language metadata and origin labels
 

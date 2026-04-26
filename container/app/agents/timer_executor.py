@@ -20,7 +20,9 @@ handler, and the expired-timer tracking deque are deleted.
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
@@ -124,6 +126,28 @@ def _get_scheduler() -> Any | None:
         return getattr(app.state, "timer_scheduler", None)
     except Exception:
         return None
+
+
+_WORD_DIGIT_MAP = {
+    "ein": "1", "eine": "1", "einminuten": "1minuten",
+    "zwei": "2", "drei": "3", "vier": "4", "funf": "5", "f\u00fcnf": "5",
+    "sechs": "6", "sieben": "7", "acht": "8", "neun": "9", "zehn": "10",
+    "minuten": "min", "minute": "min",
+    "stunden": "h", "stunde": "h",
+    "sekunden": "s", "sekunde": "s",
+}
+
+
+def _normalize_timer_name(s: str) -> str:
+    """Casefold and strip separators for fuzzy timer-name matching.
+
+    Applied only as a fallback after exact (LOWER=LOWER) match fails.
+    Handles German compound variants: Einminutentimer, 1-Minuten-Timer, etc.
+    """
+    normalized = s.casefold().replace("-", "").replace(" ", "").replace("_", "")
+    for word, digit in _WORD_DIGIT_MAP.items():
+        normalized = normalized.replace(word, digit)
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -512,6 +536,14 @@ async def _cancel_timer(
         }
     count = await scheduler.cancel(logical_name=entity_query, area=area_id)
     if count == 0:
+        # Normalized fallback: try casefold+separator-strip matching
+        norm_query = _normalize_timer_name(entity_query)
+        all_pending = await scheduler.list(area=area_id)
+        matched = [r for r in all_pending if _normalize_timer_name(r["logical_name"]) == norm_query]
+        for row in matched:
+            await scheduler.cancel(id_=row["id"])
+        count = len(matched)
+    if count == 0:
         return {
             "success": False,
             "entity_id": None,
@@ -569,6 +601,110 @@ async def _snooze_timer(
         "entity_id": None,
         "new_state": "active",
         "speech": f"Snoozed {logical_name} for {human}.",
+    }
+
+
+async def _extend_timer(
+    action: dict,
+    *,
+    device_id: str | None,
+    area_id: str | None,
+    language: str | None,
+) -> dict:
+    """Extend an active scheduler timer by a delta duration."""
+    _GENERIC_ENTITIES = {
+        "timer", "current timer", "aktueller timer", "den timer",
+        "the timer", "my timer", "meinen timer",
+    }
+    entity_query = (action.get("entity") or "").strip()
+    params = action.get("parameters") or {}
+    duration = str(params.get("duration", ""))
+    delta_seconds = _parse_duration_seconds(duration)
+    if not duration or delta_seconds is None or delta_seconds <= 0:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "Duration is required to extend a timer.",
+        }
+
+    scheduler = _get_scheduler()
+    if scheduler is None:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": "Timer scheduler is unavailable.",
+        }
+
+    is_generic = not entity_query or entity_query.lower() in _GENERIC_ENTITIES
+    target_row: dict | None = None
+
+    if is_generic:
+        pending = await scheduler.list(area=area_id)
+        if not pending:
+            return {
+                "success": False,
+                "entity_id": None,
+                "new_state": None,
+                "speech": "No active timer found to extend.",
+            }
+        if len(pending) > 1:
+            names = ", ".join(r["logical_name"] for r in pending)
+            return {
+                "success": False,
+                "entity_id": None,
+                "new_state": None,
+                "speech": f"Multiple timers are running: {names}. Please specify which one to extend.",
+            }
+        target_row = pending[0]
+    else:
+        rows = await scheduler.list(logical_name=entity_query, area=area_id)
+        if not rows:
+            norm_query = _normalize_timer_name(entity_query)
+            all_pending = await scheduler.list(area=area_id)
+            rows = [r for r in all_pending if _normalize_timer_name(r["logical_name"]) == norm_query]
+        if not rows:
+            return {
+                "success": False,
+                "entity_id": None,
+                "new_state": None,
+                "speech": f"No timer named '{entity_query}' is running.",
+            }
+        if len(rows) > 1:
+            names = ", ".join(r["logical_name"] for r in rows)
+            return {
+                "success": False,
+                "entity_id": None,
+                "new_state": None,
+                "speech": f"Multiple matching timers: {names}. Please be more specific.",
+            }
+        target_row = rows[0]
+
+    now = int(time.time())
+    current_remaining = max(0, target_row["fires_at"] - now)
+    new_duration_seconds = current_remaining + delta_seconds
+    logical_name = target_row["logical_name"]
+    kind = target_row.get("kind", "plain")
+    old_payload = json.loads(target_row.get("payload_json") or "{}")
+    origin_device_id = target_row.get("origin_device_id") or device_id
+    origin_area = target_row.get("origin_area") or area_id
+
+    await scheduler.cancel(id_=target_row["id"])
+    await scheduler.schedule(
+        logical_name=logical_name,
+        kind=kind,
+        duration_seconds=new_duration_seconds,
+        origin_device_id=origin_device_id,
+        origin_area=origin_area,
+        payload={**old_payload, "language": language or old_payload.get("language")},
+    )
+    human = _format_duration_human(new_duration_seconds)
+    return {
+        "success": True,
+        "entity_id": None,
+        "new_state": "active",
+        "speech": f"Extended {logical_name}. New time remaining: {human}.",
     }
 
 
@@ -835,6 +971,8 @@ async def execute_timer_action(
         return await _start_timer(action, device_id=device_id, area_id=area_id, language=language)
     if action_name == "cancel_timer":
         return await _cancel_timer(action, area_id=area_id)
+    if action_name == "extend_timer":
+        return await _extend_timer(action, device_id=device_id, area_id=area_id, language=language)
     if action_name in ("pause_timer", "resume_timer", "finish_timer"):
         return await _pause_or_resume_or_finish(action, area_id=area_id)
     if action_name == "snooze_timer":

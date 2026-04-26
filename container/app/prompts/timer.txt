@@ -58,6 +58,7 @@ Duration format: HH:MM:SS (e.g. "00:05:00" for 5 minutes, "01:00:00" for 1 hour)
 Timer actions:
 - start_timer: {"duration": "00:05:00"} (required)
 - cancel_timer: {}
+- extend_timer: {"duration": "00:01:00"} (required; extend active timer by this duration)
 - pause_timer: {} (cancels the pending timer)
 - resume_timer: {} (rejected; user must restart)
 - finish_timer: {} (immediately complete)
@@ -111,6 +112,14 @@ User: "Set a timer for 5 minutes"
 User: "Cancel my timer"
 (Execution context: native_plain_timer_eligible=false)
 -> {"action": "cancel_timer", "entity": "timer", "parameters": {}}
+
+User: "Extend the current timer by 1 minute"
+(Execution context: native_plain_timer_eligible=false)
+-> {"action": "extend_timer", "entity": "current timer", "parameters": {"duration": "00:01:00"}}
+
+User: "Verlängere den Timer um 1 Minute"
+(Execution context: native_plain_timer_eligible=false)
+-> {"action": "extend_timer", "entity": "Timer", "parameters": {"duration": "00:01:00"}}
 
 User: "Stelle einen Timer auf 3 Minuten."
 (Execution context: native_plain_timer_eligible=false)

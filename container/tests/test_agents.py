@@ -1923,6 +1923,50 @@ class TestOrchestratorAgent:
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    async def test_classify_routing_hit_uses_current_user_text_not_stale_condensed(
+        self, mock_track, mock_settings
+    ):
+        """Routing cache hit: condensed task returned must be user_text, not cached stale text."""
+        orch, *_ = self._make_orchestrator()
+        orch._cache_manager.process = AsyncMock(
+            return_value=MagicMock(
+                hit_type="routing_hit",
+                agent_id="timer-agent",
+                similarity=0.95,
+                condensed_task="set timer for 1 minute",
+            )
+        )
+        classifications, routing_cached = await orch._classify(
+            "Breche bitte den Einminutentimer ab."
+        )
+        assert routing_cached is True
+        assert classifications[0][0] == "timer-agent"
+        _, condensed, _ = classifications[0]
+        assert condensed == "Breche bitte den Einminutentimer ab."
+        assert "set timer" not in condensed.lower()
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
+    async def test_classify_precomputed_routing_hit_uses_current_user_text(
+        self, mock_track, mock_settings
+    ):
+        """Precomputed routing cache result: condensed must be user_text, not stale cached value."""
+        orch, *_ = self._make_orchestrator()
+        stale_cache = MagicMock(
+            hit_type="routing_hit",
+            agent_id="timer-agent",
+            similarity=0.95,
+            condensed_task="start a 5 minute timer",
+        )
+        classifications, routing_cached = await orch._classify(
+            "cancel my timer", cache_result=stale_cache
+        )
+        assert routing_cached is True
+        _, condensed, _ = classifications[0]
+        assert condensed == "cancel my timer"
+
+    @patch("app.agents.orchestrator.SettingsRepository")
+    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_classify_ignores_cached_singleton_send_agent_route(self, mock_complete, mock_track, mock_settings):
         mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
