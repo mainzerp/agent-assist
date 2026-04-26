@@ -5,6 +5,12 @@
 {% block page_content %}
 <div x-data="timersPage()" x-init="init()">
 
+    <div id="timers-alpine-warning" class="card" style="display:none;margin-bottom:1rem;border-color:var(--danger,#f38ba8);">
+        <p style="margin:0;color:var(--danger,#f38ba8);font-weight:600;">
+            Interactive controls failed to initialize (Alpine.js unavailable). Add/Edit actions may not work until you reload the page or restore network access.
+        </p>
+    </div>
+
     <div class="page-header">
         <div class="page-header-text">
             <p class="page-subtitle">Scheduler-managed timers and source-labeled alarms (internal scheduler and HA legacy visibility). Auto-refreshes every 5s.</p>
@@ -495,5 +501,24 @@ function timersPage() {
         }
     };
 }
+</script>
+<script>
+(function() {
+    function showAlpineWarning() {
+        var banner = document.getElementById('timers-alpine-warning');
+        if (!banner) {
+            return;
+        }
+        banner.style.display = 'block';
+    }
+
+    document.addEventListener('dashboard:alpine-missing', showAlpineWarning);
+
+    window.setTimeout(function() {
+        if (!window.Alpine) {
+            showAlpineWarning();
+        }
+    }, 3200);
+})();
 </script>
 {% endblock %}
