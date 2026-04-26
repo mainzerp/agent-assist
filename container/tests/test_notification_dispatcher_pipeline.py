@@ -200,3 +200,102 @@ async def test_pipeline_prefers_satellite_from_entity_index() -> None:
     ]
     _, _, _, data = client.calls[0]
     assert data["device_id"] == "dev-kitchen-001"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_timer_notification_resolves_media_player_from_origin_metadata() -> None:
+    with (
+        patch.object(nd, "_load_notification_profile", new=AsyncMock(return_value={"tts_enabled": True})),
+        patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
+        patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.office")),
+        patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value="Timer done")),
+        patch.object(nd, "_play_chime", new=AsyncMock()) as play_chime,
+        patch.object(nd, "_notify_tts", new=AsyncMock()) as notify_tts,
+        patch.object(nd, "spawn", side_effect=lambda coro, name=None: coro.close()) as spawn_mock,
+    ):
+        metadata = SimpleNamespace(
+            media_player_entity=None,
+            origin_device_id="device-abc",
+            origin_area="office",
+            duration="00:05:00",
+        )
+        await nd.dispatch_timer_notification(
+            ha_client=MagicMock(),
+            timer_name="Timer",
+            entity_id="agenthub_internal:1",
+            metadata=metadata,
+            entity_index=MagicMock(),
+        )
+
+    play_chime.assert_awaited_once()
+    notify_tts.assert_awaited_once()
+    assert notify_tts.await_args.args[1] == "media_player.office"
+    spawn_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_timer_notification_prefers_explicit_media_player_target() -> None:
+    with (
+        patch.object(nd, "_load_notification_profile", new=AsyncMock(return_value={"tts_enabled": True})),
+        patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
+        patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.fallback")) as fallback,
+        patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value="Timer done")),
+        patch.object(nd, "_play_chime", new=AsyncMock()),
+        patch.object(nd, "_notify_tts", new=AsyncMock()) as notify_tts,
+        patch.object(nd, "spawn", side_effect=lambda coro, name=None: coro.close()),
+    ):
+        metadata = SimpleNamespace(
+            media_player_entity="media_player.explicit",
+            origin_device_id="device-abc",
+            origin_area="office",
+            duration="00:05:00",
+        )
+        await nd.dispatch_timer_notification(
+            ha_client=MagicMock(),
+            timer_name="Timer",
+            entity_id="agenthub_internal:1",
+            metadata=metadata,
+            entity_index=MagicMock(),
+        )
+
+    fallback.assert_not_awaited()
+    assert notify_tts.await_args.args[1] == "media_player.explicit"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_timer_notification_unnamed_timer_uses_generic_message_without_tts_target() -> None:
+    with (
+        patch.object(
+            nd,
+            "_load_notification_profile",
+            new=AsyncMock(
+                return_value={
+                    "tts_enabled": True,
+                    "persistent_enabled": True,
+                    "push_enabled": False,
+                }
+            ),
+        ),
+        patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
+        patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value=None)),
+        patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value=None)),
+        patch.object(nd, "_notify_tts", new=AsyncMock()) as notify_tts,
+        patch.object(nd, "_notify_persistent", new=AsyncMock()) as notify_persistent,
+    ):
+        metadata = SimpleNamespace(
+            media_player_entity=None,
+            origin_device_id=None,
+            origin_area=None,
+            duration="00:03:00",
+        )
+        await nd.dispatch_timer_notification(
+            ha_client=MagicMock(),
+            timer_name="Timer",
+            entity_id="agenthub_internal:2",
+            metadata=metadata,
+            entity_index=None,
+        )
+
+    notify_tts.assert_not_awaited()
+    notify_persistent.assert_awaited_once()
+    assert notify_persistent.await_args.args[2] == "The timer has finished"

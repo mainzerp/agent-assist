@@ -1,12 +1,40 @@
 # Version
 
-**Current Version:** 0.27.4
+**Current Version:** 0.27.5
 
-## Recent Changes (since 0.27.4)
+## Recent Changes (since 0.27.5)
 
 (none yet)
 
 ## Version History
+
+### 0.27.5 (PATCH) -- Timer expiry delivery and dashboard contract alignment
+
+Fixes an internal timer regression where scheduler-fired timers could
+miss audible expiry delivery when no explicit media target was stored,
+and updates the Timers dashboard to the current scheduler-backed admin
+API contract.
+
+Changes:
+
+- Included `origin_device_id` in scheduler `timer_notification`
+  background payloads so expiry delivery can resolve playback targets
+  from persisted origin metadata after restart and normal runtime flow.
+- Added notification-delivery fallback target resolution that keeps
+  explicit `media_player` targets authoritative, then falls back to
+  origin-device and origin-area lookup for scheduler-managed timer
+  notifications.
+- Added a stable generic expiry message fallback for unnamed timers so
+  non-audio channels still produce a meaningful user-visible
+  notification when no custom text exists.
+- Updated `timers.html` to render scheduler timer fields (`logical_name`,
+  `kind`, `duration_seconds`, `remaining_seconds`, origin metadata,
+  state) and removed obsolete helper-pool and delayed-task sections.
+- Added focused regression tests for scheduler expiry metadata payloads,
+  timer-notification target fallback and precedence behavior, unnamed
+  timer fallback messaging, and the `/api/admin/timers` dashboard
+  contract/template coupling.
+- Bumped `container/app/__init__.py` runtime version to `0.27.5`.
 
 ### 0.27.4 (PATCH) -- Prompt file async hygiene
 

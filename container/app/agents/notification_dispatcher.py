@@ -123,6 +123,11 @@ _FALLBACK_MESSAGES = {
     "en": "Timer {name} has finished",
 }
 
+_GENERIC_FALLBACK_MESSAGES = {
+    "de": "Der Timer ist abgelaufen",
+    "en": "The timer has finished",
+}
+
 # Delay after TTS before starting to listen (seconds).
 _TTS_TO_LISTEN_DELAY = 4.0
 
@@ -152,8 +157,30 @@ async def dispatch_timer_notification(
     lang_key = "de" if language.startswith("de") else "en"
 
     media_player = metadata.media_player_entity if metadata else None
+    origin_device_id = getattr(metadata, "origin_device_id", None) if metadata else None
     area = metadata.origin_area if metadata else None
     duration = metadata.duration if metadata else None
+
+    if not media_player:
+        media_player = await _resolve_timer_playback_target(
+            ha_client,
+            origin_device_id=origin_device_id,
+            area=area,
+            entity_index=entity_index,
+        )
+        if media_player:
+            logger.info(
+                "Timer notification playback target resolved from origin metadata (device_id=%s, area=%s): %s",
+                origin_device_id,
+                area,
+                media_player,
+            )
+        else:
+            logger.warning(
+                "Timer notification has no resolvable playback target (device_id=%s, area=%s)",
+                origin_device_id,
+                area,
+            )
 
     # Determine if timer has a meaningful name
     has_meaningful_name = _has_meaningful_timer_name(timer_name, entity_id)
@@ -166,8 +193,11 @@ async def dispatch_timer_notification(
         language=language,
         has_meaningful_name=has_meaningful_name,
     )
-    if not message and has_meaningful_name:
-        message = _FALLBACK_MESSAGES.get(lang_key, _FALLBACK_MESSAGES["en"]).format(name=timer_name)
+    if not message:
+        if has_meaningful_name:
+            message = _FALLBACK_MESSAGES.get(lang_key, _FALLBACK_MESSAGES["en"]).format(name=timer_name)
+        else:
+            message = _GENERIC_FALLBACK_MESSAGES.get(lang_key, _GENERIC_FALLBACK_MESSAGES["en"])
 
     # Channel 1: TTS on origin device
     if profile.get("tts_enabled", True) and media_player:
@@ -500,6 +530,89 @@ async def _resolve_ha_device_id(
     if rendered.lower() == "none":
         return None
     return rendered
+
+
+async def _resolve_media_player_from_origin_device(
+    ha_client: Any,
+    origin_device_id: str | None,
+) -> str | None:
+    if not origin_device_id:
+        return None
+    template = "{{ expand(device_entities('" + origin_device_id + "')) | map(attribute='entity_id') | join(',') }}"
+    rendered: str | None = None
+    try:
+        if hasattr(ha_client, "render_template"):
+            rendered = await ha_client.render_template(template)
+        else:
+            client = getattr(ha_client, "_client", None)
+            if client is None:
+                return None
+            resp = await client.post("/api/template", json={"template": template})
+            resp.raise_for_status()
+            rendered = (resp.text or "").strip()
+    except Exception:
+        logger.debug(
+            "Failed to resolve media_player from origin device %s",
+            origin_device_id,
+            exc_info=True,
+        )
+        return None
+
+    if not rendered:
+        return None
+
+    candidates = [item.strip() for item in rendered.split(",") if item and item.strip()]
+    for candidate in candidates:
+        if candidate.startswith("media_player."):
+            return candidate
+    return None
+
+
+async def _resolve_media_player_from_area(
+    ha_client: Any,
+    area: str | None,
+    entity_index: Any = None,
+) -> str | None:
+    if not area:
+        return None
+
+    if entity_index is not None:
+        try:
+            entries = await entity_index.list_entries_async(domains={"media_player"})
+            for e in entries:
+                if getattr(e, "area", None) == area:
+                    return e.entity_id
+        except Exception:
+            logger.warning(
+                "EntityIndex media_player lookup failed for area %s",
+                area,
+                exc_info=True,
+            )
+
+    try:
+        states = await ha_client.get_states()
+        for s in states:
+            eid = s.get("entity_id", "")
+            if not eid.startswith("media_player."):
+                continue
+            if s.get("attributes", {}).get("area_id") == area:
+                return eid
+    except Exception:
+        logger.warning("State scan media_player lookup failed for area %s", area, exc_info=True)
+    return None
+
+
+async def _resolve_timer_playback_target(
+    ha_client: Any,
+    *,
+    origin_device_id: str | None,
+    area: str | None,
+    entity_index: Any = None,
+) -> str | None:
+    media_player = await _resolve_media_player_from_origin_device(ha_client, origin_device_id)
+    if media_player:
+        return media_player
+    return await _resolve_media_player_from_area(ha_client, area, entity_index=entity_index)
 
 
 async def _trigger_conversation_continuation(

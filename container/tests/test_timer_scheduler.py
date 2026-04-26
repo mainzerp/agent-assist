@@ -203,6 +203,8 @@ class TestKindDispatch:
                 logical_name="x",
                 kind="plain",
                 duration_seconds=0,
+                origin_device_id="device-123",
+                origin_area="kitchen",
                 payload={},
             )
             for _ in range(20):
@@ -212,6 +214,9 @@ class TestKindDispatch:
                     break
             gateway.dispatch_background_event.assert_awaited_once()
             assert gateway.dispatch_background_event.await_args.args[0] == "timer_notification"
+            payload = gateway.dispatch_background_event.await_args.args[1]
+            assert payload["origin_device_id"] == "device-123"
+            assert payload["origin_area"] == "kitchen"
         finally:
             await sched.stop()
 

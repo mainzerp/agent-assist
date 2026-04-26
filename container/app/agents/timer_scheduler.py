@@ -258,6 +258,7 @@ class TimerScheduler:
                     "timer_name": display_name,
                     "entity_id": synthetic_entity_id,
                     "media_player": payload.get("media_player"),
+                    "origin_device_id": origin_device_id,
                     "origin_area": origin_area,
                     "duration": duration_str,
                 },

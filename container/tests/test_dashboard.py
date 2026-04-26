@@ -151,6 +151,11 @@ class TestDashboardPageAccessibility:
         assert "text/html" in resp.headers.get("content-type", "")
         assert DEFAULT_LOCAL_EMBEDDING_MODEL in resp.text
 
+    async def test_timers_page(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/timers")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers.get("content-type", "")
+
 
 # ===================================================================
 # Template rendering content checks
@@ -208,6 +213,55 @@ class TestDashboardTemplateRendering:
         html = resp.text
         assert html.count('role="status"') >= 4
         assert html.count('aria-live="polite"') >= 4
+
+    async def test_timers_page_uses_scheduler_contract_copy(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/timers")
+        html = resp.text
+        assert "Scheduler Timers" in html
+        assert "remaining_seconds" in html
+        assert "logical_name" in html
+        assert "Timer Pool" not in html
+        assert "Pending Delayed Tasks" not in html
+
+
+@pytest.mark.integration
+class TestTimerDashboardApiContract:
+    async def test_admin_timers_returns_scheduler_fields(self, dashboard_client: httpx.AsyncClient):
+        app = dashboard_client._transport.app
+        app.state.timer_scheduler = MagicMock()
+        app.state.timer_scheduler.list = AsyncMock(
+            return_value=[
+                {
+                    "id": "timer-1",
+                    "logical_name": "kitchen timer",
+                    "kind": "plain",
+                    "fires_at": 9999999999,
+                    "duration_seconds": 300,
+                    "origin_area": "kitchen",
+                    "origin_device_id": "device-1",
+                    "state": "pending",
+                }
+            ]
+        )
+        app.state.ha_client.get_states = AsyncMock(return_value=[])
+
+        resp = await dashboard_client.get("/api/admin/timers")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "timers" in data
+        assert "alarms" in data
+        assert len(data["timers"]) == 1
+        row = data["timers"][0]
+        assert row["id"] == "timer-1"
+        assert row["logical_name"] == "kitchen timer"
+        assert row["kind"] == "plain"
+        assert "remaining_seconds" in row
+        assert row["duration_seconds"] == 300
+        assert row["state"] == "pending"
+        assert row["origin_area"] == "kitchen"
+        assert row["origin_device_id"] == "device-1"
+        assert "entity_id" not in row
+        assert "name" not in row
 
 
 # ===================================================================

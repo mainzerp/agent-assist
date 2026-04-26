@@ -7,7 +7,7 @@
 
     <div class="page-header">
         <div class="page-header-text">
-            <p class="page-subtitle">Active timers, alarms, pool allocation, and pending delayed tasks. Auto-refreshes every 5s.</p>
+            <p class="page-subtitle">Scheduler-managed timers and Home Assistant input_datetime alarms. Auto-refreshes every 5s.</p>
         </div>
         <div class="page-actions">
             <span class="text-muted" x-text="timers.length + ' timer(s), ' + alarms.length + ' alarm(s)'"></span>
@@ -16,43 +16,42 @@
 
     <!-- Section 1: Active Timers -->
     <div class="section-header">
-        <h2 class="section-title mt-0 mb-0">Active Timers</h2>
+        <h2 class="section-title mt-0 mb-0">Scheduler Timers</h2>
     </div>
     <template x-if="!loading && timers.length === 0">
-        <div class="empty-state"><p>No timer entities found in Home Assistant.</p></div>
+        <div class="empty-state"><p>No active scheduler timers.</p></div>
     </template>
     <div x-show="timers.length > 0" class="table-container">
         <table class="data-table">
             <thead>
                 <tr>
-                    <th>Name</th>
-                    <th>Entity ID</th>
+                    <th>Timer</th>
+                    <th>Kind</th>
                     <th>State</th>
                     <th>Remaining</th>
                     <th>Duration</th>
+                    <th>Origin</th>
                 </tr>
             </thead>
             <tbody>
-                <template x-for="t in timers" :key="t.entity_id">
+                <template x-for="t in timers" :key="t.id">
                     <tr>
+                        <td x-text="displayTimerName(t)"></td>
                         <td>
-                            <span x-text="t.name"></span>
-                            <template x-if="t.pool_name">
-                                <span class="badge badge-teal" style="margin-left: 0.375rem; font-size: 0.7rem;">pool</span>
-                            </template>
+                            <span class="badge badge-teal" x-text="t.kind || '-'"></span>
                         </td>
-                        <td class="text-mono" x-text="t.entity_id"></td>
                         <td>
                             <span class="badge badge-dot"
                                   :class="{
-                                      'badge-green': t.state === 'active',
+                                      'badge-green': t.state === 'pending' || t.state === 'active',
                                       'badge-yellow': t.state === 'paused',
-                                      'badge-muted': t.state === 'idle' || (t.state !== 'active' && t.state !== 'paused')
+                                      'badge-muted': t.state === 'cancelled' || t.state === 'fired' || t.state === 'expired' || (!t.state)
                                   }"
-                                  x-text="t.state"></span>
+                                  x-text="t.state || '-' "></span>
                         </td>
-                        <td class="text-mono" x-text="t.state === 'active' || t.state === 'paused' ? t.remaining : '-'"></td>
-                        <td class="text-mono" x-text="t.duration || '-'"></td>
+                        <td class="text-mono" x-text="formatDurationSeconds(t.remaining_seconds)"></td>
+                        <td class="text-mono" x-text="formatDurationSeconds(t.duration_seconds)"></td>
+                        <td class="text-mono" x-text="displayOrigin(t)"></td>
                     </tr>
                 </template>
             </tbody>
@@ -97,65 +96,6 @@
         </table>
     </div>
 
-    <!-- Section 3: Timer Pool -->
-    <div class="section-header" style="margin-top: 2rem;">
-        <h2 class="section-title mt-0 mb-0">Timer Pool</h2>
-    </div>
-    <div class="card">
-        <template x-if="pool.mappings.length === 0">
-            <p class="text-muted">No pool slots currently allocated. Timers are assigned from the pool when a user starts a named timer.</p>
-        </template>
-        <template x-if="pool.mappings.length > 0">
-            <div>
-                <p class="text-muted mb-md" x-text="pool.allocated + ' slot(s) allocated'"></p>
-                <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
-                    <template x-for="m in pool.mappings" :key="m.entity_id">
-                        <div class="badge badge-teal" style="display: inline-flex; flex-direction: column; padding: 0.375rem 0.75rem; line-height: 1.4;">
-                            <span style="font-weight: 600;" x-text="m.name"></span>
-                            <span style="font-size: 0.7rem; opacity: 0.8;" x-text="m.entity_id"></span>
-                        </div>
-                    </template>
-                </div>
-            </div>
-        </template>
-    </div>
-
-    <!-- Section 4: Pending Delayed Tasks -->
-    <div class="section-header" style="margin-top: 2rem;">
-        <h2 class="section-title mt-0 mb-0">Pending Delayed Tasks</h2>
-    </div>
-    <template x-if="!loading && delayedTasks.length === 0">
-        <div class="empty-state"><p>No pending delayed tasks.</p></div>
-    </template>
-    <div x-show="delayedTasks.length > 0" class="table-container">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Timer Entity</th>
-                    <th>Description</th>
-                    <th>Type</th>
-                </tr>
-            </thead>
-            <tbody>
-                <template x-for="dt in delayedTasks" :key="dt.timer_entity_id">
-                    <tr>
-                        <td class="text-mono" x-text="dt.timer_entity_id"></td>
-                        <td x-text="dt.description"></td>
-                        <td>
-                            <span class="badge"
-                                  :class="{
-                                      'badge-blue': dt.description.startsWith('notify:'),
-                                      'badge-teal': dt.description.includes('media_player'),
-                                      'badge-muted': !dt.description.startsWith('notify:') && !dt.description.includes('media_player')
-                                  }"
-                                  x-text="inferTaskType(dt.description)"></span>
-                        </td>
-                    </tr>
-                </template>
-            </tbody>
-        </table>
-    </div>
-
     <template x-if="loading">
         <p class="text-muted" style="padding: 1rem 0;">Loading timer data...</p>
     </template>
@@ -166,8 +106,6 @@ function timersPage() {
     return {
         timers: [],
         alarms: [],
-        pool: { mappings: [], allocated: 0 },
-        delayedTasks: [],
         loading: true,
         refreshInterval: null,
 
@@ -183,8 +121,6 @@ function timersPage() {
                     const data = await resp.json();
                     this.timers = data.timers || [];
                     this.alarms = data.alarms || [];
-                    this.pool = data.pool || { mappings: [], allocated: 0 };
-                    this.delayedTasks = data.delayed_tasks || [];
                 }
             } catch (e) {
                 console.error('Failed to load timer data', e);
@@ -192,10 +128,26 @@ function timersPage() {
             this.loading = false;
         },
 
-        inferTaskType(description) {
-            if (description.startsWith('notify:')) return 'notification';
-            if (description.includes('media_player')) return 'sleep_timer';
-            return 'delayed_action';
+        formatDurationSeconds(seconds) {
+            if (typeof seconds !== 'number' || Number.isNaN(seconds)) return '-';
+            const total = Math.max(0, Math.floor(seconds));
+            const hours = Math.floor(total / 3600);
+            const minutes = Math.floor((total % 3600) / 60);
+            const secs = total % 60;
+            const pad = (value) => value.toString().padStart(2, '0');
+            return `${pad(hours)}:${pad(minutes)}:${pad(secs)}`;
+        },
+
+        displayTimerName(timer) {
+            const logical = (timer && timer.logical_name ? String(timer.logical_name).trim() : '');
+            return logical || 'unnamed timer';
+        },
+
+        displayOrigin(timer) {
+            if (!timer) return '-';
+            if (timer.origin_area) return `area:${timer.origin_area}`;
+            if (timer.origin_device_id) return `device:${timer.origin_device_id}`;
+            return '-';
         }
     };
 }
