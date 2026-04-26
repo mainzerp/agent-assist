@@ -222,6 +222,76 @@ def _format_alarm_time_local(epoch: int) -> str:
     return datetime.fromtimestamp(int(epoch)).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _extract_cancel_alarm_selectors(action: dict[str, Any]) -> tuple[dict[str, str], str | None]:
+    """Extract and normalize supported cancel_alarm selectors."""
+    params = action.get("parameters") or {}
+    raw_id = str(params.get("id") or "").strip()
+    raw_datetime = str(params.get("datetime") or "").strip()
+    raw_time = str(params.get("time") or "").strip()
+    raw_date = str(params.get("date") or "").strip()
+    raw_name = str(params.get("name") or action.get("entity") or "").strip()
+
+    normalized: dict[str, str] = {"id": raw_id, "name": raw_name}
+
+    if raw_datetime:
+        candidate = raw_datetime.replace("T", " ")
+        try:
+            normalized["datetime"] = datetime.fromisoformat(candidate).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return {}, "Invalid datetime format. Use YYYY-MM-DD HH:MM:SS."
+
+    if raw_time:
+        parsed_time = None
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                parsed_time = datetime.strptime(raw_time, fmt).time()
+                break
+            except ValueError:
+                continue
+        if parsed_time is None:
+            return {}, "Invalid time format. Use HH:MM or HH:MM:SS."
+        normalized["time"] = parsed_time.strftime("%H:%M:%S")
+
+    if raw_date:
+        try:
+            normalized["date"] = datetime.fromisoformat(raw_date).date().isoformat()
+        except ValueError:
+            return {}, "Invalid date format. Use YYYY-MM-DD."
+
+    return normalized, None
+
+
+def _filter_alarm_rows_by_schedule(
+    rows: list[dict[str, Any]],
+    *,
+    target_datetime: str = "",
+    target_time: str = "",
+    target_date: str = "",
+) -> list[dict[str, Any]]:
+    """Filter pending internal alarm rows by local scheduled datetime or time/date."""
+    matches: list[dict[str, Any]] = []
+    for row in rows:
+        fires_at = int(row.get("fires_at") or 0)
+        local_dt = datetime.fromtimestamp(fires_at)
+        local_datetime = local_dt.strftime("%Y-%m-%d %H:%M:%S")
+        local_time = local_dt.strftime("%H:%M:%S")
+        local_date = local_dt.date().isoformat()
+
+        if target_datetime:
+            if local_datetime == target_datetime:
+                matches.append(row)
+            continue
+
+        if target_time and local_time != target_time:
+            continue
+        if target_date and local_date != target_date:
+            continue
+        if target_time:
+            matches.append(row)
+
+    return matches
+
+
 def _parse_alarm_target_epoch(params: dict[str, Any], *, now_ts: int) -> tuple[int | None, str | None]:
     raw_datetime = str(params.get("datetime", "")).strip()
     raw_time = str(params.get("time", "")).strip()
@@ -471,8 +541,16 @@ async def _cancel_alarm(action: dict, *, area_id: str | None) -> dict:
             "speech": "Timer scheduler is unavailable.",
         }
 
-    params = action.get("parameters") or {}
-    raw_id = str(params.get("id") or "").strip()
+    selectors, error = _extract_cancel_alarm_selectors(action)
+    if error:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": error,
+        }
+
+    raw_id = selectors.get("id", "")
     pending = await scheduler.list(kinds={"alarm"})
 
     if raw_id:
@@ -495,26 +573,114 @@ async def _cancel_alarm(action: dict, *, area_id: str | None) -> dict:
             "metadata": {"status": "cancelled", "id": raw_id, "source": "internal"},
         }
 
-    target_name = str(params.get("name") or action.get("entity") or "").strip()
-    if not target_name:
+    scope = [row for row in pending if (area_id is None or row.get("origin_area") == area_id)]
+    target_datetime = selectors.get("datetime", "")
+    target_time = selectors.get("time", "")
+    target_date = selectors.get("date", "")
+    target_name = selectors.get("name", "")
+    matches: list[dict[str, Any]] = []
+
+    if target_datetime:
+        matches = _filter_alarm_rows_by_schedule(scope, target_datetime=target_datetime)
+        matches.sort(key=lambda r: (int(r.get("fires_at") or 0), str(r.get("id") or "")))
+        if len(matches) == 1:
+            match = matches[0]
+            await scheduler.cancel(id_=str(match.get("id")))
+            return {
+                "success": True,
+                "entity_id": None,
+                "new_state": "cancelled",
+                "speech": f"Cancelled alarm '{match.get('logical_name') or 'alarm'}'.",
+                "metadata": {"status": "cancelled", "id": match.get("id"), "source": "internal"},
+            }
+        if len(matches) > 1:
+            candidates = [
+                {
+                    "id": row.get("id"),
+                    "logical_name": row.get("logical_name") or "alarm",
+                    "fires_at": int(row.get("fires_at") or 0),
+                    "local_time": _format_alarm_time_local(int(row.get("fires_at") or 0)),
+                }
+                for row in matches
+            ]
+            choices = "; ".join(f"{c['logical_name']} at {c['local_time']} (id {c['id']})" for c in candidates)
+            return {
+                "success": False,
+                "entity_id": None,
+                "new_state": None,
+                "speech": (
+                    f"Multiple alarms are scheduled for {target_datetime}: {choices}. "
+                    "Please specify the alarm id."
+                ),
+                "metadata": {"status": "ambiguous", "candidates": candidates, "source": "internal"},
+            }
+
+    if target_time:
+        matches = _filter_alarm_rows_by_schedule(scope, target_time=target_time, target_date=target_date)
+        matches.sort(key=lambda r: (int(r.get("fires_at") or 0), str(r.get("id") or "")))
+        if len(matches) == 1:
+            match = matches[0]
+            await scheduler.cancel(id_=str(match.get("id")))
+            return {
+                "success": True,
+                "entity_id": None,
+                "new_state": "cancelled",
+                "speech": f"Cancelled alarm '{match.get('logical_name') or 'alarm'}'.",
+                "metadata": {"status": "cancelled", "id": match.get("id"), "source": "internal"},
+            }
+        if len(matches) > 1:
+            candidates = [
+                {
+                    "id": row.get("id"),
+                    "logical_name": row.get("logical_name") or "alarm",
+                    "fires_at": int(row.get("fires_at") or 0),
+                    "local_time": _format_alarm_time_local(int(row.get("fires_at") or 0)),
+                }
+                for row in matches
+            ]
+            request_label = target_time if not target_date else f"{target_date} {target_time}"
+            choices = "; ".join(f"{c['logical_name']} at {c['local_time']} (id {c['id']})" for c in candidates)
+            return {
+                "success": False,
+                "entity_id": None,
+                "new_state": None,
+                "speech": (
+                    f"Multiple alarms match {request_label}: {choices}. "
+                    "Please specify the alarm id or exact scheduled datetime."
+                ),
+                "metadata": {"status": "ambiguous", "candidates": candidates, "source": "internal"},
+            }
+
+    if target_name:
+        normalized_target = _normalize_alarm_name(target_name)
+        matches = [row for row in scope if _normalize_alarm_name(str(row.get("logical_name") or "")) == normalized_target]
+        matches.sort(key=lambda r: (int(r.get("fires_at") or 0), str(r.get("id") or "")))
+    else:
         return {
             "success": False,
             "entity_id": None,
             "new_state": None,
-            "speech": "Please provide an alarm id or alarm name to cancel.",
+            "speech": "Please provide an alarm id, scheduled time, or alarm name to cancel.",
         }
 
-    scope = [row for row in pending if (area_id is None or row.get("origin_area") == area_id)]
-    normalized_target = _normalize_alarm_name(target_name)
-    matches = [row for row in scope if _normalize_alarm_name(str(row.get("logical_name") or "")) == normalized_target]
-    matches.sort(key=lambda r: (int(r.get("fires_at") or 0), str(r.get("id") or "")))
-
     if not matches:
+        if target_datetime and target_name:
+            message = f"No pending internal alarm scheduled for {target_datetime} or named '{target_name}' was found."
+        elif target_datetime:
+            message = f"No pending internal alarm scheduled for {target_datetime} was found."
+        elif target_time and target_name:
+            request_label = target_time if not target_date else f"{target_date} {target_time}"
+            message = f"No pending internal alarm matching {request_label} or named '{target_name}' was found."
+        elif target_time:
+            request_label = target_time if not target_date else f"{target_date} {target_time}"
+            message = f"No pending internal alarm matching {request_label} was found."
+        else:
+            message = f"No pending internal alarm named '{target_name}' was found."
         return {
             "success": False,
             "entity_id": None,
             "new_state": None,
-            "speech": f"No pending internal alarm named '{target_name}' was found.",
+            "speech": message,
             "metadata": {"status": "not_found", "source": "internal"},
         }
 

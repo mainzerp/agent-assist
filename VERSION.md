@@ -1,12 +1,26 @@
 # Version
 
-**Current Version:** 0.27.11
+**Current Version:** 0.27.12
 
-## Recent Changes (since 0.27.11)
+## Recent Changes (since 0.27.12)
 
 (none yet)
 
 ## Version History
+
+### 0.27.12 (PATCH) -- Alarm cancel time matching and prompt regression coverage
+
+- Extended internal `cancel_alarm` matching in `container/app/agents/timer_executor.py`
+  to resolve by exact scheduled `datetime`, then by `time` with optional `date`,
+  before falling back to name matching.
+- Kept strict ambiguity behavior for internal alarm cancellation while improving
+  selector-specific not-found and ambiguity messages.
+- Expanded `container/app/prompts/timer.txt` with English alarm-cancel examples
+  covering generic, time-based, datetime-based, and named cancellation requests.
+- Added focused timer-agent tests in `container/tests/test_agents.py` for
+  prompt snapshot coverage and deterministic internal alarm cancellation by
+  time, datetime, and time-plus-date filtering.
+- Bumped `container/app/__init__.py` runtime version to `0.27.12`.
 
 ### 0.27.11 (PATCH) -- Internal alarm CRUD via scheduler and source-labeled visibility
 

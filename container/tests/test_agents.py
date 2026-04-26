@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time as _time
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1152,6 +1153,125 @@ class TestTimerExecutor:
         assert len(result["metadata"]["candidates"]) == 2
         scheduler.cancel.assert_not_awaited()
 
+    async def test_cancel_alarm_by_time_success_before_name_fallback(self):
+        """cancel_alarm matches a unique scheduled time before generic-name fallback."""
+        from unittest.mock import patch as _patch
+
+        scheduler = MagicMock()
+        scheduler.list = AsyncMock(
+            return_value=[
+                {
+                    "id": "alarm-1",
+                    "logical_name": "Wecker",
+                    "fires_at": int(datetime(2026, 4, 26, 14, 35, 0).timestamp()),
+                    "origin_area": "bedroom",
+                },
+                {
+                    "id": "alarm-2",
+                    "logical_name": "Wecker",
+                    "fires_at": int(datetime(2026, 4, 26, 16, 0, 0).timestamp()),
+                    "origin_area": "bedroom",
+                },
+                {
+                    "id": "alarm-3",
+                    "logical_name": "Wecker",
+                    "fires_at": int(datetime(2026, 4, 26, 14, 35, 0).timestamp()),
+                    "origin_area": "office",
+                },
+            ]
+        )
+        scheduler.cancel = AsyncMock(return_value=1)
+
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "cancel_alarm", "entity": "Wecker", "parameters": {"time": "14:35:00"}},
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+                area_id="bedroom",
+            )
+
+        assert result["success"] is True
+        assert result["metadata"]["id"] == "alarm-1"
+        scheduler.cancel.assert_awaited_once_with(id_="alarm-1")
+
+    async def test_cancel_alarm_by_datetime_success(self):
+        """cancel_alarm matches a single internal alarm by scheduled datetime."""
+        from unittest.mock import patch as _patch
+
+        scheduler = MagicMock()
+        scheduler.list = AsyncMock(
+            return_value=[
+                {
+                    "id": "alarm-1",
+                    "logical_name": "Wake",
+                    "fires_at": int(datetime(2026, 4, 26, 14, 35, 0).timestamp()),
+                    "origin_area": "bedroom",
+                }
+            ]
+        )
+        scheduler.cancel = AsyncMock(return_value=1)
+
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {
+                    "action": "cancel_alarm",
+                    "entity": "alarm",
+                    "parameters": {"datetime": "2026-04-26 14:35:00"},
+                },
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+                area_id="bedroom",
+            )
+
+        assert result["success"] is True
+        assert result["metadata"]["id"] == "alarm-1"
+        scheduler.cancel.assert_awaited_once_with(id_="alarm-1")
+
+    async def test_cancel_alarm_by_time_and_date_filters_candidates(self):
+        """cancel_alarm uses the optional date selector to narrow same-time alarms."""
+        from unittest.mock import patch as _patch
+
+        scheduler = MagicMock()
+        scheduler.list = AsyncMock(
+            return_value=[
+                {
+                    "id": "alarm-1",
+                    "logical_name": "Wake",
+                    "fires_at": int(datetime(2026, 4, 26, 14, 35, 0).timestamp()),
+                    "origin_area": "bedroom",
+                },
+                {
+                    "id": "alarm-2",
+                    "logical_name": "Wake",
+                    "fires_at": int(datetime(2026, 4, 27, 14, 35, 0).timestamp()),
+                    "origin_area": "bedroom",
+                },
+            ]
+        )
+        scheduler.cancel = AsyncMock(return_value=1)
+
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {
+                    "action": "cancel_alarm",
+                    "entity": "alarm",
+                    "parameters": {"time": "14:35:00", "date": "2026-04-26"},
+                },
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+                area_id="bedroom",
+            )
+
+        assert result["success"] is True
+        assert result["metadata"]["id"] == "alarm-1"
+        scheduler.cancel.assert_awaited_once_with(id_="alarm-1")
+
     async def test_unknown_action(self):
         """Unknown action returns error."""
         result = await execute_timer_action(
@@ -1197,6 +1317,11 @@ class TestTimerPromptSnapshot:
             "Stelle den Küchentimer auf 5 Minuten.",
             "native_plain_timer_eligible=true",
             "native_plain_timer_eligible=false",
+            "Cancel my alarm",
+            "Cancel the alarm for 14:35",
+            "Cancel my morning alarm",
+            "Cancel my alarm scheduled for 2026-04-26 14:35:00",
+            '"action": "cancel_alarm"',
         ):
             assert needle in prompt, f"missing required few-shot substring: {needle}"
         assert prompt.count("delegate_native_plain_timer") >= 3
