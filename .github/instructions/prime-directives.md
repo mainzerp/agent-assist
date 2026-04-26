@@ -47,3 +47,15 @@ No blocking I/O is permitted on the asyncio event loop. All Home Assistant REST 
 ## 10. Current State Only in Project Docs
 
 Documentation, code comments, and analysis must describe the current runtime state of the project. Roadmap items must be clearly labeled as such and kept in `docs/roadmap.md`. Never describe planned or aspirational behavior as if it were already implemented.
+
+## 11. No Hardcoded Keyword Routing for Primary Intent Decisions
+
+Primary intent detection, target-agent routing, and top-level intent classification must not rely on hardcoded keyword lists, substring dispatch, regex-only routing, or language-specific phrase tables. This ban is scoped to top-level classification and routing decisions only; downstream executor safeguards and domain validation logic are not prohibited by this directive.
+
+## 12. LLM Owns Live Intent Classification Outside Valid Routing-Cache Hits
+
+When no valid routing-cache decision exists for a turn, the orchestrator must perform live LLM-based intent classification. Valid routing-cache hits may be reused and may skip reclassification, but this exception does not permit bypassing visibility enforcement, action-cache replay validation, or other runtime safety checks.
+
+## 13. Few-Shot Examples in Prompt Assets Must Be English-Only
+
+Few-shot examples used in prompts, classifier templates, and instruction assets must be written in English. This policy does not authorize translating user-provided entity, room, area, device, or location names; user identifiers must remain verbatim where runtime behavior requires preservation.
