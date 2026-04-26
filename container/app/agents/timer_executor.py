@@ -27,6 +27,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.agents.action_executor import (
     call_service_with_verification,
@@ -218,7 +219,19 @@ def _normalize_alarm_name(s: str) -> str:
     return text
 
 
-def _format_alarm_time_local(epoch: int) -> str:
+def _get_timezone_info(timezone: str | None) -> ZoneInfo | None:
+    if not timezone:
+        return None
+    try:
+        return ZoneInfo(str(timezone))
+    except Exception:
+        return None
+
+
+def _format_alarm_time_local(epoch: int, *, timezone: str | None = None) -> str:
+    tz = _get_timezone_info(timezone)
+    if tz is not None:
+        return datetime.fromtimestamp(int(epoch), tz=tz).strftime("%Y-%m-%d %H:%M:%S")
     return datetime.fromtimestamp(int(epoch)).strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -267,12 +280,14 @@ def _filter_alarm_rows_by_schedule(
     target_datetime: str = "",
     target_time: str = "",
     target_date: str = "",
+    timezone: str | None = None,
 ) -> list[dict[str, Any]]:
     """Filter pending internal alarm rows by local scheduled datetime or time/date."""
     matches: list[dict[str, Any]] = []
+    tz = _get_timezone_info(timezone)
     for row in rows:
         fires_at = int(row.get("fires_at") or 0)
-        local_dt = datetime.fromtimestamp(fires_at)
+        local_dt = datetime.fromtimestamp(fires_at, tz=tz) if tz is not None else datetime.fromtimestamp(fires_at)
         local_datetime = local_dt.strftime("%Y-%m-%d %H:%M:%S")
         local_time = local_dt.strftime("%H:%M:%S")
         local_date = local_dt.date().isoformat()
@@ -292,10 +307,17 @@ def _filter_alarm_rows_by_schedule(
     return matches
 
 
-def _parse_alarm_target_epoch(params: dict[str, Any], *, now_ts: int) -> tuple[int | None, str | None]:
+def _parse_alarm_target_epoch(
+    params: dict[str, Any],
+    *,
+    now_ts: int,
+    timezone: str | None = None,
+) -> tuple[int | None, str | None]:
     raw_datetime = str(params.get("datetime", "")).strip()
     raw_time = str(params.get("time", "")).strip()
     raw_date = str(params.get("date", "")).strip()
+
+    tz = _get_timezone_info(timezone)
 
     if raw_datetime:
         candidate = raw_datetime.replace("T", " ")
@@ -303,6 +325,12 @@ def _parse_alarm_target_epoch(params: dict[str, Any], *, now_ts: int) -> tuple[i
             dt = datetime.fromisoformat(candidate)
         except ValueError:
             return None, "Invalid datetime format. Use YYYY-MM-DD HH:MM:SS."
+        if dt.tzinfo is None and tz is not None:
+            dt = dt.replace(tzinfo=tz)
+            now_ref = datetime.fromtimestamp(now_ts, tz=tz)
+            if dt <= now_ref:
+                return None, "Alarm datetime must be in the future."
+            return int(dt.timestamp()), None
         epoch = int(dt.timestamp())
         if epoch <= now_ts:
             return None, "Alarm datetime must be in the future."
@@ -318,6 +346,13 @@ def _parse_alarm_target_epoch(params: dict[str, Any], *, now_ts: int) -> tuple[i
                 continue
         if parsed_time is None:
             return None, "Invalid time format. Use HH:MM or HH:MM:SS."
+        if tz is not None:
+            now_local = datetime.fromtimestamp(now_ts, tz=tz)
+            scheduled = datetime.combine(now_local.date(), parsed_time, tzinfo=tz)
+            if scheduled <= now_local:
+                scheduled = scheduled + timedelta(days=1)
+            return int(scheduled.timestamp()), None
+
         now_local = datetime.fromtimestamp(now_ts)
         scheduled = datetime.combine(now_local.date(), parsed_time)
         if int(scheduled.timestamp()) <= now_ts:
@@ -329,6 +364,13 @@ def _parse_alarm_target_epoch(params: dict[str, Any], *, now_ts: int) -> tuple[i
             target_date = datetime.fromisoformat(raw_date).date()
         except ValueError:
             return None, "Invalid date format. Use YYYY-MM-DD."
+        if tz is not None:
+            scheduled = datetime.combine(target_date, datetime.min.time(), tzinfo=tz)
+            now_local = datetime.fromtimestamp(now_ts, tz=tz)
+            if scheduled <= now_local:
+                return None, "Alarm date must be in the future."
+            return int(scheduled.timestamp()), None
+
         scheduled = datetime.combine(target_date, datetime.min.time())
         epoch = int(scheduled.timestamp())
         if epoch <= now_ts:
@@ -353,13 +395,14 @@ async def _handle_read_action(
     span_collector=None,
     *,
     area_id: str | None = None,
+    timezone: str | None = None,
 ) -> dict:
     if action_name == "query_timer":
         return await _query_timer(entity_query, area_id=area_id)
     if action_name == "list_timers":
         return await _list_timers(area_id=area_id)
     if action_name == "list_alarms":
-        return await _list_alarms(area_id=area_id)
+        return await _list_alarms(area_id=area_id, timezone=timezone)
     return {"success": False, "entity_id": "", "new_state": None, "speech": f"Unknown read action: {action_name}"}
 
 
@@ -427,7 +470,7 @@ async def _list_timers(*, area_id: str | None = None) -> dict:
     }
 
 
-async def _list_alarms(*, area_id: str | None = None) -> dict:
+async def _list_alarms(*, area_id: str | None = None, timezone: str | None = None) -> dict:
     scheduler = _get_scheduler()
     if scheduler is None:
         return {
@@ -452,7 +495,7 @@ async def _list_alarms(*, area_id: str | None = None) -> dict:
     lines: list[str] = []
     for row in rows:
         fires_at = int(row.get("fires_at") or 0)
-        local_time = _format_alarm_time_local(fires_at)
+        local_time = _format_alarm_time_local(fires_at, timezone=timezone)
         alarm_rows.append(
             {
                 "id": row.get("id"),
@@ -481,6 +524,7 @@ async def _set_alarm(
     device_id: str | None,
     area_id: str | None,
     language: str | None,
+    timezone: str | None,
 ) -> dict:
     scheduler = _get_scheduler()
     if scheduler is None:
@@ -493,7 +537,7 @@ async def _set_alarm(
 
     params = action.get("parameters") or {}
     now_ts = int(time.time())
-    target_epoch, error = _parse_alarm_target_epoch(params, now_ts=now_ts)
+    target_epoch, error = _parse_alarm_target_epoch(params, now_ts=now_ts, timezone=timezone)
     if target_epoch is None:
         return {
             "success": False,
@@ -517,7 +561,7 @@ async def _set_alarm(
             "scheduled_for_epoch": int(target_epoch),
         },
     )
-    local_time = _format_alarm_time_local(target_epoch)
+    local_time = _format_alarm_time_local(target_epoch, timezone=timezone)
     return {
         "success": True,
         "entity_id": None,
@@ -531,7 +575,7 @@ async def _set_alarm(
     }
 
 
-async def _cancel_alarm(action: dict, *, area_id: str | None) -> dict:
+async def _cancel_alarm(action: dict, *, area_id: str | None, timezone: str | None) -> dict:
     scheduler = _get_scheduler()
     if scheduler is None:
         return {
@@ -581,7 +625,7 @@ async def _cancel_alarm(action: dict, *, area_id: str | None) -> dict:
     matches: list[dict[str, Any]] = []
 
     if target_datetime:
-        matches = _filter_alarm_rows_by_schedule(scope, target_datetime=target_datetime)
+        matches = _filter_alarm_rows_by_schedule(scope, target_datetime=target_datetime, timezone=timezone)
         matches.sort(key=lambda r: (int(r.get("fires_at") or 0), str(r.get("id") or "")))
         if len(matches) == 1:
             match = matches[0]
@@ -599,7 +643,7 @@ async def _cancel_alarm(action: dict, *, area_id: str | None) -> dict:
                     "id": row.get("id"),
                     "logical_name": row.get("logical_name") or "alarm",
                     "fires_at": int(row.get("fires_at") or 0),
-                    "local_time": _format_alarm_time_local(int(row.get("fires_at") or 0)),
+                    "local_time": _format_alarm_time_local(int(row.get("fires_at") or 0), timezone=timezone),
                 }
                 for row in matches
             ]
@@ -616,7 +660,12 @@ async def _cancel_alarm(action: dict, *, area_id: str | None) -> dict:
             }
 
     if target_time:
-        matches = _filter_alarm_rows_by_schedule(scope, target_time=target_time, target_date=target_date)
+        matches = _filter_alarm_rows_by_schedule(
+            scope,
+            target_time=target_time,
+            target_date=target_date,
+            timezone=timezone,
+        )
         matches.sort(key=lambda r: (int(r.get("fires_at") or 0), str(r.get("id") or "")))
         if len(matches) == 1:
             match = matches[0]
@@ -634,7 +683,7 @@ async def _cancel_alarm(action: dict, *, area_id: str | None) -> dict:
                     "id": row.get("id"),
                     "logical_name": row.get("logical_name") or "alarm",
                     "fires_at": int(row.get("fires_at") or 0),
-                    "local_time": _format_alarm_time_local(int(row.get("fires_at") or 0)),
+                    "local_time": _format_alarm_time_local(int(row.get("fires_at") or 0), timezone=timezone),
                 }
                 for row in matches
             ]
@@ -690,7 +739,7 @@ async def _cancel_alarm(action: dict, *, area_id: str | None) -> dict:
                 "id": row.get("id"),
                 "logical_name": row.get("logical_name") or "alarm",
                 "fires_at": int(row.get("fires_at") or 0),
-                "local_time": _format_alarm_time_local(int(row.get("fires_at") or 0)),
+                "local_time": _format_alarm_time_local(int(row.get("fires_at") or 0), timezone=timezone),
             }
             for row in matches
         ]
@@ -1392,6 +1441,7 @@ async def execute_timer_action(
     device_id: str | None = None,
     area_id: str | None = None,
     language: str | None = None,
+    timezone: str | None = None,
     span_collector=None,
 ) -> dict:
     """Dispatch a parsed timer action.
@@ -1413,6 +1463,7 @@ async def execute_timer_action(
             agent_id,
             span_collector=span_collector,
             area_id=area_id,
+            timezone=timezone,
         )
 
     if action_name == "start_timer":
@@ -1440,9 +1491,15 @@ async def execute_timer_action(
             action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
         )
     if action_name == "set_datetime":
-        return await _set_alarm(action, device_id=device_id, area_id=area_id, language=language)
+        return await _set_alarm(
+            action,
+            device_id=device_id,
+            area_id=area_id,
+            language=language,
+            timezone=timezone,
+        )
     if action_name == "cancel_alarm":
-        return await _cancel_alarm(action, area_id=area_id)
+        return await _cancel_alarm(action, area_id=area_id, timezone=timezone)
 
     # Fall through: legacy mapped actions (currently none).
     mapping = _TIMER_ACTION_MAP.get(action_name)

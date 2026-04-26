@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 _VALID_KINDS = frozenset({"plain", "notification", "delayed_action", "sleep", "snooze", "alarm"})
+_STARTUP_RECOVERY_RETRY_DELAY_SECONDS = 2.0
 
 
 class TimerScheduler:
@@ -46,6 +47,7 @@ class TimerScheduler:
         self._orchestrator_gateway = orchestrator_gateway
         self._tasks: dict[str, asyncio.Task] = {}
         self._by_logical: dict[str, list[str]] = {}
+        self._startup_recovery_task: asyncio.Task | None = None
         self._started = False
 
     # ------------------------------------------------------------------
@@ -68,23 +70,9 @@ class TimerScheduler:
             rows = await self._repo.list_pending()
         except Exception:
             logger.error("TimerScheduler.start: failed to load pending timers", exc_info=True)
+            self._schedule_startup_recovery_retry()
             rows = []
-        now = int(time.time())
-        for row in rows:
-            if int(row["fires_at"]) <= now:
-                try:
-                    await self._fire(row)
-                    await self._repo.mark_fired(row["id"], now)
-                    fired_on_recovery += 1
-                except Exception:
-                    logger.error(
-                        "TimerScheduler.start: fire-on-recovery failed for %s",
-                        row.get("id"),
-                        exc_info=True,
-                    )
-            else:
-                self._spawn_task(row)
-                rehydrated += 1
+        rehydrated, fired_on_recovery = await self._rehydrate_rows(rows)
         logger.info(
             "TimerScheduler started: rehydrated=%d fired_on_recovery=%d",
             rehydrated,
@@ -99,6 +87,11 @@ class TimerScheduler:
                 task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        startup_recovery = self._startup_recovery_task
+        self._startup_recovery_task = None
+        if startup_recovery and not startup_recovery.done():
+            startup_recovery.cancel()
+            await asyncio.gather(startup_recovery, return_exceptions=True)
         self._tasks.clear()
         self._by_logical.clear()
         self._started = False
@@ -196,9 +189,59 @@ class TimerScheduler:
 
     def _spawn_task(self, row: dict) -> None:
         timer_id = row["id"]
+        if timer_id in self._tasks:
+            return
         task = asyncio.create_task(self._run(row), name=f"timer-{timer_id}")
         self._tasks[timer_id] = task
         self._by_logical.setdefault((row["logical_name"] or "").lower(), []).append(timer_id)
+
+    def _schedule_startup_recovery_retry(self) -> None:
+        existing = self._startup_recovery_task
+        if existing is not None and not existing.done():
+            return
+        self._startup_recovery_task = asyncio.create_task(
+            self._startup_recovery_retry(),
+            name="timer-startup-recovery-retry",
+        )
+
+    async def _startup_recovery_retry(self) -> None:
+        try:
+            await asyncio.sleep(_STARTUP_RECOVERY_RETRY_DELAY_SECONDS)
+            rows = await self._repo.list_pending()
+            rehydrated, fired_on_recovery = await self._rehydrate_rows(rows)
+            logger.info(
+                "TimerScheduler startup recovery retry: rehydrated=%d fired_on_recovery=%d",
+                rehydrated,
+                fired_on_recovery,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error("TimerScheduler startup recovery retry failed", exc_info=True)
+
+    async def _rehydrate_rows(self, rows: list[dict]) -> tuple[int, int]:
+        rehydrated = 0
+        fired_on_recovery = 0
+        now = int(time.time())
+        for row in rows:
+            timer_id = row.get("id")
+            if not timer_id or timer_id in self._tasks:
+                continue
+            if int(row["fires_at"]) <= now:
+                try:
+                    await self._fire(row)
+                    await self._repo.mark_fired(timer_id, now)
+                    fired_on_recovery += 1
+                except Exception:
+                    logger.error(
+                        "TimerScheduler.start: fire-on-recovery failed for %s",
+                        row.get("id"),
+                        exc_info=True,
+                    )
+            else:
+                self._spawn_task(row)
+                rehydrated += 1
+        return rehydrated, fired_on_recovery
 
     def _cancel_task(self, timer_id: str) -> None:
         task = self._tasks.pop(timer_id, None)

@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import sys
 import time as _time
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -791,6 +792,27 @@ class TestTimerAgent:
         _, kwargs = mock_exec.call_args
         assert kwargs.get("agent_id") == "timer-agent"
 
+    @patch(
+        "app.agents.timer.execute_timer_action",
+        new_callable=AsyncMock,
+        return_value={"success": True, "entity_id": None, "new_state": "scheduled", "speech": "Done."},
+    )
+    @patch(
+        "app.llm.client.complete",
+        new_callable=AsyncMock,
+        return_value='```json\n{"action": "set_datetime", "entity": "alarm", "parameters": {"time": "07:00:00"}}\n```\nDone.',
+    )
+    async def test_handle_task_passes_timezone(self, _mock_complete, mock_exec):
+        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
+        await agent.handle_task(
+            _make_task(
+                "set alarm for 7",
+                context=TaskContext(timezone="Europe/Berlin"),
+            )
+        )
+        _args, kwargs = mock_exec.call_args
+        assert kwargs.get("timezone") == "Europe/Berlin"
+
     # --- Extension 1: Query Timer ---
 
     @patch(
@@ -1078,6 +1100,94 @@ class TestTimerExecutor:
         assert result["success"] is True
         kwargs = scheduler.schedule.await_args.kwargs
         assert kwargs["duration_seconds"] > 23 * 3600
+
+    async def test_set_datetime_time_uses_explicit_timezone_for_epoch(self):
+        """set_datetime time-only uses provided timezone when computing epoch."""
+        from unittest.mock import patch as _patch
+
+        scheduler = MagicMock()
+        scheduler.schedule = AsyncMock(return_value="alarm-berlin")
+        now_ts = int(datetime(2026, 1, 15, 8, 0, 0, tzinfo=timezone.utc).timestamp())
+
+        with (
+            _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler),
+            _patch("app.agents.timer_executor.time.time", return_value=now_ts),
+        ):
+            result = await execute_timer_action(
+                {"action": "set_datetime", "entity": "Alarm", "parameters": {"time": "10:00:00"}},
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+                timezone="Europe/Berlin",
+            )
+
+        assert result["success"] is True
+        kwargs = scheduler.schedule.await_args.kwargs
+        assert kwargs["duration_seconds"] == 3600
+
+    async def test_alarm_list_and_cancel_use_same_timezone_basis(self):
+        """list_alarms/cancel_alarm format and matching stay consistent for explicit timezone."""
+        from unittest.mock import patch as _patch
+
+        berlin = ZoneInfo("Europe/Berlin")
+        fires_at = int(datetime(2026, 4, 26, 14, 35, 0, tzinfo=berlin).timestamp())
+        scheduler = MagicMock()
+        scheduler.list = AsyncMock(
+            return_value=[
+                {"id": "alarm-1", "logical_name": "Wake", "fires_at": fires_at, "origin_area": "bedroom"}
+            ]
+        )
+        scheduler.cancel = AsyncMock(return_value=1)
+
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            list_result = await execute_timer_action(
+                {"action": "list_alarms", "entity": ""},
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+                timezone="Europe/Berlin",
+            )
+            cancel_result = await execute_timer_action(
+                {
+                    "action": "cancel_alarm",
+                    "entity": "alarm",
+                    "parameters": {"datetime": "2026-04-26 14:35:00"},
+                },
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+                area_id="bedroom",
+                timezone="Europe/Berlin",
+            )
+
+        assert list_result["success"] is True
+        assert list_result["metadata"]["alarms"][0]["local_time"] == "2026-04-26 14:35:00"
+        assert cancel_result["success"] is True
+        assert cancel_result["metadata"]["id"] == "alarm-1"
+        scheduler.cancel.assert_awaited_once_with(id_="alarm-1")
+
+    async def test_set_datetime_invalid_timezone_falls_back_safely(self):
+        """Invalid timezone should not break scheduling and should keep safe fallback behavior."""
+        from unittest.mock import patch as _patch
+
+        scheduler = MagicMock()
+        scheduler.schedule = AsyncMock(return_value="alarm-safe")
+
+        with _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler):
+            result = await execute_timer_action(
+                {"action": "set_datetime", "entity": "Alarm", "parameters": {"time": "07:00:00"}},
+                AsyncMock(),
+                None,
+                None,
+                agent_id="timer-agent",
+                timezone="Not/A_Real_Timezone",
+            )
+
+        assert result["success"] is True
+        scheduler.schedule.assert_awaited_once()
 
     async def test_list_alarms_returns_internal_sorted_rows(self):
         """list_alarms queries internal alarm rows and exposes source metadata."""

@@ -220,6 +220,79 @@ class TestRestartRecovery:
         finally:
             await sched.stop()
 
+    async def test_startup_recovery_retry_rehydrates_after_transient_load_failure(self, db_repository):
+        now = int(time.time())
+        row = {
+            "id": "retry-rehydrate-id",
+            "logical_name": "rehydrate-later",
+            "kind": "notification",
+            "created_at": now,
+            "fires_at": now + 3600,
+            "duration_seconds": 3600,
+            "origin_device_id": None,
+            "origin_area": None,
+            "payload_json": json.dumps({"notification_message": "x"}),
+            "state": "pending",
+        }
+        repo = MagicMock()
+        repo.list_pending = AsyncMock(side_effect=[RuntimeError("db unavailable"), [row]])
+        repo.mark_fired = AsyncMock()
+
+        sched, _gateway = _make_scheduler()
+        sched._repo = repo
+        try:
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr("app.agents.timer_scheduler._STARTUP_RECOVERY_RETRY_DELAY_SECONDS", 0.01)
+                await sched.start()
+                for _ in range(60):
+                    if "retry-rehydrate-id" in sched._tasks:
+                        break
+                    await asyncio.sleep(0.01)
+
+            assert repo.list_pending.await_count >= 2
+            assert "retry-rehydrate-id" in sched._tasks
+            repo.mark_fired.assert_not_awaited()
+        finally:
+            await sched.stop()
+
+    async def test_startup_recovery_retry_fires_overdue_pending_orphan(self, db_repository):
+        now = int(time.time())
+        row = {
+            "id": "retry-overdue-id",
+            "logical_name": "overdue-retry",
+            "kind": "notification",
+            "created_at": now - 120,
+            "fires_at": now - 30,
+            "duration_seconds": 10,
+            "origin_device_id": None,
+            "origin_area": None,
+            "payload_json": json.dumps({"notification_message": "late"}),
+            "state": "pending",
+        }
+        repo = MagicMock()
+        repo.list_pending = AsyncMock(side_effect=[RuntimeError("db unavailable"), [row]])
+        repo.mark_fired = AsyncMock()
+
+        sched, gateway = _make_scheduler()
+        sched._repo = repo
+        try:
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr("app.agents.timer_scheduler._STARTUP_RECOVERY_RETRY_DELAY_SECONDS", 0.01)
+                await sched.start()
+                for _ in range(60):
+                    if repo.mark_fired.await_count >= 1:
+                        break
+                    await asyncio.sleep(0.01)
+
+            repo.mark_fired.assert_awaited_once()
+            fired_args = repo.mark_fired.await_args.args
+            assert fired_args[0] == "retry-overdue-id"
+            assert isinstance(fired_args[1], int)
+            gateway.dispatch_background_event.assert_awaited_once()
+            assert gateway.dispatch_background_event.await_args.args[0] == "timer_notification"
+        finally:
+            await sched.stop()
+
 
 class TestKindDispatch:
     async def test_plain_and_notification_dispatch_background_event(self, db_repository):

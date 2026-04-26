@@ -1,12 +1,30 @@
 # Version
 
-**Current Version:** 0.27.13
+**Current Version:** 0.27.14
 
-## Recent Changes (since 0.27.13)
+## Recent Changes (since 0.27.14)
 
 (none yet)
 
 ## Version History
+
+### 0.27.14 (PATCH) -- Alarm timezone threading and startup overdue recovery
+
+- Threaded task/home timezone through timer-agent execution in
+  `container/app/agents/timer.py` and alarm code paths in
+  `container/app/agents/timer_executor.py`.
+- Made internal alarm `set_datetime` epoch computation timezone-aware,
+  with guarded fallback for missing/invalid timezones.
+- Aligned internal alarm list/cancel formatting and schedule matching to
+  use the same timezone basis as alarm creation.
+- Added minimal `TimerScheduler` startup resilience in
+  `container/app/agents/timer_scheduler.py`: one bounded delayed retry
+  after transient `list_pending()` failure, overdue pending fire/mark
+  reconciliation on recovery, and duplicate-task guards.
+- Added focused regression tests in `container/tests/test_agents.py` and
+  `container/tests/test_timer_scheduler.py` for timezone threading,
+  timezone-aware alarm behavior, and startup retry overdue-orphan recovery.
+- Bumped `container/app/__init__.py` runtime version to `0.27.14`.
 
 ### 0.27.13 (PATCH) -- Alarm fire delivery metadata and dispatch parity
 
