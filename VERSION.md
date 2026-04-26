@@ -1,12 +1,32 @@
 # Version
 
-**Current Version:** 0.27.6
+**Current Version:** 0.27.7
 
-## Recent Changes (since 0.27.6)
+## Recent Changes (since 0.27.7)
 
 (none yet)
 
 ## Version History
+
+### 0.27.7 (PATCH) -- Timer expiry satellite announce preference
+
+Patch fix for timer-expiry audible routing so announcements prefer Assist
+Satellite targets from timer origin metadata before media-player fallback.
+
+Changes:
+
+- Updated timer notification dispatch in
+  `container/app/agents/background_actions.py` to resolve an
+  `assist_satellite.*` target from `origin_device_id` first, then from
+  `origin_area`, and only then use the existing `media_player` fallback
+  path.
+- Added an explicit Assist Satellite announce notifier helper and kept
+  media-player chime/TTS behavior unchanged as fallback.
+- Kept persistent and push notification delivery behavior unchanged.
+- Added focused timer dispatch pipeline tests covering satellite-first
+  routing, area fallback, media-player fallback, and non-audio fallback
+  notification guarantees.
+- Bumped `container/app/__init__.py` runtime version to `0.27.7`.
 
 ### 0.27.6 (PATCH) -- Timer retest follow-up fixes
 

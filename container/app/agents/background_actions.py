@@ -252,7 +252,11 @@ async def dispatch_timer_notification(
     area = metadata.origin_area if metadata else None
     duration = metadata.duration if metadata else None
 
-    if not media_player:
+    satellite_entity = await _resolve_satellite_from_origin_device(ha_client, origin_device_id)
+    if not satellite_entity:
+        satellite_entity = await _resolve_satellite_device(ha_client, area, entity_index=entity_index)
+
+    if not media_player and not satellite_entity:
         media_player = await _resolve_timer_playback_target(
             ha_client,
             origin_device_id=origin_device_id,
@@ -287,23 +291,36 @@ async def dispatch_timer_notification(
         else:
             message = _GENERIC_FALLBACK_MESSAGES.get(lang_key, _GENERIC_FALLBACK_MESSAGES["en"])
 
-    if profile.get("tts_enabled", True) and media_player:
-        if profile.get("chime_enabled", True):
-            await _play_chime(ha_client, media_player, profile)
+    if profile.get("tts_enabled", True):
+        if satellite_entity and message:
+            await _notify_satellite_announce(ha_client, satellite_entity, message)
+            spawn(
+                _trigger_conversation_continuation(
+                    ha_client,
+                    satellite_entity,
+                    area,
+                    profile,
+                    entity_index=entity_index,
+                ),
+                name="tts-followup",
+            )
+        elif media_player:
+            if profile.get("chime_enabled", True):
+                await _play_chime(ha_client, media_player, profile)
 
-        if message:
-            await _notify_tts(ha_client, media_player, message, profile)
+            if message:
+                await _notify_tts(ha_client, media_player, message, profile)
 
-        spawn(
-            _trigger_conversation_continuation(
-                ha_client,
-                media_player,
-                area,
-                profile,
-                entity_index=entity_index,
-            ),
-            name="tts-followup",
-        )
+            spawn(
+                _trigger_conversation_continuation(
+                    ha_client,
+                    media_player,
+                    area,
+                    profile,
+                    entity_index=entity_index,
+                ),
+                name="tts-followup",
+            )
 
     if profile.get("persistent_enabled", True) and message:
         await _notify_persistent(ha_client, timer_name, message)
@@ -451,6 +468,25 @@ async def _notify_tts(
             logger.error("TTS fallback also failed on %s", media_player_entity, exc_info=True)
 
 
+async def _notify_satellite_announce(
+    ha_client: Any,
+    satellite_entity: str,
+    message: str,
+) -> None:
+    try:
+        await ha_client.call_service(
+            "assist_satellite",
+            "announce",
+            satellite_entity,
+            {
+                "message": message,
+            },
+        )
+        logger.info("Assist satellite announce sent to %s", satellite_entity)
+    except Exception:
+        logger.warning("Assist satellite announce failed on %s", satellite_entity, exc_info=True)
+
+
 async def _notify_persistent(
     ha_client: Any,
     timer_name: str,
@@ -587,6 +623,42 @@ async def _resolve_media_player_from_origin_device(
     candidates = [item.strip() for item in rendered.split(",") if item and item.strip()]
     for candidate in candidates:
         if candidate.startswith("media_player."):
+            return candidate
+    return None
+
+
+async def _resolve_satellite_from_origin_device(
+    ha_client: Any,
+    origin_device_id: str | None,
+) -> str | None:
+    if not origin_device_id:
+        return None
+    template = "{{ expand(device_entities('" + origin_device_id + "')) | map(attribute='entity_id') | join(',') }}"
+    rendered: str | None = None
+    try:
+        if hasattr(ha_client, "render_template"):
+            rendered = await ha_client.render_template(template)
+        else:
+            client = getattr(ha_client, "_client", None)
+            if client is None:
+                return None
+            resp = await client.post("/api/template", json={"template": template})
+            resp.raise_for_status()
+            rendered = (resp.text or "").strip()
+    except Exception:
+        logger.debug(
+            "Failed to resolve assist_satellite from origin device %s",
+            origin_device_id,
+            exc_info=True,
+        )
+        return None
+
+    if not rendered:
+        return None
+
+    candidates = [item.strip() for item in rendered.split(",") if item and item.strip()]
+    for candidate in candidates:
+        if candidate.startswith("assist_satellite."):
             return candidate
     return None
 

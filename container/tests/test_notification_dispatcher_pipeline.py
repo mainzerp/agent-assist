@@ -203,12 +203,19 @@ async def test_pipeline_prefers_satellite_from_entity_index() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_timer_notification_resolves_media_player_from_origin_metadata() -> None:
+async def test_timer_prefers_satellite_from_origin_device_over_media_player() -> None:
     with (
         patch.object(nd, "_load_notification_profile", new=AsyncMock(return_value={"tts_enabled": True})),
         patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
-        patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.office")),
+        patch.object(
+            nd,
+            "_resolve_satellite_from_origin_device",
+            new=AsyncMock(return_value="assist_satellite.office"),
+        ) as from_origin_satellite,
+        patch.object(nd, "_resolve_satellite_device", new=AsyncMock(return_value="assist_satellite.area")) as from_area_satellite,
+        patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.office")) as media_fallback,
         patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value="Timer done")),
+        patch.object(nd, "_notify_satellite_announce", new=AsyncMock()) as notify_satellite,
         patch.object(nd, "_play_chime", new=AsyncMock()) as play_chime,
         patch.object(nd, "_notify_tts", new=AsyncMock()) as notify_tts,
         patch.object(nd, "spawn", side_effect=lambda coro, name=None: coro.close()) as spawn_mock,
@@ -227,9 +234,13 @@ async def test_dispatch_timer_notification_resolves_media_player_from_origin_met
             entity_index=MagicMock(),
         )
 
-    play_chime.assert_awaited_once()
-    notify_tts.assert_awaited_once()
-    assert notify_tts.await_args.args[1] == "media_player.office"
+    from_origin_satellite.assert_awaited_once()
+    from_area_satellite.assert_not_awaited()
+    media_fallback.assert_not_awaited()
+    notify_satellite.assert_awaited_once()
+    assert notify_satellite.await_args.args[1] == "assist_satellite.office"
+    play_chime.assert_not_awaited()
+    notify_tts.assert_not_awaited()
     spawn_mock.assert_called_once()
 
 
@@ -263,7 +274,79 @@ async def test_dispatch_timer_notification_prefers_explicit_media_player_target(
 
 
 @pytest.mark.asyncio
-async def test_dispatch_timer_notification_unnamed_timer_uses_generic_message_without_tts_target() -> None:
+async def test_timer_uses_area_satellite_when_origin_device_satellite_missing() -> None:
+    with (
+        patch.object(nd, "_load_notification_profile", new=AsyncMock(return_value={"tts_enabled": True})),
+        patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
+        patch.object(nd, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value=None)) as from_origin_satellite,
+        patch.object(nd, "_resolve_satellite_device", new=AsyncMock(return_value="assist_satellite.kitchen")) as from_area_satellite,
+        patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.kitchen")) as media_fallback,
+        patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value="Timer done")),
+        patch.object(nd, "_notify_satellite_announce", new=AsyncMock()) as notify_satellite,
+        patch.object(nd, "_notify_tts", new=AsyncMock()) as notify_tts,
+        patch.object(nd, "spawn", side_effect=lambda coro, name=None: coro.close()),
+    ):
+        metadata = SimpleNamespace(
+            media_player_entity=None,
+            origin_device_id="device-abc",
+            origin_area="kitchen",
+            duration="00:05:00",
+        )
+        await nd.dispatch_timer_notification(
+            ha_client=MagicMock(),
+            timer_name="Timer",
+            entity_id="agenthub_internal:1",
+            metadata=metadata,
+            entity_index=MagicMock(),
+        )
+
+    from_origin_satellite.assert_awaited_once()
+    from_area_satellite.assert_awaited_once()
+    media_fallback.assert_not_awaited()
+    notify_satellite.assert_awaited_once()
+    assert notify_satellite.await_args.args[1] == "assist_satellite.kitchen"
+    notify_tts.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_timer_falls_back_to_media_player_when_no_satellite_target() -> None:
+    with (
+        patch.object(nd, "_load_notification_profile", new=AsyncMock(return_value={"tts_enabled": True})),
+        patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
+        patch.object(nd, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value=None)) as from_origin_satellite,
+        patch.object(nd, "_resolve_satellite_device", new=AsyncMock(return_value=None)) as from_area_satellite,
+        patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value="media_player.office")) as media_fallback,
+        patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value="Timer done")),
+        patch.object(nd, "_notify_satellite_announce", new=AsyncMock()) as notify_satellite,
+        patch.object(nd, "_play_chime", new=AsyncMock()) as play_chime,
+        patch.object(nd, "_notify_tts", new=AsyncMock()) as notify_tts,
+        patch.object(nd, "spawn", side_effect=lambda coro, name=None: coro.close()),
+    ):
+        metadata = SimpleNamespace(
+            media_player_entity=None,
+            origin_device_id="device-abc",
+            origin_area="office",
+            duration="00:05:00",
+        )
+        await nd.dispatch_timer_notification(
+            ha_client=MagicMock(),
+            timer_name="Timer",
+            entity_id="agenthub_internal:1",
+            metadata=metadata,
+            entity_index=MagicMock(),
+        )
+
+    from_origin_satellite.assert_awaited_once()
+    from_area_satellite.assert_awaited_once()
+    media_fallback.assert_awaited_once()
+    notify_satellite.assert_not_awaited()
+    play_chime.assert_awaited_once()
+    notify_tts.assert_awaited_once()
+    assert notify_tts.await_args.args[1] == "media_player.office"
+
+
+@pytest.mark.asyncio
+async def test_timer_without_satellite_or_media_player_keeps_non_audio_notifications() -> None:
     with (
         patch.object(
             nd,
@@ -277,15 +360,19 @@ async def test_dispatch_timer_notification_unnamed_timer_uses_generic_message_wi
             ),
         ),
         patch.object(nd.SettingsRepository, "get_value", new=AsyncMock(return_value="en")),
+        patch.object(nd, "_resolve_satellite_from_origin_device", new=AsyncMock(return_value=None)),
+        patch.object(nd, "_resolve_satellite_device", new=AsyncMock(return_value=None)),
         patch.object(nd, "_resolve_timer_playback_target", new=AsyncMock(return_value=None)),
         patch.object(nd, "_generate_tts_message", new=AsyncMock(return_value=None)),
+        patch.object(nd, "_notify_satellite_announce", new=AsyncMock()) as notify_satellite,
         patch.object(nd, "_notify_tts", new=AsyncMock()) as notify_tts,
         patch.object(nd, "_notify_persistent", new=AsyncMock()) as notify_persistent,
+        patch.object(nd, "_notify_push", new=AsyncMock()) as notify_push,
     ):
         metadata = SimpleNamespace(
             media_player_entity=None,
-            origin_device_id=None,
-            origin_area=None,
+            origin_device_id="device-abc",
+            origin_area="office",
             duration="00:03:00",
         )
         await nd.dispatch_timer_notification(
@@ -296,8 +383,10 @@ async def test_dispatch_timer_notification_unnamed_timer_uses_generic_message_wi
             entity_index=None,
         )
 
+    notify_satellite.assert_not_awaited()
     notify_tts.assert_not_awaited()
     notify_persistent.assert_awaited_once()
+    notify_push.assert_not_awaited()
     assert notify_persistent.await_args.args[2] == "The timer has finished"
 
 
