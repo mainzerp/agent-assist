@@ -28,6 +28,8 @@ else:
     os.environ.setdefault("FERNET_KEY_PATH", str(_test_root / ".fernet_key"))
     os.environ.setdefault("CHROMADB_PERSIST_DIR", str(_test_root / "chromadb"))
 
+from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
+
 
 def build_integration_test_app(
     *,
@@ -418,7 +420,7 @@ def mock_settings() -> dict[str, str]:
         "cache.response.partial_threshold": "0.80",
         "cache.response.max_entries": "20000",
         "embedding.provider": "local",
-        "embedding.local_model": "all-MiniLM-L6-v2",
+        "embedding.local_model": DEFAULT_LOCAL_EMBEDDING_MODEL,
         "embedding.external_model": "",
         "embedding.dimension": "384",
         "entity_matching.confidence_threshold": "0.60",

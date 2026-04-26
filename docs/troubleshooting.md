@@ -158,6 +158,8 @@ docker compose restart ha-agenthub
 
 Each request is assigned a trace ID (visible in the logs as `[trace:...]`). Use the trace ID to find all related log entries for a single request. Traces can also be viewed in the admin dashboard (Traces page) with a Gantt visualization of each processing step.
 
+Trace previews in the dashboard and stored trace summaries are sanitized before persistence. Secrets, bearer tokens, credentialed URLs, sensitive query parameters, tool payload details, and short verification codes may appear as redacted placeholders while safe operational fields such as entity IDs, agent IDs, actions, and counts remain visible.
+
 **Log format:**
 
 ```

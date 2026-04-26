@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from pathlib import Path
 
 from app.models.agent import AgentCard, AgentError, AgentErrorCode, AgentTask, TaskContext, TaskResult
+from app.security.sanitization import USER_INPUT_END, USER_INPUT_START, wrap_user_input
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,55 @@ _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 # Module-level cache for loaded prompt files (Q-4). Prompts only change on
 # container restart, so there is no invalidation path.
 _prompt_cache: dict[str, str] = {}
+
+_KNOWN_PROMPT_NAMES = (
+    "automation",
+    "climate",
+    "filler",
+    "general",
+    "light",
+    "media",
+    "mediate",
+    "merge",
+    "music",
+    "orchestrator",
+    "rewrite",
+    "scene",
+    "security",
+    "send",
+    "timer",
+)
+
+
+def _prompt_path(name: str) -> Path:
+    return _PROMPTS_DIR / f"{name}.txt"
+
+
+def _load_prompt_path(path: Path) -> str:
+    cache_key = str(path)
+    cached = _prompt_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    logger.debug("Cold-loading prompt from disk: %s", path.name)
+    content = path.read_text(encoding="utf-8").strip()
+    if "{personality_base}" in content:
+        base_path = _prompt_path("personality_base")
+        if base_path.exists():
+            base_cache_key = str(base_path)
+            base_content = _prompt_cache.get(base_cache_key)
+            if base_content is None:
+                base_content = base_path.read_text(encoding="utf-8").strip()
+                _prompt_cache[base_cache_key] = base_content
+            content = content.replace("{personality_base}", base_content)
+    _prompt_cache[cache_key] = content
+    return content
+
+
+def preload_prompt_cache(prompt_names: Iterable[str] | None = None) -> None:
+    """Warm the shipped prompt cache so request handlers stay in memory."""
+    names = tuple(prompt_names) if prompt_names is not None else _KNOWN_PROMPT_NAMES
+    for name in names:
+        _load_prompt_path(_prompt_path(name))
 
 
 class BaseAgent(ABC):
@@ -106,20 +156,7 @@ class BaseAgent(ABC):
         Returns:
             Prompt text content.
         """
-        path = _PROMPTS_DIR / f"{name}.txt"
-        cache_key = str(path)
-        cached = _prompt_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        content = path.read_text(encoding="utf-8").strip()
-        # Resolve {personality_base} include if present
-        if "{personality_base}" in content:
-            base_path = _PROMPTS_DIR / "personality_base.txt"
-            if base_path.exists():
-                base_content = base_path.read_text(encoding="utf-8").strip()
-                content = content.replace("{personality_base}", base_content)
-        _prompt_cache[cache_key] = content
-        return content
+        return _load_prompt_path(_prompt_path(name))
 
     def _error_result(
         self,
@@ -146,6 +183,43 @@ class BaseAgent(ABC):
             parts.append(f"Home location: {context.location_name}")
         return "\n".join(parts)
 
+    @staticmethod
+    def _wrap_user_input(content: str) -> str:
+        """Delimit free-form user content before it is sent to an LLM."""
+        text = content or ""
+        if USER_INPUT_START in text and USER_INPUT_END in text:
+            return text
+        return wrap_user_input(text)
+
+    @classmethod
+    def _append_conversation_turn_messages(
+        cls,
+        messages: list[dict],
+        turns: list[dict],
+        *,
+        max_content_length: int | None = None,
+    ) -> None:
+        for turn in turns:
+            role = turn.get("role", "user")
+            content = turn.get("content", "")
+            if max_content_length is not None and len(content) > max_content_length:
+                content = content[:max_content_length] + "..."
+            if role == "user":
+                content = cls._wrap_user_input(content)
+            messages.append({"role": role, "content": content})
+
+    @classmethod
+    def _normalize_llm_messages(cls, messages: list[dict]) -> list[dict]:
+        normalized = []
+        for message in messages:
+            if message.get("role") == "user" and isinstance(message.get("content"), str):
+                updated = dict(message)
+                updated["content"] = cls._wrap_user_input(updated["content"])
+                normalized.append(updated)
+            else:
+                normalized.append(message)
+        return normalized
+
     async def _call_llm(self, messages: list[dict], **overrides) -> str:
         """Call the LLM using this agent's config.
 
@@ -154,4 +228,4 @@ class BaseAgent(ABC):
         """
         from app.llm.client import complete
 
-        return await complete(self.agent_card.agent_id, messages, **overrides)
+        return await complete(self.agent_card.agent_id, self._normalize_llm_messages(messages), **overrides)

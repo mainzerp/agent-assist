@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from app.agents.base import BaseAgent
+from app.agents.tool_calling import call_llm_with_mcp_tools, mcp_tools_to_openai_format
 from app.analytics.tracer import _optional_span
 from app.models.agent import AgentCard, AgentErrorCode, AgentTask, TaskResult
 
@@ -59,19 +60,16 @@ class GeneralAgent(BaseAgent):
         messages = [{"role": "system", "content": system_prompt}]
 
         if task.context and task.context.conversation_turns:
-            for turn in task.context.conversation_turns:
-                messages.append(
-                    {
-                        "role": turn.get("role", "user"),
-                        "content": turn.get("content", ""),
-                    }
-                )
+            self._append_conversation_turn_messages(messages, task.context.conversation_turns)
 
         # task.description = condensed task from orchestrator (primary input)
         # task.user_text = original unmodified user text (fallback only)
-        user_content = task.description
+        user_content = self._wrap_user_input(task.description)
         if task.user_text and task.user_text != task.description:
-            user_content = f'{task.description}\n\n(Original user message: "{task.user_text}")'
+            user_content = (
+                f"Routing summary:\n{self._wrap_user_input(task.description)}\n\n"
+                f"Original user message:\n{self._wrap_user_input(task.user_text)}"
+            )
         messages.append({"role": "user", "content": user_content})
 
         # Check for available MCP tools
@@ -80,10 +78,15 @@ class GeneralAgent(BaseAgent):
             llm_kwargs["max_tokens"] = 2048
         tools = await self._get_mcp_tools()
         if tools:
-            tool_schemas = self._mcp_tools_to_openai_format(tools)
+            tool_schemas = mcp_tools_to_openai_format(tools)
             async with _optional_span(span_collector, "llm_call", agent_id="general-agent") as span:
-                response = await self._call_llm_with_tools(
-                    messages, tool_schemas, tools, span_collector=span_collector, **llm_kwargs
+                response = await call_llm_with_mcp_tools(
+                    self,
+                    messages,
+                    tools,
+                    self._mcp_tool_manager,
+                    span_collector=span_collector,
+                    **llm_kwargs,
                 )
                 span["metadata"]["model"] = "general-agent"
                 span["metadata"]["llm_response"] = response[:500] if response else ""
@@ -116,60 +119,15 @@ class GeneralAgent(BaseAgent):
     @staticmethod
     def _mcp_tools_to_openai_format(mcp_tools: list[dict]) -> list[dict]:
         """Convert MCP tool descriptors to OpenAI function-calling format."""
-        openai_tools = []
-        for tool in mcp_tools:
-            openai_tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool["name"],
-                        "description": tool.get("description", ""),
-                        "parameters": tool.get("input_schema", {}),
-                    },
-                }
-            )
-        return openai_tools
+        return mcp_tools_to_openai_format(mcp_tools)
 
     async def _call_llm_with_tools(self, messages, tool_schemas, mcp_tools, span_collector=None, **overrides):
         """Call LLM with tool calling support."""
-        from app.llm.client import complete_with_tools
-
-        # Build a tool name -> tool info mapping for execution
-        tool_map = {}
-        for tool in mcp_tools:
-            tool_map[tool["name"]] = tool
-
-        async def execute_tool(name: str, arguments: dict) -> str:
-            tool_info = tool_map.get(name)
-            if not tool_info:
-                return f"Error: unknown tool '{name}'"
-            server_name = tool_info.get("_server_name", "")
-            try:
-                result = await self._mcp_tool_manager.call_tool(server_name, name, arguments)
-                # MCP call_tool returns a CallToolResult; extract text content
-                if hasattr(result, "content"):
-                    texts = [c.text for c in result.content if hasattr(c, "text")]
-                    return "\n".join(texts) if texts else str(result)
-                return str(result)
-            except Exception as e:
-                logger.warning("MCP tool '%s' failed: %s", name, e)
-                return f"Tool error: {e}"
-
-        _inner_executor = execute_tool
-
-        async def _traced_executor(name: str, arguments: dict) -> str:
-            async with _optional_span(span_collector, "mcp_tool_call", agent_id="general-agent") as tool_span:
-                tool_span["metadata"]["tool_name"] = name
-                tool_span["metadata"]["arguments"] = str(arguments)[:300]
-                result = await _inner_executor(name, arguments)
-                tool_span["metadata"]["result"] = result[:500] if result else ""
-                return result
-
-        return await complete_with_tools(
-            self.agent_card.agent_id,
+        return await call_llm_with_mcp_tools(
+            self,
             messages,
-            tools=tool_schemas,
-            tool_executor=_traced_executor,
+            mcp_tools,
+            self._mcp_tool_manager,
             span_collector=span_collector,
             **overrides,
         )

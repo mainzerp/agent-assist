@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from typing import TYPE_CHECKING
 
 from app.a2a.orchestrator_gateway import OrchestratorGateway
 from app.agents.automation import AutomationAgent
+from app.agents.base import preload_prompt_cache
 from app.agents.climate import ClimateAgent
 from app.agents.custom_loader import CustomAgentLoader
 from app.agents.filler import FillerAgent
@@ -24,6 +26,7 @@ from app.agents.timer import TimerAgent
 from app.cache.cache_manager import CacheManager
 from app.cache.embedding import get_embedding_engine
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX, get_vector_store
+from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.db.repository import AgentConfigRepository, SettingsRepository, SetupStateRepository
 from app.entity.aliases import AliasResolver
 from app.entity.index import EntityIndex
@@ -117,7 +120,10 @@ async def _resolve_active_embedding_model() -> str:
     try:
         provider = await SettingsRepository.get_value("embedding.provider", "local")
         if provider == "local":
-            return await SettingsRepository.get_value("embedding.local_model", "all-MiniLM-L6-v2") or ""
+            return await SettingsRepository.get_value(
+                "embedding.local_model",
+                DEFAULT_LOCAL_EMBEDDING_MODEL,
+            ) or ""
         return await SettingsRepository.get_value("embedding.external_model", "") or ""
     except Exception:
         logger.debug("Could not resolve active embedding model", exc_info=True)
@@ -429,13 +435,15 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
         await alias_resolver.load()
         app.state.alias_resolver = alias_resolver
 
+    await asyncio.to_thread(preload_prompt_cache)
+
     entity_matcher = getattr(app.state, "entity_matcher", None)
     if entity_matcher is None:
         entity_matcher = EntityMatcher(entity_index, alias_resolver)
         await entity_matcher.load_config()
         # 0.23.0: wire optional language-agnostic on-demand expansion.
         try:
-            from app.entity.expansion import QueryExpansionService
+            from app.entity.expansion import QueryExpansionService, load_query_expansion_prompt_template
 
             async def _llm_expand(prompt: str) -> str:
                 # Use the orchestrator-tier LLM for expansion (cheap,
@@ -453,7 +461,11 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
                 except Exception:
                     return ""
 
-            entity_matcher._expansion_service = QueryExpansionService(llm_call=_llm_expand)
+            prompt_template = await asyncio.to_thread(load_query_expansion_prompt_template)
+            entity_matcher._expansion_service = QueryExpansionService(
+                llm_call=_llm_expand,
+                prompt_template=prompt_template,
+            )
         except Exception:
             logger.debug("Expansion service wiring skipped", exc_info=True)
         try:
@@ -494,16 +506,14 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
         )
         if connected:
             try:
-                client = mcp_registry.get_client("duckduckgo-search")
-                if client:
-                    tools = await client.list_tools()
-                    for tool in tools:
-                        await AgentMcpToolsRepository.assign_tool(
-                            "general-agent",
-                            "duckduckgo-search",
-                            tool["name"],
-                        )
-                    logger.info("Assigned %d DuckDuckGo tools to general-agent", len(tools))
+                tools = await mcp_tool_manager.refresh_server("duckduckgo-search")
+                for tool in tools:
+                    await AgentMcpToolsRepository.assign_tool(
+                        "general-agent",
+                        "duckduckgo-search",
+                        tool["name"],
+                    )
+                logger.info("Assigned %d DuckDuckGo tools to general-agent", len(tools))
             except Exception:
                 logger.warning(
                     "Setup init (%s): failed to auto-assign DuckDuckGo tools",
@@ -560,9 +570,21 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
 
     custom_loader = getattr(app.state, "custom_loader", None)
     if custom_loader is None:
-        custom_loader = CustomAgentLoader(registry, ha_client=ha_client, entity_index=entity_index)
+        custom_loader = CustomAgentLoader(
+            registry,
+            ha_client=ha_client,
+            entity_index=entity_index,
+            mcp_tool_manager=mcp_tool_manager,
+        )
         await custom_loader.load_all()
         app.state.custom_loader = custom_loader
+    else:
+        custom_loader._ha_client = ha_client
+        custom_loader._entity_index = entity_index
+        custom_loader._mcp_tool_manager = mcp_tool_manager
+        reload_result = custom_loader.reload()
+        if inspect.isawaitable(reload_result):
+            await reload_result
 
     await orchestrator_agent.initialize()
 

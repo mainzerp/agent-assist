@@ -522,6 +522,17 @@ class TestSetupXSSPrevention:
 # ===================================================================
 
 
+def test_custom_agent_loader_accepts_mcp_tool_manager_for_setup_runtime():
+    from app.agents.custom_loader import CustomAgentLoader
+
+    registry = MagicMock()
+    mcp_tool_manager = MagicMock()
+    loader = CustomAgentLoader(registry, mcp_tool_manager=mcp_tool_manager)
+
+    assert loader._mcp_tool_manager is mcp_tool_manager
+
+
+
 @pytest.mark.asyncio
 async def test_initialize_setup_dependent_services_is_idempotent():
     """FLOW-SETUP-1 (P1-2): calling the shared init helper twice must not
@@ -678,6 +689,165 @@ async def test_initialize_setup_dependent_services_is_idempotent():
         assert mock_cache_cls.call_count == first_cache_cls_calls
         assert "filler-agent" not in fake_registry.registered
         assert getattr(app.state, "orchestrator_gateway", None) is not None
+
+
+@pytest.mark.asyncio
+async def test_initialize_setup_dependent_services_preloads_prompt_files():
+    import contextlib
+    from types import SimpleNamespace
+
+    from app.runtime_setup import _initialize_setup_dependent_services
+
+    app = SimpleNamespace()
+    app.state = SimpleNamespace()
+
+    class FakeRegistry:
+        async def register(self, agent):
+            return None
+
+        async def list_agents(self):
+            return []
+
+    fake_registry = FakeRegistry()
+    fake_dispatcher = MagicMock()
+    fake_mcp_registry = MagicMock()
+    fake_mcp_registry.load_from_db = AsyncMock()
+    fake_mcp_registry.add_server = AsyncMock(return_value=False)
+    fake_mcp_tool_manager = MagicMock()
+
+    app.state.registry = fake_registry
+    app.state.dispatcher = fake_dispatcher
+    app.state.mcp_registry = fake_mcp_registry
+    app.state.mcp_tool_manager = fake_mcp_tool_manager
+
+    fake_ha_client = MagicMock()
+    fake_ha_client.initialize = AsyncMock()
+    fake_ha_client.reload = AsyncMock()
+    fake_ha_client.set_state_observer = MagicMock()
+
+    fake_entity_index = MagicMock()
+    fake_vector_store = MagicMock()
+
+    async def fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    patches = [
+        patch("app.runtime_setup.HARestClient", return_value=fake_ha_client),
+        patch("app.runtime_setup.EntityIndex", return_value=fake_entity_index),
+        patch("app.runtime_setup.get_embedding_engine", new_callable=AsyncMock),
+        patch(
+            "app.runtime_setup.get_vector_store",
+            new_callable=AsyncMock,
+            return_value=fake_vector_store,
+        ),
+        patch(
+            "app.runtime_setup.schedule_entity_index_prime",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch("app.runtime_setup.home_context_provider"),
+        patch("app.runtime_setup.AliasResolver"),
+        patch("app.runtime_setup.EntityMatcher"),
+        patch("app.runtime_setup.RewriteAgent"),
+        patch("app.runtime_setup.CacheManager"),
+        patch(
+            "app.db.repository.McpServerRepository.get",
+            new_callable=AsyncMock,
+            return_value={"name": "duckduckgo-search"},
+        ),
+        patch("app.runtime_setup.OrchestratorAgent"),
+        patch("app.runtime_setup.GeneralAgent"),
+        patch("app.runtime_setup.LightAgent"),
+        patch("app.runtime_setup.MusicAgent"),
+        patch("app.runtime_setup.FillerAgent"),
+        patch("app.runtime_setup.CustomAgentLoader"),
+        patch(
+            "app.runtime_setup.AgentConfigRepository.get",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch("app.ha_client.websocket.HAWebSocketClient"),
+        patch("app.agents.alarm_monitor.AlarmMonitor"),
+        patch("app.agents.timer_scheduler.TimerScheduler"),
+        patch("app.runtime_setup.preload_prompt_cache"),
+        patch("app.runtime_setup.asyncio.to_thread", new=AsyncMock(side_effect=fake_to_thread)),
+        patch("app.entity.expansion.load_query_expansion_prompt_template", return_value="Prompt: {token}"),
+        patch("app.entity.expansion.QueryExpansionService"),
+    ]
+
+    with contextlib.ExitStack() as stack:
+        mocks = [stack.enter_context(p) for p in patches]
+        (
+            _ha_cls,
+            _ei_cls,
+            _embed,
+            _vs,
+            _prime,
+            mock_home_ctx,
+            mock_alias_cls,
+            mock_matcher_cls,
+            mock_rewrite_cls,
+            mock_cache_cls,
+            _ddg_get,
+            mock_orch_cls,
+            mock_general_cls,
+            mock_light_cls,
+            mock_music_cls,
+            mock_filler_cls,
+            mock_custom_cls,
+            _agent_cfg,
+            mock_ws_cls,
+            mock_alarm_cls,
+            mock_timer_cls,
+            mock_preload_prompts,
+            mock_to_thread,
+            mock_load_query_prompt,
+            mock_query_service_cls,
+        ) = mocks
+
+        mock_home_ctx.refresh = AsyncMock()
+        alias_inst = MagicMock()
+        alias_inst.load = AsyncMock()
+        mock_alias_cls.return_value = alias_inst
+        matcher_inst = MagicMock()
+        matcher_inst.load_config = AsyncMock()
+        mock_matcher_cls.return_value = matcher_inst
+        mock_rewrite_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="rewrite-agent"))
+        cache_inst = MagicMock()
+        cache_inst.initialize = AsyncMock()
+        cache_inst.purge_readonly_entries = AsyncMock(return_value=0)
+        mock_cache_cls.return_value = cache_inst
+        orch_inst = MagicMock(agent_card=SimpleNamespace(agent_id="orchestrator"))
+        orch_inst.initialize = AsyncMock()
+        mock_orch_cls.return_value = orch_inst
+        mock_general_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="general-agent"))
+        mock_light_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="light-agent"))
+        mock_music_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="music-agent"))
+        mock_filler_cls.return_value = MagicMock(agent_card=SimpleNamespace(agent_id="filler-agent"))
+        loader_inst = MagicMock()
+        loader_inst.load_all = AsyncMock()
+        mock_custom_cls.return_value = loader_inst
+        ws_inst = MagicMock()
+        ws_inst.run = AsyncMock()
+        ws_inst.on_event = MagicMock()
+        mock_ws_cls.return_value = ws_inst
+        alarm_inst = MagicMock()
+        alarm_inst.start = AsyncMock()
+        mock_alarm_cls.return_value = alarm_inst
+        timer_inst = MagicMock()
+        timer_inst.start = AsyncMock()
+        mock_timer_cls.return_value = timer_inst
+        mock_query_service = MagicMock()
+        mock_query_service_cls.return_value = mock_query_service
+
+        await _initialize_setup_dependent_services(app, source="test-prompt")
+
+        mock_preload_prompts.assert_called_once_with()
+        mock_load_query_prompt.assert_called_once_with()
+        mock_query_service_cls.assert_called_once()
+        assert mock_query_service_cls.call_args.kwargs["prompt_template"] == "Prompt: {token}"
+        assert matcher_inst._expansion_service is mock_query_service
+        assert mock_to_thread.await_count >= 2
 
 
 # ===================================================================

@@ -51,7 +51,7 @@ accepted as a legacy alias on read).
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
 | `embedding.provider` | `local` | string | Embedding provider: `local` or `external` |
-| `embedding.local_model` | `all-MiniLM-L6-v2` | string | Local embedding model name |
+| `embedding.local_model` | `intfloat/multilingual-e5-small` | string | Local embedding model name |
 | `embedding.external_model` | (empty) | string | External model (e.g., `openai/text-embedding-3-small`) |
 | `embedding.dimension` | `384` | int | Embedding vector dimension |
 
@@ -59,7 +59,7 @@ accepted as a legacy alias on read).
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
-| `entity_matching.confidence_threshold` | `0.75` | float | Minimum confidence score for entity match |
+| `entity_matching.confidence_threshold` | `0.60` | float | Minimum confidence score for entity match |
 | `entity_matching.top_n_candidates` | `3` | int | Number of candidates for LLM disambiguation |
 | `entity_matching.oversample_factor` | `20` | int | Embedding shortlist multiplier when agent visibility/preferred-domain hints are present |
 
@@ -146,7 +146,7 @@ Managed via `GET/PUT /api/admin/personality/config` and the dashboard
 
 | Key | Default | Type | Description |
 |-----|---------|------|-------------|
-| `general.conversation_context_turns` | `3` | int | Number of conversation turns to keep as context |
+| `general.conversation_context_turns` | `3` | int | Number of prior conversation turns retained for recent runtime context; honored by the orchestrator and clamped to `1..20` |
 
 ## Agent Configuration
 
@@ -212,6 +212,34 @@ Internal helper agents (`filler-agent`, `rewrite-agent`,
 intent targets and are not listed in the dashboard's intent-routing
 configuration.
 
+## Custom Agents
+
+Custom agents are stored in the `custom_agents` table and registered at
+runtime as A2A agents with IDs shaped as `custom-{name}`. Names supplied
+through the admin API are normalized to stable lowercase slugs and cannot
+include the `custom-` prefix.
+
+Creating or updating a custom agent synchronizes the runtime stores used
+by the rest of the system:
+
+- `agent_configs` gets a matching `custom-{name}` row, so LLM calls use
+  the same real configuration lookup as built-in agents. `model_override`
+  becomes the config model; when it is omitted, the custom agent copies
+  practical defaults from `general-agent`.
+- `mcp_tools` is mirrored into `agent_mcp_tools`, which is the runtime
+  source used by the MCP tool manager for both built-in and custom agents.
+- `entity_visibility` is mirrored into `entity_visibility_rules` using
+  the same rule types as the entity visibility API.
+- `enabled=false` keeps the config row disabled and clears active MCP and
+  visibility assignments. Deleting a custom agent removes the config row
+  and clears those assignments.
+
+Entity visibility for custom agents applies to entity-resolution helpers
+and HA-facing action paths that a custom agent uses through AgentHub's
+container runtime. LLM-only prompt text is not an entity access-control
+boundary by itself, and MCP tools must still be treated as trusted
+in-process capabilities scoped by their own tool behavior.
+
 ## Entity Matching Configuration
 
 Entity matching signal weights are stored in the `entity_matching_config` table and can be adjusted from the admin dashboard:
@@ -249,4 +277,6 @@ MCP tools are discovered automatically after connection and can be assigned to s
 - **Admin Accounts**: Username + bcrypt-hashed password in the `admin_accounts` table. Session-based authentication for the dashboard using signed cookies.
 - **HA Token**: Long-Lived Access Token stored Fernet-encrypted in the `secrets` table.
 - **LLM API Keys**: Stored Fernet-encrypted in the `secrets` table.
-- **Input Sanitization**: User input is sanitized against prompt injection patterns before processing.
+- **Live Input Sanitization**: REST, SSE, WebSocket, and dashboard chat turns are sanitized once at ingress before they become `AgentTask` text. The sanitizer strips null/control characters, applies the configured length bound, and preserves normal entity and room names, including non-English characters such as German umlauts.
+- **Prompt-Injection Detection**: Known prompt-injection patterns are detected on the sanitized live text and propagated as additive task context metadata. Detection is not a hard rejection; deterministic routing, entity resolution, cache lookup, service execution, and action verification continue to use the sanitized plain text.
+- **Prompt Delimiting**: Free-form user content is wrapped with explicit user-input delimiters before it is placed in LLM prompt messages. The delimited form is only used at LLM message boundaries; cache keys, verbatim terms, entity matching, and Home Assistant service payloads use the sanitized plain text.

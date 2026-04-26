@@ -40,24 +40,25 @@ class HelloPlugin(BasePlugin):
 
 1. **configure** -- Read settings, validate configuration
 2. **startup** -- Initialize resources (connections, caches)
-3. **ready** -- Register agents, subscribe to events (system is fully up)
+3. **ready** -- Subscribe to events, add routes, or dispatch orchestrator-bound work
 4. **shutdown** -- Clean up resources (called when container stops)
 
 ## Available APIs
 
 Through the `PluginContext` object passed to lifecycle hooks:
 
-- `ctx.agent_registry` -- Register/unregister A2A agents
+- `ctx.agent_catalog` -- Inspect currently registered agents (read-only)
+- `ctx.orchestrator_gateway` -- Send text or background work through the orchestrator
 - `ctx.mcp_registry` -- Access MCP server connections
 - `ctx.settings` -- Read/write settings via `SettingsRepository`
 - `ctx.event_bus` -- Subscribe to / publish plugin events
 - `ctx.add_api_route(path, endpoint, **kwargs)` and
   `ctx.include_router(router, **kwargs)` -- register HTTP routes
 
-Direct access to the FastAPI application instance via `ctx.app` was
-removed in 0.13.0. Use `ctx.add_api_route` or `ctx.include_router`
-instead; arbitrary `app` mutation is no longer part of the plugin
-trust boundary.
+Direct access to the FastAPI application instance via `ctx.app` and the
+old direct registry surface are removed. Use `ctx.add_api_route`,
+`ctx.include_router`, `ctx.agent_catalog`, and
+`ctx.orchestrator_gateway` instead.
 
 ## Notes
 

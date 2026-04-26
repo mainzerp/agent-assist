@@ -36,7 +36,7 @@ class RewriteAgent(BaseAgent):
         system_prompt = self._load_prompt("rewrite")
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": cached_text},
+            {"role": "user", "content": self._wrap_user_input(cached_text)},
         ]
         try:
             result = await self._call_llm(messages)

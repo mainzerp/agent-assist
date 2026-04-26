@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from app.db.repository import McpServerRepository
@@ -16,6 +17,18 @@ class MCPServerRegistry:
 
     def __init__(self) -> None:
         self._clients: dict[str, MCPClient] = {}
+        self._change_listeners: list[Callable[[str | None], None]] = []
+
+    def add_change_listener(self, listener: Callable[[str | None], None]) -> None:
+        """Register a synchronous callback for MCP server connection-set changes."""
+        self._change_listeners.append(listener)
+
+    def _notify_changed(self, server_name: str | None = None) -> None:
+        for listener in list(self._change_listeners):
+            try:
+                listener(server_name)
+            except Exception:
+                logger.debug("MCP registry change listener failed", exc_info=True)
 
     async def load_from_db(self) -> None:
         """Read enabled MCP servers from DB, create clients, and connect."""
@@ -41,6 +54,7 @@ class MCPServerRegistry:
             len(self._clients),
             sum(1 for c in self._clients.values() if c.connected),
         )
+        self._notify_changed(None)
 
     async def add_server(
         self,
@@ -67,6 +81,7 @@ class MCPServerRegistry:
         )
         connected = await client.connect()
         self._clients[name] = client
+        self._notify_changed(name)
         return connected
 
     async def remove_server(self, name: str) -> None:
@@ -75,6 +90,7 @@ class MCPServerRegistry:
         if client:
             await client.disconnect()
         await McpServerRepository.delete(name)
+        self._notify_changed(name)
 
     def list_servers(self) -> list[dict[str, Any]]:
         """Return all server info with connection status."""
@@ -92,4 +108,5 @@ class MCPServerRegistry:
             except Exception:
                 logger.warning("Error disconnecting MCP server '%s'", name, exc_info=True)
         self._clients.clear()
+        self._notify_changed(None)
         logger.info("All MCP servers disconnected")

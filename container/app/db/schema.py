@@ -12,6 +12,7 @@ from pathlib import Path
 import aiosqlite
 
 from app.config import settings
+from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 
 _write_conn: aiosqlite.Connection | None = None
 _write_lock = asyncio.Lock()
@@ -391,7 +392,7 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         # per-language seed data. Admins can override.
         (
             "embedding.local_model",
-            "intfloat/multilingual-e5-small",
+            DEFAULT_LOCAL_EMBEDDING_MODEL,
             "string",
             "embedding",
             "Local embedding model name (multilingual recommended)",
@@ -475,7 +476,13 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
         ("a2a.default_timeout", "10", "int", "a2a", "Default agent timeout in seconds"),
         ("a2a.max_iterations", "3", "int", "a2a", "Max iterations per agent to prevent loops"),
         # General settings
-        ("general.conversation_context_turns", "3", "int", "general", "Number of conversation turns to keep"),
+        (
+            "general.conversation_context_turns",
+            "3",
+            "int",
+            "general",
+            "Number of prior conversation turns to keep (user+assistant pairs)",
+        ),
         # Home context settings
         (
             "home.timezone",

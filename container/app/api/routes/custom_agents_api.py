@@ -40,6 +40,16 @@ class CustomAgentUpdate(BaseModel):
     enabled: bool | None = None
 
 
+async def _reload_custom_loader(request: Request) -> None:
+    custom_loader = getattr(request.app.state, "custom_loader", None)
+    if custom_loader is not None:
+        await custom_loader.reload()
+
+
+def _http_422_from_value_error(exc: ValueError) -> HTTPException:
+    return HTTPException(status_code=422, detail=str(exc))
+
+
 @router.get("")
 async def list_custom_agents() -> list[dict[str, Any]]:
     """List all custom agents."""
@@ -49,28 +59,39 @@ async def list_custom_agents() -> list[dict[str, Any]]:
 @router.post("", status_code=201)
 async def create_custom_agent(request: Request, body: CustomAgentCreate) -> dict[str, Any]:
     """Create a new custom agent."""
-    existing = await CustomAgentRepository.get(body.name)
+    try:
+        name = CustomAgentRepository.normalize_name(body.name)
+    except ValueError as exc:
+        raise _http_422_from_value_error(exc) from exc
+
+    existing = await CustomAgentRepository.get(name)
     if existing:
         raise HTTPException(status_code=409, detail="Agent with this name already exists")
 
-    await CustomAgentRepository.create(
-        name=body.name,
-        system_prompt=body.system_prompt,
-        description=body.description,
-        model_override=body.model_override,
-        mcp_tools=body.mcp_tools,
-        entity_visibility=body.entity_visibility,
-        intent_patterns=body.intent_patterns,
-    )
-    custom_loader = request.app.state.custom_loader
-    await custom_loader.reload()
-    return await CustomAgentRepository.get(body.name)
+    try:
+        created_name = await CustomAgentRepository.create_with_runtime(
+            name=name,
+            system_prompt=body.system_prompt,
+            description=body.description,
+            model_override=body.model_override,
+            mcp_tools=body.mcp_tools,
+            entity_visibility=body.entity_visibility,
+            intent_patterns=body.intent_patterns,
+            enabled=True,
+        )
+    except ValueError as exc:
+        raise _http_422_from_value_error(exc) from exc
+    await _reload_custom_loader(request)
+    return await CustomAgentRepository.get(created_name)
 
 
 @router.get("/{name}")
 async def get_custom_agent(name: str) -> dict[str, Any]:
     """Get a single custom agent."""
-    agent = await CustomAgentRepository.get(name)
+    try:
+        agent = await CustomAgentRepository.get(name)
+    except ValueError as exc:
+        raise _http_422_from_value_error(exc) from exc
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     return agent
@@ -79,27 +100,37 @@ async def get_custom_agent(name: str) -> dict[str, Any]:
 @router.put("/{name}")
 async def update_custom_agent(request: Request, name: str, body: CustomAgentUpdate) -> dict[str, Any]:
     """Update a custom agent."""
-    existing = await CustomAgentRepository.get(name)
+    try:
+        normalized_name = CustomAgentRepository.normalize_name(name)
+        existing = await CustomAgentRepository.get(normalized_name)
+    except ValueError as exc:
+        raise _http_422_from_value_error(exc) from exc
     if not existing:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    update_data = body.model_dump(exclude_none=True)
-    if update_data:
-        await CustomAgentRepository.update(name, **update_data)
+    update_data = {field: getattr(body, field) for field in body.model_fields_set}
+    if update_data.get("system_prompt") is None and "system_prompt" in update_data:
+        raise HTTPException(status_code=422, detail="system_prompt cannot be null")
+    try:
+        await CustomAgentRepository.update_with_runtime(normalized_name, **update_data)
+    except ValueError as exc:
+        raise _http_422_from_value_error(exc) from exc
 
-    custom_loader = request.app.state.custom_loader
-    await custom_loader.reload()
-    return await CustomAgentRepository.get(name)
+    await _reload_custom_loader(request)
+    return await CustomAgentRepository.get(normalized_name)
 
 
 @router.delete("/{name}")
 async def delete_custom_agent(request: Request, name: str) -> dict[str, str]:
     """Delete a custom agent."""
-    existing = await CustomAgentRepository.get(name)
+    try:
+        normalized_name = CustomAgentRepository.normalize_name(name)
+        existing = await CustomAgentRepository.get(normalized_name)
+    except ValueError as exc:
+        raise _http_422_from_value_error(exc) from exc
     if not existing:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    await CustomAgentRepository.delete(name)
-    custom_loader = request.app.state.custom_loader
-    await custom_loader.reload()
-    return {"status": "deleted", "name": name}
+    await CustomAgentRepository.delete_with_runtime(normalized_name)
+    await _reload_custom_loader(request)
+    return {"status": "deleted", "name": normalized_name}

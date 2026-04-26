@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from app.db.repository import SettingsRepository
+from app.security.sanitization import wrap_user_input
 from app.util.tasks import spawn
 
 logger = logging.getLogger(__name__)
@@ -260,11 +261,11 @@ async def _generate_tts_message(
         f"Output ONLY the spoken sentence, nothing else."
     )
 
-    context_parts = [f"Timer name: {timer_name}"]
+    context_parts = [f"Timer name:\n{wrap_user_input(timer_name)}"]
     if duration:
-        context_parts.append(f"Duration: {duration}")
+        context_parts.append(f"Duration:\n{wrap_user_input(duration)}")
     if area:
-        context_parts.append(f"Area/Room: {area}")
+        context_parts.append(f"Area/Room:\n{wrap_user_input(area)}")
 
     user_prompt = (
         "A timer has just finished. Context:\n" + "\n".join(context_parts) + "\n\nGenerate a one-sentence announcement."

@@ -80,7 +80,7 @@ Return: summary of the plan and the plan file path.
 ```
 
 ### Implementation Subagent Template
-Call `runSubagent` with `model: "GPT-5.5 (copilot)"`.
+Call `runSubagent` with `model: "GPT-5.4 (copilot)"`.
 ```
 **NEVER** call plan_review or ask_user tool from this subagent. This is for implementation only.
 You are a senior software engineer agent.

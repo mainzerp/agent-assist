@@ -8,6 +8,7 @@ import os
 
 import chromadb
 
+from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.db.repository import SettingsRepository
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,10 @@ class EmbeddingEngine:
         """Read embedding.provider and embedding.*_model from settings table."""
         self._provider = await SettingsRepository.get_value("embedding.provider", "local")
         if self._provider == "local":
-            self._model_name = await SettingsRepository.get_value("embedding.local_model", "all-MiniLM-L6-v2")
+            self._model_name = await SettingsRepository.get_value(
+                "embedding.local_model",
+                DEFAULT_LOCAL_EMBEDDING_MODEL,
+            )
         else:
             self._model_name = await SettingsRepository.get_value("embedding.external_model", "")
 
@@ -90,7 +94,7 @@ class EmbeddingEngine:
                 "all-MiniLM-L6-v2": 384,
                 "all-mpnet-base-v2": 768,
                 # 0.23.0: multilingual default.
-                "intfloat/multilingual-e5-small": 384,
+                DEFAULT_LOCAL_EMBEDDING_MODEL: 384,
                 "intfloat/multilingual-e5-base": 768,
                 "paraphrase-multilingual-MiniLM-L12-v2": 384,
             }

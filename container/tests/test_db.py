@@ -79,6 +79,11 @@ class TestSeedData:
         assert "embedding.provider" in keys
         assert "a2a.default_timeout" in keys
 
+    async def test_current_runtime_defaults_seeded(self, db_repository):
+        assert await SettingsRepository.get_value("embedding.local_model") == "intfloat/multilingual-e5-small"
+        assert await SettingsRepository.get_value("entity_matching.confidence_threshold") == "0.60"
+        assert await SettingsRepository.get_value("general.conversation_context_turns") == "3"
+
     async def test_default_agent_configs_populated(self, db_repository):
         agents = await AgentConfigRepository.list_all()
         agent_ids = {a["agent_id"] for a in agents}

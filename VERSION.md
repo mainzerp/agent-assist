@@ -1,12 +1,185 @@
 # Version
 
-**Current Version:** 0.26.1
+**Current Version:** 0.27.4
 
-## Recent Changes (since 0.26.1)
+## Recent Changes (since 0.27.4)
 
 (none yet)
 
 ## Version History
+
+### 0.27.4 (PATCH) -- Prompt file async hygiene
+
+Moves shipped prompt-file reads off the normal async request path while
+preserving existing prompt content and fail-soft query-expansion behavior.
+
+Changes:
+
+- Added a shared BaseAgent prompt preload helper for the shipped runtime
+  prompt set and kept lazy `_load_prompt()` fallback for tests and
+  unusual prompt names.
+- Warmed the agent prompt cache during setup initialization via
+  `asyncio.to_thread(...)` so normal agent turns reuse in-memory prompt
+  content instead of synchronously reading from disk.
+- Changed `QueryExpansionService` to cache its prompt template at
+  construction/startup and wired runtime setup to load that template off
+  the event loop before assigning the service to the matcher.
+- Added focused tests covering repeated prompt reuse after warmup,
+  startup preload wiring, and missing query-expansion prompt fail-soft
+  fallback.
+- Bumped `container/app/__init__.py` runtime version to `0.27.4`.
+
+### 0.27.3 (PATCH) -- Operator settings and current-state docs
+
+Makes the `general.conversation_context_turns` setting effective in the
+orchestrator conversation-history path and refreshes stale operator docs
+to match the shipped runtime defaults and plugin surface.
+
+Changes:
+
+- Replaced the orchestrator's hardcoded 3-turn history window with the
+  `general.conversation_context_turns` setting, clamped to `1..20` with
+  a safe fallback to `3` on missing, invalid, or unreadable values.
+- Applied the computed turn limit consistently to in-memory conversation
+  trimming and DB-backed conversation-history hydration.
+- Added focused orchestrator tests for configured turn limits, DB
+  fallback, in-memory cache trimming, and invalid-setting fallback
+  behavior.
+- Added a seeded-settings regression test covering current defaults for
+  `embedding.local_model`, `entity_matching.confidence_threshold`, and
+  `general.conversation_context_turns`.
+- Updated configuration and architecture docs to reflect the current
+  embedding default, entity-match threshold, effective conversation
+  context setting, and plugin integration surface.
+- Updated plugin docs and the plugin quickstart to use
+  `ctx.agent_catalog` and `ctx.orchestrator_gateway` instead of the
+  removed `ctx.agent_registry` surface.
+- Bumped `container/app/__init__.py` runtime version to `0.27.3`.
+
+### 0.27.2 (PATCH) -- Trace redaction hardening
+
+Hardens persisted trace spans and summaries so sensitive payloads are
+redacted before storage while preserving safe operational metadata.
+
+Changes:
+
+- Replaced the narrow top-level trace regexes with a shared recursive
+  sanitizer for strings, dicts, lists, tuples, and fallback object
+  stringification in `container/app/analytics/tracer.py`.
+- Redacted sensitive keys and values including authorization headers,
+  tokens, API keys, passwords, cookies, short verification codes, JSON
+  `code` fields, credentialed URLs, and sensitive query parameters before
+  writing spans or trace summaries.
+- Applied the sanitizer to both batched span flushes and direct
+  `record_span()` calls, and sanitized trace-summary fields including
+  `user_input`, `final_response`, `agent_instructions`, and
+  `conversation_turns`.
+- Changed shared MCP tool-call tracing to store structured sanitized
+  arguments, safe argument keys, and sanitized result previews instead of
+  raw stringified payloads.
+- Added focused tracer redaction tests covering nested payloads, URL
+  credentials, tool arguments/results, LLM previews, and trace-summary
+  sanitization.
+- Updated `docs/troubleshooting.md` to note that trace previews are
+  sanitized and may omit sensitive payload details.
+- Bumped `container/app/__init__.py` runtime version to `0.27.2`.
+
+### 0.27.1 (PATCH) -- MCP tool-schema caching
+
+Removes repeated MCP tool-schema discovery from normal general-agent and
+custom-agent request paths while preserving explicit admin refresh and
+server lifecycle invalidation behavior.
+
+Changes:
+
+- Added an in-memory per-server MCP tool descriptor cache in
+  `MCPToolManager`, guarded by per-server async locks to avoid discovery
+  stampedes.
+- Changed assigned-tool lookup for built-in and custom agents to group
+  assignments by MCP server and fetch descriptors once per server.
+- Kept admin discovery as an explicit refresh path and added server/all
+  invalidation plus single-server refresh helpers.
+- Invalidated cached descriptors on registry load, add, remove, and
+  disconnect-all lifecycle changes, and refreshed descriptors after admin
+  server creation when the server connects successfully.
+- Ensured disconnected servers do not serve stale cached descriptors and
+  reconnects refresh schemas before tools are returned again.
+- Bumped `container/app/__init__.py` runtime version to `0.27.1`.
+
+### 0.27.0 (MINOR) -- First-class custom-agent runtime contract
+
+Makes custom agents execute through the same runtime stores used by
+built-in agents for LLM config, MCP tool assignments, entity visibility,
+enabled state, deletion cleanup, and tracing.
+
+Changes:
+
+- Added synchronized custom-agent runtime helpers that create or update
+  `agent_configs` rows for `custom-{name}` IDs, copying `general-agent`
+  defaults when no `model_override` is supplied.
+- Mirrored custom-agent MCP tool assignments into `agent_mcp_tools` and
+  entity visibility rules into `entity_visibility_rules`, with disabled
+  agents clearing active assignments and deleted agents removing runtime
+  config entirely.
+- Updated `DynamicAgent` and `CustomAgentLoader` so model override, MCP
+  assignments, visibility metadata, enabled lifecycle, and registry
+  reload behavior are carried into runtime.
+- Extracted shared MCP tool-call handling for LLM-backed agents and wired
+  custom agents to use assigned MCP tools through the same manager path
+  as `general-agent`.
+- Added `llm_call` tracing around custom-agent LLM/tool execution with
+  safe model, response-length, and tool-count metadata.
+- Normalized legacy custom-agent row names during loader registration so
+  runtime IDs, endpoints, and config sync stay aligned for display names.
+- Updated API/configuration/architecture docs to describe the current
+  custom-agent runtime contract and entity visibility semantics.
+- Bumped `container/app/__init__.py` runtime version to `0.27.0`.
+
+### 0.26.3 (PATCH) -- Live ingress sanitization and prompt delimiting
+
+Hardens the live conversation path by applying the existing user-input
+sanitization and prompt-injection detection helpers at ingress, then
+delimiting free-form user content before it reaches LLM prompts.
+
+Changes:
+
+- Added `container/app/security/user_input.py` as the shared live user
+  input preparation helper.
+- Updated REST, SSE, WebSocket, and dashboard chat ingestion to store
+  sanitized plain text on `AgentTask` while preserving an additive
+  `injection_detected` context flag.
+- Added shared BaseAgent prompt wrapping helpers and wrapped user
+  content in general, actionable, custom, filler, rewrite, send-agent,
+  orchestrator classifier, repair, merge, and mediation LLM prompts.
+- Delimited direct query-expansion and timer-notification TTS LLM prompt
+  values outside BaseAgent while preserving query normalization, cache
+  keys, and structured background-turn ingress behavior.
+- Preserved deterministic entity resolution, cache keys, service
+  execution, action verification, and verbatim terms on sanitized plain
+  text rather than prompt-delimited text.
+- Updated `docs/configuration.md` to describe the current live
+  sanitization and prompt-delimiting behavior.
+- Bumped `container/app/__init__.py` runtime version to `0.26.3`.
+
+### 0.26.2 (PATCH) -- Cached-action visibility parity with live matching
+
+Fixes cached-action replay so it evaluates the same domain, area,
+entity, and device-class visibility rules used by live entity matching
+before re-executing a cached Home Assistant action.
+
+Changes:
+
+- Added `container/app/entity/visibility.py` as the shared visibility
+  rule evaluator for live matching and cached-action replay.
+- Updated `container/app/entity/matcher.py` to use the shared evaluator
+  while preserving `entity_include` union semantics.
+- Updated `container/app/agents/orchestrator.py` so cached-action replay
+  fails closed on missing entity IDs, visibility lookup/evaluation errors,
+  and scoped-rule metadata gaps.
+- Added focused tests for cached replay denial through area and
+  device-class rules, explicit `entity_include` replay allowance, and
+  missing indexed metadata fail-closed behavior.
+- Bumped `container/app/__init__.py` runtime version to `0.26.2`.
 
 ### 0.26.1 (PATCH) -- Canonical flow hardening for orchestrator-only routing and background turns
 

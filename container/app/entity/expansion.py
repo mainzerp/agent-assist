@@ -17,11 +17,21 @@ from pathlib import Path
 from typing import Any
 
 from app.db.repository import QuerySynonymCacheRepository, SettingsRepository
+from app.security.sanitization import wrap_user_input
 
 logger = logging.getLogger(__name__)
 
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "query_expansion.txt"
 _TOKEN_NORMALIZE_RE = re.compile(r"[^\w\s-]", re.UNICODE)
+
+
+def load_query_expansion_prompt_template(prompt_path: Path | None = None) -> str | None:
+    path = prompt_path or _PROMPT_PATH
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        logger.warning("Failed to read query_expansion prompt", exc_info=True)
+        return None
 
 
 def _normalize_token(token: str) -> str:
@@ -62,10 +72,16 @@ class QueryExpansionService:
         cache_repo: type[QuerySynonymCacheRepository] = QuerySynonymCacheRepository,
         llm_call=None,
         prompt_path: Path | None = None,
+        prompt_template: str | None = None,
     ) -> None:
         self._cache = cache_repo
         self._llm_call = llm_call
         self._prompt_path = prompt_path or _PROMPT_PATH
+        self._prompt_template = (
+            prompt_template
+            if prompt_template is not None
+            else load_query_expansion_prompt_template(self._prompt_path)
+        )
         self._inflight: dict[tuple[str, str], asyncio.Lock] = {}
         self._lock_guard = asyncio.Lock()
 
@@ -132,13 +148,12 @@ class QueryExpansionService:
     async def _call_llm(self, token: str, source_language: str, index_language: str) -> list[str]:
         if self._llm_call is None:
             return []
-        try:
-            template = self._prompt_path.read_text(encoding="utf-8")
-        except Exception:
-            logger.warning("Failed to read query_expansion prompt", exc_info=True)
+        template = self._prompt_template
+        if template is None:
             return []
+        prompt_token = wrap_user_input(token)
         prompt = (
-            template.replace("{token}", token)
+            template.replace("{token}", prompt_token)
             .replace("{source_language}", source_language or "unknown")
             .replace("{index_language}", index_language or "unknown")
         )

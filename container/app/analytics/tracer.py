@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import json
 import logging
 import re
 import time
@@ -15,16 +16,230 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
+from urllib.parse import parse_qsl, quote, urlsplit, urlunsplit
 
 from app.db.repository import TraceSpanRepository, TraceSummaryRepository
 
 logger = logging.getLogger(__name__)
 
-# Patterns to redact from trace metadata values
-_SENSITIVE_PATTERNS = [
-    (re.compile(r"\b\d{4,8}\b"), "[REDACTED_CODE]"),
-    (re.compile(r'"code"\s*:\s*"[^"]*"'), '"code": "[REDACTED]"'),
-]
+_SENSITIVE_KEY_MARKERS = (
+    "authorization",
+    "token",
+    "api_key",
+    "apikey",
+    "password",
+    "secret",
+    "cookie",
+    "set-cookie",
+    "bearer",
+    "credential",
+)
+
+_NORMALIZED_SENSITIVE_KEY_MARKERS = tuple(marker.replace("_", "-") for marker in _SENSITIVE_KEY_MARKERS)
+_EXACT_SENSITIVE_KEYS = {"code", "key"}
+
+_SAFE_METADATA_KEYS = {
+    "action",
+    "agent_id",
+    "area",
+    "area_id",
+    "area_name",
+    "cached_agent_id",
+    "chars",
+    "content_agent",
+    "count",
+    "delivery_type",
+    "device_id",
+    "device_name",
+    "domain",
+    "entity",
+    "entity_id",
+    "error_type",
+    "from_agent",
+    "hit_type",
+    "language",
+    "length",
+    "model",
+    "server_name",
+    "service",
+    "span_id",
+    "status",
+    "success",
+    "target",
+    "target_agent",
+    "to_agent",
+    "tool_name",
+}
+
+_SENSITIVE_QUERY_MARKERS = _SENSITIVE_KEY_MARKERS + (
+    "code",
+    "key",
+    "auth",
+)
+_NORMALIZED_SENSITIVE_QUERY_MARKERS = tuple(marker.replace("_", "-") for marker in _SENSITIVE_QUERY_MARKERS)
+
+_URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+_BEARER_TOKEN_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}\b")
+_COMMON_API_KEY_RE = re.compile(
+    r"\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gsk_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9]{16,}|AIza[0-9A-Za-z\-_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})\b"
+)
+_LONG_TOKEN_RE = re.compile(r"\b(?:[A-Fa-f0-9]{32,}|[A-Za-z0-9_-]{48,})\b")
+_JSON_CODE_RE = re.compile(r'(?i)("code"\s*:\s*)(?:"[^"]*"|\d+)')
+_CONTEXTUAL_CODE_RE = re.compile(
+    r"(?i)\b((?:otp|pin|verification\s+code|one[- ]time\s+code|auth(?:orization)?\s+code|code))\b([^A-Za-z0-9]{0,4})(?!\[?REDACTED)([A-Za-z0-9]{4,8})\b"
+)
+_CONTEXTUAL_SECRET_RE = re.compile(
+    r"(?i)\b(authorization|token|api[_-]?key|apikey|password|secret|cookie|set-cookie|credential)\b(\s*[:=]?\s*)([A-Za-z0-9._~+/=-]{4,})"
+)
+_MAX_FALLBACK_CHARS = 2000
+
+
+def _normalize_key(key: Any) -> str:
+    return str(key).strip().lower().replace("_", "-")
+
+
+def _is_safe_metadata_key(key: str) -> bool:
+    normalized = _normalize_key(key)
+    return (
+        normalized in _SAFE_METADATA_KEYS
+        or normalized.endswith("-id")
+        or normalized.endswith("-count")
+        or normalized.endswith("-chars")
+        or normalized.endswith("-length")
+    )
+
+
+def _is_sensitive_key(key: str) -> bool:
+    normalized = _normalize_key(key)
+    if normalized in _EXACT_SENSITIVE_KEYS:
+        return True
+    if _is_safe_metadata_key(normalized):
+        return False
+    return any(marker in normalized for marker in _NORMALIZED_SENSITIVE_KEY_MARKERS)
+
+
+def _is_sensitive_query_key(key: str) -> bool:
+    normalized = _normalize_key(key)
+    return normalized in _EXACT_SENSITIVE_KEYS or any(
+        marker in normalized for marker in _NORMALIZED_SENSITIVE_QUERY_MARKERS
+    )
+
+
+def _encode_query_pairs(pairs: list[tuple[str, str]]) -> str:
+    parts: list[str] = []
+    for key, value in pairs:
+        encoded_key = quote(str(key), safe="")
+        if value == "":
+            parts.append(encoded_key)
+        else:
+            encoded_value = quote(str(value), safe="[]:/@")
+            parts.append(f"{encoded_key}={encoded_value}")
+    return "&".join(parts)
+
+
+def _redacted_placeholder(_value: Any) -> str:
+    return "[REDACTED]"
+
+
+def _redacted_placeholder_for_key(key: str | None, value: Any) -> str:
+    normalized = _normalize_key(key) if key is not None else ""
+    if normalized == "code":
+        return "[REDACTED_CODE]"
+    return _redacted_placeholder(value)
+
+
+def _replace_contextual_secret(match: re.Match[str]) -> str:
+    label = match.group(1)
+    separator = match.group(2)
+    normalized = _normalize_key(label)
+    placeholder = "[REDACTED_TOKEN]" if any(
+        marker in normalized for marker in ("authorization", "token", "api-key", "apikey")
+    ) else "[REDACTED]"
+    return f"{label}{separator}{placeholder}"
+
+
+def _maybe_parse_json_string(value: str) -> Any | None:
+    candidate = value.strip()
+    if not candidate or candidate[0] not in "[{":
+        return None
+    try:
+        return json.loads(candidate)
+    except Exception:
+        return None
+
+
+def _sanitize_plain_string(value: str) -> str:
+    sanitized = _BEARER_TOKEN_RE.sub("Bearer [REDACTED_TOKEN]", value)
+    sanitized = _COMMON_API_KEY_RE.sub("[REDACTED_TOKEN]", sanitized)
+    sanitized = _LONG_TOKEN_RE.sub("[REDACTED_TOKEN]", sanitized)
+    sanitized = _JSON_CODE_RE.sub(r'\1"[REDACTED_CODE]"', sanitized)
+    sanitized = _CONTEXTUAL_CODE_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED_CODE]", sanitized)
+    sanitized = _CONTEXTUAL_SECRET_RE.sub(_replace_contextual_secret, sanitized)
+    return sanitized
+
+
+def _sanitize_url(url: str) -> str:
+    try:
+        split = urlsplit(url)
+    except Exception:
+        return _sanitize_plain_string(url)
+
+    host = split.hostname or ""
+    if not host and split.netloc:
+        host = split.netloc.rsplit("@", 1)[-1]
+    netloc = host
+    if split.port:
+        netloc = f"{netloc}:{split.port}"
+
+    query_pairs: list[tuple[str, str]] = []
+    for key, value in parse_qsl(split.query, keep_blank_values=True):
+        if _is_sensitive_query_key(key):
+            query_pairs.append((key, "[REDACTED]"))
+        else:
+            query_pairs.append((key, _sanitize_plain_string(value)))
+
+    query = _encode_query_pairs(query_pairs)
+    fragment = _sanitize_plain_string(split.fragment) if split.fragment else ""
+    sanitized = urlunsplit((split.scheme, netloc, split.path, query, fragment))
+    return sanitized or _sanitize_plain_string(url)
+
+
+def _sanitize_string(value: str) -> str:
+    parsed = _maybe_parse_json_string(value)
+    if parsed is not None:
+        return json.dumps(sanitize_trace_value(parsed), ensure_ascii=False)
+
+    sanitized = _URL_RE.sub(lambda match: _sanitize_url(match.group(0)), value)
+    return _sanitize_plain_string(sanitized)
+
+
+def sanitize_trace_value(value: Any, *, key: str | None = None) -> Any:
+    """Recursively redact sensitive trace payloads while preserving safe metadata."""
+    if key is not None and _is_sensitive_key(key):
+        return _redacted_placeholder_for_key(key, value)
+
+    if isinstance(value, dict):
+        return {
+            item_key: sanitize_trace_value(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [sanitize_trace_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(sanitize_trace_value(item) for item in value)
+    if isinstance(value, (str, bytes, bytearray)):
+        text = value.decode(errors="replace") if isinstance(value, (bytes, bytearray)) else value
+        return _sanitize_string(text)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return _sanitize_string(str(value)[:_MAX_FALLBACK_CHARS])
+
+
+def sanitize_trace_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if not metadata:
+        return {}
+    sanitized = sanitize_trace_value(metadata)
+    return sanitized if isinstance(sanitized, dict) else {"value": sanitized}
 
 # Parent-span tracking per async context (Q-8). A ContextVar is the
 # correct mechanism for nested spans under ``asyncio.gather`` so parallel
@@ -33,17 +248,6 @@ _current_parent: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_current_parent",
     default=None,
 )
-
-
-def _sanitize_metadata(metadata: dict) -> dict:
-    """Redact sensitive patterns from metadata string values."""
-    sanitized = {}
-    for key, value in metadata.items():
-        if isinstance(value, str):
-            for pattern, replacement in _SENSITIVE_PATTERNS:
-                value = pattern.sub(replacement, value)
-        sanitized[key] = value
-    return sanitized
 
 
 SpanSource = Literal["ha", "chat", "api"]
@@ -136,8 +340,7 @@ class SpanCollector:
             return
         try:
             for span in self._spans:
-                if span.get("metadata"):
-                    span["metadata"] = _sanitize_metadata(span["metadata"])
+                span["metadata"] = sanitize_trace_metadata(span.get("metadata"))
             await TraceSpanRepository.insert_batch(self._spans)
             # Compute and store total duration from spans
             try:
@@ -182,7 +385,7 @@ async def record_span(
             agent_id=agent_id,
             parent_span=parent_span,
             status=status,
-            metadata=metadata,
+            metadata=sanitize_trace_metadata(metadata),
             end_time=end_time,
         )
     except Exception:
@@ -214,12 +417,13 @@ async def create_trace_summary(
     existing call sites (tests, unauthenticated REST) stay valid.
     """
     try:
+        summary_agent_instructions = agent_instructions or {routing_agent: condensed_task}
         await TraceSummaryRepository.create(
             {
                 "trace_id": trace_id,
                 "conversation_id": conversation_id,
-                "user_input": user_input,
-                "final_response": final_response,
+                "user_input": sanitize_trace_value(user_input, key="user_input"),
+                "final_response": sanitize_trace_value(final_response, key="final_response"),
                 "agents": agents,
                 "total_duration_ms": None,
                 "source": source,
@@ -227,8 +431,14 @@ async def create_trace_summary(
                 "routing_confidence": routing_confidence,
                 "routing_duration_ms": routing_duration_ms,
                 "routing_reasoning": None,
-                "agent_instructions": agent_instructions or {routing_agent: condensed_task},
-                "conversation_turns": conversation_turns,
+                "agent_instructions": sanitize_trace_value(
+                    summary_agent_instructions,
+                    key="agent_instructions",
+                ),
+                "conversation_turns": sanitize_trace_value(
+                    conversation_turns,
+                    key="conversation_turns",
+                ),
                 "device_id": device_id,
                 "area_id": area_id,
                 "device_name": device_name,

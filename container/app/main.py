@@ -251,7 +251,12 @@ async def lifespan(app: FastAPI):
         music_agent = MusicAgent(ha_client=None, entity_index=None, entity_matcher=None)
         await registry.register(music_agent)
 
-        custom_loader = CustomAgentLoader(registry, ha_client=None, entity_index=None)
+        custom_loader = CustomAgentLoader(
+            registry,
+            ha_client=None,
+            entity_index=None,
+            mcp_tool_manager=mcp_tool_manager,
+        )
         await custom_loader.load_all()
         app.state.custom_loader = custom_loader
 
@@ -389,6 +394,7 @@ async def lifespan(app: FastAPI):
 
     from app.cache.vector_store import close_vector_store
 
+    mcp_tool_manager.invalidate_all()
     await mcp_registry.disconnect_all()
     if ha_client:
         await ha_client.close()

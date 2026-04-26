@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any
 
@@ -53,6 +54,7 @@ async def add_mcp_server(request: Request, body: McpServerCreate) -> dict[str, A
         raise HTTPException(status_code=409, detail="Server with this name already exists")
 
     mcp_registry = request.app.state.mcp_registry
+    mcp_tool_manager = request.app.state.mcp_tool_manager
     connected = await mcp_registry.add_server(
         name=body.name,
         transport=body.transport,
@@ -60,6 +62,12 @@ async def add_mcp_server(request: Request, body: McpServerCreate) -> dict[str, A
         env_vars=body.env_vars,
         timeout=body.timeout,
     )
+    if connected:
+        refresh_result = mcp_tool_manager.refresh_server(body.name)
+        if inspect.isawaitable(refresh_result):
+            await refresh_result
+    else:
+        mcp_tool_manager.invalidate_server(body.name)
     return {"name": body.name, "connected": connected}
 
 
@@ -73,7 +81,10 @@ async def remove_mcp_server(request: Request, name: str) -> dict[str, str]:
         raise HTTPException(status_code=403, detail="Cannot delete built-in MCP server")
 
     mcp_registry = request.app.state.mcp_registry
+    mcp_tool_manager = request.app.state.mcp_tool_manager
+    mcp_tool_manager.invalidate_server(name)
     await mcp_registry.remove_server(name)
+    mcp_tool_manager.invalidate_server(name)
     return {"status": "deleted", "name": name}
 
 

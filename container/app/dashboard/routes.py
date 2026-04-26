@@ -9,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 
 from app import __version__ as _app_version
 from app.config import settings as app_settings
+from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.security.auth import (
     SESSION_COOKIE_NAME,
     authenticate_admin,
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals["app_version"] = _app_version
+templates.env.globals["default_local_embedding_model"] = DEFAULT_LOCAL_EMBEDDING_MODEL
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 

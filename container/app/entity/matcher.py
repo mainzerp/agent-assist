@@ -12,6 +12,7 @@ from app.db.repository import EntityVisibilityRepository, SettingsRepository
 from app.entity.aliases import AliasResolver
 from app.entity.index import EntityIndex
 from app.entity.signals import AliasSignal, EmbeddingSignal, JaroWinklerSignal, LevenshteinSignal, PhoneticSignal
+from app.entity.visibility import filter_visible_results
 from app.models.entity_index import EntityIndexEntry
 
 logger = logging.getLogger(__name__)
@@ -40,10 +41,6 @@ def _digraphs_to_umlauts(text: str) -> str | None:
     for digraph, umlaut in mapping.items():
         result = result.replace(digraph, umlaut)
     return result
-
-
-# Domains where device_class filtering applies (sensor-like domains)
-DEVICE_CLASS_DOMAINS = {"sensor", "binary_sensor", "cover", "number"}
 
 
 @dataclass
@@ -407,77 +404,15 @@ class EntityMatcher:
     ) -> list[MatchResult]:
         """Filter match results by agent entity visibility rules.
 
-        Rule types: domain_include, domain_exclude, area_include, area_exclude,
-        device_class_include, device_class_exclude.
-        No rules = no filtering (full access).
+        No rules = no filtering (full access). Rule evaluation is shared
+        with cached-action replay so both paths keep the same semantics.
         """
-        rules = await EntityVisibilityRepository.get_rules(agent_id)
-        if not rules:
-            return results
-
-        domain_include = set()
-        domain_exclude = set()
-        area_include = set()
-        area_exclude = set()
-        entity_include = set()
-        device_class_include = set()
-        device_class_exclude = set()
-        for rule in rules:
-            rt = rule["rule_type"]
-            rv = rule["rule_value"]
-            if rt == "domain_include":
-                domain_include.add(rv)
-            elif rt == "domain_exclude":
-                domain_exclude.add(rv)
-            elif rt == "area_include":
-                area_include.add(rv)
-            elif rt == "area_exclude":
-                area_exclude.add(rv)
-            elif rt == "entity_include":
-                entity_include.add(rv)
-            elif rt == "device_class_include":
-                device_class_include.add(rv)
-            elif rt == "device_class_exclude":
-                device_class_exclude.add(rv)
-
-        filtered = []
-        for result in results:
-            entity_id = result.entity_id
-            domain = entity_id.split(".")[0] if "." in entity_id else ""
-
-            if domain_include and domain not in domain_include:
-                continue
-            if domain_exclude and domain in domain_exclude:
-                continue
-
-            # Entity index lookup for area and device_class checks
-            entry = self._entity_index.get_by_id(entity_id)
-            area = entry.area if entry else None
-            if area_include and (area is None or area not in area_include):
-                continue
-            if area_exclude and area is not None and area in area_exclude:
-                continue
-
-            # Device class filtering (only for sensor-like domains)
-            if device_class_include and domain in DEVICE_CLASS_DOMAINS:
-                entity_dc = entry.device_class if entry else None
-                if not entity_dc or entity_dc not in device_class_include:
-                    continue
-            if device_class_exclude:
-                entity_dc = entry.device_class if entry else None
-                if entity_dc and entity_dc in device_class_exclude:
-                    continue
-
-            filtered.append(result)
-
-        # entity_include: union with domain/area-filtered results
-        if entity_include:
-            filtered_ids = {r.entity_id for r in filtered}
-            for r in results:
-                if r.entity_id in entity_include and r.entity_id not in filtered_ids:
-                    filtered.append(r)
-
-        return filtered
+        return await filter_visible_results(
+            agent_id,
+            results,
+            self._entity_index,
+            repository=EntityVisibilityRepository,
+        )
 
     async def filter_visible_results(
         self,

@@ -186,6 +186,117 @@ class TestMCPToolManager:
         assert "server2" not in tools
         assert len(tools["server1"]) == 1
 
+    async def test_get_tools_for_agent_caches_descriptors_once_per_server(self):
+        with patch(
+            "app.db.repository.AgentMcpToolsRepository.get_tools",
+            new_callable=AsyncMock,
+            return_value=[
+                {"server_name": "duckduckgo-search", "tool_name": "web_search"},
+                {"server_name": "duckduckgo-search", "tool_name": "web_search_news"},
+            ],
+        ):
+            registry = MCPServerRegistry()
+            mock_client = MagicMock()
+            mock_client.connected = True
+            mock_client.list_tools = AsyncMock(
+                return_value=[
+                    {"name": "web_search", "description": "Search", "input_schema": {}},
+                    {"name": "web_search_news", "description": "News", "input_schema": {}},
+                ]
+            )
+            registry._clients["duckduckgo-search"] = mock_client
+            manager = MCPToolManager(registry)
+
+            first = await manager.get_tools_for_agent("general-agent")
+            second = await manager.get_tools_for_agent("general-agent")
+
+        assert [tool["name"] for tool in first] == ["web_search", "web_search_news"]
+        assert [tool["name"] for tool in second] == ["web_search", "web_search_news"]
+        assert mock_client.list_tools.await_count == 1
+
+    async def test_get_tools_for_agent_lock_prevents_concurrent_discovery_stampede(self):
+        with patch(
+            "app.db.repository.AgentMcpToolsRepository.get_tools",
+            new_callable=AsyncMock,
+            return_value=[{"server_name": "duckduckgo-search", "tool_name": "web_search"}],
+        ):
+            registry = MCPServerRegistry()
+            mock_client = MagicMock()
+            mock_client.connected = True
+
+            async def slow_list_tools():
+                await asyncio.sleep(0.01)
+                return [{"name": "web_search", "description": "Search", "input_schema": {}}]
+
+            mock_client.list_tools = AsyncMock(side_effect=slow_list_tools)
+            registry._clients["duckduckgo-search"] = mock_client
+            manager = MCPToolManager(registry)
+
+            results = await asyncio.gather(
+                manager.get_tools_for_agent("general-agent"),
+                manager.get_tools_for_agent("general-agent"),
+                manager.get_tools_for_agent("general-agent"),
+            )
+
+        assert all([tool["name"] for tool in result] == ["web_search"] for result in results)
+        assert mock_client.list_tools.await_count == 1
+
+    async def test_admin_discover_refreshes_cached_descriptors(self):
+        with patch(
+            "app.db.repository.AgentMcpToolsRepository.get_tools",
+            new_callable=AsyncMock,
+            return_value=[{"server_name": "duckduckgo-search", "tool_name": "web_search"}],
+        ):
+            registry = MCPServerRegistry()
+            mock_client = MagicMock()
+            mock_client.connected = True
+            mock_client.list_tools = AsyncMock(
+                side_effect=[
+                    [{"name": "web_search", "description": "Old", "input_schema": {}}],
+                    [{"name": "web_search", "description": "New", "input_schema": {}}],
+                ]
+            )
+            registry._clients["duckduckgo-search"] = mock_client
+            manager = MCPToolManager(registry)
+
+            first = await manager.get_tools_for_agent("general-agent")
+            refreshed = await manager.discover_tools()
+            second = await manager.get_tools_for_agent("general-agent")
+
+        assert first[0]["description"] == "Old"
+        assert refreshed["duckduckgo-search"][0]["description"] == "New"
+        assert second[0]["description"] == "New"
+        assert mock_client.list_tools.await_count == 2
+
+    async def test_disconnected_server_does_not_serve_stale_cached_tools(self):
+        with patch(
+            "app.db.repository.AgentMcpToolsRepository.get_tools",
+            new_callable=AsyncMock,
+            return_value=[{"server_name": "duckduckgo-search", "tool_name": "web_search"}],
+        ):
+            registry = MCPServerRegistry()
+            mock_client = MagicMock()
+            mock_client.connected = True
+            mock_client.list_tools = AsyncMock(
+                side_effect=[
+                    [{"name": "web_search", "description": "Before disconnect", "input_schema": {}}],
+                    [{"name": "web_search", "description": "After reconnect", "input_schema": {}}],
+                ]
+            )
+            registry._clients["duckduckgo-search"] = mock_client
+            manager = MCPToolManager(registry)
+
+            cached = await manager.get_tools_for_agent("general-agent")
+            mock_client.connected = False
+            disconnected = await manager.get_tools_for_agent("general-agent")
+            mock_client.connected = True
+            reconnected = await manager.get_tools_for_agent("general-agent")
+
+        assert cached[0]["description"] == "Before disconnect"
+        assert disconnected == []
+        assert reconnected[0]["description"] == "After reconnect"
+        assert mock_client.list_tools.await_count == 2
+
     async def test_call_tool_raises_on_unknown_server(self):
         registry = MagicMock(spec=MCPServerRegistry)
         registry.get_client.return_value = None
@@ -304,6 +415,79 @@ class TestAgentMcpToolAssignment:
             assert len(tools) == 1
             assert tools[0]["name"] == "web_search"
             assert tools[0]["_server_name"] == "duckduckgo-search"
+
+    async def test_get_tools_for_custom_agent_uses_runtime_assignments(self, db_repository):
+        """Custom agents get MCP tools from agent_mcp_tools after runtime sync."""
+        from app.db.repository import CustomAgentRepository
+
+        await CustomAgentRepository.create_with_runtime(
+            "searchbot",
+            system_prompt="s",
+            mcp_tools=[{"server_name": "duckduckgo-search", "tool_name": "web_search"}],
+        )
+        registry = MCPServerRegistry()
+        mock_client = MagicMock()
+        mock_client.connected = True
+        mock_client.list_tools = AsyncMock(
+            return_value=[{"name": "web_search", "description": "Search", "input_schema": {}}]
+        )
+        registry._clients["duckduckgo-search"] = mock_client
+        manager = MCPToolManager(registry)
+
+        tools = await manager.get_tools_for_agent("custom-searchbot")
+
+        assert len(tools) == 1
+        assert tools[0]["name"] == "web_search"
+        assert tools[0]["_server_name"] == "duckduckgo-search"
+
+    async def test_get_tools_for_custom_agent_reuses_descriptor_cache(self, db_repository):
+        """Custom agents use the same cached MCP descriptor path as built-ins."""
+        from app.db.repository import CustomAgentRepository
+
+        await CustomAgentRepository.create_with_runtime(
+            "cachebot",
+            system_prompt="s",
+            mcp_tools=[{"server_name": "duckduckgo-search", "tool_name": "web_search"}],
+        )
+        registry = MCPServerRegistry()
+        mock_client = MagicMock()
+        mock_client.connected = True
+        mock_client.list_tools = AsyncMock(
+            return_value=[{"name": "web_search", "description": "Search", "input_schema": {}}]
+        )
+        registry._clients["duckduckgo-search"] = mock_client
+        manager = MCPToolManager(registry)
+
+        first = await manager.get_tools_for_agent("custom-cachebot")
+        second = await manager.get_tools_for_agent("custom-cachebot")
+
+        assert first == second
+        assert first[0]["name"] == "web_search"
+        assert mock_client.list_tools.await_count == 1
+
+    async def test_disabled_custom_agent_has_no_active_mcp_tools(self, db_repository):
+        """Disabled custom agents do not fall back to stale custom_agents.mcp_tools JSON."""
+        from app.db.repository import CustomAgentRepository
+
+        await CustomAgentRepository.create_with_runtime(
+            "disabled-searchbot",
+            system_prompt="s",
+            mcp_tools=[{"server_name": "duckduckgo-search", "tool_name": "web_search"}],
+        )
+        await CustomAgentRepository.update_with_runtime("disabled-searchbot", enabled=False)
+        registry = MCPServerRegistry()
+        mock_client = MagicMock()
+        mock_client.connected = True
+        mock_client.list_tools = AsyncMock(
+            return_value=[{"name": "web_search", "description": "Search", "input_schema": {}}]
+        )
+        registry._clients["duckduckgo-search"] = mock_client
+        manager = MCPToolManager(registry)
+
+        tools = await manager.get_tools_for_agent("custom-disabled-searchbot")
+
+        assert tools == []
+        mock_client.list_tools.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

@@ -581,7 +581,7 @@ function settingsPage() {
 
         getEmbeddingPlaceholder(provider) {
             var placeholders = {
-                'local': 'all-MiniLM-L6-v2',
+                'local': '{{ default_local_embedding_model }}',
                 'openrouter': 'openai/text-embedding-3-small',
                 'groq': 'model-name',
                 'anthropic': 'voyage/voyage-3',

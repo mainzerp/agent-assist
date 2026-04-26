@@ -109,6 +109,7 @@ class TaskContext(BaseModel):
     location_name: str = ""
     local_time: str = ""
     native_plain_timer_eligible: bool = False
+    injection_detected: bool = False
 
 
 class ActionExecuted(BaseModel):

@@ -239,7 +239,11 @@ List all custom agents.
 
 ### POST /api/admin/custom-agents
 
-Create a custom agent.
+Create a custom agent. The stored name is normalized to a lowercase slug
+and the runtime agent ID is `custom-{name}`. Creation also creates the
+matching `agent_configs` row used by LLM calls, synchronizes MCP tool
+assignments into `agent_mcp_tools`, and synchronizes entity visibility
+rules into `entity_visibility_rules`.
 
 **Request body:**
 
@@ -249,9 +253,15 @@ Create a custom agent.
   "description": "Weather information",
   "system_prompt": "You are a weather assistant...",
   "model_override": "openrouter/openai/gpt-4o-mini",
+  "mcp_tools": [{"server_name": "duckduckgo-search", "tool_name": "web_search"}],
+  "entity_visibility": [{"rule_type": "domain_include", "rule_value": "weather"}],
   "intent_patterns": ["weather", "forecast", "temperature outside"]
 }
 ```
+
+If `model_override` is omitted, the custom agent copies practical LLM
+defaults from `general-agent` so dispatch can use the normal config
+lookup path without manual database edits.
 
 ### GET /api/admin/custom-agents/{name}
 
@@ -259,11 +269,18 @@ Get a single custom agent.
 
 ### PUT /api/admin/custom-agents/{name}
 
-Update a custom agent. Partial updates supported (only include fields to change).
+Update a custom agent. Partial updates are supported; include only fields
+to change. Supplying `model_override`, `mcp_tools`, `entity_visibility`,
+or `enabled` updates the matching runtime stores after the custom-agent
+row is saved. Disabling an agent keeps its config row with
+`enabled=false` and clears active MCP and visibility assignments until it
+is enabled again.
 
 ### DELETE /api/admin/custom-agents/{name}
 
-Delete a custom agent.
+Delete a custom agent. Deletion removes the custom-agent row, the matching
+`agent_configs` row, active MCP assignments, and active visibility rules,
+then reloads the custom-agent registry.
 
 ---
 

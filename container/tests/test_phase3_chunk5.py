@@ -262,6 +262,7 @@ class TestNotificationDispatcherAgentId:
     @pytest.mark.asyncio
     async def test_generate_tts_message_uses_dispatcher_id(self):
         from app.agents import notification_dispatcher as nd
+        from app.security.sanitization import USER_INPUT_END, USER_INPUT_START
 
         with patch("app.llm.client.complete", new=AsyncMock(return_value="Timer ist fertig.")) as fake_complete:
             result = await nd._generate_tts_message(
@@ -277,3 +278,9 @@ class TestNotificationDispatcherAgentId:
         # dispatcher, not the orchestrator agent.
         kwargs = fake_complete.await_args.kwargs
         assert kwargs["agent_id"] == "notification-dispatcher"
+        user_prompt = kwargs["messages"][1]["content"]
+        assert user_prompt.count(USER_INPUT_START) == 3
+        assert user_prompt.count(USER_INPUT_END) == 3
+        assert f"{USER_INPUT_START}\nPasta\n{USER_INPUT_END}" in user_prompt
+        assert f"{USER_INPUT_START}\n10 Minuten\n{USER_INPUT_END}" in user_prompt
+        assert f"{USER_INPUT_START}\nKueche\n{USER_INPUT_END}" in user_prompt

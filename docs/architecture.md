@@ -78,6 +78,12 @@ user-routable: `filler`, `rewrite`, `mediation`, `language_detect`,
 `sanitize`, `cancel_speech`, `delayed_tasks`, `alarm_monitor`,
 `notification_dispatcher`, and the plugin-loader stub `custom_loader`.
 
+Custom agents created through the admin API are also registered as A2A
+agents with IDs shaped as `custom-{name}`. Their prompt, model config,
+MCP tool assignments, enabled state, and entity visibility rules are
+synchronized from SQLite before registration so the orchestrator can
+route to them through the same dispatcher boundary as built-in agents.
+
 ## Request Flow
 
 1. User speaks a command in Home Assistant (e.g., "turn on the bedroom light").
@@ -188,7 +194,7 @@ The hybrid entity matcher combines five signals with configurable weights:
 | Alias | Exact lookup from DB | "nightstand lamp" = `light.bedroom_nightstand` |
 | Domain | HA entity domain filtering | "light" commands only match `light.*` entities |
 
-A weighted score above 0.75 returns a single confident match. Below that threshold, the top-N candidates are sent to the LLM for disambiguation.
+By default, a weighted score above 0.60 returns a single confident match. Below the configured threshold, the top-N candidates are sent to the LLM for disambiguation.
 
 ## Data Storage
 
@@ -201,8 +207,8 @@ Plugins extend the system without modifying core code:
 
 - Plugins are Python files in `container/plugins/` discovered at startup.
 - Each plugin subclasses `BasePlugin` and implements lifecycle hooks: `configure`, `startup`, `ready`, `shutdown`.
-- The `PluginContext` provides access to the agent registry, MCP registry, settings repository, and the FastAPI app instance.
-- Plugins can register custom A2A agents, add dashboard routes, subscribe to events via the event bus, and read/write settings.
+- The `PluginContext` provides a read-only agent catalog, the orchestrator gateway, MCP registry access, settings access, and restricted route helpers; the old direct registry and raw `app` escape hatches are removed.
+- Plugins can inspect registered agents, dispatch work through the orchestrator, add routes, subscribe to events via the event bus, and read/write settings.
 - Plugin failures are isolated -- one plugin crashing does not affect others.
 
 See [Plugin Development Guide](plugin-development.md) for details.

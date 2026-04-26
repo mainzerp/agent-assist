@@ -17,9 +17,11 @@ from app.security.sanitization import (
     sanitize_input,
     wrap_user_input,
 )
+from app.security.user_input import PreparedUserInput, prepare_user_text
 
 __all__ = [
     "MAX_INPUT_LENGTH",
+    "PreparedUserInput",
     "USER_INPUT_END",
     "USER_INPUT_START",
     "check_injection_patterns",
@@ -28,6 +30,7 @@ __all__ = [
     "encrypt",
     "get_fernet",
     "hash_password",
+    "prepare_user_text",
     "retrieve_secret",
     "sanitize_input",
     "store_secret",

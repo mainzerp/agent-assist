@@ -32,6 +32,7 @@ from app.models.agent import AgentTask, TaskContext
 from app.models.conversation import StreamToken
 from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import require_admin_session
+from app.security.user_input import prepare_user_text
 
 logger = logging.getLogger(__name__)
 
@@ -655,15 +656,16 @@ async def admin_chat(request: Request, payload: ChatRequest):
     language = payload.language
     if not language:
         language = await SettingsRepository.get_value("language") or "en"
+    prepared_text = prepare_user_text(payload.text)
     task = AgentTask(
-        description=payload.text,
-        user_text=payload.text,
+        description=prepared_text.text,
+        user_text=prepared_text.text,
         conversation_id=payload.conversation_id,
         # FLOW-CTX-1 (0.18.6): dashboard chat has no satellite and
         # no area. Mark ``source="chat"`` so agents can skip
         # area-based tie-breaking that would otherwise silently
         # pin to a previous request's area.
-        context=TaskContext(language=language, source="chat"),
+        context=TaskContext(language=language, source="chat", injection_detected=prepared_text.injection_detected),
     )
     a2a_request = JsonRpcRequest(
         method="message/send",
@@ -698,11 +700,12 @@ async def admin_chat_stream(request: Request, payload: ChatRequest):
     language = payload.language
     if not language:
         language = await SettingsRepository.get_value("language") or "en"
+    prepared_text = prepare_user_text(payload.text)
     task = AgentTask(
-        description=payload.text,
-        user_text=payload.text,
+        description=prepared_text.text,
+        user_text=prepared_text.text,
         conversation_id=payload.conversation_id,
-        context=TaskContext(language=language, source="chat"),
+        context=TaskContext(language=language, source="chat", injection_detected=prepared_text.injection_detected),
     )
     a2a_request = JsonRpcRequest(
         method="message/stream",

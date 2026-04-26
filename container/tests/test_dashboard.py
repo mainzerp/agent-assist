@@ -12,6 +12,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
+from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from tests.conftest import build_integration_test_app
 
 # ---------------------------------------------------------------------------
@@ -148,6 +149,7 @@ class TestDashboardPageAccessibility:
         resp = await dashboard_client.get("/dashboard/settings")
         assert resp.status_code == 200
         assert "text/html" in resp.headers.get("content-type", "")
+        assert DEFAULT_LOCAL_EMBEDDING_MODEL in resp.text
 
 
 # ===================================================================

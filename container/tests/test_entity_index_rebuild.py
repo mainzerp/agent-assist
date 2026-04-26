@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.cache.vector_store import COLLECTION_ENTITY_INDEX
+from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 
 
 def _make_app_state() -> MagicMock:
@@ -81,6 +82,26 @@ def _patch_settings(values: dict[str, str]):
         patch("app.runtime_setup.SettingsRepository.set", new=AsyncMock(side_effect=_set)),
         set_calls,
     )
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_embedding_model_uses_multilingual_default_when_setting_missing():
+    from app import runtime_setup
+
+    async def _get_value(key: str, default: str | None = None) -> str:
+        if key == "embedding.provider":
+            return "local"
+        if key == "embedding.local_model":
+            return default if default is not None else ""
+        return default if default is not None else ""
+
+    with patch(
+        "app.runtime_setup.SettingsRepository.get_value",
+        new=AsyncMock(side_effect=_get_value),
+    ):
+        resolved = await runtime_setup._resolve_active_embedding_model()
+
+    assert resolved == DEFAULT_LOCAL_EMBEDDING_MODEL
 
 
 @pytest.mark.asyncio

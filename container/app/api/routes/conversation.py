@@ -16,6 +16,7 @@ from app.analytics.tracer import SpanCollector
 from app.models.agent import AgentTask, TaskContext
 from app.models.conversation import ConversationRequest, ConversationResponse, StreamToken
 from app.security.auth import require_api_key, require_api_key_ws
+from app.security.user_input import prepare_user_text
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,7 @@ def _build_a2a_request(
     # unit-tests hand-crafting a request) is ``"api"`` so missing
     # context does not silently masquerade as an HA voice call.
     source = getattr(span_collector, "source", "api") if span_collector else "api"
+    prepared_text = prepare_user_text(conv_request.text)
     context = TaskContext(
         device_id=conv_request.device_id,
         area_id=conv_request.area_id,
@@ -71,10 +73,11 @@ def _build_a2a_request(
         language=conv_request.language or "en",
         source=source,
         native_plain_timer_eligible=_native_plain_timer_eligible(conv_request, request),
+        injection_detected=prepared_text.injection_detected,
     )
     task = AgentTask(
-        description=conv_request.text,
-        user_text=conv_request.text,
+        description=prepared_text.text,
+        user_text=prepared_text.text,
         conversation_id=conv_request.conversation_id,
         context=context,
     )

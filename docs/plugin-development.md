@@ -4,9 +4,10 @@ This document covers how to develop plugins for HA-AgentHub.
 
 ## Overview
 
-Plugins extend HA-AgentHub without modifying core code. They can register
-custom agents, subscribe to events, read/write settings, and interact with
-MCP servers.
+Plugins extend HA-AgentHub without modifying core code. They can inspect
+registered agents through `ctx.agent_catalog`, dispatch work through
+`ctx.orchestrator_gateway`, subscribe to events, read/write settings,
+interact with MCP servers, and add API routes.
 
 Plugins live as individual `.py` files in the `container/plugins/` directory.
 They are discovered and loaded automatically at container startup.
@@ -56,7 +57,7 @@ class MyPlugin(BasePlugin):
         pass
 
     async def ready(self, ctx: PluginContext) -> None:
-        # System is fully initialized; register agents, subscribe to events
+        # System is fully initialized; subscribe to events or dispatch work
         pass
 
     async def shutdown(self) -> None:
@@ -80,7 +81,7 @@ Hooks are called in this order during startup:
 |-------------|-----------------------------------------|--------------------------------------|
 | `configure` | After plugin discovery                  | Reading settings, validating config  |
 | `startup`   | After all plugins are configured        | Initializing resources               |
-| `ready`     | After all agents registered, system up  | Registering custom agents, events    |
+| `ready`     | After all agents registered, system up  | Event subscriptions, routes, orchestrator-bound work |
 
 On shutdown:
 
@@ -95,37 +96,23 @@ All hooks are optional. Only implement the ones you need.
 The `PluginContext` object is passed to `configure`, `startup`, and `ready`
 hooks. It provides access to:
 
-| Attribute         | Type                | Description                        |
-|-------------------|---------------------|------------------------------------|
-| `agent_registry`  | `AgentRegistry`     | Register/unregister agents         |
-| `mcp_registry`    | `MCPServerRegistry` | Access MCP server connections      |
-| `settings`        | `SettingsRepository`| Read/write system settings         |
-| `event_bus`       | `EventBus`          | Subscribe/publish plugin events    |
+| Attribute              | Type                  | Description                                   |
+|------------------------|-----------------------|-----------------------------------------------|
+| `agent_catalog`        | `AgentCatalog`        | Read-only discovery of registered agents      |
+| `orchestrator_gateway` | `OrchestratorGateway` | Dispatch text or background work to the orchestrator |
+| `mcp_registry`         | `MCPServerRegistry`   | Access MCP server connections                 |
+| `settings`             | `SettingsRepository`  | Read/write system settings                    |
+| `event_bus`            | `EventBus`            | Subscribe/publish plugin events               |
 
 To add API routes, use the `add_api_route(path, endpoint, **kwargs)` or
 `include_router(router, **kwargs)` methods on `PluginContext`. Direct access
-to the FastAPI application object is not supported.
+to the FastAPI application object is not supported. Legacy direct registry
+access is also no longer supported and now raises `AttributeError`.
 
-### Registering a Custom Agent
+### Discovering Agents And Dispatching Through The Orchestrator
 
 ```python
-from app.agents.base import BaseAgent
-from app.models.agent import AgentCard, AgentTask
-
-
-class WeatherAgent(BaseAgent):
-    @property
-    def agent_card(self) -> AgentCard:
-        return AgentCard(
-            agent_id="weather-agent",
-            name="Weather",
-            description="Provides weather information",
-            skills=["weather", "forecast"],
-            endpoint="local://weather-agent",
-        )
-
-    async def handle_task(self, task: AgentTask) -> dict:
-        return {"speech": "The weather is sunny.", "action_executed": None}
+from app.plugins.base import BasePlugin, PluginContext
 
 
 class WeatherPlugin(BasePlugin):
@@ -138,9 +125,24 @@ class WeatherPlugin(BasePlugin):
         return "1.0.0"
 
     async def ready(self, ctx: PluginContext) -> None:
-        agent = WeatherAgent()
-        await ctx.agent_registry.register(agent)
+        agents = await ctx.agent_catalog.list_agents()
+        if not any(card.agent_id == "general-agent" for card in agents):
+            return
+
+        async def on_weather_request(data: dict) -> None:
+            question = data.get("question", "What is the weather today?")
+            await ctx.orchestrator_gateway.dispatch_text(
+                question,
+                user_text=question,
+                conversation_id=data.get("conversation_id"),
+            )
+
+        ctx.event_bus.subscribe("weather.request", on_weather_request)
 ```
+
+Use `ctx.agent_catalog` when you need to inspect what the runtime has
+registered, and use `ctx.orchestrator_gateway` when plugin-originated work
+should re-enter the normal A2A/orchestrator flow.
 
 ### Reading/Writing Settings
 

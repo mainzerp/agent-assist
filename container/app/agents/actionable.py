@@ -101,15 +101,9 @@ class ActionableAgent(BaseAgent):
         messages = [{"role": "system", "content": system_prompt}]
 
         if task.context and task.context.conversation_turns:
-            for turn in task.context.conversation_turns:
-                messages.append(
-                    {
-                        "role": turn.get("role", "user"),
-                        "content": turn.get("content", ""),
-                    }
-                )
+            self._append_conversation_turn_messages(messages, task.context.conversation_turns)
 
-        user_content = task.description
+        user_content = self._wrap_user_input(task.description)
         if task.user_text and task.user_text != task.description:
             try:
                 primary_source = await SettingsRepository.get_value(
@@ -123,9 +117,15 @@ class ActionableAgent(BaseAgent):
                 # message into a condensed task, give the agent the
                 # ORIGINAL text first so original-language entity tokens
                 # are preserved through the LLM call.
-                user_content = f'{task.user_text}\n\n(Routing summary: "{task.description}")'
+                user_content = (
+                    f"User request:\n{self._wrap_user_input(task.user_text)}\n\n"
+                    f"Routing summary:\n{self._wrap_user_input(task.description)}"
+                )
             else:
-                user_content = f'{task.description}\n\n(Original user message: "{task.user_text}")'
+                user_content = (
+                    f"Routing summary:\n{self._wrap_user_input(task.description)}\n\n"
+                    f"Original user message:\n{self._wrap_user_input(task.user_text)}"
+                )
 
         # 0.26.0: For the timer agent only, append a deterministic
         # eligibility hint as the LAST line of the user message so the

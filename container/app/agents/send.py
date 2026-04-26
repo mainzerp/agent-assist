@@ -130,14 +130,15 @@ class SendAgent(BaseAgent):
         """Optionally format content via LLM for the delivery channel."""
         try:
             prompt_template = self._load_prompt("send")
+            wrapped_content = self._wrap_user_input(content)
             prompt = prompt_template.format(
                 delivery_type=delivery_type,
                 target_name=target_name,
-                content=content,
+                content=wrapped_content,
             )
             messages = [
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": content},
+                {"role": "user", "content": wrapped_content},
             ]
             async with _optional_span(span_collector, "llm_call", agent_id="send-agent") as span:
                 result = await self._call_llm(

@@ -17,6 +17,7 @@ from app.cache.vector_store import (
     COLLECTION_ROUTING_CACHE,
     VectorStore,
 )
+from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.models.cache import CachedAction
 from tests.helpers import make_response_cache_entry
 
@@ -1051,11 +1052,28 @@ class TestEmbeddingEngine:
     async def test_initialize_loads_config(self):
         engine = EmbeddingEngine()
         with patch("app.cache.embedding.SettingsRepository") as mock_repo:
-            mock_repo.get_value = AsyncMock(side_effect=["local", "all-MiniLM-L6-v2"])
+            mock_repo.get_value = AsyncMock(side_effect=["local", DEFAULT_LOCAL_EMBEDDING_MODEL])
             with patch.object(engine, "_get_local_model", return_value=MagicMock()):
                 await engine.initialize()
         assert engine._provider == "local"
-        assert engine._model_name == "all-MiniLM-L6-v2"
+        assert engine._model_name == DEFAULT_LOCAL_EMBEDDING_MODEL
+
+    async def test_initialize_uses_multilingual_default_when_local_model_missing(self):
+        engine = EmbeddingEngine()
+
+        async def _get_value(key, default=None):
+            if key == "embedding.provider":
+                return "local"
+            if key == "embedding.local_model":
+                return default
+            return default
+
+        with patch("app.cache.embedding.SettingsRepository.get_value", new=AsyncMock(side_effect=_get_value)):
+            with patch.object(engine, "_get_local_model", return_value=MagicMock()):
+                await engine.initialize()
+
+        assert engine._provider == "local"
+        assert engine._model_name == DEFAULT_LOCAL_EMBEDDING_MODEL
 
     def test_get_local_model_restores_startup_logger_levels_on_success(self):
         import sys

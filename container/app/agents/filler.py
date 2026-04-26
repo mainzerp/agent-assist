@@ -82,7 +82,7 @@ class FillerAgent(BaseAgent):
                 personality=personality or "",
                 language=language_name,
             )
-            user_content = f'"{task.user_text[:200]}"\n(agent: {target_agent})'
+            user_content = f"{self._wrap_user_input(task.user_text[:200])}\n\nAgent: {target_agent}"
 
             result = await asyncio.wait_for(
                 self._call_llm(

@@ -22,14 +22,17 @@ from app.agents.sanitize import strip_markdown
 from app.analytics.collector import track_agent_timeout, track_request
 from app.analytics.tracer import _optional_span
 from app.db.repository import ConversationRepository, SettingsRepository
+from app.entity.visibility import entity_is_visible
 from app.ha_client.home_context import home_context_provider
 from app.models.agent import AgentCard, AgentTask, TaskContext
 from app.models.cache import CachedAction, ResponseCacheEntry
 
 logger = logging.getLogger(__name__)
 
-# Max conversation turns to keep per conversation
-_MAX_TURNS = 3
+# Conversation context setting defaults
+_DEFAULT_CONVERSATION_CONTEXT_TURNS = 3
+_MIN_CONVERSATION_CONTEXT_TURNS = 1
+_MAX_CONVERSATION_CONTEXT_TURNS = 20
 
 # Conversation memory limits
 _MAX_CONVERSATIONS = 1000
@@ -372,6 +375,7 @@ class OrchestratorAgent(BaseAgent):
             context.source = incoming_context.source
             context.language = incoming_context.language
             context.native_plain_timer_eligible = incoming_context.native_plain_timer_eligible
+            context.injection_detected = incoming_context.injection_detected
         # FLOW-HIGH-3: Prefer the orchestrator-resolved language (from
         # _resolve_language / detect_user_language) over whatever the
         # incoming request carried. The streaming path already does this;
@@ -611,6 +615,7 @@ class OrchestratorAgent(BaseAgent):
                 source=incoming_context.source if incoming_context else "api",
                 language=content_language,
                 sequential_send=True,
+                injection_detected=incoming_context.injection_detected if incoming_context else False,
             )
 
             # Populate home location/time context
@@ -848,42 +853,20 @@ class OrchestratorAgent(BaseAgent):
         if not entity_id:
             return False
         try:
-            from app.db.repository import EntityVisibilityRepository
-
-            rules = await EntityVisibilityRepository.get_rules(agent_id)
+            return await entity_is_visible(
+                agent_id,
+                entity_id,
+                self._entity_index,
+                fail_closed_on_metadata_gap=True,
+            )
         except Exception:
             logger.debug(
-                "Visibility lookup failed for agent=%s entity=%s; treating as not visible",
+                "Visibility evaluation failed for agent=%s entity=%s; treating as not visible",
                 agent_id,
                 entity_id,
                 exc_info=True,
             )
             return False
-        if not rules:
-            # No rules configured -> full access (matches live matcher behavior).
-            return True
-
-        domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
-        domain_include: set[str] = set()
-        domain_exclude: set[str] = set()
-        entity_include: set[str] = set()
-        for rule in rules:
-            rt = rule.get("rule_type")
-            rv = rule.get("rule_value")
-            if rt == "domain_include":
-                domain_include.add(rv)
-            elif rt == "domain_exclude":
-                domain_exclude.add(rv)
-            elif rt == "entity_include":
-                entity_include.add(rv)
-
-        # entity_include is a per-entity allow-list that bypasses domain
-        # filters in the live matcher; honor that semantic here too.
-        if entity_id in entity_include:
-            return True
-        if domain_include and domain not in domain_include:
-            return False
-        return not (domain_exclude and domain in domain_exclude)
 
     async def _handle_response_cache_hit(
         self,
@@ -2023,6 +2006,7 @@ class OrchestratorAgent(BaseAgent):
             context.area_name = task.context.area_name
             context.source = task.context.source
             context.native_plain_timer_eligible = task.context.native_plain_timer_eligible
+            context.injection_detected = task.context.injection_detected
         if self._ha_client:
             try:
                 from zoneinfo import ZoneInfo
@@ -2528,19 +2512,14 @@ class OrchestratorAgent(BaseAgent):
         messages = [{"role": "system", "content": system_prompt}]
         turns = await self._get_turns(conversation_id)
         if turns:
-            for turn in turns:
-                role = turn.get("role", "user")
-                content = turn.get("content", "")
-                if len(content) > 300:
-                    content = content[:300] + "..."
-                messages.append({"role": role, "content": content})
+            self._append_conversation_turn_messages(messages, turns, max_content_length=300)
         messages.append(
             {
                 "role": "user",
                 "content": (
                     "Repair the routing result for this request. "
                     "If the user wants content delivered somewhere, return content-agent first and send-agent second.\n\n"
-                    f"Request: {user_text}"
+                    f"Request:\n{self._wrap_user_input(user_text)}"
                 ),
             }
         )
@@ -2695,13 +2674,8 @@ class OrchestratorAgent(BaseAgent):
         # Inject recent conversation history as proper multi-turn messages
         turns = await self._get_turns(conversation_id)
         if turns:
-            for turn in turns:
-                role = turn.get("role", "user")
-                content = turn.get("content", "")
-                if len(content) > 300:
-                    content = content[:300] + "..."
-                messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": user_text})
+            self._append_conversation_turn_messages(messages, turns, max_content_length=300)
+        messages.append({"role": "user", "content": self._wrap_user_input(user_text)})
 
         try:
             async with _optional_span(span_collector, "llm_call", agent_id="orchestrator") as llm_span:
@@ -2862,6 +2836,26 @@ class OrchestratorAgent(BaseAgent):
         deduped.sort(key=lambda x: x[2] if x[2] is not None else -1.0, reverse=True)
         return deduped[:3]
 
+    async def _get_conversation_context_turn_limit(self) -> int:
+        fallback = _DEFAULT_CONVERSATION_CONTEXT_TURNS
+        try:
+            raw_value = await SettingsRepository.get_value(
+                "general.conversation_context_turns",
+                str(fallback),
+            )
+            parsed = int(str(raw_value).strip())
+        except Exception:
+            logger.debug(
+                "Failed to read general.conversation_context_turns; using default %d",
+                fallback,
+                exc_info=True,
+            )
+            return fallback
+        return max(
+            _MIN_CONVERSATION_CONTEXT_TURNS,
+            min(_MAX_CONVERSATION_CONTEXT_TURNS, parsed),
+        )
+
     async def _get_turns(self, conversation_id: str | None) -> list[dict]:
         """Get recent conversation turns for context.
 
@@ -2872,11 +2866,16 @@ class OrchestratorAgent(BaseAgent):
         """
         if not conversation_id:
             return []
+        turn_limit = await self._get_conversation_context_turn_limit()
+        max_messages = turn_limit * 2
         entry = self._conversations.get(conversation_id)
         if entry is not None:
             ts, turns = entry
             if time.monotonic() - ts <= _CONVERSATION_TTL_SECONDS:
-                return list(turns)
+                trimmed_turns = list(turns[-max_messages:]) if len(turns) > max_messages else list(turns)
+                if len(trimmed_turns) != len(turns):
+                    self._conversations[conversation_id] = (ts, trimmed_turns)
+                return trimmed_turns
             self._conversations.pop(conversation_id, None)
 
         try:
@@ -2895,7 +2894,7 @@ class OrchestratorAgent(BaseAgent):
             return []
 
         turns: list[dict] = []
-        for row in rows[-_MAX_TURNS:]:
+        for row in rows[-turn_limit:]:
             user_text = row.get("user_text") or ""
             if user_text:
                 turns.append({"role": "user", "content": user_text})
@@ -2915,9 +2914,10 @@ class OrchestratorAgent(BaseAgent):
     async def _store_turn(
         self, conversation_id: str | None, user_text: str, assistant_text: str, agent_id: str | None = None
     ) -> None:
-        """Store a conversation turn, keeping last _MAX_TURNS exchanges."""
+        """Store a conversation turn, keeping the configured number of exchanges."""
         if not conversation_id:
             return
+        turn_limit = await self._get_conversation_context_turn_limit()
         self._evict_stale_conversations()
         now = time.monotonic()
         if conversation_id in self._conversations:
@@ -2930,7 +2930,7 @@ class OrchestratorAgent(BaseAgent):
         if agent_id:
             assistant_turn["agent_id"] = agent_id
         turns.append(assistant_turn)
-        max_messages = _MAX_TURNS * 2
+        max_messages = turn_limit * 2
         if len(turns) > max_messages:
             turns = turns[-max_messages:]
         self._conversations[conversation_id] = (now, turns)
@@ -3002,7 +3002,7 @@ class OrchestratorAgent(BaseAgent):
                 {
                     "role": "user",
                     "content": (
-                        f"User asked: {user_text}\n\n"
+                        f"User asked:\n{self._wrap_user_input(user_text)}\n\n"
                         f"Agent responses:\n{agent_summary}\n\n"
                         "Combine into one natural response:"
                     ),
@@ -3055,7 +3055,11 @@ class OrchestratorAgent(BaseAgent):
                 {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
-                    "content": f"User asked: {user_text}\nAgent ({agent_id}) responded: {agent_speech}\n\nRephrase in {language}:",
+                    "content": (
+                        f"User asked:\n{self._wrap_user_input(user_text)}\n"
+                        f"Agent ({agent_id}) responded: {agent_speech}\n\n"
+                        f"Rephrase in {language}:"
+                    ),
                 },
             ]
             overrides = {
