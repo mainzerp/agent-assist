@@ -58,7 +58,7 @@ ORCHESTRATOR: Confirm with user via ask_user tool UNTIL user confirms task compl
 ## Subagent Prompts
 
 ### Research Subagent Template
-Call `runSubagent` with `model: "GPT-5.5 (copilot)"`. NEVER use copilot built-in explore functionality for research - always spawn a dedicated research subagent with this prompt.
+Call `runSubagent` with `model: "GPT-5.4 (copilot)"`. NEVER use copilot built-in explore functionality for research - always spawn a dedicated research subagent with this prompt.
 ```
 **NEVER** call plan_review or ask_user tools from this subagent. This is for research and analysis only.
 You are an expert code analysis agent.
