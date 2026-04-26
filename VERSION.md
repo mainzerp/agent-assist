@@ -1,12 +1,28 @@
 # Version
 
-**Current Version:** 0.27.9
+**Current Version:** 0.27.10
 
-## Recent Changes (since 0.27.9)
+## Recent Changes (since 0.27.10)
 
 (none yet)
 
 ## Version History
+
+### 0.27.10 (PATCH) -- set_datetime unresolved alarm-target fallback
+
+- Fixed timer `set_datetime` unresolved-target handling in
+  `container/app/agents/timer_executor.py` by adding a scoped fallback
+  that uses visible `input_datetime` candidates only when direct
+  resolution fails.
+- Added deterministic fallback outcomes for unresolved alarm intent:
+  one visible candidate auto-selects and proceeds, many candidates
+  return explicit disambiguation, and zero candidates return setup
+  guidance mentioning `input_datetime`.
+- Kept explicit resolved-entity `set_datetime` execution behavior
+  unchanged.
+- Added focused timer-executor tests in `container/tests/test_agents.py`
+  for the 1/Many/0 fallback matrix plus explicit-resolution regression.
+- Bumped `container/app/__init__.py` runtime version to `0.27.10`.
 
 ### 0.27.9 (PATCH) -- Timer extend, cancel variant robustness, routing cache fix
 

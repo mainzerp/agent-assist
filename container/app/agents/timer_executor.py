@@ -58,6 +58,70 @@ def _validate_domain(entity_id: str) -> bool:
     return domain in _ALLOWED_DOMAINS
 
 
+def _supports_method(obj: Any, method_name: str) -> bool:
+    """Return True when an object or its mock spec exposes a callable method."""
+    spec_class = getattr(obj, "_spec_class", None)
+    if spec_class and hasattr(spec_class, method_name):
+        return callable(getattr(obj, method_name, None))
+    return callable(getattr(obj, method_name, None))
+
+
+async def _list_visible_input_datetime_targets(
+    entity_index: Any,
+    entity_matcher: Any,
+    agent_id: str | None,
+) -> list[tuple[str, str]]:
+    """Return visible input_datetime targets as (entity_id, friendly_name)."""
+    if not entity_index:
+        return []
+
+    entries: list[Any] = []
+    if _supports_method(entity_index, "list_entries_async"):
+        entries = await entity_index.list_entries_async(domains=_INPUT_DATETIME_DOMAINS)
+    elif _supports_method(entity_index, "list_entries"):
+        entries = entity_index.list_entries(domains=_INPUT_DATETIME_DOMAINS)
+
+    if not entries:
+        return []
+
+    visible_entries = entries
+    if agent_id and entity_matcher and _supports_method(entity_matcher, "filter_visible_results"):
+        from app.entity.matcher import MatchResult
+
+        visible = await entity_matcher.filter_visible_results(
+            agent_id,
+            [
+                MatchResult(
+                    entity_id=entry.entity_id,
+                    friendly_name=entry.friendly_name,
+                    score=1.0,
+                )
+                for entry in entries
+            ],
+        )
+        visible_ids = {result.entity_id for result in visible}
+        visible_entries = [entry for entry in entries if entry.entity_id in visible_ids]
+
+    targets = [
+        (
+            entry.entity_id,
+            (entry.friendly_name or entry.entity_id),
+        )
+        for entry in visible_entries
+        if getattr(entry, "entity_id", "").startswith("input_datetime.")
+    ]
+    targets.sort(key=lambda item: (item[1].casefold(), item[0]))
+    return targets
+
+
+def _should_attempt_set_datetime_fallback(action_name: str, action: dict) -> bool:
+    """Gate unresolved set_datetime fallback without keyword heuristics."""
+    if action_name != "set_datetime":
+        return False
+    params = action.get("parameters") or {}
+    return any(str(params.get(key, "")).strip() for key in ("datetime", "time", "date"))
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1025,6 +1089,33 @@ async def execute_timer_action(
     if entity_id and not _validate_domain(entity_id):
         logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
         entity_id = None
+
+    if not entity_id:
+        if _should_attempt_set_datetime_fallback(action_name, action):
+            targets = await _list_visible_input_datetime_targets(entity_index, entity_matcher, agent_id)
+            if len(targets) == 1:
+                entity_id, friendly_name = targets[0]
+            elif len(targets) > 1:
+                labels = ", ".join(f"{friendly} ({target_id})" for target_id, friendly in targets)
+                return {
+                    "success": False,
+                    "entity_id": None,
+                    "new_state": None,
+                    "speech": (
+                        f"Multiple alarm targets are available: {labels}. "
+                        "Please tell me which one to update."
+                    ),
+                }
+            else:
+                return {
+                    "success": False,
+                    "entity_id": None,
+                    "new_state": None,
+                    "speech": (
+                        "No visible input_datetime alarm target is available. "
+                        "Please create or expose an input_datetime entity in Home Assistant and try again."
+                    ),
+                }
 
     if not entity_id:
         return {

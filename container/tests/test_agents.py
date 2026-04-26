@@ -907,6 +907,11 @@ class TestTimerAgent:
 class TestTimerExecutor:
     """Unit tests for timer_executor functions (scheduler-backed in 0.26.0)."""
 
+    class _Entry:
+        def __init__(self, entity_id: str, friendly_name: str):
+            self.entity_id = entity_id
+            self.friendly_name = friendly_name
+
     async def test_query_timer_active(self):
         """query_timer returns remaining time for an active scheduler timer."""
         import time as _time
@@ -1018,6 +1023,120 @@ class TestTimerExecutor:
         scheduler.cancel.assert_awaited_once()
         scheduler.schedule.assert_awaited_once()
         assert scheduler.schedule.await_args.kwargs["kind"] == "snooze"
+
+    async def test_set_datetime_unresolved_single_visible_target_auto_selects(self):
+        """Unresolved set_datetime auto-selects exactly one visible input_datetime target."""
+        from unittest.mock import patch as _patch
+
+        matcher = MagicMock()
+        matcher.match = AsyncMock(return_value=[])
+        matcher.filter_visible_results = AsyncMock(
+            return_value=[MagicMock(entity_id="input_datetime.morning_alarm")]
+        )
+        entity_index = MagicMock()
+        entity_index.list_entries_async = AsyncMock(
+            return_value=[self._Entry("input_datetime.morning_alarm", "Morning Alarm")]
+        )
+
+        with _patch(
+            "app.agents.timer_executor.call_service_with_verification",
+            new_callable=AsyncMock,
+            return_value={"success": True, "observed_state": "07:00:00"},
+        ) as verify_call:
+            result = await execute_timer_action(
+                {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "07:00:00"}},
+                AsyncMock(),
+                entity_index,
+                matcher,
+                agent_id="timer-agent",
+            )
+
+        assert result["success"] is True
+        assert result["entity_id"] == "input_datetime.morning_alarm"
+        assert "Updated Morning Alarm" in result["speech"]
+        assert verify_call.await_args.args[3] == "input_datetime.morning_alarm"
+
+    async def test_set_datetime_unresolved_multiple_visible_targets_requires_disambiguation(self):
+        """Unresolved set_datetime returns disambiguation when multiple visible targets exist."""
+        from unittest.mock import patch as _patch
+
+        matcher = MagicMock()
+        matcher.match = AsyncMock(return_value=[])
+        matcher.filter_visible_results = AsyncMock(
+            return_value=[
+                MagicMock(entity_id="input_datetime.morning_alarm"),
+                MagicMock(entity_id="input_datetime.work_alarm"),
+            ]
+        )
+        entity_index = MagicMock()
+        entity_index.list_entries_async = AsyncMock(
+            return_value=[
+                self._Entry("input_datetime.morning_alarm", "Morning Alarm"),
+                self._Entry("input_datetime.work_alarm", "Work Alarm"),
+            ]
+        )
+
+        with _patch("app.agents.timer_executor.call_service_with_verification", new_callable=AsyncMock) as verify_call:
+            result = await execute_timer_action(
+                {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "07:00:00"}},
+                AsyncMock(),
+                entity_index,
+                matcher,
+                agent_id="timer-agent",
+            )
+
+        assert result["success"] is False
+        assert "Multiple alarm targets are available" in result["speech"]
+        assert "Morning Alarm" in result["speech"]
+        assert "Work Alarm" in result["speech"]
+        verify_call.assert_not_awaited()
+
+    async def test_set_datetime_unresolved_no_visible_target_returns_setup_guidance(self):
+        """Unresolved set_datetime returns setup guidance when no visible target exists."""
+        matcher = MagicMock()
+        matcher.match = AsyncMock(return_value=[])
+        matcher.filter_visible_results = AsyncMock(return_value=[])
+        entity_index = MagicMock()
+        entity_index.list_entries_async = AsyncMock(return_value=[])
+
+        result = await execute_timer_action(
+            {"action": "set_datetime", "entity": "alarm", "parameters": {"time": "07:00:00"}},
+            AsyncMock(),
+            entity_index,
+            matcher,
+            agent_id="timer-agent",
+        )
+
+        assert result["success"] is False
+        assert "input_datetime" in result["speech"]
+
+    async def test_set_datetime_explicit_resolved_entity_path_unchanged(self):
+        """Resolved explicit set_datetime target keeps existing behavior and bypasses fallback listing."""
+        from unittest.mock import patch as _patch
+
+        matcher = MagicMock()
+        matcher.match = AsyncMock(
+            return_value=[MagicMock(entity_id="input_datetime.morning_alarm", friendly_name="Morning Alarm", score=0.99)]
+        )
+        entity_index = MagicMock()
+        entity_index.list_entries_async = AsyncMock(side_effect=AssertionError("fallback listing should not run"))
+
+        with _patch(
+            "app.agents.timer_executor.call_service_with_verification",
+            new_callable=AsyncMock,
+            return_value={"success": True, "observed_state": "07:00:00"},
+        ) as verify_call:
+            result = await execute_timer_action(
+                {"action": "set_datetime", "entity": "morning alarm", "parameters": {"time": "07:00:00"}},
+                AsyncMock(),
+                entity_index,
+                matcher,
+                agent_id="timer-agent",
+            )
+
+        assert result["success"] is True
+        assert result["entity_id"] == "input_datetime.morning_alarm"
+        verify_call.assert_awaited_once()
 
     async def test_unknown_action(self):
         """Unknown action returns error."""
