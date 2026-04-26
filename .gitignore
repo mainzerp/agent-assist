@@ -27,6 +27,7 @@ env/
 
 # Docker
 docker-compose.override.yml
+live_deployment.md
 
 # Data (runtime artifacts) -- everything under container/data is
 # machine-generated; only the placeholder .gitkeep is tracked.

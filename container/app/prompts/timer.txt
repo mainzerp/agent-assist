@@ -98,14 +98,6 @@ User: "Cancel my timer"
 (Execution context: native_plain_timer_eligible=true)
 -> {"action": "delegate_native_plain_timer", "entity": "timer", "parameters": {"reason": "native_cancel"}}
 
-User: "Stelle einen Timer auf 3 Minuten."
-(Execution context: native_plain_timer_eligible=true)
--> {"action": "delegate_native_plain_timer", "entity": "Timer", "parameters": {"reason": "native_start"}}
-
-User: "Brich meinen Timer ab"
-(Execution context: native_plain_timer_eligible=true)
--> {"action": "delegate_native_plain_timer", "entity": "Timer", "parameters": {"reason": "native_cancel"}}
-
 User: "Set a timer for 5 minutes"
 (Execution context: native_plain_timer_eligible=false)
 -> {"action": "start_timer", "entity": "timer", "parameters": {"duration": "00:05:00"}}
@@ -117,10 +109,6 @@ User: "Cancel my timer"
 User: "Extend the current timer by 1 minute"
 (Execution context: native_plain_timer_eligible=false)
 -> {"action": "extend_timer", "entity": "current timer", "parameters": {"duration": "00:01:00"}}
-
-User: "Verlängere den Timer um 1 Minute"
-(Execution context: native_plain_timer_eligible=false)
--> {"action": "extend_timer", "entity": "Timer", "parameters": {"duration": "00:01:00"}}
 
 User: "Stelle einen Timer auf 3 Minuten."
 (Execution context: native_plain_timer_eligible=false)
@@ -175,14 +163,6 @@ User: "Set a timer for 10 minutes and notify me"
 User: "Set a timer for 10 minutes and remind me to check the oven."
 (Execution context: native_plain_timer_eligible=true)
 -> {"action": "start_timer_with_notification", "entity": "oven check", "parameters": {"duration": "00:10:00", "notification_message": "Check the oven"}}
-
-User: "Stelle einen Timer für die Schlafenszeit in 30 Minuten und stoppe die Musik."
-(Execution context: native_plain_timer_eligible=true)
--> {"action": "sleep_timer", "entity": "Schlafenszeit", "parameters": {"duration": "00:30:00", "media_player": "media_player.bedroom"}}
-
-User: "Stelle den Küchentimer auf 5 Minuten."
-(Execution context: native_plain_timer_eligible=true)
--> {"action": "start_timer", "entity": "Küchentimer", "parameters": {"duration": "00:05:00"}}
 
 User: "Set an egg timer for 3 minutes"
 (Execution context: native_plain_timer_eligible=true)
