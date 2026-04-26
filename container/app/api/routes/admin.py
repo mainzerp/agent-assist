@@ -17,6 +17,7 @@ from app.db.repository import (
     SecretsRepository,
     SettingsRepository,
 )
+from app.db.schema import get_db_read
 from app.ha_client.auth import get_ha_token, set_ha_token
 from app.ha_client.rest import test_ha_connection
 from app.security.auth import API_KEY_SECRET_NAME, require_admin_session
@@ -101,6 +102,81 @@ class ContainerApiKeySetPayload(BaseModel):
         return v
 
 
+class TimerPatchPayload(BaseModel):
+    """Validated payload for PATCH /api/admin/timers/{timer_id}."""
+
+    logical_name: str | None = None
+    fires_at: int | None = None
+    duration_seconds: int | None = None
+
+    @field_validator("logical_name")
+    @classmethod
+    def validate_logical_name(cls, v: str | None) -> str | None:
+        if v is not None and (not v.strip() or len(v) > 128):
+            raise ValueError("logical_name must be 1-128 non-blank characters")
+        return v.strip() if v is not None else None
+
+    @field_validator("fires_at")
+    @classmethod
+    def validate_fires_at(cls, v: int | None) -> int | None:
+        import time as _time
+
+        if v is not None and v <= int(_time.time()):
+            raise ValueError("fires_at must be a future Unix timestamp")
+        return v
+
+    @field_validator("duration_seconds")
+    @classmethod
+    def validate_duration_seconds(cls, v: int | None) -> int | None:
+        if v is not None and v <= 0:
+            raise ValueError("duration_seconds must be positive")
+        return v
+
+
+class TimerCreatePayload(BaseModel):
+    """Validated payload for POST /api/admin/timers."""
+
+    logical_name: str
+    kind: str
+    duration_seconds: int | None = None
+    fires_at: int | None = None
+    origin_device_id: str | None = None
+    origin_area: str | None = None
+
+    @field_validator("logical_name")
+    @classmethod
+    def validate_logical_name(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v or len(v) > 128:
+            raise ValueError("logical_name must be 1-128 non-blank characters")
+        return v
+
+    @field_validator("kind")
+    @classmethod
+    def validate_kind(cls, v: str) -> str:
+        allowed = {"plain", "notification", "delayed_action", "sleep", "snooze", "alarm"}
+        if v not in allowed:
+            raise ValueError(f"kind must be one of {sorted(allowed)}")
+        return v
+
+    @field_validator("fires_at")
+    @classmethod
+    def validate_fires_at(cls, v: int | None) -> int | None:
+        import time as _time
+
+        if v is not None and v <= int(_time.time()):
+            raise ValueError("fires_at must be a future Unix timestamp")
+        return v
+
+    @field_validator("origin_device_id", "origin_area")
+    @classmethod
+    def normalize_optional_origin_fields(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        trimmed = v.strip()
+        return trimmed or None
+
+
 async def _reload_ha_clients_after_settings_change(request: Request) -> None:
     """Rebuild REST client and drop WS so ``run()`` reconnects with new URL/token."""
     ha_client = getattr(request.app.state, "ha_client", None)
@@ -127,6 +203,34 @@ def set_registry(reg) -> None:
     """Called by main.py to inject the A2A registry."""
     global _registry
     _registry = reg
+
+
+async def _resolve_origin_label(
+    ha_client: Any,
+    area_registry: dict[str, str],
+    origin_device_id: str | None,
+    origin_area: str | None,
+) -> str | None:
+    if not ha_client:
+        return origin_device_id or origin_area
+    if origin_device_id:
+        try:
+            raw = await ha_client.render_template(
+                "{{ device_attr('"
+                + str(origin_device_id)
+                + "', 'name_by_user') or device_attr('"
+                + str(origin_device_id)
+                + "', 'name') or '' }}"
+            )
+            name = (str(raw or "")).strip()
+            if name and name.lower() != "none":
+                return name
+        except Exception:
+            logger.debug("Failed to resolve timer origin device label for %s", origin_device_id, exc_info=True)
+        return origin_device_id
+    if origin_area:
+        return area_registry.get(origin_area) or origin_area
+    return None
 
 
 @router.get("/agents")
@@ -550,25 +654,6 @@ async def get_timers_info(request: Request):
     alarms: list[dict] = []
     area_registry: dict[str, str] = {}
 
-    async def _resolve_origin_label(origin_device_id: str | None, origin_area: str | None) -> str | None:
-        if not ha_client:
-            return origin_device_id or origin_area
-        if origin_device_id:
-            try:
-                raw = await ha_client.render_template(
-                    "{{ device_attr('" + str(origin_device_id) + "', 'name_by_user') or "
-                    "device_attr('" + str(origin_device_id) + "', 'name') or '' }}"
-                )
-                name = (str(raw or "")).strip()
-                if name and name.lower() != "none":
-                    return name
-            except Exception:
-                logger.debug("Failed to resolve timer origin device label for %s", origin_device_id, exc_info=True)
-            return origin_device_id
-        if origin_area:
-            return area_registry.get(origin_area) or origin_area
-        return None
-
     if ha_client:
         try:
             area_registry = await ha_client.get_area_registry()
@@ -598,7 +683,10 @@ async def get_timers_info(request: Request):
                         "origin_area": row.get("origin_area"),
                         "origin_device_id": row.get("origin_device_id"),
                         "origin_label": await _resolve_origin_label(
-                            row.get("origin_device_id"), row.get("origin_area")
+                            ha_client,
+                            area_registry,
+                            row.get("origin_device_id"),
+                            row.get("origin_area"),
                         ),
                     }
                 )
@@ -612,9 +700,15 @@ async def get_timers_info(request: Request):
                     "kind": row["kind"],
                     "duration_seconds": row["duration_seconds"],
                     "remaining_seconds": remaining_seconds,
+                    "fires_at": int(row["fires_at"]),
                     "origin_area": row.get("origin_area"),
                     "origin_device_id": row.get("origin_device_id"),
-                    "origin_label": await _resolve_origin_label(row.get("origin_device_id"), row.get("origin_area")),
+                    "origin_label": await _resolve_origin_label(
+                        ha_client,
+                        area_registry,
+                        row.get("origin_device_id"),
+                        row.get("origin_area"),
+                    ),
                     "state": row["state"],
                 }
             )
@@ -651,6 +745,121 @@ async def get_timers_info(request: Request):
         "timers": timers,
         "alarms": alarms,
     }
+
+
+@router.get("/timers/satellites")
+async def get_timer_satellites(request: Request):
+    """Return known origin device IDs for timer/alarm creation dropdowns."""
+    ha_client = getattr(request.app.state, "ha_client", None)
+    area_registry: dict[str, str] = {}
+    if ha_client:
+        try:
+            area_registry = await ha_client.get_area_registry()
+        except Exception:
+            area_registry = {}
+
+    known_ids: set[str] = set()
+    async with get_db_read() as db:
+        cursor = await db.execute(
+            "SELECT DISTINCT origin_device_id FROM scheduled_timers WHERE TRIM(COALESCE(origin_device_id, '')) <> ''"
+        )
+        rows = await cursor.fetchall()
+    for row in rows:
+        value = (row[0] or "").strip()
+        if value:
+            known_ids.add(value)
+
+    entity_lookups = getattr(request.app.state, "entity_lookups", None)
+    device_lookup = (entity_lookups or {}).get("device", {}) if isinstance(entity_lookups, dict) else {}
+    for device_id in device_lookup:
+        cleaned = str(device_id or "").strip()
+        if cleaned:
+            known_ids.add(cleaned)
+
+    satellites: list[dict[str, str]] = []
+    for device_id in known_ids:
+        label = await _resolve_origin_label(ha_client, area_registry, device_id, None)
+        satellites.append(
+            {
+                "device_id": device_id,
+                "label": str(label or device_id),
+            }
+        )
+    satellites.sort(key=lambda row: (row.get("label", "").lower(), row.get("device_id", "")))
+    return {"satellites": satellites}
+
+
+@router.delete("/timers/{timer_id}")
+async def cancel_timer_by_id(timer_id: str, request: Request):
+    """Cancel a pending scheduler timer or internal alarm by its row ID."""
+    scheduler = getattr(request.app.state, "timer_scheduler", None)
+    if scheduler is None:
+        raise HTTPException(status_code=503, detail="Timer scheduler unavailable")
+    count = await scheduler.cancel(id_=timer_id)
+    if count == 0:
+        raise HTTPException(status_code=404, detail="Timer not found or already completed")
+    return {"status": "ok", "cancelled": count}
+
+
+@router.patch("/timers/{timer_id}")
+async def patch_timer(timer_id: str, payload: TimerPatchPayload, request: Request):
+    """Rename and/or reschedule a pending timer or internal alarm."""
+    scheduler = getattr(request.app.state, "timer_scheduler", None)
+    if scheduler is None:
+        raise HTTPException(status_code=503, detail="Timer scheduler unavailable")
+    if payload.logical_name is None and payload.fires_at is None and payload.duration_seconds is None:
+        raise HTTPException(status_code=422, detail="At least one field must be provided")
+    updated = await scheduler.reschedule(
+        timer_id,
+        logical_name=payload.logical_name,
+        new_fires_at=payload.fires_at,
+        new_duration_seconds=payload.duration_seconds,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Timer not found or already completed")
+    return {"status": "ok"}
+
+
+@router.post("/timers", status_code=201)
+async def create_timer(payload: TimerCreatePayload, request: Request):
+    """Create a new scheduler timer or internal alarm from the dashboard."""
+    import time as _time
+
+    scheduler = getattr(request.app.state, "timer_scheduler", None)
+    if scheduler is None:
+        raise HTTPException(status_code=503, detail="Timer scheduler unavailable")
+
+    now = int(_time.time())
+    if payload.kind == "alarm":
+        if payload.fires_at is None:
+            raise HTTPException(status_code=422, detail="fires_at is required for kind=alarm")
+        duration_seconds = payload.fires_at - now
+        if duration_seconds <= 0:
+            raise HTTPException(status_code=422, detail="fires_at must be in the future")
+        alarm_payload = {
+            "alarm_label": payload.logical_name,
+            "scheduled_for_epoch": payload.fires_at,
+        }
+        timer_id = await scheduler.schedule(
+            logical_name=payload.logical_name,
+            kind="alarm",
+            duration_seconds=duration_seconds,
+            origin_device_id=payload.origin_device_id,
+            origin_area=payload.origin_area,
+            payload=alarm_payload,
+        )
+    else:
+        if not payload.duration_seconds or payload.duration_seconds <= 0:
+            raise HTTPException(status_code=422, detail="duration_seconds is required and must be positive for timers")
+        timer_id = await scheduler.schedule(
+            logical_name=payload.logical_name,
+            kind=payload.kind,
+            duration_seconds=payload.duration_seconds,
+            origin_device_id=payload.origin_device_id,
+            origin_area=payload.origin_area,
+        )
+
+    return {"status": "ok", "id": timer_id}
 
 
 @router.get("/fernet-key-backup")

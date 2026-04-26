@@ -158,6 +158,9 @@ class TimerScheduler:
         """
         now = int(time.time())
         if id_:
+            row = await self._repo.get(id_)
+            if not row or row.get("state") != "pending":
+                return 0
             await self._repo.mark_cancelled(id_, now)
             self._cancel_task(id_)
             return 1
@@ -182,6 +185,56 @@ class TimerScheduler:
     ) -> list[dict]:
         """Return pending timers, optionally filtered by logical_name and/or area."""
         return await self._repo.list_pending_for(logical_name=logical_name, area=area, kinds=kinds)
+
+    async def reschedule(
+        self,
+        id_: str,
+        *,
+        logical_name: str | None = None,
+        new_fires_at: int | None = None,
+        new_duration_seconds: int | None = None,
+    ) -> bool:
+        """Update a pending timer/alarm in-place and restart its asyncio task.
+
+        Strategy: update the DB row via the repository, then cancel the
+        existing asyncio task and spawn a replacement task from the updated
+        row. The row ID is preserved (no identity churn).
+
+        Returns ``True`` if the timer was found, was still pending, and was
+        updated. Returns ``False`` if no matching pending row exists.
+        """
+        row = await self._repo.get(id_)
+        if not row or row.get("state") != "pending":
+            return False
+
+        updated = await self._repo.update_scheduled_timer(
+            id_,
+            logical_name=logical_name,
+            fires_at=new_fires_at,
+            duration_seconds=new_duration_seconds,
+        )
+        if not updated:
+            return False
+
+        updated_row = dict(row)
+        if logical_name is not None:
+            old_key = (row.get("logical_name") or "").lower()
+            new_key = logical_name.lower()
+            if old_key != new_key:
+                old_list = self._by_logical.get(old_key, [])
+                if id_ in old_list:
+                    old_list.remove(id_)
+                self._by_logical.setdefault(new_key, []).append(id_)
+            updated_row["logical_name"] = logical_name
+        if new_fires_at is not None:
+            updated_row["fires_at"] = int(new_fires_at)
+        if new_duration_seconds is not None:
+            updated_row["duration_seconds"] = int(new_duration_seconds)
+
+        # Keep cancellation semantics centralized in _cancel_task.
+        self._cancel_task(id_)
+        self._spawn_task(updated_row)
+        return True
 
     # ------------------------------------------------------------------
     # Internals

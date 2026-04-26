@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import time
+
 import aiosqlite
 
 from app.db.repository import (
@@ -11,6 +14,7 @@ from app.db.repository import (
     CustomAgentRepository,
     EntityVisibilityRepository,
     McpServerRepository,
+    ScheduledTimersRepository,
     SecretsRepository,
     SendDeviceMappingRepository,
     SettingsRepository,
@@ -64,6 +68,105 @@ class TestSchemaCreation:
             row = await cursor.fetchone()
         assert row is not None
         assert row[0] == 1
+
+
+class TestScheduledTimersRepository:
+    async def test_update_scheduled_timer_renames(self, db_repository):
+        now = int(time.time())
+        await ScheduledTimersRepository.insert(
+            id="sched-upd-rename",
+            logical_name="old-name",
+            kind="plain",
+            created_at=now,
+            fires_at=now + 120,
+            duration_seconds=120,
+            origin_device_id=None,
+            origin_area=None,
+            payload_json=json.dumps({}),
+        )
+
+        updated = await ScheduledTimersRepository.update_scheduled_timer(
+            "sched-upd-rename",
+            logical_name="new-name",
+        )
+        assert updated is True
+
+        row = await ScheduledTimersRepository.get("sched-upd-rename")
+        assert row is not None
+        assert row["logical_name"] == "new-name"
+
+    async def test_update_scheduled_timer_reschedules(self, db_repository):
+        now = int(time.time())
+        original_fires_at = now + 60
+        new_fires_at = now + 3600
+        await ScheduledTimersRepository.insert(
+            id="sched-upd-fire",
+            logical_name="resched-me",
+            kind="plain",
+            created_at=now,
+            fires_at=original_fires_at,
+            duration_seconds=60,
+            origin_device_id=None,
+            origin_area=None,
+            payload_json=json.dumps({}),
+        )
+
+        updated = await ScheduledTimersRepository.update_scheduled_timer(
+            "sched-upd-fire",
+            fires_at=new_fires_at,
+        )
+        assert updated is True
+
+        row = await ScheduledTimersRepository.get("sched-upd-fire")
+        assert row is not None
+        assert int(row["fires_at"]) == new_fires_at
+
+    async def test_update_scheduled_timer_no_op_on_cancelled(self, db_repository):
+        now = int(time.time())
+        await ScheduledTimersRepository.insert(
+            id="sched-upd-cancelled",
+            logical_name="original",
+            kind="plain",
+            created_at=now,
+            fires_at=now + 600,
+            duration_seconds=600,
+            origin_device_id=None,
+            origin_area=None,
+            payload_json=json.dumps({}),
+        )
+        await ScheduledTimersRepository.mark_cancelled("sched-upd-cancelled", now)
+
+        updated = await ScheduledTimersRepository.update_scheduled_timer(
+            "sched-upd-cancelled",
+            logical_name="should-not-change",
+        )
+        assert updated is False
+
+        row = await ScheduledTimersRepository.get("sched-upd-cancelled")
+        assert row is not None
+        assert row["logical_name"] == "original"
+        assert row["state"] == "cancelled"
+
+    async def test_update_scheduled_timer_empty_fields_returns_false(self, db_repository):
+        now = int(time.time())
+        await ScheduledTimersRepository.insert(
+            id="sched-upd-empty",
+            logical_name="keep-me",
+            kind="plain",
+            created_at=now,
+            fires_at=now + 300,
+            duration_seconds=300,
+            origin_device_id=None,
+            origin_area=None,
+            payload_json=json.dumps({}),
+        )
+
+        updated = await ScheduledTimersRepository.update_scheduled_timer("sched-upd-empty")
+        assert updated is False
+
+        row = await ScheduledTimersRepository.get("sched-upd-empty")
+        assert row is not None
+        assert row["logical_name"] == "keep-me"
 
 
 # ---------------------------------------------------------------------------

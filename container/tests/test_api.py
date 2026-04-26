@@ -6,6 +6,7 @@ real FastAPI app with mocked dependencies.
 
 from __future__ import annotations
 
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -109,6 +110,55 @@ async def unauthed_client(db_repository):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             yield client
+
+
+@pytest_asyncio.fixture()
+async def timer_admin_client(db_repository):
+    """Async authenticated client with a real TimerScheduler in app state."""
+    from app.agents.timer_scheduler import TimerScheduler
+    from app.db import schema as db_schema
+    from app.db.repository import ScheduledTimersRepository
+
+    gateway = MagicMock()
+    gateway.dispatch_background_event = AsyncMock()
+    scheduler = TimerScheduler(ScheduledTimersRepository, orchestrator_gateway=gateway)
+
+    ha_client = AsyncMock()
+    ha_client.get_area_registry = AsyncMock(return_value={})
+    ha_client.render_template = AsyncMock(return_value="")
+    ha_client.get_states = AsyncMock(return_value=[])
+
+    app = build_integration_test_app(
+        setup_complete=True,
+        override_api_key=True,
+        override_admin_session=True,
+        ha_client=ha_client,
+        state_overrides={
+            "timer_scheduler": scheduler,
+            "entity_lookups": {
+                "area": {},
+                "alias": {},
+                "device": {
+                    "device-known": "Known Satellite",
+                },
+                "area_id": {},
+            },
+        },
+    )
+
+    with (
+        patch("app.api.routes.admin.get_db_read", db_schema.get_db_read),
+        patch(
+            "app.db.repository.SetupStateRepository.is_complete",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            yield client, scheduler
+
+    await scheduler.stop()
 
 
 # ===================================================================
@@ -599,6 +649,145 @@ class TestAdminAgentsEndpoint:
         data = resp.json()
         assert "agents" in data
         assert isinstance(data["agents"], list)
+
+
+# ===================================================================
+# Admin Timers API
+# ===================================================================
+
+
+@pytest.mark.integration
+class TestAdminTimersAPI:
+    async def test_delete_timer_cancels(self, timer_admin_client):
+        client, scheduler = timer_admin_client
+        timer_id = await scheduler.schedule(
+            logical_name="delete-me",
+            kind="plain",
+            duration_seconds=3600,
+        )
+
+        resp = await client.delete(f"/api/admin/timers/{timer_id}")
+        assert resp.status_code == 200
+        assert resp.json()["cancelled"] == 1
+
+        rows = await scheduler.list()
+        assert all(row["id"] != timer_id for row in rows)
+
+    async def test_delete_timer_not_found(self, timer_admin_client):
+        client, _scheduler = timer_admin_client
+        resp = await client.delete("/api/admin/timers/does-not-exist")
+        assert resp.status_code == 404
+
+    async def test_patch_timer_renames(self, timer_admin_client):
+        client, scheduler = timer_admin_client
+        timer_id = await scheduler.schedule(
+            logical_name="rename-before",
+            kind="plain",
+            duration_seconds=3600,
+        )
+
+        resp = await client.patch(
+            f"/api/admin/timers/{timer_id}",
+            json={"logical_name": "rename-after"},
+        )
+        assert resp.status_code == 200
+
+        rows = await scheduler.list(logical_name="rename-after")
+        assert any(row["id"] == timer_id for row in rows)
+
+    async def test_patch_timer_no_fields_422(self, timer_admin_client):
+        client, scheduler = timer_admin_client
+        timer_id = await scheduler.schedule(
+            logical_name="empty-patch",
+            kind="plain",
+            duration_seconds=3600,
+        )
+
+        resp = await client.patch(f"/api/admin/timers/{timer_id}", json={})
+        assert resp.status_code == 422
+
+    async def test_post_timer_and_alarm_create(self, timer_admin_client):
+        client, scheduler = timer_admin_client
+
+        timer_resp = await client.post(
+            "/api/admin/timers",
+            json={
+                "logical_name": "new timer",
+                "kind": "plain",
+                "duration_seconds": 90,
+                "origin_device_id": "device-origin-1",
+            },
+        )
+        assert timer_resp.status_code == 201
+        timer_id = timer_resp.json()["id"]
+
+        now = int(time.time())
+        alarm_resp = await client.post(
+            "/api/admin/timers",
+            json={
+                "logical_name": "new alarm",
+                "kind": "alarm",
+                "fires_at": now + 600,
+                "origin_device_id": "device-origin-2",
+            },
+        )
+        assert alarm_resp.status_code == 201
+
+        rows = await scheduler.list()
+        by_id = {row["id"]: row for row in rows}
+        assert by_id[timer_id]["origin_device_id"] == "device-origin-1"
+
+    async def test_post_alarm_missing_fires_at_422(self, timer_admin_client):
+        client, _scheduler = timer_admin_client
+        resp = await client.post(
+            "/api/admin/timers",
+            json={"logical_name": "bad alarm", "kind": "alarm"},
+        )
+        assert resp.status_code == 422
+
+    async def test_get_timers_includes_fires_at(self, timer_admin_client):
+        client, scheduler = timer_admin_client
+        await scheduler.schedule(
+            logical_name="fires-at-check",
+            kind="plain",
+            duration_seconds=3600,
+        )
+
+        resp = await client.get("/api/admin/timers")
+        assert resp.status_code == 200
+        timers = resp.json().get("timers", [])
+        assert timers
+        assert all("fires_at" in row for row in timers)
+
+    async def test_get_timer_satellites_returns_distinct_device_ids(self, timer_admin_client):
+        client, scheduler = timer_admin_client
+        await scheduler.schedule(
+            logical_name="sat-1",
+            kind="plain",
+            duration_seconds=3600,
+            origin_device_id="device-dup",
+        )
+        await scheduler.schedule(
+            logical_name="sat-2",
+            kind="plain",
+            duration_seconds=3600,
+            origin_device_id="device-dup",
+        )
+        await scheduler.schedule(
+            logical_name="sat-3",
+            kind="plain",
+            duration_seconds=3600,
+            origin_device_id="device-unique",
+        )
+
+        resp = await client.get("/api/admin/timers/satellites")
+        assert resp.status_code == 200
+        satellites = resp.json().get("satellites", [])
+        ids = [row["device_id"] for row in satellites if row.get("device_id")]
+        assert len(ids) == len(set(ids))
+        assert "device-dup" in ids
+        assert "device-unique" in ids
+        assert "device-known" in ids
 
 
 # ===================================================================

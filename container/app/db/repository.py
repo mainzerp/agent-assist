@@ -1921,3 +1921,42 @@ class ScheduledTimersRepository:
             )
             await db.commit()
             return cursor.rowcount
+
+    @staticmethod
+    async def update_scheduled_timer(
+        id_: str,
+        *,
+        logical_name: str | None = None,
+        fires_at: int | None = None,
+        duration_seconds: int | None = None,
+        payload_json: str | None = None,
+    ) -> bool:
+        """Update mutable fields on a pending scheduled_timers row.
+
+        Only rows with ``state = 'pending'`` are affected; already-fired or
+        cancelled rows return ``False`` without touching the DB.
+
+        Returns ``True`` if exactly one row was updated, ``False`` otherwise.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if logical_name is not None:
+            clauses.append("logical_name = ?")
+            params.append(logical_name)
+        if fires_at is not None:
+            clauses.append("fires_at = ?")
+            params.append(int(fires_at))
+        if duration_seconds is not None:
+            clauses.append("duration_seconds = ?")
+            params.append(int(duration_seconds))
+        if payload_json is not None:
+            clauses.append("payload_json = ?")
+            params.append(payload_json)
+        if not clauses:
+            return False
+        params.append(id_)
+        sql = "UPDATE scheduled_timers SET " + ", ".join(clauses) + " WHERE id = ? AND state = 'pending'"
+        async with get_db_write() as db:
+            cursor = await db.execute(sql, tuple(params))
+            await db.commit()
+            return cursor.rowcount > 0

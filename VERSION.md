@@ -1,12 +1,36 @@
 # Version
 
-**Current Version:** 0.27.14
+**Current Version:** 0.27.15
 
-## Recent Changes (since 0.27.14)
+## Recent Changes (since 0.27.15)
 
 (none yet)
 
 ## Version History
+
+### 0.27.15 (PATCH) -- Timer/alarm dashboard CRUD and satellite-aware creation
+
+- Added pending-row update support in `container/app/db/repository.py`
+  via `ScheduledTimersRepository.update_scheduled_timer(...)`.
+- Added in-place reschedule support in
+  `container/app/agents/timer_scheduler.py` with
+  `TimerScheduler.reschedule(...)`, and tightened `cancel(id_=...)` to
+  return `0` for non-pending/non-existent rows.
+- Extended admin timer APIs in `container/app/api/routes/admin.py` with:
+  `PATCH /api/admin/timers/{timer_id}`,
+  `DELETE /api/admin/timers/{timer_id}`,
+  `POST /api/admin/timers`, and
+  `GET /api/admin/timers/satellites`.
+- Kept `GET /api/admin/timers` backward compatible while adding
+  `fires_at` to scheduler timer rows.
+- Updated `container/app/dashboard/templates/timers.html` with
+  add/edit/cancel UI for internal rows, read-only labeling for
+  `ha_legacy` alarms, and satellite dropdowns for timer/alarm creation.
+- Added focused regression coverage in:
+  `container/tests/test_db.py`,
+  `container/tests/test_timer_scheduler.py`, and
+  `container/tests/test_api.py`.
+- Bumped `container/app/__init__.py` runtime version to `0.27.15`.
 
 ### 0.27.14 (PATCH) -- Alarm timezone threading and startup overdue recovery
 

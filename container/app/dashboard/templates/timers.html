@@ -9,8 +9,10 @@
         <div class="page-header-text">
             <p class="page-subtitle">Scheduler-managed timers and source-labeled alarms (internal scheduler and HA legacy visibility). Auto-refreshes every 5s.</p>
         </div>
-        <div class="page-actions">
+        <div class="page-actions" style="display:flex;gap:0.5rem;align-items:center;">
             <span class="text-muted" x-text="timers.length + ' timer(s), ' + alarms.length + ' alarm(s)'"></span>
+            <button class="btn btn-sm btn-primary" @click="openAddTimer()">+ Add Timer</button>
+            <button class="btn btn-sm btn-primary" @click="openAddAlarm()">+ Add Alarm</button>
         </div>
     </div>
 
@@ -31,6 +33,7 @@
                     <th>Remaining</th>
                     <th>Duration</th>
                     <th>Origin</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -52,6 +55,10 @@
                         <td class="text-mono" x-text="formatDurationSeconds(t.remaining_seconds)"></td>
                         <td class="text-mono" x-text="formatDurationSeconds(t.duration_seconds)"></td>
                         <td class="text-mono" x-text="displayOrigin(t)"></td>
+                        <td style="white-space:nowrap;">
+                            <button class="btn btn-xs btn-secondary" @click="openEditTimer(t)">Edit</button>
+                            <button class="btn btn-xs btn-danger" @click="cancelRow(t.id)">Cancel</button>
+                        </td>
                     </tr>
                 </template>
             </tbody>
@@ -74,6 +81,7 @@
                     <th>Scheduled Time</th>
                     <th>Type</th>
                     <th>Source</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -99,6 +107,17 @@
                                   }"
                                   x-text="a.source || 'ha_legacy'"></span>
                         </td>
+                        <td style="white-space:nowrap;">
+                            <template x-if="a.source === 'internal'">
+                                <span>
+                                    <button class="btn btn-xs btn-secondary" @click="openEditAlarm(a)">Edit</button>
+                                    <button class="btn btn-xs btn-danger" @click="cancelRow(a.id)">Cancel</button>
+                                </span>
+                            </template>
+                            <template x-if="a.source !== 'internal'">
+                                <span class="text-muted" style="font-size:0.8em;">read-only</span>
+                            </template>
+                        </td>
                     </tr>
                 </template>
             </tbody>
@@ -108,6 +127,110 @@
     <template x-if="loading">
         <p class="text-muted" style="padding: 1rem 0;">Loading timer data...</p>
     </template>
+
+    <!-- Edit Timer/Alarm Modal -->
+    <div x-show="showEditModal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;" @click.self="showEditModal=false">
+        <div style="background:var(--surface,#1e1e2e);padding:1.5rem;border-radius:8px;min-width:320px;max-width:480px;width:90%;">
+            <h3 style="margin-top:0;" x-text="editMode === 'alarm' ? 'Edit Alarm' : 'Edit Timer'"></h3>
+            <div style="margin-bottom:1rem;">
+                <label style="display:block;margin-bottom:0.25rem;">Label</label>
+                <input type="text" x-model="editName" maxlength="128"
+                       style="width:100%;box-sizing:border-box;padding:0.4rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+            </div>
+            <div style="margin-bottom:1rem;">
+                <label style="display:block;margin-bottom:0.25rem;">New Fire Time (local)</label>
+                <input type="datetime-local" x-model="editFiresAt"
+                       style="width:100%;box-sizing:border-box;padding:0.4rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+            </div>
+            <p x-show="modalError" x-text="modalError" style="color:var(--danger,#f38ba8);margin:0 0 0.75rem;"></p>
+            <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+                <button class="btn btn-sm btn-secondary" @click="showEditModal=false">Cancel</button>
+                <button class="btn btn-sm btn-primary" @click="submitEdit()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Timer Modal -->
+    <div x-show="showAddTimerModal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;" @click.self="showAddTimerModal=false">
+        <div style="background:var(--surface,#1e1e2e);padding:1.5rem;border-radius:8px;min-width:320px;max-width:480px;width:90%;">
+            <h3 style="margin-top:0;">Add Timer</h3>
+            <div style="margin-bottom:1rem;">
+                <label style="display:block;margin-bottom:0.25rem;">Label</label>
+                <input type="text" x-model="addTimerName" maxlength="128" placeholder="my timer"
+                       style="width:100%;box-sizing:border-box;padding:0.4rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+            </div>
+            <div style="margin-bottom:1rem;">
+                <label style="display:block;margin-bottom:0.25rem;">Duration</label>
+                <div style="display:flex;gap:0.5rem;align-items:center;">
+                    <input type="number" x-model.number="addTimerHours" min="0" max="99" placeholder="0"
+                           style="width:4.5rem;padding:0.4rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+                    <span>h</span>
+                    <input type="number" x-model.number="addTimerMinutes" min="0" max="59" placeholder="5"
+                           style="width:4.5rem;padding:0.4rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+                    <span>m</span>
+                    <input type="number" x-model.number="addTimerSeconds" min="0" max="59" placeholder="0"
+                           style="width:4.5rem;padding:0.4rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+                    <span>s</span>
+                </div>
+            </div>
+            <div style="margin-bottom:1rem;">
+                <label style="display:block;margin-bottom:0.25rem;">Kind</label>
+                <select x-model="addTimerKind"
+                        style="width:100%;padding:0.4rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;">
+                    <option value="plain">plain</option>
+                    <option value="notification">notification</option>
+                    <option value="sleep">sleep</option>
+                </select>
+            </div>
+            <div style="margin-bottom:1rem;">
+                <label style="display:block;margin-bottom:0.25rem;">Satellite</label>
+                <select x-model="addTimerOriginDeviceId"
+                        style="width:100%;padding:0.4rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;">
+                    <option value="">-- none (broadcast) --</option>
+                    <template x-for="s in satelliteOptions" :key="s.device_id">
+                        <option :value="s.device_id" x-text="s.label || s.device_id"></option>
+                    </template>
+                </select>
+            </div>
+            <p x-show="addTimerError" x-text="addTimerError" style="color:var(--danger,#f38ba8);margin:0 0 0.75rem;"></p>
+            <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+                <button class="btn btn-sm btn-secondary" @click="showAddTimerModal=false">Cancel</button>
+                <button class="btn btn-sm btn-primary" @click="submitAddTimer()">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Alarm Modal -->
+    <div x-show="showAddAlarmModal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;" @click.self="showAddAlarmModal=false">
+        <div style="background:var(--surface,#1e1e2e);padding:1.5rem;border-radius:8px;min-width:320px;max-width:480px;width:90%;">
+            <h3 style="margin-top:0;">Add Alarm</h3>
+            <div style="margin-bottom:1rem;">
+                <label style="display:block;margin-bottom:0.25rem;">Label</label>
+                <input type="text" x-model="addAlarmName" maxlength="128" placeholder="morning alarm"
+                       style="width:100%;box-sizing:border-box;padding:0.4rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+            </div>
+            <div style="margin-bottom:1rem;">
+                <label style="display:block;margin-bottom:0.25rem;">Scheduled Time (local)</label>
+                <input type="datetime-local" x-model="addAlarmFiresAt"
+                       style="width:100%;box-sizing:border-box;padding:0.4rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+            </div>
+            <div style="margin-bottom:1rem;">
+                <label style="display:block;margin-bottom:0.25rem;">Satellite</label>
+                <select x-model="addAlarmOriginDeviceId"
+                        style="width:100%;padding:0.4rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;">
+                    <option value="">-- none (broadcast) --</option>
+                    <template x-for="s in satelliteOptions" :key="s.device_id">
+                        <option :value="s.device_id" x-text="s.label || s.device_id"></option>
+                    </template>
+                </select>
+            </div>
+            <p x-show="addAlarmError" x-text="addAlarmError" style="color:var(--danger,#f38ba8);margin:0 0 0.75rem;"></p>
+            <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+                <button class="btn btn-sm btn-secondary" @click="showAddAlarmModal=false">Cancel</button>
+                <button class="btn btn-sm btn-primary" @click="submitAddAlarm()">Create</button>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -117,6 +240,27 @@ function timersPage() {
         alarms: [],
         loading: true,
         refreshInterval: null,
+        showEditModal: false,
+        showAddTimerModal: false,
+        showAddAlarmModal: false,
+        editTarget: null,
+        editMode: null,
+        modalError: '',
+        editName: '',
+        editFiresAt: '',
+        addTimerName: '',
+        addTimerHours: 0,
+        addTimerMinutes: 0,
+        addTimerSeconds: 0,
+        addTimerKind: 'plain',
+        addTimerError: '',
+        addAlarmName: '',
+        addAlarmFiresAt: '',
+        addAlarmError: '',
+        satelliteOptions: [],
+        satellitesLoaded: false,
+        addTimerOriginDeviceId: '',
+        addAlarmOriginDeviceId: '',
 
         async init() {
             await this.loadData();
@@ -163,6 +307,191 @@ function timersPage() {
             if (timer.origin_device_id) return `device:${timer.origin_device_id}`;
             if (timer.origin_area) return `area:${timer.origin_area}`;
             return '-';
+        },
+
+        async cancelRow(id) {
+            if (!confirm('Cancel this timer/alarm?')) return;
+            try {
+                const resp = await fetch(`/api/admin/timers/${encodeURIComponent(id)}`, {
+                    method: 'DELETE',
+                    credentials: 'same-origin',
+                });
+                if (!resp.ok) {
+                    const body = await resp.json().catch(() => ({}));
+                    alert('Cancel failed: ' + (body.detail || resp.status));
+                    return;
+                }
+            } catch (e) {
+                alert('Cancel failed: ' + e);
+                return;
+            }
+            await this.loadData();
+        },
+
+        openEditTimer(t) {
+            this.editTarget = t;
+            this.editMode = 'timer';
+            this.editName = t.logical_name || '';
+            const d = new Date((t.fires_at || 0) * 1000);
+            this.editFiresAt = this._toDatetimeLocal(d);
+            this.modalError = '';
+            this.showEditModal = true;
+        },
+
+        openEditAlarm(a) {
+            this.editTarget = a;
+            this.editMode = 'alarm';
+            this.editName = a.name || '';
+            const d = new Date((a.fires_at || 0) * 1000);
+            this.editFiresAt = this._toDatetimeLocal(d);
+            this.modalError = '';
+            this.showEditModal = true;
+        },
+
+        async submitEdit() {
+            if (!this.editTarget) return;
+            const id = this.editTarget.id;
+            const body = {};
+            const trimmed = this.editName.trim();
+            if (trimmed) body.logical_name = trimmed;
+            if (this.editFiresAt) {
+                const epoch = Math.floor(new Date(this.editFiresAt).getTime() / 1000);
+                if (!isNaN(epoch) && epoch > Math.floor(Date.now() / 1000)) {
+                    body.fires_at = epoch;
+                    body.duration_seconds = epoch - Math.floor(Date.now() / 1000);
+                }
+            }
+            if (!Object.keys(body).length) {
+                this.modalError = 'Provide at least one change.';
+                return;
+            }
+            try {
+                const resp = await fetch(`/api/admin/timers/${encodeURIComponent(id)}`, {
+                    method: 'PATCH',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    this.modalError = err.detail || ('Error ' + resp.status);
+                    return;
+                }
+            } catch (e) {
+                this.modalError = String(e);
+                return;
+            }
+            this.showEditModal = false;
+            await this.loadData();
+        },
+
+        async openAddTimer() {
+            await this.ensureSatelliteOptionsLoaded();
+            this.addTimerOriginDeviceId = '';
+            this.addTimerName = '';
+            this.addTimerHours = 0;
+            this.addTimerMinutes = 5;
+            this.addTimerSeconds = 0;
+            this.addTimerKind = 'plain';
+            this.addTimerError = '';
+            this.showAddTimerModal = true;
+        },
+
+        async submitAddTimer() {
+            const name = this.addTimerName.trim();
+            if (!name) { this.addTimerError = 'Name is required.'; return; }
+            const secs = (parseInt(this.addTimerHours, 10) || 0) * 3600
+                       + (parseInt(this.addTimerMinutes, 10) || 0) * 60
+                       + (parseInt(this.addTimerSeconds, 10) || 0);
+            if (secs <= 0) { this.addTimerError = 'Duration must be greater than zero.'; return; }
+            const selectedDeviceId = (this.addTimerOriginDeviceId || '').trim();
+            const payload = {
+                logical_name: name,
+                kind: this.addTimerKind,
+                duration_seconds: secs,
+                origin_device_id: selectedDeviceId || null,
+            };
+            try {
+                const resp = await fetch('/api/admin/timers', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    this.addTimerError = err.detail || ('Error ' + resp.status);
+                    return;
+                }
+            } catch (e) {
+                this.addTimerError = String(e);
+                return;
+            }
+            this.showAddTimerModal = false;
+            await this.loadData();
+        },
+
+        async openAddAlarm() {
+            await this.ensureSatelliteOptionsLoaded();
+            this.addAlarmOriginDeviceId = '';
+            this.addAlarmName = '';
+            this.addAlarmFiresAt = '';
+            this.addAlarmError = '';
+            this.showAddAlarmModal = true;
+        },
+
+        async submitAddAlarm() {
+            const name = this.addAlarmName.trim();
+            if (!name) { this.addAlarmError = 'Name is required.'; return; }
+            if (!this.addAlarmFiresAt) { this.addAlarmError = 'Scheduled time is required.'; return; }
+            const epoch = Math.floor(new Date(this.addAlarmFiresAt).getTime() / 1000);
+            if (isNaN(epoch) || epoch <= Math.floor(Date.now() / 1000)) {
+                this.addAlarmError = 'Scheduled time must be in the future.';
+                return;
+            }
+            const selectedDeviceId = (this.addAlarmOriginDeviceId || '').trim();
+            const payload = {
+                logical_name: name,
+                kind: 'alarm',
+                fires_at: epoch,
+                origin_device_id: selectedDeviceId || null,
+            };
+            try {
+                const resp = await fetch('/api/admin/timers', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    this.addAlarmError = err.detail || ('Error ' + resp.status);
+                    return;
+                }
+            } catch (e) {
+                this.addAlarmError = String(e);
+                return;
+            }
+            this.showAddAlarmModal = false;
+            await this.loadData();
+        },
+
+        _toDatetimeLocal(d) {
+            const pad = (n) => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        },
+
+        async ensureSatelliteOptionsLoaded() {
+            if (this.satellitesLoaded) return;
+            try {
+                const resp = await fetch('/api/admin/timers/satellites', { credentials: 'same-origin' });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                this.satelliteOptions = Array.isArray(data.satellites) ? data.satellites : [];
+                this.satellitesLoaded = true;
+            } catch (_) {
+                // Keep empty list on failure; modal can still create broadcast timers.
+            }
         }
     };
 }

@@ -176,6 +176,74 @@ class TestList:
             await sched.stop()
 
 
+class TestReschedule:
+    async def test_reschedule_updates_label(self, db_repository):
+        sched, _gateway = _make_scheduler()
+        try:
+            timer_id = await sched.schedule(
+                logical_name="original-name",
+                kind="notification",
+                duration_seconds=3600,
+                payload={"notification_message": "x"},
+            )
+
+            updated = await sched.reschedule(timer_id, logical_name="updated-name")
+            assert updated is True
+
+            rows = await sched.list(logical_name="updated-name")
+            assert any(row["id"] == timer_id for row in rows)
+        finally:
+            await sched.stop()
+
+    async def test_reschedule_updates_fires_at(self, db_repository):
+        sched, _gateway = _make_scheduler()
+        try:
+            timer_id = await sched.schedule(
+                logical_name="reschedule-me",
+                kind="notification",
+                duration_seconds=120,
+                payload={"notification_message": "x"},
+            )
+            before = await ScheduledTimersRepository.get(timer_id)
+            assert before is not None
+
+            new_fires_at = int(time.time()) + 7200
+            updated = await sched.reschedule(timer_id, new_fires_at=new_fires_at)
+            assert updated is True
+
+            after = await ScheduledTimersRepository.get(timer_id)
+            assert after is not None
+            assert int(after["fires_at"]) == new_fires_at
+            assert int(after["fires_at"]) != int(before["fires_at"])
+        finally:
+            await sched.stop()
+
+    async def test_reschedule_unknown_id_returns_false(self, db_repository):
+        sched, _gateway = _make_scheduler()
+        try:
+            updated = await sched.reschedule("nonexistent-id", logical_name="unused")
+            assert updated is False
+        finally:
+            await sched.stop()
+
+    async def test_reschedule_cancelled_row_returns_false(self, db_repository):
+        sched, _gateway = _make_scheduler()
+        try:
+            timer_id = await sched.schedule(
+                logical_name="cancel-then-reschedule",
+                kind="notification",
+                duration_seconds=3600,
+                payload={"notification_message": "x"},
+            )
+            cancelled = await sched.cancel(id_=timer_id)
+            assert cancelled == 1
+
+            updated = await sched.reschedule(timer_id, logical_name="new-name")
+            assert updated is False
+        finally:
+            await sched.stop()
+
+
 class TestRestartRecovery:
     async def test_restart_recovery(self, db_repository):
         # Scheduler #1: create a long-pending timer and stop without firing.
