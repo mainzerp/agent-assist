@@ -1,12 +1,27 @@
 # Version
 
-**Current Version:** 0.27.5
+**Current Version:** 0.27.6
 
-## Recent Changes (since 0.27.5)
+## Recent Changes (since 0.27.6)
 
 (none yet)
 
 ## Version History
+
+### 0.27.6 (PATCH) -- Timer retest follow-up fixes
+
+Follow-up patch for timer retest alignment across dashboard origin precedence
+and timer expiry area fallback matching.
+
+Changes:
+
+- Updated dashboard timer origin selection to prefer `origin_device_id`
+  over area-derived origin values.
+- Normalized timer-expiry area fallback matching with trim/casefold while
+  keeping strict equality checks after normalization.
+- Added and updated tests for origin precedence and fallback matching
+  robustness.
+- Bumped `container/app/__init__.py` runtime version to `0.27.6`.
 
 ### 0.27.5 (PATCH) -- Timer expiry delivery and dashboard contract alignment
 

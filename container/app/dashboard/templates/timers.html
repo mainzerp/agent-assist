@@ -145,8 +145,8 @@ function timersPage() {
 
         displayOrigin(timer) {
             if (!timer) return '-';
-            if (timer.origin_area) return `area:${timer.origin_area}`;
             if (timer.origin_device_id) return `device:${timer.origin_device_id}`;
+            if (timer.origin_area) return `area:${timer.origin_area}`;
             return '-';
         }
     };

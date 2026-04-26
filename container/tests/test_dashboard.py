@@ -223,6 +223,15 @@ class TestDashboardTemplateRendering:
         assert "Timer Pool" not in html
         assert "Pending Delayed Tasks" not in html
 
+    async def test_timers_page_origin_display_prefers_device_before_area(self, dashboard_client: httpx.AsyncClient):
+        resp = await dashboard_client.get("/dashboard/timers")
+        html = resp.text
+        device_idx = html.find("if (timer.origin_device_id) return `device:${timer.origin_device_id}`;")
+        area_idx = html.find("if (timer.origin_area) return `area:${timer.origin_area}`;")
+        assert device_idx != -1
+        assert area_idx != -1
+        assert device_idx < area_idx
+
 
 @pytest.mark.integration
 class TestTimerDashboardApiContract:

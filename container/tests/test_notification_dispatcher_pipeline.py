@@ -299,3 +299,84 @@ async def test_dispatch_timer_notification_unnamed_timer_uses_generic_message_wi
     notify_tts.assert_not_awaited()
     notify_persistent.assert_awaited_once()
     assert notify_persistent.await_args.args[2] == "The timer has finished"
+
+
+@pytest.mark.asyncio
+async def test_resolve_media_player_from_area_matches_case_and_whitespace_with_entity_index() -> None:
+    entry = SimpleNamespace(
+        entity_id="media_player.kitchen_speaker",
+        area="Kitchen",
+        domain="media_player",
+    )
+    index = MagicMock()
+    index.list_entries_async = AsyncMock(return_value=[entry])
+
+    got = await nd._resolve_media_player_from_area(MagicMock(), "  kitchen  ", entity_index=index)
+
+    assert got == "media_player.kitchen_speaker"
+
+
+@pytest.mark.asyncio
+async def test_resolve_media_player_from_area_does_not_match_non_equivalent_area() -> None:
+    entry = SimpleNamespace(
+        entity_id="media_player.bedroom_speaker",
+        area="bedroom",
+        domain="media_player",
+    )
+    index = MagicMock()
+    index.list_entries_async = AsyncMock(return_value=[entry])
+
+    got = await nd._resolve_media_player_from_area(MagicMock(), "kitchen", entity_index=index)
+
+    assert got is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_satellite_matches_case_and_whitespace_with_entity_index() -> None:
+    entry = SimpleNamespace(
+        entity_id="assist_satellite.kitchen_pi",
+        area="Kitchen",
+        domain="assist_satellite",
+    )
+    index = MagicMock()
+    index.list_entries_async = AsyncMock(return_value=[entry])
+
+    got = await nd._resolve_satellite_device(MagicMock(), "  kitchen  ", entity_index=index)
+
+    assert got == "assist_satellite.kitchen_pi"
+
+
+@pytest.mark.asyncio
+async def test_resolve_timer_playback_target_prefers_origin_device_then_area_fallback() -> None:
+    with (
+        patch.object(nd, "_resolve_media_player_from_origin_device", new=AsyncMock(return_value="media_player.device")) as from_device,
+        patch.object(nd, "_resolve_media_player_from_area", new=AsyncMock(return_value="media_player.area")) as from_area,
+    ):
+        got = await nd._resolve_timer_playback_target(
+            MagicMock(),
+            origin_device_id="device-abc",
+            area="kitchen",
+            entity_index=MagicMock(),
+        )
+
+    assert got == "media_player.device"
+    from_device.assert_awaited_once()
+    from_area.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_timer_playback_target_uses_area_when_device_resolution_fails() -> None:
+    with (
+        patch.object(nd, "_resolve_media_player_from_origin_device", new=AsyncMock(return_value=None)) as from_device,
+        patch.object(nd, "_resolve_media_player_from_area", new=AsyncMock(return_value="media_player.area")) as from_area,
+    ):
+        got = await nd._resolve_timer_playback_target(
+            MagicMock(),
+            origin_device_id="device-abc",
+            area="kitchen",
+            entity_index=MagicMock(),
+        )
+
+    assert got == "media_player.area"
+    from_device.assert_awaited_once()
+    from_area.assert_awaited_once()

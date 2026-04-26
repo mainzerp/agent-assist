@@ -26,6 +26,15 @@ class NotificationMetadata:
     duration: str | None
 
 
+def _normalize_area_for_match(area: str | None) -> str | None:
+    if area is None:
+        return None
+    normalized = str(area).strip()
+    if not normalized:
+        return None
+    return normalized.casefold()
+
+
 def _error_result(message: str, *, code: str = "internal", recoverable: bool = True) -> dict[str, Any]:
     return {
         "speech": "",
@@ -513,7 +522,8 @@ async def _resolve_satellite_device(
     area: str | None,
     entity_index: Any = None,
 ) -> str | None:
-    if not area:
+    normalized_area = _normalize_area_for_match(area)
+    if not normalized_area:
         return None
 
     if entity_index is not None:
@@ -522,7 +532,7 @@ async def _resolve_satellite_device(
                 domains={"assist_satellite"},
             )
             for entry in entries:
-                if getattr(entry, "area", None) == area:
+                if _normalize_area_for_match(getattr(entry, "area", None)) == normalized_area:
                     return entry.entity_id
         except Exception:
             logger.warning(
@@ -535,7 +545,10 @@ async def _resolve_satellite_device(
         states = await ha_client.get_states()
         for state in states:
             entity_id = state.get("entity_id", "")
-            if entity_id.startswith("assist_satellite.") and state.get("attributes", {}).get("area_id") == area:
+            if not entity_id.startswith("assist_satellite."):
+                continue
+            state_area = state.get("attributes", {}).get("area_id")
+            if _normalize_area_for_match(state_area) == normalized_area:
                 return entity_id
     except Exception:
         logger.warning("Failed to resolve satellite for area %s", area, exc_info=True)
@@ -583,14 +596,15 @@ async def _resolve_media_player_from_area(
     area: str | None,
     entity_index: Any = None,
 ) -> str | None:
-    if not area:
+    normalized_area = _normalize_area_for_match(area)
+    if not normalized_area:
         return None
 
     if entity_index is not None:
         try:
             entries = await entity_index.list_entries_async(domains={"media_player"})
             for entry in entries:
-                if getattr(entry, "area", None) == area:
+                if _normalize_area_for_match(getattr(entry, "area", None)) == normalized_area:
                     return entry.entity_id
         except Exception:
             logger.warning("EntityIndex media_player lookup failed for area %s", area, exc_info=True)
@@ -601,7 +615,8 @@ async def _resolve_media_player_from_area(
             entity_id = state.get("entity_id", "")
             if not entity_id.startswith("media_player."):
                 continue
-            if state.get("attributes", {}).get("area_id") == area:
+            state_area = state.get("attributes", {}).get("area_id")
+            if _normalize_area_for_match(state_area) == normalized_area:
                 return entity_id
     except Exception:
         logger.warning("State scan media_player lookup failed for area %s", area, exc_info=True)
