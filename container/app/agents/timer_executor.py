@@ -49,6 +49,7 @@ _ACTION_DOMAINS: dict[str, frozenset[str]] = {}
 _INPUT_DATETIME_DOMAINS: frozenset[str] = frozenset({"input_datetime"})
 _CALENDAR_DOMAINS: frozenset[str] = frozenset({"calendar"})
 _ALARM_WEEKDAY_CODES: frozenset[str] = frozenset({"MO", "TU", "WE", "TH", "FR", "SA", "SU"})
+_ALARM_RECURRING_KEYWORDS: tuple[str, ...] = ("alarm", "wecker")
 
 
 def _validate_domain(entity_id: str) -> bool:
@@ -449,6 +450,129 @@ def _build_recurring_alarm_payload(
         normalized["byweekday"] = normalized_weekdays
 
     return normalized, None
+
+
+def _is_alarm_like_recurring_reminder(action: dict[str, Any]) -> bool:
+    """Return True for conservative alarm/wecker recurring-reminder intents only."""
+    params = action.get("parameters") or {}
+    start_time = str(params.get("start_date_time", "")).strip()
+    rrule = str(params.get("rrule", "")).strip()
+    if not start_time or not rrule:
+        return False
+
+    fields = [
+        str(action.get("entity") or ""),
+        str(params.get("summary") or ""),
+        str(params.get("label") or ""),
+    ]
+    haystack = " ".join(fields).casefold()
+    return any(keyword in haystack for keyword in _ALARM_RECURRING_KEYWORDS)
+
+
+def _parse_rrule_for_alarm_recurrence(rrule: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Map supported RRULE forms to internal recurrence payload for alarms."""
+    raw = str(rrule or "").strip()
+    if not raw:
+        return None, "rrule is required for recurring alarm routing."
+
+    pairs: dict[str, str] = {}
+    for segment in raw.split(";"):
+        part = segment.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            return None, f"Invalid RRULE segment '{part}'."
+        key, value = part.split("=", 1)
+        rule_key = key.strip().upper()
+        rule_value = value.strip()
+        if not rule_key or not rule_value:
+            return None, f"Invalid RRULE segment '{part}'."
+        if rule_key in pairs:
+            return None, f"Duplicate RRULE key '{rule_key}'."
+        pairs[rule_key] = rule_value
+
+    allowed_keys = {"FREQ", "INTERVAL", "BYDAY"}
+    unsupported = [key for key in pairs if key not in allowed_keys]
+    if unsupported:
+        return None, "Unsupported RRULE component(s): " + ", ".join(sorted(unsupported)) + "."
+
+    freq = pairs.get("FREQ", "").upper()
+    if freq not in {"DAILY", "WEEKLY"}:
+        return None, "Unsupported RRULE frequency for recurring alarms. Use FREQ=DAILY or FREQ=WEEKLY."
+
+    interval = 1
+    if "INTERVAL" in pairs:
+        try:
+            interval = int(pairs["INTERVAL"])
+        except (TypeError, ValueError):
+            return None, "Invalid RRULE INTERVAL. Use a positive integer."
+        if interval < 1:
+            return None, "Invalid RRULE INTERVAL. Use a positive integer."
+
+    recurrence: dict[str, Any] = {"freq": freq.casefold(), "interval": interval}
+    if freq == "WEEKLY":
+        raw_byday = pairs.get("BYDAY", "")
+        if not raw_byday:
+            return None, "Weekly RRULE requires BYDAY (e.g. BYDAY=MO,WE,FR)."
+
+        seen: set[str] = set()
+        byweekday: list[str] = []
+        for token in raw_byday.split(","):
+            code = token.strip().upper()
+            if code not in _ALARM_WEEKDAY_CODES:
+                return None, "Invalid RRULE BYDAY value. Use MO,TU,WE,TH,FR,SA,SU."
+            if code in seen:
+                continue
+            seen.add(code)
+            byweekday.append(code)
+
+        if not byweekday:
+            return None, "Weekly RRULE requires at least one valid BYDAY value."
+        recurrence["byweekday"] = byweekday
+    elif "BYDAY" in pairs:
+        return None, "BYDAY is only supported for weekly recurring alarms."
+
+    return recurrence, None
+
+
+def _build_alarm_reroute_action_from_recurring_reminder(
+    action: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Convert alarm-like create_recurring_reminder payload to set_datetime format."""
+    if not _is_alarm_like_recurring_reminder(action):
+        return None, None
+
+    params = action.get("parameters") or {}
+    start_time_raw = str(params.get("start_date_time", "")).strip()
+    rrule_raw = str(params.get("rrule", "")).strip()
+
+    recurrence, recurrence_error = _parse_rrule_for_alarm_recurrence(rrule_raw)
+    if recurrence_error:
+        return None, recurrence_error
+
+    normalized_start = start_time_raw.replace("T", " ")
+    try:
+        parsed_start = datetime.fromisoformat(normalized_start)
+    except ValueError:
+        return None, "Invalid start_date_time format for recurring alarm routing. Use YYYY-MM-DD HH:MM:SS."
+
+    if parsed_start.tzinfo is not None:
+        datetime_value = parsed_start.isoformat(sep=" ")
+    else:
+        datetime_value = parsed_start.strftime("%Y-%m-%d %H:%M:%S")
+
+    label = (str(action.get("entity") or "").strip() or str(params.get("summary") or "").strip() or "alarm")
+
+    rerouted_action: dict[str, Any] = {
+        "action": "set_datetime",
+        "entity": label,
+        "parameters": {
+            "datetime": datetime_value,
+            "recurrence": recurrence,
+            "label": label,
+        },
+    }
+    return rerouted_action, None
 
 
 # ---------------------------------------------------------------------------
@@ -957,7 +1081,29 @@ async def _create_recurring_reminder(
     entity_matcher: Any,
     agent_id: str | None,
     span_collector=None,
+    *,
+    device_id: str | None = None,
+    area_id: str | None = None,
+    language: str | None = None,
+    timezone: str | None = None,
 ) -> dict:
+    rerouted_action, reroute_error = _build_alarm_reroute_action_from_recurring_reminder(action)
+    if reroute_error:
+        return {
+            "success": False,
+            "entity_id": None,
+            "new_state": None,
+            "speech": reroute_error,
+        }
+    if rerouted_action is not None:
+        return await _set_alarm(
+            rerouted_action,
+            device_id=device_id,
+            area_id=area_id,
+            language=language,
+            timezone=timezone,
+        )
+
     entity_query = action.get("entity", "")
     params = action.get("parameters") or {}
     summary = str(params.get("summary", ""))
@@ -1587,7 +1733,16 @@ async def execute_timer_action(
         )
     if action_name == "create_recurring_reminder":
         return await _create_recurring_reminder(
-            action, ha_client, entity_index, entity_matcher, agent_id, span_collector=span_collector
+            action,
+            ha_client,
+            entity_index,
+            entity_matcher,
+            agent_id,
+            span_collector=span_collector,
+            device_id=device_id,
+            area_id=area_id,
+            language=language,
+            timezone=timezone,
         )
     if action_name == "set_datetime":
         return await _set_alarm(

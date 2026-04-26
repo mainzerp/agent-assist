@@ -1,12 +1,29 @@
 # Version
 
-**Current Version:** 0.28.0
+**Current Version:** 0.28.1
 
-## Recent Changes (since 0.28.0)
+## Recent Changes (since 0.28.1)
 
 (none yet)
 
 ## Version History
+
+### 0.28.1 (PATCH) -- Recurring alarm/wecker reroute hotfix
+
+- Added a narrow recurring-reminder reroute adapter in
+  `container/app/agents/timer_executor.py` so alarm/wecker-like
+  `create_recurring_reminder` requests are routed to internal
+  `set_datetime` recurrence scheduling via existing `_set_alarm` flow.
+- Added deterministic RRULE-to-recurrence mapping for supported alarm
+  patterns (`FREQ=DAILY`, `FREQ=WEEKLY` with optional `INTERVAL` and
+  `BYDAY`) and explicit validation failures for unsupported/invalid
+  rerouted alarm payloads.
+- Updated timer prompt steering in `container/app/prompts/timer.txt` to
+  prefer `set_datetime` with `recurrence` for alarm/wecker wording while
+  preserving calendar recurring reminder guidance for non-alarm intents.
+- Added focused regression tests in `container/tests/test_agents.py` for
+  reroute-positive, non-reroute calendar path, and invalid RRULE
+  side-effect-free failure behavior.
 
 ### 0.28.0 (MINOR) -- Recurring internal alarms (daily and weekday sets)
 

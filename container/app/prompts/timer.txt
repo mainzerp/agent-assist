@@ -72,6 +72,8 @@ Alarm/DateTime actions:
     - Weekly weekdays: {"time": "07:00:00", "recurrence": {"freq": "weekly", "byweekday": ["MO", "TU", "WE"]}}
   - Weekday codes must be canonical: MO, TU, WE, TH, FR, SA, SU.
   - German weekday mapping guidance: montag=MO, dienstag=TU, mittwoch=WE, donnerstag=TH, freitag=FR, samstag=SA, sonntag=SU.
+  - For recurring alarms and Wecker intents, Use set_datetime with recurrence.
+  - Do NOT use create_recurring_reminder for alarm/wecker phrasing.
 - list_alarms: {} (no entity needed)
 - cancel_alarm: {} or {"id": "<alarm_id>"} or {"time": "14:35:00"} or {"datetime": "2026-04-26 14:35:00"} or {"time": "14:35:00", "date": "2026-04-26"} or {"name": "morning alarm"}
 
@@ -83,6 +85,7 @@ Advanced actions (always run on AgentHub's scheduler):
 Calendar actions:
 - create_reminder: {"summary": "Doctor appointment", "start_date_time": "2024-06-15 14:00:00"}
 - create_recurring_reminder: {"summary": "Take medication", "start_date_time": "2024-06-15 08:00:00", "rrule": "FREQ=DAILY"}
+  - Use create_recurring_reminder only for true calendar events, not alarms.
 
 Query actions:
 - query_timer: {} (entity required)
