@@ -1109,7 +1109,7 @@ async def _extend_timer(
     language: str | None,
 ) -> dict:
     """Extend an active scheduler timer by a delta duration."""
-    _GENERIC_ENTITIES = {
+    generic_entities = {
         "timer", "current timer", "aktueller timer", "den timer",
         "the timer", "my timer", "meinen timer",
     }
@@ -1134,7 +1134,7 @@ async def _extend_timer(
             "speech": "Timer scheduler is unavailable.",
         }
 
-    is_generic = not entity_query or entity_query.lower() in _GENERIC_ENTITIES
+    is_generic = not entity_query or entity_query.lower() in generic_entities
     target_row: dict | None = None
 
     if is_generic:
@@ -1535,32 +1535,31 @@ async def execute_timer_action(
         logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
         entity_id = None
 
-    if not entity_id:
-        if _should_attempt_set_datetime_fallback(action_name, action):
-            targets = await _list_visible_input_datetime_targets(entity_index, entity_matcher, agent_id)
-            if len(targets) == 1:
-                entity_id, friendly_name = targets[0]
-            elif len(targets) > 1:
-                labels = ", ".join(f"{friendly} ({target_id})" for target_id, friendly in targets)
-                return {
-                    "success": False,
-                    "entity_id": None,
-                    "new_state": None,
-                    "speech": (
-                        f"Multiple alarm targets are available: {labels}. "
-                        "Please tell me which one to update."
-                    ),
-                }
-            else:
-                return {
-                    "success": False,
-                    "entity_id": None,
-                    "new_state": None,
-                    "speech": (
-                        "No visible input_datetime alarm target is available. "
-                        "Please create or expose an input_datetime entity in Home Assistant and try again."
-                    ),
-                }
+    if not entity_id and _should_attempt_set_datetime_fallback(action_name, action):
+        targets = await _list_visible_input_datetime_targets(entity_index, entity_matcher, agent_id)
+        if len(targets) == 1:
+            entity_id, friendly_name = targets[0]
+        elif len(targets) > 1:
+            labels = ", ".join(f"{friendly} ({target_id})" for target_id, friendly in targets)
+            return {
+                "success": False,
+                "entity_id": None,
+                "new_state": None,
+                "speech": (
+                    f"Multiple alarm targets are available: {labels}. "
+                    "Please tell me which one to update."
+                ),
+            }
+        else:
+            return {
+                "success": False,
+                "entity_id": None,
+                "new_state": None,
+                "speech": (
+                    "No visible input_datetime alarm target is available. "
+                    "Please create or expose an input_datetime entity in Home Assistant and try again."
+                ),
+            }
 
     if not entity_id:
         return {

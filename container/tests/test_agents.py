@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time as _time
-from datetime import datetime, timezone
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -1107,7 +1107,7 @@ class TestTimerExecutor:
 
         scheduler = MagicMock()
         scheduler.schedule = AsyncMock(return_value="alarm-berlin")
-        now_ts = int(datetime(2026, 1, 15, 8, 0, 0, tzinfo=timezone.utc).timestamp())
+        now_ts = int(datetime(2026, 1, 15, 8, 0, 0, tzinfo=datetime.UTC).timestamp())
 
         with (
             _patch("app.agents.timer_executor._get_scheduler", return_value=scheduler),
