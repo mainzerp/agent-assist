@@ -1,12 +1,27 @@
 # Version
 
-**Current Version:** 0.27.15
+**Current Version:** 0.27.16
 
-## Recent Changes (since 0.27.15)
+## Recent Changes (since 0.27.16)
 
 (none yet)
 
 ## Version History
+
+### 0.27.16 (PATCH) -- Timers modal centering and assist-satellite filtering
+
+- Updated timers dashboard modal wrappers in
+  `container/app/dashboard/templates/timers.html` to use the shared
+  `.modal-overlay` centering behavior for Add Timer and Add Alarm modal
+  presentation while keeping existing add/edit/cancel logic unchanged.
+- Tightened `GET /api/admin/timers/satellites` in
+  `container/app/api/routes/admin.py` to return only valid
+  `assist_satellite.*`-derived device IDs, removed broad inclusion from
+  general device lookup keys, preserved the `{ satellites: [...] }`
+  response shape, and deduplicated by `device_id`.
+- Updated focused endpoint regression coverage in
+  `container/tests/test_api.py` to verify assist-only filtering and
+  duplicate `device_id` collapse.
 
 ### 0.27.15 (PATCH) -- Timer/alarm dashboard CRUD and satellite-aware creation
 

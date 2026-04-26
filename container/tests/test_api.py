@@ -116,7 +116,6 @@ async def unauthed_client(db_repository):
 async def timer_admin_client(db_repository):
     """Async authenticated client with a real TimerScheduler in app state."""
     from app.agents.timer_scheduler import TimerScheduler
-    from app.db import schema as db_schema
     from app.db.repository import ScheduledTimersRepository
 
     gateway = MagicMock()
@@ -125,8 +124,30 @@ async def timer_admin_client(db_repository):
 
     ha_client = AsyncMock()
     ha_client.get_area_registry = AsyncMock(return_value={})
-    ha_client.render_template = AsyncMock(return_value="")
-    ha_client.get_states = AsyncMock(return_value=[])
+
+    async def _render_template_side_effect(template: str):
+        text = str(template or "")
+        if "device_id('assist_satellite.kitchen_a')" in text:
+            return "device-dup"
+        if "device_id('assist_satellite.kitchen_b')" in text:
+            return "device-dup"
+        if "device_id('assist_satellite.office')" in text:
+            return "device-unique"
+        if "device_attr('device-dup'" in text:
+            return "Kitchen Satellite"
+        if "device_attr('device-unique'" in text:
+            return "Office Satellite"
+        return ""
+
+    ha_client.render_template = AsyncMock(side_effect=_render_template_side_effect)
+    ha_client.get_states = AsyncMock(
+        return_value=[
+            {"entity_id": "assist_satellite.kitchen_a", "attributes": {}},
+            {"entity_id": "assist_satellite.kitchen_b", "attributes": {}},
+            {"entity_id": "assist_satellite.office", "attributes": {}},
+            {"entity_id": "light.kitchen", "attributes": {}},
+        ]
+    )
 
     app = build_integration_test_app(
         setup_complete=True,
@@ -146,13 +167,10 @@ async def timer_admin_client(db_repository):
         },
     )
 
-    with (
-        patch("app.api.routes.admin.get_db_read", db_schema.get_db_read),
-        patch(
-            "app.db.repository.SetupStateRepository.is_complete",
-            new_callable=AsyncMock,
-            return_value=True,
-        ),
+    with patch(
+        "app.db.repository.SetupStateRepository.is_complete",
+        new_callable=AsyncMock,
+        return_value=True,
     ):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -759,35 +777,17 @@ class TestAdminTimersAPI:
         assert timers
         assert all("fires_at" in row for row in timers)
 
-    async def test_get_timer_satellites_returns_distinct_device_ids(self, timer_admin_client):
-        client, scheduler = timer_admin_client
-        await scheduler.schedule(
-            logical_name="sat-1",
-            kind="plain",
-            duration_seconds=3600,
-            origin_device_id="device-dup",
-        )
-        await scheduler.schedule(
-            logical_name="sat-2",
-            kind="plain",
-            duration_seconds=3600,
-            origin_device_id="device-dup",
-        )
-        await scheduler.schedule(
-            logical_name="sat-3",
-            kind="plain",
-            duration_seconds=3600,
-            origin_device_id="device-unique",
-        )
-
+    async def test_get_timer_satellites_filters_to_assist_satellites_and_deduplicates(self, timer_admin_client):
+        client, _scheduler = timer_admin_client
         resp = await client.get("/api/admin/timers/satellites")
         assert resp.status_code == 200
         satellites = resp.json().get("satellites", [])
+
+        assert isinstance(satellites, list)
         ids = [row["device_id"] for row in satellites if row.get("device_id")]
         assert len(ids) == len(set(ids))
-        assert "device-dup" in ids
-        assert "device-unique" in ids
-        assert "device-known" in ids
+        assert set(ids) == {"device-dup", "device-unique"}
+        assert "device-known" not in ids
 
 
 # ===================================================================

@@ -17,7 +17,6 @@ from app.db.repository import (
     SecretsRepository,
     SettingsRepository,
 )
-from app.db.schema import get_db_read
 from app.ha_client.auth import get_ha_token, set_ha_token
 from app.ha_client.rest import test_ha_connection
 from app.security.auth import API_KEY_SECRET_NAME, require_admin_session
@@ -231,6 +230,28 @@ async def _resolve_origin_label(
     if origin_area:
         return area_registry.get(origin_area) or origin_area
     return None
+
+
+async def _resolve_ha_device_id(
+    ha_client: Any,
+    entity_id: str,
+) -> str | None:
+    if not ha_client or not entity_id:
+        return None
+    template = "{{ device_id('" + entity_id + "') }}"
+    rendered: str | None = None
+    try:
+        rendered = await ha_client.render_template(template)
+    except Exception:
+        logger.debug("Failed to resolve device_id for %s", entity_id, exc_info=True)
+        return None
+
+    if not rendered:
+        return None
+    cleaned = str(rendered).strip()
+    if not cleaned or cleaned.lower() == "none":
+        return None
+    return cleaned
 
 
 @router.get("/agents")
@@ -758,23 +779,33 @@ async def get_timer_satellites(request: Request):
         except Exception:
             area_registry = {}
 
-    known_ids: set[str] = set()
-    async with get_db_read() as db:
-        cursor = await db.execute(
-            "SELECT DISTINCT origin_device_id FROM scheduled_timers WHERE TRIM(COALESCE(origin_device_id, '')) <> ''"
-        )
-        rows = await cursor.fetchall()
-    for row in rows:
-        value = (row[0] or "").strip()
-        if value:
-            known_ids.add(value)
+    satellite_entities: set[str] = set()
+    entity_index = getattr(request.app.state, "entity_index", None)
+    if entity_index is not None:
+        try:
+            entries = await entity_index.list_entries_async(domains={"assist_satellite"})
+            for entry in entries:
+                entity_id = str(getattr(entry, "entity_id", "") or "").strip()
+                if entity_id.startswith("assist_satellite."):
+                    satellite_entities.add(entity_id)
+        except Exception:
+            logger.debug("Entity index satellite lookup failed", exc_info=True)
 
-    entity_lookups = getattr(request.app.state, "entity_lookups", None)
-    device_lookup = (entity_lookups or {}).get("device", {}) if isinstance(entity_lookups, dict) else {}
-    for device_id in device_lookup:
-        cleaned = str(device_id or "").strip()
-        if cleaned:
-            known_ids.add(cleaned)
+    if ha_client:
+        try:
+            states = await ha_client.get_states()
+        except Exception:
+            states = []
+        for state in states:
+            entity_id = str(state.get("entity_id", "") or "").strip()
+            if entity_id.startswith("assist_satellite."):
+                satellite_entities.add(entity_id)
+
+    known_ids: set[str] = set()
+    for entity_id in satellite_entities:
+        device_id = await _resolve_ha_device_id(ha_client, entity_id)
+        if device_id:
+            known_ids.add(device_id)
 
     satellites: list[dict[str, str]] = []
     for device_id in known_ids:

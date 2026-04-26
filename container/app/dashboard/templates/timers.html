@@ -135,7 +135,7 @@
     </template>
 
     <!-- Edit Timer/Alarm Modal -->
-    <div x-show="showEditModal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;" @click.self="showEditModal=false">
+    <div x-show="showEditModal" class="modal-overlay" @click.self="showEditModal=false">
         <div style="background:var(--surface,#1e1e2e);padding:1.5rem;border-radius:8px;min-width:320px;max-width:480px;width:90%;">
             <h3 style="margin-top:0;" x-text="editMode === 'alarm' ? 'Edit Alarm' : 'Edit Timer'"></h3>
             <div style="margin-bottom:1rem;">
@@ -157,7 +157,7 @@
     </div>
 
     <!-- Add Timer Modal -->
-    <div x-show="showAddTimerModal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;" @click.self="showAddTimerModal=false">
+    <div x-show="showAddTimerModal" class="modal-overlay" @click.self="showAddTimerModal=false">
         <div style="background:var(--surface,#1e1e2e);padding:1.5rem;border-radius:8px;min-width:320px;max-width:480px;width:90%;">
             <h3 style="margin-top:0;">Add Timer</h3>
             <div style="margin-bottom:1rem;">
@@ -207,7 +207,7 @@
     </div>
 
     <!-- Add Alarm Modal -->
-    <div x-show="showAddAlarmModal" style="position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;" @click.self="showAddAlarmModal=false">
+    <div x-show="showAddAlarmModal" class="modal-overlay" @click.self="showAddAlarmModal=false">
         <div style="background:var(--surface,#1e1e2e);padding:1.5rem;border-radius:8px;min-width:320px;max-width:480px;width:90%;">
             <h3 style="margin-top:0;">Add Alarm</h3>
             <div style="margin-bottom:1rem;">
