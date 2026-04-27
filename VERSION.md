@@ -1,17 +1,26 @@
 # Version
 
-**Current Version:** 1.3.2
+**Current Version:** 1.3.3
 
-## Recent Changes (since 1.3.1)
+## Recent Changes (since 1.3.2)
 
-- HA bridge: fixed satellite stuck in "processing" with no audio after a filler-then-final response, and now audibly bridges the agent compute time. The integration ends the originating satellite's active assist_pipeline run with the filler text as the spoken result, so the user hears the verbal acknowledgement within ~1 s of finishing speaking and the satellite's LEDs return to `idle` cleanly. The actual final answer is then pushed via a separate `assist_satellite.announce` call once the satellite is observed back in `idle`, so the announce no longer collides with the active pipeline.
-- HA bridge: WebSocket ownership transfers from the foreground conversation call to a background "push" task when a filler frame arrives first; the foreground returns the filler ConversationResult immediately and the background continues reading the WS for the final, watches the satellite state, and dispatches the announce only after the satellite is idle. Push tasks are tracked per satellite (one in-flight per satellite; supersession cancels the previous task) and are registered as HA background tasks so they are cancelled on integration reload.
-- HA bridge: push aborts cleanly if the user starts a new turn before the announce fires (satellite re-enters `listening`/`processing` after the filler's `responding`→`idle` cycle), preventing audio overlap with the new turn.
-- HA bridge: removed the dead FillerGate machinery (`_arm_filler_gate`, `_await_filler_gate`, the `_filler_gate.py` module, the media_player state-listener callbacks, the old `MAX_FILLER_WAIT_SECONDS` constant, and the `_speak_filler` / sibling-`tts.speak` / `_resolve_tts_engine_entity` / `_resolve_tts_entity` helpers if exclusively used by the deleted path) since the V4 filler-first design has no awaitable gate and no in-pipeline announce branch.
-- HA bridge: filler-path diagnostics promoted from DEBUG to INFO/WARNING with a `"ha-agenthub:"` log prefix so future stalls leave a visible trail at the default INFO level. New lines: filler-first return (INFO), push received final (INFO), push dispatching announce (INFO), push cancelled / superseded / abandoned (INFO), push WS-closed / final-timeout / idle-timeout / no-satellite / announce-failed (WARNING).
-- HA bridge: added `enable_post_filler_push` config option (default `True`) as a kill switch — set to `False` to revert to a V3-style "buffer fillers, return combined string at end of stream" behaviour without code rollback.
+- Echo guard for the post-filler push pipeline now requires both satellite identity AND normalized inbound text to match a recent announcement within an 8 s TTL, instead of suppressing every turn from a satellite while a push is in flight. Eliminates the possibility of silently masking unrelated voice turns.
+- Push-task cancellation on supersession and on integration unload/removal now awaits the cancelled task's cleanup (state listener unsubscribe, local WS close) before proceeding.
+- Optional `homeassistant.helpers.event.async_track_state_change_event` import now also tolerates `ImportError` (in addition to `ModuleNotFoundError`); when the symbol is unavailable the push falls back to a fixed `POST_FILLER_FALLBACK_DELAY_SECONDS = 1.5` delay before announcing.
+- WebSocket ownership transfer in `_process_via_ws` is now atomic: the background push task is registered before `self._ws` is detached; if registration fails the foreground keeps the socket and falls back to the buffered unified-string path.
+- Removed the stale empty `_filler_gate.py` artifact.
+- Added two `DEBUG`-level diagnostic log lines (turn entry, WebSocket entry) under the `ha-agenthub:` prefix so future "no container trace, no HA log" regressions are immediately diagnosable when debug logging is enabled.
 
 ## Version History
+
+### 1.3.3 (PATCH) -- HA bridge V4 audit fixes
+
+- Echo guard for the post-filler push pipeline now requires both satellite identity AND normalized inbound text to match a recent announcement within an 8 s TTL, instead of suppressing every turn from a satellite while a push is in flight. Eliminates the possibility of silently masking unrelated voice turns.
+- Push-task cancellation on supersession and on integration unload/removal now awaits the cancelled task's cleanup (state listener unsubscribe, local WS close) before proceeding.
+- Optional `homeassistant.helpers.event.async_track_state_change_event` import now also tolerates `ImportError` (in addition to `ModuleNotFoundError`); when the symbol is unavailable the push falls back to a fixed `POST_FILLER_FALLBACK_DELAY_SECONDS = 1.5` delay before announcing.
+- WebSocket ownership transfer in `_process_via_ws` is now atomic: the background push task is registered before `self._ws` is detached; if registration fails the foreground keeps the socket and falls back to the buffered unified-string path.
+- Removed the stale empty `_filler_gate.py` artifact.
+- Added two `DEBUG`-level diagnostic log lines (turn entry, WebSocket entry) under the `ha-agenthub:` prefix so future "no container trace, no HA log" regressions are immediately diagnosable when debug logging is enabled.
 
 ### 1.3.2 (PATCH) -- Filler-first return + post-idle announce push
 

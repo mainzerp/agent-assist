@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 import contextvars
 import json
 import logging
@@ -23,8 +24,10 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 try:
     from homeassistant.helpers.event import async_track_state_change_event
-except ModuleNotFoundError:
+    _HAS_STATE_TRACKER = True
+except (ImportError, AttributeError):
     async_track_state_change_event = None
+    _HAS_STATE_TRACKER = False
 
 from .const import (
     DOMAIN,
@@ -37,10 +40,12 @@ from .const import (
     DEFAULT_NATIVE_PLAIN_TIMERS,
     CONF_ENABLE_POST_FILLER_PUSH,
     DEFAULT_ENABLE_POST_FILLER_PUSH,
+    ECHO_GUARD_TTL_SECONDS,
     NATIVE_HA_AGENT_ID,
     NATIVE_PLAIN_TIMER_DIRECTIVE,
     NATIVE_PLAIN_TIMER_ELIGIBLE_FIELD,
     NATIVE_PLAIN_TIMER_ELIGIBLE_HEADER,
+    POST_FILLER_FALLBACK_DELAY_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -150,6 +155,18 @@ def _strip_markdown(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _normalize_for_echo(text: str) -> str:
+    """Normalize text for echo comparison: strip markdown, lowercase,
+    collapse whitespace. Used only by the post-filler-push echo guard."""
+    if not text:
+        return ""
+    stripped = _strip_markdown(text)
+    return _WHITESPACE_RE.sub(" ", stripped).strip().lower()
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -212,7 +229,7 @@ class HaAgentHubConversationEntity(
         # V4: at most one in-flight post-filler push task per satellite.
         self._inflight_pushes: dict[str, asyncio.Task] = {}
         # V4 reentrancy guard for assist_satellite.announce echo loops.
-        self._push_in_progress_satellites: set[str] = set()
+        self._recent_announcements: dict[str, tuple[str, float]] = {}
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
@@ -242,10 +259,9 @@ class HaAgentHubConversationEntity(
         )
 
         def _cancel_pushes() -> None:
-            for sat_id, task in list(self._inflight_pushes.items()):
-                if not task.done():
-                    task.cancel()
-            self._inflight_pushes.clear()
+            if not self._inflight_pushes:
+                return
+            self.hass.async_create_task(self._cancel_and_await_pushes(None))
 
         self._entry.async_on_unload(_cancel_pushes)
 
@@ -254,9 +270,14 @@ class HaAgentHubConversationEntity(
         if hasattr(self, "_reconnect_task") and self._reconnect_task:
             self._reconnect_task.cancel()
             self._reconnect_task = None
-        for sat_id, task in list(self._inflight_pushes.items()):
-            task.cancel()
-        self._inflight_pushes.clear()
+        if self._inflight_pushes:
+            try:
+                await asyncio.shield(self._cancel_and_await_pushes(None))
+            except Exception:
+                logger.debug(
+                    "ha-agenthub: push cancellation during entity removal raised",
+                    exc_info=True,
+                )
         await self._disconnect_ws()
         await super().async_will_remove_from_hass()
 
@@ -389,11 +410,14 @@ class HaAgentHubConversationEntity(
         cid = user_input.conversation_id or ""
         text = (user_input.text or "").strip()
         device_id = getattr(user_input, "device_id", None)
+        sat: str | None = None
+        echo_suppressed = False
         if isinstance(device_id, str) and device_id:
             sat = self._resolve_satellite_entity(user_input)
-            if sat and sat in self._push_in_progress_satellites:
-                logger.warning(
-                    "ha-agenthub: suppressing reentrant turn from satellite mid-push sat=%s text_len=%d",
+            if self._is_likely_echo(sat, text):
+                echo_suppressed = True
+                logger.debug(
+                    "ha-agenthub: echo-suppressing turn sat=%s text_len=%d",
                     sat, len(text),
                 )
                 response = intent.IntentResponse(language=user_input.language or "en")
@@ -402,6 +426,11 @@ class HaAgentHubConversationEntity(
                     response=response,
                     conversation_id=user_input.conversation_id,
                 )
+        logger.debug(
+            "ha-agenthub: turn-entry cid=%s device_id=%s sat=%s text_len=%d echo_guard=%s",
+            cid, device_id, sat, len(text),
+            "hit" if echo_suppressed else "miss",
+        )
         key = (cid, text)
 
         coalesced = False
@@ -668,7 +697,46 @@ class HaAgentHubConversationEntity(
             return f"area:{area_id}"
         return "__global__"
 
-    def _spawn_post_filler_push(
+    def _is_likely_echo(self, satellite: str | None, inbound_text: str) -> bool:
+        """Return True iff a recent announce on this satellite carried the
+        same normalized text and the TTL has not expired."""
+        if not satellite:
+            return False
+        entry = self._recent_announcements.get(satellite)
+        if entry is None:
+            return False
+        announced_norm, expiry = entry
+        if time.monotonic() >= expiry:
+            self._recent_announcements.pop(satellite, None)
+            return False
+        return _normalize_for_echo(inbound_text) == announced_norm
+
+    async def _cancel_and_await_pushes(
+        self, satellite_ids: Iterable[str] | None = None
+    ) -> None:
+        """Cancel in-flight push tasks and await their completion.
+
+        If satellite_ids is None, cancels all tasks in self._inflight_pushes.
+        Otherwise cancels only the matching keys. Always awaits with
+        return_exceptions=True so a CancelledError or other exception in one
+        task does not block cleanup of the others.
+        """
+        if satellite_ids is None:
+            keys = list(self._inflight_pushes.keys())
+        else:
+            keys = [key for key in satellite_ids if key in self._inflight_pushes]
+        tasks: list[asyncio.Task] = []
+        for key in keys:
+            task = self._inflight_pushes.get(key)
+            if task is not None and not task.done():
+                task.cancel()
+                tasks.append(task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for key in keys:
+            self._inflight_pushes.pop(key, None)
+
+    async def _spawn_post_filler_push(
         self,
         *,
         local_ws: aiohttp.ClientWebSocketResponse,
@@ -684,18 +752,23 @@ class HaAgentHubConversationEntity(
                 "ha-agenthub: cancelling previous post-filler push key=%s sat=%s",
                 gate_key, satellite_entity_id,
             )
-            previous.cancel()
-        task = self._entry.async_create_background_task(
-            self.hass,
-            self._post_filler_push(
-                local_ws=local_ws,
-                satellite_entity_id=satellite_entity_id,
-                user_input=user_input,
-                gate_key=gate_key,
-                key=key,
-            ),
-            name=f"ha_agenthub_post_filler_push:{key}",
+            await self._cancel_and_await_pushes([key])
+        push_coro = self._post_filler_push(
+            local_ws=local_ws,
+            satellite_entity_id=satellite_entity_id,
+            user_input=user_input,
+            gate_key=gate_key,
+            key=key,
         )
+        try:
+            task = self._entry.async_create_background_task(
+                self.hass,
+                push_coro,
+                name=f"ha_agenthub_post_filler_push:{key}",
+            )
+        except Exception:
+            push_coro.close()
+            raise
         self._inflight_pushes[key] = task
 
     async def _post_filler_push(
@@ -725,7 +798,7 @@ class HaAgentHubConversationEntity(
                 observed_idle.set()
 
         try:
-            if satellite_entity_id and async_track_state_change_event is not None:
+            if satellite_entity_id and _HAS_STATE_TRACKER and async_track_state_change_event is not None:
                 unsub = async_track_state_change_event(
                     self.hass,
                     [satellite_entity_id],
@@ -802,7 +875,16 @@ class HaAgentHubConversationEntity(
                 )
                 return
 
-            if not observed_idle.is_set():
+            if not _HAS_STATE_TRACKER:
+                logger.debug(
+                    "ha-agenthub: state tracker unavailable; falling back to fixed delay key=%s sat=%s",
+                    gate_key, satellite_entity_id,
+                )
+                try:
+                    await asyncio.sleep(POST_FILLER_FALLBACK_DELAY_SECONDS)
+                except asyncio.CancelledError:
+                    raise
+            elif not observed_idle.is_set():
                 try:
                     await asyncio.wait_for(
                         observed_idle.wait(),
@@ -822,7 +904,11 @@ class HaAgentHubConversationEntity(
                 )
                 return
 
-            self._push_in_progress_satellites.add(satellite_entity_id)
+            normalized_announced = _normalize_for_echo(final_text)
+            self._recent_announcements[satellite_entity_id] = (
+                normalized_announced,
+                time.monotonic() + ECHO_GUARD_TTL_SECONDS,
+            )
             try:
                 logger.info(
                     "ha-agenthub: post-filler push dispatching announce key=%s sat=%s final_chars=%d",
@@ -843,8 +929,6 @@ class HaAgentHubConversationEntity(
                     "ha-agenthub: assist_satellite.announce failed in push key=%s sat=%s",
                     gate_key, satellite_entity_id, exc_info=True,
                 )
-            finally:
-                self._push_in_progress_satellites.discard(satellite_entity_id)
         except asyncio.CancelledError:
             logger.info(
                 "ha-agenthub: post-filler push cancelled key=%s sat=%s",
@@ -875,6 +959,12 @@ class HaAgentHubConversationEntity(
         """Send request via WebSocket and accumulate streaming tokens."""
         gate_key = HaAgentHubConversationEntity._filler_gate_key(self, user_input)
         push_enabled = self._is_post_filler_push_enabled()
+        logger.debug(
+            "ha-agenthub: ws-entry cid=%s ws_open=%s push_enabled=%s",
+            user_input.conversation_id,
+            self._ws is not None and not self._ws.closed,
+            push_enabled,
+        )
         payload: dict[str, Any] = {
             "text": user_input.text,
             "conversation_id": user_input.conversation_id,
@@ -919,25 +1009,33 @@ class HaAgentHubConversationEntity(
 
                         satellite = self._resolve_satellite_entity(user_input)
                         local_ws = self._ws
-                        self._ws = None
                         logger.info(
                             "ha-agenthub: filler-first return key=%s sat=%s filler_chars=%d",
                             gate_key, satellite, len(stripped_filler),
                         )
-                        self._spawn_post_filler_push(
-                            local_ws=local_ws,
-                            satellite_entity_id=satellite,
-                            user_input=user_input,
-                            gate_key=gate_key,
-                        )
-                        self._ws_last_active = time.monotonic()
-                        response = intent.IntentResponse(language=user_input.language or "en")
-                        response.async_set_speech(stripped_filler)
-                        return conversation.ConversationResult(
-                            response=response,
-                            conversation_id=user_input.conversation_id,
-                        )
-                        continue
+                        try:
+                            await self._spawn_post_filler_push(
+                                local_ws=local_ws,
+                                satellite_entity_id=satellite,
+                                user_input=user_input,
+                                gate_key=gate_key,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "ha-agenthub: failed to spawn post-filler push; keeping WS and falling back key=%s sat=%s",
+                                gate_key, satellite,
+                            )
+                            buffered_filler_parts.append(stripped_filler)
+                            continue
+                        else:
+                            self._ws = None
+                            self._ws_last_active = time.monotonic()
+                            response = intent.IntentResponse(language=user_input.language or "en")
+                            response.async_set_speech(stripped_filler)
+                            return conversation.ConversationResult(
+                                response=response,
+                                conversation_id=user_input.conversation_id,
+                            )
 
                     token_text = data.get("token", "")
                     if token_text:

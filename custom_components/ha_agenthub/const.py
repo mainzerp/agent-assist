@@ -40,3 +40,16 @@ NATIVE_HA_AGENT_ID = "conversation.home_assistant"
 NATIVE_PLAIN_TIMER_ELIGIBLE_FIELD = "native_plain_timer_eligible"
 NATIVE_PLAIN_TIMER_ELIGIBLE_HEADER = "X-HA-AgentHub-Native-Plain-Timer-Eligible"
 NATIVE_PLAIN_TIMER_DIRECTIVE = "delegate_native_plain_timer"
+
+# Echo-guard TTL for the narrow satellite+text reentrancy check used by
+# the post-filler-push pipeline. Window starts when an announce is
+# dispatched on a satellite; subsequent inbound turns from the same
+# satellite whose normalized text matches the announced text are
+# treated as recognizer echoes and suppressed.
+ECHO_GUARD_TTL_SECONDS = 8.0
+
+# Fallback delay used by the post-filler push when
+# homeassistant.helpers.event.async_track_state_change_event is not
+# importable on this HA core. Approximates the typical filler playback
+# duration so the follow-up announce does not collide.
+POST_FILLER_FALLBACK_DELAY_SECONDS = 1.5

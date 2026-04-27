@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -199,7 +200,7 @@ def _make_entity(conversation_module, *, service_side_effect=None, build_result=
     entity._inflight_bridge = {}
     entity._coalesce_window_sec = 0.25
     entity._inflight_pushes = {}
-    entity._push_in_progress_satellites = set()
+    entity._recent_announcements = {}
     entity._resolve_origin_context = MagicMock(return_value={})
     entity._is_native_plain_timers_enabled = MagicMock(return_value=False)
     entity._ws_last_active = 0.0
@@ -419,6 +420,183 @@ class TestHABridgeFillerWait:
         assert calls[1].args[2]["entity_id"] == "assist_satellite.b"
         assert calls[1].args[2]["message"] == "Antwort B"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("satellite", "inbound_text", "expiry_offset", "expect_suppressed", "expect_expired_cleanup"),
+        [
+            ("assist_satellite.flur", "Das Licht ist an.", 8.0, True, False),
+            ("assist_satellite.flur", "Mach das Licht aus.", 8.0, False, False),
+            ("assist_satellite.kueche", "Das Licht ist an.", 8.0, False, False),
+            ("assist_satellite.flur", "Das Licht ist an.", -1.0, False, True),
+        ],
+    )
+    async def test_echo_guard_matches_only_same_sat_and_normalized_text(
+        self,
+        satellite,
+        inbound_text,
+        expiry_offset,
+        expect_suppressed,
+        expect_expired_cleanup,
+        caplog,
+    ):
+        conversation_module = _import_conversation_module()
+        caplog.set_level(logging.DEBUG)
+        bridge_result = _FakeConversationResult(
+            response=_FakeIntentResponse(language="en"),
+            conversation_id="conv-1",
+        )
+        bridge_result.response.async_set_speech("forwarded")
+        entity = _make_entity(conversation_module)
+        entity._recent_announcements["assist_satellite.flur"] = (
+            "das licht ist an.",
+            time.monotonic() + expiry_offset,
+        )
+        entity._resolve_satellite_entity = MagicMock(return_value=satellite)
+        entity._async_bridge_with_cleanup = AsyncMock(return_value=bridge_result)
+
+        result = await conversation_module.HaAgentHubConversationEntity._async_handle_message(
+            entity,
+            _user_input(text=inbound_text),
+            SimpleNamespace(),
+        )
+
+        if expect_suppressed:
+            assert result.response.speech == ""
+            entity._async_bridge_with_cleanup.assert_not_awaited()
+            assert "ha-agenthub: echo-suppressing turn" in caplog.text
+        else:
+            assert result is bridge_result
+            entity._async_bridge_with_cleanup.assert_awaited_once()
+            assert "ha-agenthub: echo-suppressing turn" not in caplog.text
+        if expect_expired_cleanup:
+            assert "assist_satellite.flur" not in entity._recent_announcements
+        else:
+            assert "assist_satellite.flur" in entity._recent_announcements
+
+    @pytest.mark.asyncio
+    async def test_supersession_awaits_previous_push_cancellation(self):
+        conversation_module = _import_conversation_module()
+        entity = _make_entity(conversation_module)
+        first_ws = _FakeWebSocket()
+        second_ws = _FakeWebSocket()
+        user_input = _user_input()
+
+        await conversation_module.HaAgentHubConversationEntity._spawn_post_filler_push(
+            entity,
+            local_ws=first_ws,
+            satellite_entity_id="assist_satellite.flur",
+            user_input=user_input,
+            gate_key="device:device-a",
+        )
+        first_task = entity._inflight_pushes["assist_satellite.flur"]
+        await asyncio.sleep(0)
+
+        await conversation_module.HaAgentHubConversationEntity._spawn_post_filler_push(
+            entity,
+            local_ws=second_ws,
+            satellite_entity_id="assist_satellite.flur",
+            user_input=user_input,
+            gate_key="device:device-a",
+        )
+
+        assert first_ws.close.await_count == 1
+        assert entity._inflight_pushes["assist_satellite.flur"] is not first_task
+
+        await entity._cancel_and_await_pushes(None)
+
+    @pytest.mark.asyncio
+    async def test_ws_ownership_reverted_when_spawn_raises(self, caplog):
+        conversation_module = _import_conversation_module()
+        caplog.set_level(logging.ERROR)
+        result_sentinel = object()
+        entity = _make_entity(conversation_module, build_result=result_sentinel)
+        entity._resolve_satellite_entity = MagicMock(return_value="assist_satellite.flur")
+        entity._entry.async_create_background_task = MagicMock(side_effect=RuntimeError("boom"))
+        ws = _FakeWebSocket()
+        ws.push(_ws_text({"token": "Moment", "is_filler": True}))
+        ws.push(_ws_text({"token": "Das Licht ist an.", "done": True, "sanitized": True}))
+        entity._ws = ws
+
+        result = await conversation_module.HaAgentHubConversationEntity._process_via_ws(
+            entity,
+            _user_input(),
+        )
+
+        assert result is result_sentinel
+        assert entity._ws is ws
+        entity._build_result.assert_called_once_with(
+            "Moment. Das Licht ist an.",
+            "conv-1",
+            "en",
+            sanitized=True,
+        )
+        assert "ha-agenthub: failed to spawn post-filler push" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_missing_state_tracker_uses_fallback_delay_then_announces(self):
+        conversation_module = _import_conversation_module()
+        entity = _make_entity(conversation_module)
+        entity._resolve_satellite_entity = MagicMock(return_value="assist_satellite.flur")
+        ws = _FakeWebSocket()
+        ws.push(_ws_text({"token": "Moment", "is_filler": True}))
+        entity._ws = ws
+
+        sleep_mock = AsyncMock(return_value=None)
+        with (
+            patch.object(conversation_module, "async_track_state_change_event", None),
+            patch.object(conversation_module, "_HAS_STATE_TRACKER", False),
+            patch.object(conversation_module, "POST_FILLER_FALLBACK_DELAY_SECONDS", 0.05),
+            patch.object(conversation_module.asyncio, "sleep", sleep_mock),
+        ):
+            await conversation_module.HaAgentHubConversationEntity._process_via_ws(entity, _user_input())
+            task = _only_push_task(entity)
+            ws.push(_ws_text({"token": "Das Licht ist an", "done": True, "sanitized": True}))
+            await task
+
+        sleep_mock.assert_awaited_once_with(0.05)
+        call = entity.hass.services.async_call.await_args
+        assert call.args == (
+            "assist_satellite",
+            "announce",
+            {
+                "entity_id": "assist_satellite.flur",
+                "message": "Das Licht ist an",
+                "preannounce": False,
+            },
+        )
+        assert call.kwargs == {"blocking": False}
+        normalized_text, expiry = entity._recent_announcements["assist_satellite.flur"]
+        assert normalized_text == "das licht ist an"
+        assert expiry > time.monotonic()
+
+    @pytest.mark.asyncio
+    async def test_announce_records_recent_announcement_for_echo_guard(self):
+        conversation_module = _import_conversation_module()
+        tracker = _StateChangeTracker()
+        entity = _make_entity(conversation_module)
+        entity._resolve_satellite_entity = MagicMock(return_value="assist_satellite.flur")
+        ws = _FakeWebSocket()
+        ws.push(_ws_text({"token": "Moment", "is_filler": True}))
+        entity._ws = ws
+        final_text = "Das Licht ist an"
+
+        with patch.object(conversation_module, "async_track_state_change_event", tracker.track):
+            await conversation_module.HaAgentHubConversationEntity._process_via_ws(entity, _user_input())
+            task = _only_push_task(entity)
+
+            await _wait_for_listener(tracker, "assist_satellite.flur")
+            ws.push(_ws_text({"token": final_text, "done": True, "sanitized": True}))
+            await asyncio.sleep(0)
+            tracker.fire_state_change("assist_satellite.flur", "responding", "idle")
+            await task
+
+        assert len(entity._recent_announcements) == 1
+        normalized_text, expiry = entity._recent_announcements["assist_satellite.flur"]
+        assert normalized_text == conversation_module._normalize_for_echo(final_text)
+        now = time.monotonic()
+        assert expiry > now
+        assert expiry < now + conversation_module.ECHO_GUARD_TTL_SECONDS + 0.5
+
     async def test_filler_only_no_final_default_no_announce(self, caplog):
         conversation_module = _import_conversation_module()
         tracker = _StateChangeTracker()
@@ -581,6 +759,7 @@ class TestHABridgeFillerWait:
             second_task = _only_push_task(entity)
             await asyncio.gather(first_task, return_exceptions=True)
 
+            await _wait_for_listener(tracker, "assist_satellite.flur")
             tracker.fire_state_change("assist_satellite.flur", "responding", "idle")
             ws_two.push(_ws_text({"token": "Final", "done": True, "sanitized": True}))
             await second_task
