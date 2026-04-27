@@ -17,7 +17,9 @@ from .const import (
     DEFAULT_CONTAINER_URL,
     HEALTH_PATH,
     INTEGRATION_TITLE,
+    CONF_ENABLE_POST_FILLER_PUSH,
     CONF_NATIVE_PLAIN_TIMERS,
+    DEFAULT_ENABLE_POST_FILLER_PUSH,
     DEFAULT_NATIVE_PLAIN_TIMERS,
 )
 
@@ -49,6 +51,13 @@ def _build_options_schema(current: dict[str, Any]) -> vol.Schema:
             vol.Optional(
                 CONF_NATIVE_PLAIN_TIMERS,
                 default=current.get(CONF_NATIVE_PLAIN_TIMERS, DEFAULT_NATIVE_PLAIN_TIMERS),
+            ): bool,
+            vol.Optional(
+                CONF_ENABLE_POST_FILLER_PUSH,
+                default=current.get(
+                    CONF_ENABLE_POST_FILLER_PUSH,
+                    DEFAULT_ENABLE_POST_FILLER_PUSH,
+                ),
             ): bool,
         }
     )
@@ -129,7 +138,10 @@ class HaAgentHubOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Handle options flow."""
         errors: dict[str, str] = {}
-        current = self._entry.data
+        current = {
+            **(self._entry.data or {}),
+            **(self._entry.options or {}),
+        }
 
         if user_input is not None:
             url = _normalize_url(user_input[CONF_URL])
@@ -137,6 +149,12 @@ class HaAgentHubOptionsFlow(OptionsFlow):
             api_key = new_api_key or current.get(CONF_API_KEY, "")
             native_plain_timers = bool(
                 user_input.get(CONF_NATIVE_PLAIN_TIMERS, DEFAULT_NATIVE_PLAIN_TIMERS)
+            )
+            enable_post_filler_push = bool(
+                user_input.get(
+                    CONF_ENABLE_POST_FILLER_PUSH,
+                    DEFAULT_ENABLE_POST_FILLER_PUSH,
+                )
             )
 
             error = await _validate_connection(url, api_key)
@@ -149,6 +167,9 @@ class HaAgentHubOptionsFlow(OptionsFlow):
                         CONF_URL: url,
                         CONF_API_KEY: api_key,
                         CONF_NATIVE_PLAIN_TIMERS: native_plain_timers,
+                    },
+                    options={
+                        CONF_ENABLE_POST_FILLER_PUSH: enable_post_filler_push,
                     },
                 )
                 return self.async_create_entry(data={})

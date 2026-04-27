@@ -24,6 +24,8 @@ WS_IDLE_THRESHOLD = 60
 # preserves existing behavior for installations that have not opted in.
 CONF_NATIVE_PLAIN_TIMERS = "native_plain_timers"
 DEFAULT_NATIVE_PLAIN_TIMERS = False
+CONF_ENABLE_POST_FILLER_PUSH = "enable_post_filler_push"
+DEFAULT_ENABLE_POST_FILLER_PUSH = True
 # Stable identifier of HA's built-in default conversation agent.
 # Mirrors ``homeassistant.components.conversation.HOME_ASSISTANT_AGENT``;
 # kept as a constant so we can fall back to the literal value on older
