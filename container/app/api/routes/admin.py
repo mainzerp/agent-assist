@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import re
 import secrets
 from datetime import datetime
@@ -653,10 +653,10 @@ async def test_wake_briefing_settings(payload: WakeBriefingSettingsPayload, requ
     if gateway is None or ha_client is None:
         raise HTTPException(status_code=503, detail="Wake briefing preview unavailable")
 
+    import time as _time
+
     from app.agents.wake_briefing import compose_wake_briefing
     from app.ha_client.home_context import home_context_provider
-
-    import time as _time
 
     timezone_name = "UTC"
     try:

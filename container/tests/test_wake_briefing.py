@@ -94,7 +94,7 @@ async def test_compose_wake_briefing_happy_path_uses_gateway_and_calendar_facts(
 async def test_compose_wake_briefing_omits_timed_out_source() -> None:
     async def _dispatch(description, **kwargs):
         if description.startswith("top news today"):
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
         return {"speech": "Clear and cool."}
 
     gateway = MagicMock()

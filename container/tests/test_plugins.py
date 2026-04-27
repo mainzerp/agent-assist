@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.a2a.registry import AgentRegistry
 from app.a2a.orchestrator_gateway import AgentCatalog, OrchestratorGateway
+from app.a2a.registry import AgentRegistry
 from app.agents.custom_loader import CustomAgentLoader
 from app.ha_client.rest import (
     HARestClient,

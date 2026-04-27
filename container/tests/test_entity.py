@@ -638,10 +638,12 @@ class TestQueryExpansionService:
             prompt_path=prompt_path,
         )
 
-        with patch("app.entity.expansion.SettingsRepository.get_value", new=AsyncMock(side_effect=fake_get_value)):
-            with patch("app.entity.expansion.asyncio.to_thread", new=AsyncMock(side_effect=fake_to_thread)) as mock_to_thread:
-                first = await service.expand("Kitchen", source_language="EN", index_language="DE")
-                second = await service.expand("Bedroom", source_language="EN", index_language="DE")
+        with (
+            patch("app.entity.expansion.SettingsRepository.get_value", new=AsyncMock(side_effect=fake_get_value)),
+            patch("app.entity.expansion.asyncio.to_thread", new=AsyncMock(side_effect=fake_to_thread)) as mock_to_thread,
+        ):
+            first = await service.expand("Kitchen", source_language="EN", index_language="DE")
+            second = await service.expand("Bedroom", source_language="EN", index_language="DE")
 
         assert first == ["lamp"]
         assert second == ["lamp"]

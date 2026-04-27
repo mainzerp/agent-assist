@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -95,7 +94,7 @@ class TestGenerateCancelSpeech:
 
     @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
     async def test_generate_cancel_speech_falls_back_on_timeout(self, mock_complete):
-        mock_complete.side_effect = asyncio.TimeoutError()
+        mock_complete.side_effect = TimeoutError()
 
         result = await generate_cancel_speech("de", "Vergiss es")
 

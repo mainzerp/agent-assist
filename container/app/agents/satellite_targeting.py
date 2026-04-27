@@ -7,7 +7,6 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
-
 _EXPLICIT_TARGET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"\b(?:on|using|via)\s+(?:the\s+)?(?P<name>[\w\s\-]{1,80}?)\s+(?:satellite|satellit)\b",

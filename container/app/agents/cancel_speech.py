@@ -9,7 +9,6 @@ from app.agents.base import _load_prompt_path_async, _prompt_path
 from app.llm.client import complete
 from app.security.sanitization import wrap_user_input
 
-
 logger = logging.getLogger(__name__)
 
 _CANCEL_LLM_TIMEOUT_SEC = 1.5
@@ -38,9 +37,7 @@ def _is_acceptable(text: str) -> bool:
         return False
     if any(ch in stripped for ch in ("*", "`", "#", "[", "]")):
         return False
-    if stripped.count(".") + stripped.count("!") > 1:
-        return False
-    return True
+    return stripped.count(".") + stripped.count("!") <= 1
 
 
 async def generate_cancel_speech(language: str | None, user_text: str | None) -> str:

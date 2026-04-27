@@ -304,7 +304,7 @@ async def _query_security_state(
         logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
 
     entity_id = resolution["entity_id"]
-    friendly_name = resolution["friendly_name"]
+    resolution["friendly_name"]
     if entity_id and not _validate_domain(entity_id):
         logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
         entity_id = None

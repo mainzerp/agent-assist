@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.a2a.protocol import JsonRpcRequest
 from app.agents.base import BaseAgent
-from app.agents.cancel_speech import cancel_interaction_ack, generate_cancel_speech
+from app.agents.cancel_speech import generate_cancel_speech
 from app.agents.language_detect import detect_user_language
 from app.agents.sanitize import strip_markdown
 from app.analytics.collector import track_agent_timeout, track_request

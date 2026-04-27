@@ -11,16 +11,16 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.analytics.tracer import _optional_span
 from app.entity.deterministic_resolver import (
-    _ENTITY_ID_RE,
     _build_resolution_result,
     _filter_visible_entries,
     _list_index_entries,
     _normalize_lookup_text,
-    _select_deterministic_candidate as _select_generic_deterministic_candidate,
-    _supports_method,
     filter_matches_by_domain,
     rerank_matches_by_area,
     resolve_entity_deterministic_first,
+)
+from app.entity.deterministic_resolver import (
+    _select_deterministic_candidate as _select_generic_deterministic_candidate,
 )
 from app.ha_client.history_query import execute_recorder_history_query
 from app.ha_client.rest import allow_internal_ha_service_calls, mark_verified_ha_service_call
