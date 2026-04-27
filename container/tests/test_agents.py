@@ -154,7 +154,9 @@ class TestBaseAgent:
             return func(*args, **kwargs)
 
         try:
-            with patch("app.agents.base.asyncio.to_thread", new=AsyncMock(side_effect=fake_to_thread)) as mock_to_thread:
+            with patch(
+                "app.agents.base.asyncio.to_thread", new=AsyncMock(side_effect=fake_to_thread)
+            ) as mock_to_thread:
                 await agent.handle_task(_make_task("turn on the kitchen light"))
         finally:
             _prompt_cache.clear()
@@ -580,7 +582,9 @@ class TestClimateAgent:
         language,
     ):
         agent = ClimateAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
-        result = await agent.handle_task(_make_task(user_text, user_text=user_text, context=TaskContext(language=language)))
+        result = await agent.handle_task(
+            _make_task(user_text, user_text=user_text, context=TaskContext(language=language))
+        )
 
         assert result.action_executed is not None
         assert result.action_executed.action == "query_weather"
@@ -5460,7 +5464,9 @@ class TestClimateExecutorQueries:
         entity_index = MagicMock()
         entity_index.list_entries_async = AsyncMock(return_value=entity_entries)
         entity_index.get_by_id = MagicMock(
-            side_effect=lambda entity_id: next((entry for entry in entity_entries if entry.entity_id == entity_id), None)
+            side_effect=lambda entity_id: next(
+                (entry for entry in entity_entries if entry.entity_id == entity_id), None
+            )
         )
         matcher = AsyncMock()
         matcher.match = AsyncMock(return_value=[])

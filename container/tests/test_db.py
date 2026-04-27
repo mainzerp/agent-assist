@@ -1012,7 +1012,9 @@ class TestMigrationV21:
             await db.commit()
 
             columns = await (await db.execute("PRAGMA table_info(scheduled_timers)")).fetchall()
-            schema_versions = await (await db.execute("SELECT version FROM schema_version WHERE version = 21")).fetchall()
+            schema_versions = await (
+                await db.execute("SELECT version FROM schema_version WHERE version = 21")
+            ).fetchall()
 
         column_names = {row[1] for row in columns}
         assert "briefing" in column_names

@@ -721,7 +721,9 @@ async def test_handle_background_alarm_with_briefing_composes_custom_message() -
     )
 
     with (
-        patch("app.agents.wake_briefing.compose_wake_briefing", new=AsyncMock(return_value="Custom wake briefing")) as compose,
+        patch(
+            "app.agents.wake_briefing.compose_wake_briefing", new=AsyncMock(return_value="Custom wake briefing")
+        ) as compose,
         patch.object(nd, "dispatch_alarm_notification", new=AsyncMock(return_value=None)) as dispatch_alarm,
     ):
         result = await nd.handle_background_event(

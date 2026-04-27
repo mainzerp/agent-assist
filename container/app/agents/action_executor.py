@@ -455,6 +455,8 @@ def _build_service_data(action: dict) -> dict[str, Any]:
         data["transition"] = float(params["transition"])
 
     return data
+
+
 def _strip_trailing_device_noun(query: str) -> str | None:
     """Strip a trailing light/switch noun from a query like 'Keller light'."""
     normalized_query = _normalize_lookup_text(query)
@@ -465,6 +467,8 @@ def _strip_trailing_device_noun(query: str) -> str | None:
         return None
     stripped = " ".join(parts[:-1]).strip()
     return stripped or None
+
+
 def _select_deterministic_candidate(
     entries: list[Any],
     entity_query: str,

@@ -130,7 +130,13 @@ async def test_compose_wake_briefing_top_level_timeout_falls_back_to_alarm_text(
         await asyncio.sleep(2)
         return "Too late"
 
-    settings_repo = _SettingsRepo({"wake_briefing.timeout_seconds": "1", "wake_briefing.sources.news": "false", "wake_briefing.sources.calendar": "false"})
+    settings_repo = _SettingsRepo(
+        {
+            "wake_briefing.timeout_seconds": "1",
+            "wake_briefing.sources.news": "false",
+            "wake_briefing.sources.calendar": "false",
+        }
+    )
 
     with (
         patch("app.entity.visibility.EntityVisibilityRepository.get_rules", new=AsyncMock(return_value=[])),
@@ -152,10 +158,14 @@ async def test_compose_wake_briefing_skips_hidden_calendar_entities() -> None:
     hidden = make_entity_index_entry(entity_id="calendar.private", domain="calendar", area="bedroom")
     entity_index = MagicMock()
     entity_index.list_entries_async = AsyncMock(return_value=[visible, hidden])
-    entity_index.get_by_id = MagicMock(side_effect=lambda entity_id: {visible.entity_id: visible, hidden.entity_id: hidden}.get(entity_id))
+    entity_index.get_by_id = MagicMock(
+        side_effect=lambda entity_id: {visible.entity_id: visible, hidden.entity_id: hidden}.get(entity_id)
+    )
 
     ha_client = _HaClient()
-    ha_client.get_calendar_events = AsyncMock(return_value=[{"summary": "Visible Event", "start": "2026-04-27T10:00:00+00:00"}])
+    ha_client.get_calendar_events = AsyncMock(
+        return_value=[{"summary": "Visible Event", "start": "2026-04-27T10:00:00+00:00"}]
+    )
     settings_repo = _SettingsRepo(
         {
             "wake_briefing.sources.weather": "false",
@@ -165,7 +175,10 @@ async def test_compose_wake_briefing_skips_hidden_calendar_entities() -> None:
     )
 
     with (
-        patch("app.entity.visibility.EntityVisibilityRepository.get_rules", new=AsyncMock(return_value=[{"rule_type": "area_include", "rule_value": "office"}])),
+        patch(
+            "app.entity.visibility.EntityVisibilityRepository.get_rules",
+            new=AsyncMock(return_value=[{"rule_type": "area_include", "rule_value": "office"}]),
+        ),
         patch("app.agents.wake_briefing.complete", new=AsyncMock(return_value="Calendar only")) as complete_mock,
     ):
         result = await compose_wake_briefing(

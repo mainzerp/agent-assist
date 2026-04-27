@@ -134,8 +134,7 @@ async def resolve_satellite_target_name(
         return None, SatelliteResolutionError(
             code="missing_device_id",
             message=(
-                f"Satellite '{name}' was found, but its device id could not be resolved. "
-                "Please try another satellite."
+                f"Satellite '{name}' was found, but its device id could not be resolved. Please try another satellite."
             ),
             candidates=[],
         )

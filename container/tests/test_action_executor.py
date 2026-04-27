@@ -76,10 +76,13 @@ def _make_listable_entity_index(*entries):
     index = MagicMock(spec=EntityIndex)
     index.list_entries_async = AsyncMock(return_value=entry_list)
     index.list_entries = MagicMock(return_value=entry_list)
-    index.get_by_id = MagicMock(side_effect=lambda entity_id: next((e for e in entry_list if e.entity_id == entity_id), None))
+    index.get_by_id = MagicMock(
+        side_effect=lambda entity_id: next((e for e in entry_list if e.entity_id == entity_id), None)
+    )
     index.search = MagicMock()
     index.search_async = AsyncMock()
     return index
+
 
 # ---------------------------------------------------------------------------
 # parse_action tests
@@ -243,10 +246,10 @@ class TestParseAction:
 
     def test_parse_action_accepts_set_datetime_with_briefing(self):
         response = (
-            '```json\n'
+            "```json\n"
             '{"action": "set_datetime", "entity": "alarm", '
             '"parameters": {"time": "07:00:00", "briefing": true}}\n'
-            '```'
+            "```"
         )
         result = parse_action(response)
         assert result is not None
@@ -847,9 +850,7 @@ class TestSharedDeterministicResolution:
         )
         matcher = AsyncMock(spec=EntityMatcher)
         matcher.match = AsyncMock()
-        index = _make_listable_entity_index(
-            make_entity_index_entry("automation.morning_routine", "Morning Routine")
-        )
+        index = _make_listable_entity_index(make_entity_index_entry("automation.morning_routine", "Morning Routine"))
 
         result = await execute_automation_action(
             {"action": "query_automation_state", "entity": "Morning Routine", "parameters": {}},
@@ -1120,7 +1121,11 @@ class TestMusicExecutor:
         entity_matcher.match.assert_awaited_once()
         call = entity_matcher.match.await_args
         assert call.args == ("kitchen speaker",)
-        assert call.kwargs == {"agent_id": "music-agent", "verbatim_terms": None, "preferred_domains": ("media_player",)}
+        assert call.kwargs == {
+            "agent_id": "music-agent",
+            "verbatim_terms": None,
+            "preferred_domains": ("media_player",),
+        }
 
 
 # ---------------------------------------------------------------------------

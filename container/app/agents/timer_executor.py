@@ -562,7 +562,7 @@ def _build_alarm_reroute_action_from_recurring_reminder(
     else:
         datetime_value = parsed_start.strftime("%Y-%m-%d %H:%M:%S")
 
-    label = (str(action.get("entity") or "").strip() or str(params.get("summary") or "").strip() or "alarm")
+    label = str(action.get("entity") or "").strip() or str(params.get("summary") or "").strip() or "alarm"
 
     rerouted_action: dict[str, Any] = {
         "action": "set_datetime",
@@ -766,12 +766,17 @@ async def _set_alarm(
     logical_name = entity_query or str(params.get("label", "")).strip() or "alarm"
     duration_seconds = max(0, int(target_epoch) - now_ts)
     raw_briefing = params.get("briefing", False)
-    briefing = raw_briefing if isinstance(raw_briefing, bool) else str(raw_briefing).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    briefing = (
+        raw_briefing
+        if isinstance(raw_briefing, bool)
+        else str(raw_briefing).strip().lower()
+        in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+    )
     timer_id = await scheduler.schedule(
         logical_name=logical_name,
         kind="alarm",

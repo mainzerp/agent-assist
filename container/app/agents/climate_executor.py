@@ -524,8 +524,7 @@ async def _resolve_weather_entity(
                 weather_results = [
                     MatchResult(
                         entity_id=state.get("entity_id", ""),
-                        friendly_name=state.get("attributes", {}).get("friendly_name")
-                        or state.get("entity_id", ""),
+                        friendly_name=state.get("attributes", {}).get("friendly_name") or state.get("entity_id", ""),
                         score=1.0,
                     )
                     for state in states
@@ -579,7 +578,8 @@ async def _query_weather(
             "success": False,
             "entity_id": None,
             "new_state": None,
-            "speech": resolution_speech or "No weather entities found in Home Assistant. Please add a weather integration.",
+            "speech": resolution_speech
+            or "No weather entities found in Home Assistant. Please add a weather integration.",
             "cacheable": False,
         }
     try:
@@ -637,7 +637,8 @@ async def _query_weather_forecast(
             "success": False,
             "entity_id": None,
             "new_state": None,
-            "speech": resolution_speech or "No weather entities found in Home Assistant. Please add a weather integration.",
+            "speech": resolution_speech
+            or "No weather entities found in Home Assistant. Please add a weather integration.",
             "cacheable": False,
         }
     try:

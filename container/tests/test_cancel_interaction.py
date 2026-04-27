@@ -128,7 +128,9 @@ class TestOrchestratorCancelInteraction:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_handle_task_cancel_does_not_dispatch(self, mock_complete, mock_cancel_complete, mock_track, mock_settings):
+    async def test_handle_task_cancel_does_not_dispatch(
+        self, mock_complete, mock_cancel_complete, mock_track, mock_settings
+    ):
         mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, dispatcher = _make_orch()
         mock_complete.side_effect = _classify_then_cancel(
@@ -178,7 +180,9 @@ class TestOrchestratorCancelInteraction:
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.agents.cancel_speech.complete", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_handle_task_stream_early_return_cancel(self, mock_complete, mock_cancel_complete, mock_track, mock_settings):
+    async def test_handle_task_stream_early_return_cancel(
+        self, mock_complete, mock_cancel_complete, mock_track, mock_settings
+    ):
         mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, dispatcher = _make_orch()
         mock_complete.side_effect = _classify_then_cancel(

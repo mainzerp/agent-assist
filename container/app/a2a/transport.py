@@ -23,7 +23,7 @@ from app.models.agent import AgentTask
 logger = logging.getLogger(__name__)
 
 
-def _internal_ha_service_call_scope(handler) :
+def _internal_ha_service_call_scope(handler):
     module_name = type(handler).__module__
     if module_name.startswith("app.agents.") and module_name != "app.agents.custom_loader":
         return allow_internal_ha_service_calls(module_name)

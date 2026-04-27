@@ -463,7 +463,9 @@ def _bool_from_setting(value: str | None, default: bool) -> bool:
 
 async def _load_wake_briefing_settings() -> dict[str, Any]:
     try:
-        sensor_entities = json.loads((await SettingsRepository.get_value("wake_briefing.sensor_entities", "[]")) or "[]")
+        sensor_entities = json.loads(
+            (await SettingsRepository.get_value("wake_briefing.sensor_entities", "[]")) or "[]"
+        )
     except Exception:
         sensor_entities = []
     if not isinstance(sensor_entities, list):
@@ -590,7 +592,11 @@ async def _build_alarm_recurrence_patch(
     fires_at_epoch = int(payload.fires_at or row.get("fires_at") or 0)
     if fires_at_epoch <= 0:
         raise HTTPException(status_code=422, detail="fires_at is required to build recurring alarm metadata")
-    local_dt = datetime.fromtimestamp(fires_at_epoch, tz=tzinfo) if tzinfo is not None else datetime.fromtimestamp(fires_at_epoch)
+    local_dt = (
+        datetime.fromtimestamp(fires_at_epoch, tz=tzinfo)
+        if tzinfo is not None
+        else datetime.fromtimestamp(fires_at_epoch)
+    )
 
     recurrence = payload.recurrence.to_runtime_dict()
     recurrence["anchor_time"] = local_dt.strftime("%H:%M:%S")
