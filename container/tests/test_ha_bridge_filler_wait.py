@@ -377,9 +377,9 @@ class TestHABridgeFillerWait:
 
         user_input = MagicMock(text="hello", conversation_id="conv-1", language="en", device_id="device-a")
 
-        with patch.object(conversation_module, "async_track_state_change_event", tracker.track):
-            with pytest.raises(conversation_module._WsDroppedAfterSendError):
-                await conversation_module.HaAgentHubConversationEntity._process_via_ws(entity, user_input)
+        with patch.object(conversation_module, "async_track_state_change_event", tracker.track), \
+                pytest.raises(conversation_module._WsDroppedAfterSendError):
+            await conversation_module.HaAgentHubConversationEntity._process_via_ws(entity, user_input)
 
         tracker.unsubscribe.assert_called_once_with()
         assert entity._filler_gates == {}

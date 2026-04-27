@@ -1148,9 +1148,10 @@ class OrchestratorAgent(BaseAgent):
             min_confidence = 0.7
         if confidence is None or confidence < min_confidence:
             return False
-        if self._is_actionable_routing_agent(target_agent):
-            if not action_executed or not action_executed.get("success"):
-                return False
+        if self._is_actionable_routing_agent(target_agent) and (
+            not action_executed or not action_executed.get("success")
+        ):
+            return False
         try:
             await self._cache_manager.store_routing_async(
                 user_text,
