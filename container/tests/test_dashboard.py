@@ -228,7 +228,7 @@ class TestDashboardTemplateRendering:
         resp = await dashboard_client.get("/dashboard/agents")
         html = resp.text
         assert ':inert="sidebarInert ? true : null"' in html
-        assert ':aria-hidden="sidebarInert ? \'true\' : \'false\'"' in html
+        assert ":aria-hidden=\"sidebarInert ? 'true' : 'false'\"" in html
 
     async def test_send_devices_page_has_labels_and_live_region(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.get("/dashboard/send-devices")
@@ -306,7 +306,9 @@ class TestDashboardTemplateRendering:
         assert "Allowed domains: " in html
         assert "In index: " in html
         assert "Likely cause: no entities of the allowed domains exist in the index." in html
-        assert "Likely cause: entities exist but were filtered out by visibility, recall, or confidence threshold." in html
+        assert (
+            "Likely cause: entities exist but were filtered out by visibility, recall, or confidence threshold." in html
+        )
         assert "Keine Treffer." not in html
         assert "Erlaubte Domains: " not in html
 
@@ -363,7 +365,7 @@ class TestDashboardTemplateRendering:
     def test_dashboard_x_cloak_global_rule(self):
         style_path = Path(__file__).resolve().parents[1] / "app" / "dashboard" / "static" / "style.css"
         css = style_path.read_text(encoding="utf-8")
-        assert '[x-cloak]' in css
+        assert "[x-cloak]" in css
 
     def test_dashboard_polling_templates_clear_refresh_interval(self):
         template_dir = Path(__file__).resolve().parents[1] / "app" / "dashboard" / "templates"

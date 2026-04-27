@@ -3292,9 +3292,7 @@ class TestOrchestratorAgent:
         user_text = "Bitte Kueche ausschalten. Dann neben sie machen wir Musik an."
         mock_settings.get_value = AsyncMock(
             side_effect=lambda key, default=None: (
-                "false"
-                if key == "routing.compound_utterance_bypass"
-                else {"language": "auto"}.get(key, default)
+                "false" if key == "routing.compound_utterance_bypass" else {"language": "auto"}.get(key, default)
             )
         )
         orch, *_ = self._make_orchestrator()
@@ -3359,9 +3357,7 @@ class TestOrchestratorAgent:
         assert result["speech"] == "The kitchen lights are off and calm music is playing."
         assert result["speech"] != "Die Kueche ist jetzt ausgeschaltet."
         assert result["action_executed"] is not None
-        orch._cache_manager.invalidate_routing.assert_called_once_with(
-            make_routing_entry_id(user_text, language="de")
-        )
+        orch._cache_manager.invalidate_routing.assert_called_once_with(make_routing_entry_id(user_text, language="de"))
         assert mock_complete.await_count == 1
 
     @patch("app.agents.orchestrator.SettingsRepository")
@@ -3379,9 +3375,13 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_routing_cache_not_persisted_when_action_executed_missing(self, mock_complete, mock_track, mock_settings):
+    async def test_routing_cache_not_persisted_when_action_executed_missing(
+        self, mock_complete, mock_track, mock_settings
+    ):
         orch, *_ = self._make_orchestrator()
-        mock_settings.get_value = AsyncMock(side_effect=lambda key, default=None: {"language": "auto"}.get(key, default))
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default=None: {"language": "auto"}.get(key, default)
+        )
         mock_complete.return_value = "light-agent (95%): turn on light"
         orch._dispatch_single = AsyncMock(
             return_value=(
@@ -3400,7 +3400,9 @@ class TestOrchestratorAgent:
     @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_routing_cache_not_persisted_when_action_failed(self, mock_complete, mock_track, mock_settings):
         orch, *_ = self._make_orchestrator()
-        mock_settings.get_value = AsyncMock(side_effect=lambda key, default=None: {"language": "auto"}.get(key, default))
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default=None: {"language": "auto"}.get(key, default)
+        )
         mock_complete.return_value = "light-agent (95%): turn on light"
         orch._dispatch_single = AsyncMock(
             return_value=(
@@ -3424,7 +3426,9 @@ class TestOrchestratorAgent:
         self, mock_complete, mock_track, mock_settings
     ):
         orch, *_ = self._make_orchestrator()
-        mock_settings.get_value = AsyncMock(side_effect=lambda key, default=None: {"language": "auto"}.get(key, default))
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default=None: {"language": "auto"}.get(key, default)
+        )
         mock_complete.return_value = "light-agent (95%): turn on light"
         orch._dispatch_single = AsyncMock(
             return_value=(
@@ -3463,7 +3467,9 @@ class TestOrchestratorAgent:
         self, mock_complete, mock_track, mock_settings, user_text
     ):
         orch, *_ = self._make_orchestrator()
-        mock_settings.get_value = AsyncMock(side_effect=lambda key, default=None: {"language": "auto"}.get(key, default))
+        mock_settings.get_value = AsyncMock(
+            side_effect=lambda key, default=None: {"language": "auto"}.get(key, default)
+        )
         orch._do_cache_lookup = AsyncMock(side_effect=AssertionError("routing cache lookup should be bypassed"))
         mock_complete.return_value = "general-agent (95%): answer directly"
 

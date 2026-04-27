@@ -53,10 +53,7 @@ async def add_mcp_server(request: Request, body: McpServerCreate) -> dict[str, A
     if body.transport not in SUPPORTED_MCP_TRANSPORTS:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Unsupported transport. Supported transports: "
-                + ", ".join(sorted(SUPPORTED_MCP_TRANSPORTS))
-            ),
+            detail=("Unsupported transport. Supported transports: " + ", ".join(sorted(SUPPORTED_MCP_TRANSPORTS))),
         )
 
     existing = await McpServerRepository.get(body.name)

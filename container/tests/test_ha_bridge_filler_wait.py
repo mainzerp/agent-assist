@@ -377,8 +377,10 @@ class TestHABridgeFillerWait:
 
         user_input = MagicMock(text="hello", conversation_id="conv-1", language="en", device_id="device-a")
 
-        with patch.object(conversation_module, "async_track_state_change_event", tracker.track), \
-                pytest.raises(conversation_module._WsDroppedAfterSendError):
+        with (
+            patch.object(conversation_module, "async_track_state_change_event", tracker.track),
+            pytest.raises(conversation_module._WsDroppedAfterSendError),
+        ):
             await conversation_module.HaAgentHubConversationEntity._process_via_ws(entity, user_input)
 
         tracker.unsubscribe.assert_called_once_with()
@@ -386,7 +388,10 @@ class TestHABridgeFillerWait:
 
         result_sentinel = object()
         entity._build_result = MagicMock(return_value=result_sentinel)
-        entity._ws = SimpleNamespace(send_json=AsyncMock(), receive=AsyncMock(return_value=_ws_text({"token": "Done.", "done": True, "sanitized": True})))
+        entity._ws = SimpleNamespace(
+            send_json=AsyncMock(),
+            receive=AsyncMock(return_value=_ws_text({"token": "Done.", "done": True, "sanitized": True})),
+        )
 
         started = time.monotonic()
         result = await conversation_module.HaAgentHubConversationEntity._process_via_ws(entity, user_input)

@@ -1780,9 +1780,7 @@ class OrchestratorAgent(BaseAgent):
                     if res is None or res_error or sp in (_CANNED_TIMEOUT_SPEECH, _CANNED_GENERAL_ERROR_SPEECH):
                         if res_error:
                             reason = (
-                                res_error.get("code", "canned_error")
-                                if isinstance(res_error, dict)
-                                else "canned_error"
+                                res_error.get("code", "canned_error") if isinstance(res_error, dict) else "canned_error"
                             )
                         elif res is None:
                             reason = "timeout"
