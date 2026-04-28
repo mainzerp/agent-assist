@@ -512,6 +512,7 @@ class HaAgentHubConversationEntity(
                         continue
 
                     token_text = data.get("token", "")
+                    logger.debug("ha-agenthub: token frame len=%d done=%s", len(token_text), data.get("done", False))
                     if token_text:
                         speech_parts.append(token_text)
                     if data.get("done", False):
@@ -537,6 +538,7 @@ class HaAgentHubConversationEntity(
                                     "The assistant could not complete that request. "
                                     f"({stream_err})"
                                 ]
+                        logger.debug("ha-agenthub: done frame received, speech_len=%d", len("".join(speech_parts)))
                         break
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                     self._ws = None
@@ -549,16 +551,19 @@ class HaAgentHubConversationEntity(
                 raise aiohttp.ClientError("WebSocket stream ended without done token")
 
             self._ws_last_active = time.monotonic()
+            logger.debug("ha-agenthub: waiting for %d filler tasks", len(buffered_filler_tasks))
 
             # Wait for any in-flight filler announcements to finish before
             # returning the final response, preventing TTS overlap.
             for task in buffered_filler_tasks:
                 try:
                     await asyncio.wait_for(task, timeout=30.0)
+                    logger.debug("ha-agenthub: filler task completed")
                 except Exception:
                     logger.warning("Filler task failed or timed out", exc_info=True)
 
             speech = "".join(speech_parts)
+            logger.debug("ha-agenthub: returning speech_len=%d", len(speech))
             return self._build_result(
                 speech, final_conversation_id, user_input.language, sanitized=stream_sanitized
             )
