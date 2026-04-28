@@ -137,6 +137,7 @@ async def conversation_sse(
                     sanitized=bool(chunk.result.get("sanitized", True)) if chunk.done else not chunk.result.get("is_filler", False),
                     directive=chunk.result.get("directive") if chunk.done else None,
                     reason=chunk.result.get("reason") if chunk.done else None,
+                    filler_push=chunk.result.get("filler_push") if not chunk.done else None,
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
@@ -213,6 +214,7 @@ async def ws_conversation(
                         sanitized=bool(chunk.result.get("sanitized", True)) if chunk.done else not chunk.result.get("is_filler", False),
                         directive=chunk.result.get("directive") if chunk.done else None,
                         reason=chunk.result.get("reason") if chunk.done else None,
+                        filler_push=chunk.result.get("filler_push") if not chunk.done else None,
                     )
                     await websocket.send_json(token.model_dump())
             except WebSocketDisconnect:

@@ -86,6 +86,10 @@ class StreamToken(BaseModel):
     # frame can short-circuit the stream if needed.
     directive: str | None = None
     reason: str | None = None
+    # Container-directed filler text pushed outside the Assist pipeline
+    # via assist_satellite.announce.  When present the integration must
+    # play it immediately and continue reading the stream.
+    filler_push: str | None = None
 
     @model_validator(mode="after")
     def _force_unsanitized_filler(self) -> StreamToken:
