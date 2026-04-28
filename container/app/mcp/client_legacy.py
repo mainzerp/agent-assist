@@ -7,6 +7,8 @@ import logging
 import shlex
 from typing import Any
 
+from app.mcp.client import _validate_mcp_command
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,6 +78,7 @@ class MCPClient:
 
         from mcp import ClientSession
 
+        _validate_mcp_command(self._command_or_url)
         parts = shlex.split(self._command_or_url)
         command = parts[0]
         args = parts[1:] if len(parts) > 1 else []

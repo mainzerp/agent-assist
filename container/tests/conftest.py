@@ -28,6 +28,11 @@ else:
     os.environ.setdefault("FERNET_KEY_PATH", str(_test_root / ".fernet_key"))
     os.environ.setdefault("CHROMADB_PERSIST_DIR", str(_test_root / "chromadb"))
 
+# Force cookie_secure to False for tests so CSRF/session cookies work over HTTP.
+from app.config import settings as _test_settings
+
+_test_settings.cookie_secure = False
+
 from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 
 
@@ -116,6 +121,15 @@ def db_path(tmp_path: Path) -> Path:
     Cleanup is handled automatically by pytest's tmp_path.
     """
     return tmp_path / "test_agent_assist.db"
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_store():
+    from app.middleware.rate_limit import reset_rate_limit_store
+
+    reset_rate_limit_store()
+    yield
+    reset_rate_limit_store()
 
 
 @pytest.fixture(autouse=True)

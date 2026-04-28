@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -448,7 +449,6 @@ class TestRoutingCacheExtended:
         assert stats["count"] == 42
         assert stats["semantic_threshold"] == pytest.approx(0.92)
 
-    @pytest.mark.skip(reason="Phase 1 rewrite: mock path for SettingsRepository needs revisit; covered by integration tests")
     @pytest.mark.asyncio
     async def test_load_config_from_db(self):
         # v4: config key is cache.routing.semantic_threshold
@@ -462,16 +462,12 @@ class TestRoutingCacheExtended:
                 "cache.routing.semantic_fallback_enabled": "true",
             }.get(key, default)
 
-        with patch("app.cache._base_cache.SettingsRepository") as mock_base, patch(
-            "app.cache.routing_cache.SettingsRepository"
-        ) as mock_routing:
+        with patch("app.cache._base_cache.SettingsRepository") as mock_base:
             mock_base.get_value = AsyncMock(side_effect=_get_value)
-            mock_routing.get_value = AsyncMock(side_effect=_get_value)
             await cache.load_config()
         assert cache._semantic_threshold == pytest.approx(0.90)
         assert cache._max_entries == 1000
 
-    @pytest.mark.skip(reason="Phase 1 rewrite: log message text drift; covered by routing_cache.py:17 corrupted-task regex")
     def test_routing_cache_rejects_corrupted_condensed_task(self, caplog):
         cache, store = self._make_cache()
         store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
@@ -497,7 +493,7 @@ class TestRoutingCacheExtended:
             entry, similarity = cache.lookup("warm im wohnzimmer", language="de")
         assert entry is None
         assert similarity == pytest.approx(0.95)
-        assert any("corrupted condensed_task" in rec.message for rec in caplog.records)
+        assert any("corrupted condensed task" in rec.message for rec in caplog.records)
 
     def test_store_uses_deterministic_id(self):
         cache, store = self._make_cache()
@@ -511,7 +507,6 @@ class TestRoutingCacheExtended:
         id2 = store.upsert.call_args_list[1][1]["ids"][0]
         assert id1 == id2  # same deterministic hash
 
-    @pytest.mark.skip(reason="Phase 1 rewrite: _RoutingStore mock missing 'ids' kwarg; real invalidation covered in test_cache_registry_invalidation.py")
     def test_routing_cache_invalidate_removes_entry(self):
         class _RoutingStore:
             def __init__(self):
@@ -546,7 +541,7 @@ class TestRoutingCacheExtended:
                     document, existing = self._entries[entry_id]
                     self._entries[entry_id] = (document, {**existing, **metadata})
 
-            def get(self, _collection, include, limit=None, offset=None):
+            def get(self, _collection, ids=None, include=None, limit=None, offset=None):
                 items = list(self._entries.items())
                 if offset:
                     items = items[offset:]
@@ -902,10 +897,10 @@ class TestCacheManagerExtended:
         assert "routing" in stats
         assert "action" in stats
 
-    @pytest.mark.skip(reason="Phase 1 rewrite: SettingsRepository mock path needs revisit; covered indirectly by integration tests")
     @pytest.mark.asyncio
     async def test_initialize_loads_config(self):
-        manager, _store = self._make_manager()
+        manager, store = self._make_manager()
+        store.get.return_value = {"ids": [], "metadatas": []}
 
         async def _get_value(key, default=None):
             return {
@@ -922,17 +917,18 @@ class TestCacheManagerExtended:
 
         with (
             patch("app.cache._base_cache.SettingsRepository") as mock_base,
-            patch("app.cache.routing_cache.SettingsRepository") as mock_rs,
-            patch("app.cache.action_cache.SettingsRepository") as mock_ac,
             patch("app.db.repository.SettingsRepository") as mock_cms,
         ):
             mock_base.get_value = AsyncMock(side_effect=_get_value)
-            mock_rs.get_value = AsyncMock(side_effect=_get_value)
-            mock_ac.get_value = AsyncMock(side_effect=_get_value)
             mock_cms.get_value = AsyncMock(side_effect=_get_value)
             await manager.initialize()
 
-    @pytest.mark.skip(reason="Phase 1 rewrite: SettingsRepository mock path needs revisit")
+        assert manager._routing_cache._semantic_threshold == pytest.approx(0.92)
+        assert manager._routing_cache._max_entries == 50000
+        assert manager._action_cache._semantic_threshold == pytest.approx(0.95)
+        assert manager._action_cache._max_entries == 50000
+        assert manager._rewrite_enabled is False
+
     @pytest.mark.asyncio
     async def test_reload_config(self):
         manager, _store = self._make_manager()
@@ -952,15 +948,17 @@ class TestCacheManagerExtended:
 
         with (
             patch("app.cache._base_cache.SettingsRepository") as mock_base,
-            patch("app.cache.routing_cache.SettingsRepository") as mock_rs,
-            patch("app.cache.action_cache.SettingsRepository") as mock_ac,
             patch("app.db.repository.SettingsRepository") as mock_cms,
         ):
             mock_base.get_value = AsyncMock(side_effect=_get_value)
-            mock_rs.get_value = AsyncMock(side_effect=_get_value)
-            mock_ac.get_value = AsyncMock(side_effect=_get_value)
             mock_cms.get_value = AsyncMock(side_effect=_get_value)
             await manager.reload_config()
+
+        assert manager._routing_cache._semantic_threshold == pytest.approx(0.90)
+        assert manager._routing_cache._max_entries == 50000
+        assert manager._action_cache._semantic_threshold == pytest.approx(0.90)
+        assert manager._action_cache._max_entries == 50000
+        assert manager._rewrite_enabled is False
 
     def test_flush_pending_delegates_to_both_caches(self):
         # v4: uses _action_cache not _response_cache
@@ -1773,3 +1771,30 @@ def test_is_readonly_action_helper():
         is False
     )
     assert _is_readonly_action("invalid json") is True
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cache_stress():
+    """Spawn 20 async tasks doing store(), lookup(), and invalidate_by_entity_id()
+    on overlapping keys. Assert no exceptions and consistent final state.
+    """
+    store = _make_vector_store()
+    manager = CacheManager(store)
+    manager._routing_cache._semantic_threshold = 0.5
+    manager._routing_cache._max_entries = 1000
+
+    def worker(task_id: int) -> None:
+        for i in range(10):
+            query_text = f"query {i % 3}"
+            language = "en"
+            manager.store_routing(
+                query_text, "light-agent", 0.9, f"Task {task_id}", language=language
+            )
+            manager._routing_cache.lookup(query_text, language=language)
+            manager._routing_cache.invalidate_by_entity_id([f"light.kitchen_{task_id % 2}"])
+
+    await asyncio.gather(*[asyncio.to_thread(worker, i) for i in range(20)])
+
+    # 20 workers * 10 iterations = 200 stores.
+    # eviction_interval defaults to 100, so store_count should be 0.
+    assert manager._routing_cache._state._store_count == 0

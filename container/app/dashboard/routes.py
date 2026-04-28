@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 from app import __version__ as _app_version
 from app.config import settings as app_settings
 from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
+from app.middleware.rate_limit import rate_limit_login
 from app.security.auth import (
     CSRF_COOKIE_NAME,
     SESSION_COOKIE_NAME,
@@ -69,7 +70,7 @@ async def login_page(request: Request, error: str | None = None):
 @router.post(
     "/login",
     response_class=HTMLResponse,
-    dependencies=[Depends(verify_csrf)],
+    dependencies=[Depends(verify_csrf), Depends(rate_limit_login)],
 )
 async def login_submit(
     request: Request,

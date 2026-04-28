@@ -13,12 +13,20 @@ import time
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
+import asyncio
+
 from app.db.schema import get_db_read, get_db_write
 
 
 def _now() -> str:
     """Return current UTC timestamp as ISO 8601 string."""
     return datetime.now(UTC).isoformat()
+
+
+def _validate_column_name(col: str) -> str:
+    if not re.fullmatch(r"[a-z_][a-z0-9_]*", col):
+        raise ValueError(f"Invalid column name: {col}")
+    return col
 
 
 # P3-6: in-memory TTL cache for ``SettingsRepository.get_value``.
@@ -75,22 +83,24 @@ class SettingsRepository:
     # Class-level on purpose: ``SettingsRepository`` is a stateless
     # collection of staticmethods used as a namespace.
     _value_cache: ClassVar[dict[str, tuple[Any, float]]] = {}
+    _value_cache_lock: ClassVar[asyncio.Lock] = asyncio.Lock()
 
     @classmethod
-    def _cache_get(cls, key: str) -> tuple[bool, Any]:
-        """Return ``(hit, value)``. ``value`` may be ``_MISSING``."""
-        entry = cls._value_cache.get(key)
-        if entry is None:
-            return False, None
-        value, expires_at = entry
-        if expires_at <= time.monotonic():
-            cls._value_cache.pop(key, None)
-            return False, None
-        return True, value
+    async def _cache_get(cls, key: str) -> tuple[bool, Any]:
+        async with cls._value_cache_lock:
+            entry = cls._value_cache.get(key)
+            if entry is None:
+                return False, None
+            value, expires_at = entry
+            if expires_at <= time.monotonic():
+                cls._value_cache.pop(key, None)
+                return False, None
+            return True, value
 
     @classmethod
-    def _cache_put(cls, key: str, value: Any) -> None:
-        cls._value_cache[key] = (value, time.monotonic() + _SETTINGS_VALUE_CACHE_TTL_SEC)
+    async def _cache_put(cls, key: str, value: Any) -> None:
+        async with cls._value_cache_lock:
+            cls._value_cache[key] = (value, time.monotonic() + _SETTINGS_VALUE_CACHE_TTL_SEC)
 
     @classmethod
     def _cache_invalidate(cls, key: str | None = None) -> None:
@@ -119,17 +129,17 @@ class SettingsRepository:
         # (key absent in DB); ``default`` is applied to ``_MISSING``
         # hits at call time so different callers can use different
         # defaults.
-        hit, cached = SettingsRepository._cache_get(key)
+        hit, cached = await SettingsRepository._cache_get(key)
         if hit:
             return default if cached is _MISSING else cached
         async with get_db_read() as db:
             cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (key,))
             row = await cursor.fetchone()
         if row is None:
-            SettingsRepository._cache_put(key, _MISSING)
+            await SettingsRepository._cache_put(key, _MISSING)
             return default
         value = row[0]
-        SettingsRepository._cache_put(key, value)
+        await SettingsRepository._cache_put(key, value)
         return value
 
     @staticmethod
@@ -202,9 +212,9 @@ class AgentConfigRepository:
             return
         fields["updated_at"] = _now()
 
-        columns = ", ".join(["agent_id", *list(fields.keys())])
+        columns = ", ".join(["agent_id", *[_validate_column_name(k) for k in fields.keys()]])
         placeholders = ", ".join(["?"] * (len(fields) + 1))
-        updates = ", ".join(f"{k}=excluded.{k}" for k in fields)
+        updates = ", ".join(f"{_validate_column_name(k)}=excluded.{_validate_column_name(k)}" for k in fields)
 
         values = [agent_id, *list(fields.values())]
         async with get_db_write() as db:
@@ -717,7 +727,7 @@ class CustomAgentRepository:
             if field in data and isinstance(data[field], (list, dict)):
                 data[field] = json.dumps(data[field])
 
-        columns = ", ".join(["name", "system_prompt", *list(data.keys())])
+        columns = ", ".join(["name", "system_prompt", *[_validate_column_name(k) for k in data.keys()]])
         placeholders = ", ".join(["?"] * (len(data) + 2))
         values = [name, system_prompt, *list(data.values())]
 
@@ -748,7 +758,7 @@ class CustomAgentRepository:
                 data[field] = json.dumps(data[field])
         data["updated_at"] = _now()
 
-        set_clause = ", ".join(f"{k} = ?" for k in data)
+        set_clause = ", ".join(f"{_validate_column_name(k)} = ?" for k in data)
         values = [*list(data.values()), name]
 
         async with get_db_write() as db:
@@ -841,7 +851,7 @@ class CustomAgentRepository:
                     if field in stored and isinstance(stored[field], (list, dict)):
                         stored[field] = json.dumps(stored[field]) if stored[field] else None
                 stored["updated_at"] = _now()
-                set_clause = ", ".join(f"{key} = ?" for key in stored)
+                set_clause = ", ".join(f"{_validate_column_name(key)} = ?" for key in stored)
                 values = [*list(stored.values()), name]
                 await db.execute(f"UPDATE custom_agents SET {set_clause} WHERE name = ?", values)
             cursor = await db.execute("SELECT * FROM custom_agents WHERE name = ?", (name,))
@@ -1772,7 +1782,7 @@ class SendDeviceMappingRepository:
         fields = {k: v for k, v in kwargs.items() if k in allowed}
         if not fields:
             return False
-        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        set_clause = ", ".join(f"{_validate_column_name(k)} = ?" for k in fields)
         values = [*list(fields.values()), mapping_id]
         async with get_db_write() as db:
             cursor = await db.execute(

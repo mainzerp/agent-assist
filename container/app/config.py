@@ -21,12 +21,12 @@ class Settings(BaseSettings):
     chromadb_persist_dir: str = "/data/chromadb"
     sqlite_db_path: str = "/data/agent_assist.db"
     fernet_key_path: str = "/data/.fernet_key"
-    # SEC-3: Defaults to False so local HTTP development still works.
-    # Production deployments behind HTTPS / a reverse proxy MUST set
-    # ``COOKIE_SECURE=true`` so the admin session and CSRF cookies are
-    # only sent over TLS. Setting this to True on a plain-HTTP install
-    # will silently break login (browser drops the cookie).
-    cookie_secure: bool = False
+    # SEC-3: Defaults to True for production safety.
+    # Local HTTP development should set ``COOKIE_SECURE=false`` explicitly
+    # or the browser will drop the admin session and CSRF cookies.
+    cookie_secure: bool = True
+    # CORS origins (comma-separated). Empty list disables CORS.
+    cors_origins: str = ""
 
     model_config = SettingsConfigDict(
         env_prefix="",

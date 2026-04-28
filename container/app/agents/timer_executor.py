@@ -1,10 +1,8 @@
 """Timer-specific action execution.
 
 In 0.26.0 the HA ``timer.*`` helper-pool model was removed entirely.
-Plain timer requests are delegated to HA's native Assist engine when
-the LLM picks ``delegate_native_plain_timer`` (handled in
-``app.agents.timer``); every other timer-shaped action routes to the
-AgentHub-managed ``TimerScheduler`` (``app.agents.timer_scheduler``).
+All timer-shaped actions route to the AgentHub-managed
+``TimerScheduler`` (``app.agents.timer_scheduler``).
 
 This module retains:
 - read-only handlers (``query_timer``, ``list_timers`` against the
@@ -39,18 +37,13 @@ from app.entity.deterministic_resolver import resolve_entity_deterministic_first
 logger = logging.getLogger(__name__)
 
 
-_TIMER_ACTION_MAP: dict[str, tuple[str, str]] = {}
-
 _ACTION_PHRASES: dict[str, str] = {}
 
 _ALLOWED_DOMAINS: frozenset[str] = frozenset({"input_datetime"})
 
-_ACTION_DOMAINS: dict[str, frozenset[str]] = {}
-
 _INPUT_DATETIME_DOMAINS: frozenset[str] = frozenset({"input_datetime"})
 _CALENDAR_DOMAINS: frozenset[str] = frozenset({"calendar"})
 _ALARM_WEEKDAY_CODES: frozenset[str] = frozenset({"MO", "TU", "WE", "TH", "FR", "SA", "SU"})
-_ALARM_RECURRING_KEYWORDS: tuple[str, ...] = ("alarm", "wecker")
 
 
 def _validate_domain(entity_id: str) -> bool:
@@ -451,129 +444,6 @@ def _build_recurring_alarm_payload(
         normalized["byweekday"] = normalized_weekdays
 
     return normalized, None
-
-
-def _is_alarm_like_recurring_reminder(action: dict[str, Any]) -> bool:
-    """Return True for conservative alarm/wecker recurring-reminder intents only."""
-    params = action.get("parameters") or {}
-    start_time = str(params.get("start_date_time", "")).strip()
-    rrule = str(params.get("rrule", "")).strip()
-    if not start_time or not rrule:
-        return False
-
-    fields = [
-        str(action.get("entity") or ""),
-        str(params.get("summary") or ""),
-        str(params.get("label") or ""),
-    ]
-    haystack = " ".join(fields).casefold()
-    return any(keyword in haystack for keyword in _ALARM_RECURRING_KEYWORDS)
-
-
-def _parse_rrule_for_alarm_recurrence(rrule: str) -> tuple[dict[str, Any] | None, str | None]:
-    """Map supported RRULE forms to internal recurrence payload for alarms."""
-    raw = str(rrule or "").strip()
-    if not raw:
-        return None, "rrule is required for recurring alarm routing."
-
-    pairs: dict[str, str] = {}
-    for segment in raw.split(";"):
-        part = segment.strip()
-        if not part:
-            continue
-        if "=" not in part:
-            return None, f"Invalid RRULE segment '{part}'."
-        key, value = part.split("=", 1)
-        rule_key = key.strip().upper()
-        rule_value = value.strip()
-        if not rule_key or not rule_value:
-            return None, f"Invalid RRULE segment '{part}'."
-        if rule_key in pairs:
-            return None, f"Duplicate RRULE key '{rule_key}'."
-        pairs[rule_key] = rule_value
-
-    allowed_keys = {"FREQ", "INTERVAL", "BYDAY"}
-    unsupported = [key for key in pairs if key not in allowed_keys]
-    if unsupported:
-        return None, "Unsupported RRULE component(s): " + ", ".join(sorted(unsupported)) + "."
-
-    freq = pairs.get("FREQ", "").upper()
-    if freq not in {"DAILY", "WEEKLY"}:
-        return None, "Unsupported RRULE frequency for recurring alarms. Use FREQ=DAILY or FREQ=WEEKLY."
-
-    interval = 1
-    if "INTERVAL" in pairs:
-        try:
-            interval = int(pairs["INTERVAL"])
-        except (TypeError, ValueError):
-            return None, "Invalid RRULE INTERVAL. Use a positive integer."
-        if interval < 1:
-            return None, "Invalid RRULE INTERVAL. Use a positive integer."
-
-    recurrence: dict[str, Any] = {"freq": freq.casefold(), "interval": interval}
-    if freq == "WEEKLY":
-        raw_byday = pairs.get("BYDAY", "")
-        if not raw_byday:
-            return None, "Weekly RRULE requires BYDAY (e.g. BYDAY=MO,WE,FR)."
-
-        seen: set[str] = set()
-        byweekday: list[str] = []
-        for token in raw_byday.split(","):
-            code = token.strip().upper()
-            if code not in _ALARM_WEEKDAY_CODES:
-                return None, "Invalid RRULE BYDAY value. Use MO,TU,WE,TH,FR,SA,SU."
-            if code in seen:
-                continue
-            seen.add(code)
-            byweekday.append(code)
-
-        if not byweekday:
-            return None, "Weekly RRULE requires at least one valid BYDAY value."
-        recurrence["byweekday"] = byweekday
-    elif "BYDAY" in pairs:
-        return None, "BYDAY is only supported for weekly recurring alarms."
-
-    return recurrence, None
-
-
-def _build_alarm_reroute_action_from_recurring_reminder(
-    action: dict[str, Any],
-) -> tuple[dict[str, Any] | None, str | None]:
-    """Convert alarm-like create_recurring_reminder payload to set_datetime format."""
-    if not _is_alarm_like_recurring_reminder(action):
-        return None, None
-
-    params = action.get("parameters") or {}
-    start_time_raw = str(params.get("start_date_time", "")).strip()
-    rrule_raw = str(params.get("rrule", "")).strip()
-
-    recurrence, recurrence_error = _parse_rrule_for_alarm_recurrence(rrule_raw)
-    if recurrence_error:
-        return None, recurrence_error
-
-    normalized_start = start_time_raw.replace("T", " ")
-    try:
-        parsed_start = datetime.fromisoformat(normalized_start)
-    except ValueError:
-        return None, "Invalid start_date_time format for recurring alarm routing. Use YYYY-MM-DD HH:MM:SS."
-
-    if parsed_start.tzinfo is not None:
-        datetime_value = parsed_start.isoformat(sep=" ")
-    else:
-        datetime_value = parsed_start.strftime("%Y-%m-%d %H:%M:%S")
-
-    label = str(action.get("entity") or "").strip() or str(params.get("summary") or "").strip() or "alarm"
-
-    rerouted_action: dict[str, Any] = {
-        "action": "set_datetime",
-        "entity": label,
-        "parameters": {
-            "datetime": datetime_value,
-            "recurrence": recurrence,
-            "label": label,
-        },
-    }
-    return rerouted_action, None
 
 
 # ---------------------------------------------------------------------------
@@ -1106,23 +976,6 @@ async def _create_recurring_reminder(
     timezone: str | None = None,
     verbatim_terms: list[str] | None = None,
 ) -> dict:
-    rerouted_action, reroute_error = _build_alarm_reroute_action_from_recurring_reminder(action)
-    if reroute_error:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": reroute_error,
-        }
-    if rerouted_action is not None:
-        return await _set_alarm(
-            rerouted_action,
-            device_id=device_id,
-            area_id=area_id,
-            language=language,
-            timezone=timezone,
-        )
-
     entity_query = action.get("entity", "")
     params = action.get("parameters") or {}
     summary = str(params.get("summary", ""))
@@ -1782,91 +1635,9 @@ async def execute_timer_action(
     if action_name == "cancel_alarm":
         return await _cancel_alarm(action, area_id=area_id, timezone=timezone)
 
-    # Fall through: legacy mapped actions (currently none).
-    mapping = _TIMER_ACTION_MAP.get(action_name)
-    if not mapping:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": f"Unknown timer action: {action_name}",
-        }
-
-    domain, service = mapping
-    entity_id = None
-    friendly_name = entity_query
-
-    try:
-        # Legacy mapped actions are currently unreachable. If this branch is
-        # reactivated, it must migrate to the shared deterministic resolver.
-        if entity_matcher:
-            async with _optional_span(span_collector, "entity_match", agent_id=agent_id) as em_span:
-                matches = await entity_matcher.match(entity_query, agent_id=agent_id)
-                em_span["metadata"] = {"query": entity_query, "match_count": len(matches)}
-                required_domains = _ACTION_DOMAINS.get(action_name, _INPUT_DATETIME_DOMAINS)
-                filtered = filter_matches_by_domain(matches, required_domains)
-                if filtered:
-                    entity_id = filtered[0].entity_id
-                    friendly_name = filtered[0].friendly_name or entity_id
-                    em_span["metadata"]["top_entity_id"] = entity_id
-                    em_span["metadata"]["top_friendly_name"] = friendly_name
-                    em_span["metadata"]["top_score"] = filtered[0].score
-    except Exception:
-        logger.warning("Entity resolution failed for '%s'", entity_query, exc_info=True)
-
-    if entity_id and not _validate_domain(entity_id):
-        logger.warning("Resolved entity %s not in allowed domains %s", entity_id, _ALLOWED_DOMAINS)
-        entity_id = None
-
-    if not entity_id and _should_attempt_set_datetime_fallback(action_name, action):
-        targets = await _list_visible_input_datetime_targets(entity_index, entity_matcher, agent_id)
-        if len(targets) == 1:
-            entity_id, friendly_name = targets[0]
-        elif len(targets) > 1:
-            labels = ", ".join(f"{friendly} ({target_id})" for target_id, friendly in targets)
-            return {
-                "success": False,
-                "entity_id": None,
-                "new_state": None,
-                "speech": (f"Multiple alarm targets are available: {labels}. Please tell me which one to update."),
-            }
-        else:
-            return {
-                "success": False,
-                "entity_id": None,
-                "new_state": None,
-                "speech": (
-                    "No visible input_datetime alarm target is available. "
-                    "Please create or expose an input_datetime entity in Home Assistant and try again."
-                ),
-            }
-
-    if not entity_id:
-        return {
-            "success": False,
-            "entity_id": None,
-            "new_state": None,
-            "speech": f"Could not find an entity matching '{entity_query}'.",
-        }
-
-    service_data = _build_timer_service_data(action)
-    verify = await call_service_with_verification(
-        ha_client,
-        domain,
-        service,
-        entity_id,
-        service_data=service_data,
-    )
-    if not verify["success"]:
-        return {
-            "success": False,
-            "entity_id": entity_id,
-            "new_state": None,
-            "speech": f"Failed to execute {action_name} on {friendly_name}: {verify['error']}",
-        }
     return {
-        "success": True,
-        "entity_id": entity_id,
-        "new_state": verify.get("observed_state"),
-        "speech": f"Updated {friendly_name}.",
+        "success": False,
+        "entity_id": None,
+        "new_state": None,
+        "speech": f"Unknown timer action: {action_name}",
     }

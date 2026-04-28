@@ -15,6 +15,7 @@ from app.a2a.protocol import JsonRpcRequest
 from app.analytics.tracer import SpanCollector
 from app.models.agent import AgentTask, TaskContext
 from app.models.conversation import ConversationRequest, ConversationResponse, StreamToken
+from app.middleware.rate_limit import WsMessageRateLimiter, rate_limit_conversation
 from app.security.auth import require_api_key, require_api_key_ws
 from app.security.user_input import prepare_user_text
 
@@ -25,9 +26,6 @@ router = APIRouter(tags=["conversation"])
 # Maximum allowed WebSocket message size in bytes (10 KB)
 _MAX_WS_MESSAGE_SIZE = 10_000
 
-# REST eligibility hint header (mirrors the integration constant).
-_NATIVE_PLAIN_TIMER_HEADER = "X-HA-AgentHub-Native-Plain-Timer-Eligible"
-
 # The dispatcher is set by main.py during startup
 _dispatcher = None
 
@@ -36,20 +34,6 @@ def set_dispatcher(dispatcher) -> None:
     """Called by main.py to inject the A2A dispatcher."""
     global _dispatcher
     _dispatcher = dispatcher
-
-
-def _native_plain_timer_eligible(conv_request: ConversationRequest, request: Request | None = None) -> bool:
-    """Return True when the integration explicitly opted this turn into the
-    native plain-timer delegation path. The flag on the request is the
-    authoritative signal; the REST header is an additive hint and is
-    never used for auth or to widen scope on its own."""
-    if conv_request.native_plain_timer_eligible:
-        return True
-    if request is not None:
-        header = request.headers.get(_NATIVE_PLAIN_TIMER_HEADER)
-        if header and header.strip() == "1":
-            return True
-    return False
 
 
 def _build_a2a_request(
@@ -70,7 +54,6 @@ def _build_a2a_request(
         area_name=conv_request.area_name,
         language=conv_request.language or "en",
         source=source,
-        native_plain_timer_eligible=_native_plain_timer_eligible(conv_request, request),
         injection_detected=prepared_text.injection_detected,
     )
     task = AgentTask(
@@ -93,7 +76,7 @@ def _build_a2a_request(
     return a2a_request, task
 
 
-@router.post("/api/conversation", response_model=ConversationResponse)
+@router.post("/api/conversation", response_model=ConversationResponse, dependencies=[Depends(rate_limit_conversation)])
 async def conversation_rest(
     request: Request,
     conv_request: ConversationRequest,
@@ -124,7 +107,7 @@ async def conversation_rest(
     )
 
 
-@router.post("/api/conversation/stream")
+@router.post("/api/conversation/stream", dependencies=[Depends(rate_limit_conversation)])
 async def conversation_sse(
     request: Request,
     conv_request: ConversationRequest,
@@ -183,8 +166,12 @@ async def ws_conversation(
     # dashboard waterfall reflects exactly one HA turn per trace.
     state = websocket.scope.setdefault("state", {})
     source = state.get("source") or "ha"
+    ws_rate_limiter = WsMessageRateLimiter(rate=10.0, burst=20)
     try:
         while True:
+            if not await ws_rate_limiter.acquire():
+                await websocket.close(code=1008, reason="Rate limit exceeded")
+                break
             raw = await websocket.receive_text()
             if len(raw) > _MAX_WS_MESSAGE_SIZE:
                 await websocket.send_json({"error": "Message too large", "max_bytes": _MAX_WS_MESSAGE_SIZE})

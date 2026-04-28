@@ -35,6 +35,28 @@ from app.entity.matcher import EntityMatcher
 from app.ha_client.home_context import home_context_provider
 from app.ha_client.rest import HARestClient
 
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro: asyncio.Coroutine, *, name: str | None = None) -> asyncio.Task:
+    """Schedule ``coro`` as a tracked background task.
+
+    The task is stored in a module-level set until completion so it
+    cannot be silently dropped by the GC. Exceptions raised inside the
+    coroutine are logged with traceback and do not propagate.
+    """
+    task = asyncio.create_task(coro, name=name)
+    _background_tasks.add(task)
+
+    def _done(t: asyncio.Task) -> None:
+        _background_tasks.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.error("Background task %s failed", t.get_name(), exc_info=t.exception())
+
+    task.add_done_callback(_done)
+    return task
+
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
@@ -291,7 +313,7 @@ async def schedule_entity_index_prime(
     task = getattr(app.state, "entity_index_init_task", None)
     if task is not None and not task.done():
         return False
-    app.state.entity_index_init_task = asyncio.create_task(
+    app.state.entity_index_init_task = _spawn(
         _prime_entity_index(app, ha_client, entity_index, vector_store)
     )
     return True
@@ -582,7 +604,7 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
 
     purge_task = getattr(app.state, "purge_task", None)
     if purge_task is None or purge_task.done():
-        app.state.purge_task = asyncio.create_task(_purge_stale_response_cache(cache_manager))
+        app.state.purge_task = _spawn(_purge_stale_response_cache(cache_manager))
 
     try:
         await mcp_registry.load_from_db()
@@ -758,15 +780,15 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
         ws_client.on_event("area_registry_updated", on_area_registry_updated)
 
         app.state.ws_client = ws_client
-        app.state.ws_task = asyncio.create_task(ws_client.run())
-        app.state.flush_task = asyncio.create_task(_flush_entity_updates())
+        app.state.ws_task = _spawn(ws_client.run())
+        app.state.flush_task = _spawn(_flush_entity_updates())
 
     if ha_client is not None and ws_client is not None:
         ha_client.set_state_observer(ws_client)
 
     sync_task = getattr(app.state, "sync_task", None)
     if sync_task is None or sync_task.done():
-        app.state.sync_task = asyncio.create_task(_periodic_entity_sync(app))
+        app.state.sync_task = _spawn(_periodic_entity_sync(app))
 
     alarm_monitor = getattr(app.state, "alarm_monitor", None)
     if alarm_monitor is None:

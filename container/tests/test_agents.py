@@ -709,43 +709,6 @@ class TestMediaAgent:
 
 
 class TestTimerAgent:
-    @patch("app.agents.timer.execute_timer_action", new_callable=AsyncMock)
-    @patch(
-        "app.llm.client.complete",
-        new_callable=AsyncMock,
-        return_value='```json\n{"action": "delegate_native_plain_timer", "entity": "timer", "parameters": {"reason": "native_start"}}\n```\nDelegating.',
-    )
-    async def test_handle_task_native_delegate_returns_directive(self, mock_complete, mock_exec):
-        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
-        result = await agent.handle_task(
-            _make_task(
-                "set a timer for 5 minutes",
-                context=TaskContext(native_plain_timer_eligible=True),
-            )
-        )
-        assert result.directive == "delegate_native_plain_timer"
-        assert result.reason == "native_start"
-        assert result.speech == ""
-        assert result.action_executed is None
-        assert result.metadata["native_decision_source"] == "timer-agent"
-        mock_exec.assert_not_awaited()
-
-    @patch("app.agents.timer.execute_timer_action", new_callable=AsyncMock)
-    @patch(
-        "app.llm.client.complete",
-        new_callable=AsyncMock,
-        return_value='```json\n{"action": "delegate_native_plain_timer", "entity": "timer", "parameters": {"reason": "native_start"}}\n```\nDelegating.',
-    )
-    async def test_handle_task_native_delegate_requires_eligibility(self, mock_complete, mock_exec):
-        agent = TimerAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
-        result = await agent.handle_task(_make_task("set a timer for 5 minutes", context=TaskContext()))
-        assert result.directive is None
-        assert result.action_executed is None
-        assert result.error is not None
-        assert result.error.code == AgentErrorCode.PARSE_ERROR
-        assert "safely delegate" in result.speech.lower()
-        mock_exec.assert_not_awaited()
-
     @patch(
         "app.agents.timer.execute_timer_action",
         new_callable=AsyncMock,
@@ -1910,8 +1873,6 @@ class TestTimerPromptSnapshot:
             "and remind me to check the oven",
             "and stop the music",
             "Set the kitchen timer for 5 minutes.",
-            "native_plain_timer_eligible=true",
-            "native_plain_timer_eligible=false",
             "Cancel my alarm",
             "Cancel the alarm for 14:35",
             "Cancel my morning alarm",
@@ -1924,32 +1885,10 @@ class TestTimerPromptSnapshot:
             "use set_datetime with recurrence",
         ):
             assert needle in prompt, f"missing required few-shot substring: {needle}"
-        assert prompt.count("delegate_native_plain_timer") >= 3
 
-    def test_prompt_contains_native_policy_block(self):
+    def test_prompt_contains_weekday_mapping_guidance(self):
         prompt = self._read_prompt()
-        assert "PLAIN, UNNAMED, RELATIVE" in prompt
         assert "Weekday mapping guidance" in prompt
-
-    async def test_non_timer_prompt_does_not_inject_eligibility(self):
-        from app.models.agent import TaskContext
-        from tests.helpers import make_agent_task
-
-        agent = LightAgent(ha_client=MagicMock(), entity_index=MagicMock(), entity_matcher=MagicMock())
-        agent._call_llm = AsyncMock(
-            return_value='```json\n{"action": "turn_on", "entity": "kitchen", "parameters": {}}\n```'
-        )
-        ctx = TaskContext(native_plain_timer_eligible=True, language="en")
-        task = make_agent_task(
-            description="turn on the kitchen light",
-            user_text="turn on the kitchen light",
-            context=ctx,
-        )
-        await agent.handle_task(task)
-        messages = agent._call_llm.await_args.args[0]
-        last_user = [m for m in messages if m["role"] == "user"][-1]
-        assert "native_plain_timer_eligible" not in last_user["content"]
-
 
 class TestSceneAgent:
     @patch(
@@ -2392,15 +2331,15 @@ class TestBaseAgentStream:
         agent.handle_task = AsyncMock(
             return_value={
                 "speech": "",
-                "directive": "delegate_native_plain_timer",
-                "reason": "native_start",
+                "directive": "test_directive",
+                "reason": "test_reason",
             }
         )
         task = _make_task("set a timer for 5 minutes")
         chunks = [c async for c in agent.handle_task_stream(task)]
         assert len(chunks) == 1
-        assert chunks[0]["directive"] == "delegate_native_plain_timer"
-        assert chunks[0]["reason"] == "native_start"
+        assert chunks[0]["directive"] == "test_directive"
+        assert chunks[0]["reason"] == "test_reason"
 
     async def test_handle_task_stream_converts_handle_task_exception(self):
         """Default stream must not propagate exceptions to InProcessTransport (generic error chunk)."""
@@ -2544,38 +2483,6 @@ class TestOrchestratorAgent:
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
     @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_handle_task_passes_through_timer_directive(self, mock_complete, mock_track, mock_settings):
-        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
-        orch, dispatcher, *_ = self._make_orchestrator(
-            dispatch_result={
-                "speech": "",
-                "directive": "delegate_native_plain_timer",
-                "reason": "native_start",
-            }
-        )
-        mock_complete.return_value = "timer-agent: Set a timer for 5 minutes"
-        orch._finalize_single_agent_response = AsyncMock()
-        orch._schedule_ha_voice_followup_if_requested = MagicMock()
-
-        task = _make_task(
-            "set a timer for 5 minutes",
-            context=TaskContext(native_plain_timer_eligible=True),
-        )
-        result = await orch.handle_task(task)
-
-        assert result["directive"] == "delegate_native_plain_timer"
-        assert result["reason"] == "native_start"
-        assert result["speech"] == ""
-        assert result["action_executed"] is None
-        assert result["voice_followup"] is False
-        dispatched_task = dispatcher.dispatch.call_args.args[0].params["task"]
-        assert dispatched_task["context"]["native_plain_timer_eligible"] is True
-        orch._finalize_single_agent_response.assert_not_awaited()
-        orch._schedule_ha_voice_followup_if_requested.assert_not_called()
-
-    @patch("app.agents.orchestrator.SettingsRepository")
-    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-    @patch("app.llm.client.complete", new_callable=AsyncMock)
     async def test_handle_task_fallback_on_unknown_agent(self, mock_complete, mock_track, mock_settings):
         mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
         orch, *_ = self._make_orchestrator()
@@ -2604,45 +2511,6 @@ class TestOrchestratorAgent:
         task = _make_task("turn on kitchen light")
         result = await orch.handle_task(task)
         assert result["speech"] == "Fallback response."
-
-    @patch("app.agents.orchestrator.SettingsRepository")
-    @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
-    @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_handle_task_stream_passes_through_timer_directive(self, mock_complete, mock_track, mock_settings):
-        mock_settings.get_value = AsyncMock(side_effect=lambda k, d=None: "auto" if k == "language" else d)
-        orch, dispatcher, *_ = self._make_orchestrator()
-        mock_complete.return_value = "timer-agent: Set a timer for 5 minutes"
-        orch._finalize_single_agent_response = AsyncMock()
-        orch._schedule_ha_voice_followup_if_requested = MagicMock()
-
-        async def _directive_stream(_request):
-            final = MagicMock()
-            final.result = {
-                "token": "",
-                "done": True,
-                "directive": "delegate_native_plain_timer",
-                "reason": "native_cancel",
-            }
-            final.done = True
-            yield final
-
-        dispatcher.dispatch_stream = _directive_stream
-
-        task = _make_task(
-            "cancel my timer",
-            context=TaskContext(native_plain_timer_eligible=True),
-        )
-        chunks = [c async for c in orch.handle_task_stream(task)]
-
-        assert len(chunks) == 1
-        assert chunks[0]["token"] == ""
-        assert chunks[0]["done"] is True
-        assert chunks[0]["directive"] == "delegate_native_plain_timer"
-        assert chunks[0]["reason"] == "native_cancel"
-        assert chunks[0]["conversation_id"]
-        assert "mediated_speech" not in chunks[0]
-        orch._finalize_single_agent_response.assert_not_awaited()
-        orch._schedule_ha_voice_followup_if_requested.assert_not_called()
 
     @patch("app.agents.background_actions.handle_background_event", new_callable=AsyncMock)
     async def test_background_turn_bypasses_cache_and_returns_directly(self, mock_background):
@@ -4763,38 +4631,28 @@ class TestOrchestratorFiller:
         result = await orch._get_filler_threshold_ms()
         assert result == 500
 
-    @patch("app.agents.filler.SettingsRepository")
-    @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_invoke_filler_agent_returns_text(self, mock_complete, mock_settings):
-        orch, _, _ = self._make_filler_orchestrator()
-        filler = FillerAgent()
-        orch._filler_agent = filler
-        mock_settings.get_value = AsyncMock(return_value="")
-        mock_complete.return_value = "One moment, let me check that for you."
+    async def test_invoke_filler_agent_returns_text(self):
+        """Dispatcher returns filler speech via A2A; _invoke_filler_agent extracts it."""
+        orch, dispatcher, _ = self._make_filler_orchestrator()
+        response_mock = MagicMock()
+        response_mock.error = None
+        response_mock.result = {"speech": "One moment, let me check that for you."}
+        dispatcher.dispatch = AsyncMock(return_value=response_mock)
         result = await orch._invoke_filler_agent("what is the weather", "general-agent", "en")
         assert result == "One moment, let me check that for you."
-        mock_complete.assert_awaited_once()
+        dispatcher.dispatch.assert_awaited_once()
 
-    @patch("app.agents.filler._FILLER_LLM_TIMEOUT_SEC", 0.05)
-    @patch("app.agents.filler.SettingsRepository")
-    @patch("app.llm.client.complete", new_callable=AsyncMock)
-    async def test_invoke_filler_agent_returns_none_on_timeout(self, mock_complete, mock_settings):
-        orch, _, _ = self._make_filler_orchestrator()
-        filler = FillerAgent()
-        orch._filler_agent = filler
-        mock_settings.get_value = AsyncMock(return_value="")
-
-        async def _slow(*args, **kwargs):
-            await asyncio.sleep(0.1)
-            return "too late"
-
-        mock_complete.side_effect = _slow
+    async def test_invoke_filler_agent_returns_none_on_timeout(self):
+        """When the A2A dispatch times out, _invoke_filler_agent returns None."""
+        orch, dispatcher, _ = self._make_filler_orchestrator()
+        dispatcher.dispatch = AsyncMock(side_effect=TimeoutError)
         result = await orch._invoke_filler_agent("query", "general-agent", "en")
         assert result is None
 
-    async def test_invoke_filler_agent_returns_none_when_no_filler_agent(self):
-        orch, _, _ = self._make_filler_orchestrator()
-        orch._filler_agent = None
+    async def test_invoke_filler_agent_returns_none_on_dispatch_error(self):
+        """When the A2A dispatch raises an exception, _invoke_filler_agent returns None."""
+        orch, dispatcher, _ = self._make_filler_orchestrator()
+        dispatcher.dispatch = AsyncMock(side_effect=RuntimeError("dispatch failed"))
         result = await orch._invoke_filler_agent("query", "general-agent", "en")
         assert result is None
 
@@ -4837,10 +4695,10 @@ class TestOrchestratorFiller:
             chunks.append(c)
 
         # No filler token should be present
-        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 0
         # Non-filler tokens are buffered until the terminal frame.
-        real_tokens = [c for c in chunks if c.get("token") and not c.get("is_filler") and not c.get("done")]
+        real_tokens = [c for c in chunks if c.get("token") and not "filler_push" in c and not c.get("done")]
         assert real_tokens == []
         done_chunks = [c for c in chunks if c.get("done")]
         assert len(done_chunks) == 1
@@ -4888,9 +4746,9 @@ class TestOrchestratorFiller:
             chunks.append(c)
 
         # A filler token should be yielded before real tokens
-        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 1
-        assert filler_chunks[0]["token"] == "Let me look that up for you."
+        assert filler_chunks[0]["filler_push"] == "Let me look that up for you."
 
     @patch("app.agents.orchestrator.SettingsRepository")
     @patch("app.agents.orchestrator.track_request", new_callable=AsyncMock)
@@ -4925,7 +4783,7 @@ class TestOrchestratorFiller:
         async for c in orch.handle_task_stream(task):
             chunks.append(c)
 
-        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 0
 
     @patch("app.agents.orchestrator.SettingsRepository")
@@ -4976,7 +4834,7 @@ class TestOrchestratorFiller:
             chunks.append(c)
 
         # No filler since generation failed
-        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 0
         # Non-filler tokens are buffered until the terminal frame.
         real_tokens = [c for c in chunks if c.get("token") == "Real answer"]
@@ -5037,7 +4895,7 @@ class TestOrchestratorFiller:
             chunks.append(c)
 
         # No filler should have been sent to user
-        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 0
 
         # filler_generate span should exist with was_sent=False
@@ -5092,7 +4950,7 @@ class TestOrchestratorFiller:
             chunks.append(c)
 
         # Filler should have been sent
-        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 1
 
         # filler_generate span should exist with was_sent=True
@@ -6452,7 +6310,7 @@ class TestStreamMediatedSpeech:
         chunks = [c async for c in orch.handle_task_stream(task)]
 
         intermediate = [c for c in chunks if not c["done"]]
-        non_filler_tokens = [c for c in intermediate if not c.get("is_filler") and c.get("token")]
+        non_filler_tokens = [c for c in intermediate if not "filler_push" in c and c.get("token")]
         assert non_filler_tokens == []
 
         final = [c for c in chunks if c["done"]]
@@ -6562,8 +6420,9 @@ class TestSendAgent:
             {"message": "test content", "title": "HA-AgentHub"},
         )
 
+    @patch("app.agents.send.SettingsRepository")
     @patch("app.agents.send.SendDeviceMappingRepository")
-    async def test_handle_task_tts(self, mock_repo, monkeypatch):
+    async def test_handle_task_tts(self, mock_repo, mock_settings, monkeypatch):
         agent, ha_client = self._make_send_agent()
         mock_repo.find_by_name = AsyncMock(
             return_value={
@@ -6572,6 +6431,7 @@ class TestSendAgent:
                 "ha_service_target": "media_player.satellite_kueche",
             }
         )
+        mock_settings.get_value = AsyncMock(return_value="tts.google_translate_say")
         monkeypatch.setattr(agent, "_format_content", AsyncMock(return_value="short summary"))
 
         task = _make_task(
@@ -6943,9 +6803,9 @@ class TestSequentialSendFiller:
         async for c in orch.handle_task_stream(task):
             chunks.append(c)
 
-        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 1
-        assert filler_chunks[0]["token"] == "One moment please."
+        assert filler_chunks[0]["filler_push"] == "One moment please."
 
         # Final result should also be present
         done_chunks = [c for c in chunks if c.get("done")]
@@ -6981,7 +6841,7 @@ class TestSequentialSendFiller:
         async for c in orch.handle_task_stream(task):
             chunks.append(c)
 
-        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 0
 
     @patch("app.agents.orchestrator.SettingsRepository")
@@ -7011,7 +6871,7 @@ class TestSequentialSendFiller:
         async for c in orch.handle_task_stream(task):
             chunks.append(c)
 
-        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 0
 
     @patch("app.agents.orchestrator.SettingsRepository")
@@ -7053,7 +6913,7 @@ class TestSequentialSendFiller:
         async for c in orch.handle_task_stream(task):
             chunks.append(c)
 
-        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 0
 
     @patch("app.agents.orchestrator.SettingsRepository")
@@ -7095,7 +6955,7 @@ class TestSequentialSendFiller:
             chunks.append(c)
 
         # Filler should have fired
-        filler_chunks = [c for c in chunks if c.get("is_filler")]
+        filler_chunks = [c for c in chunks if "filler_push" in c]
         assert len(filler_chunks) == 1
 
         # Find the filler_generate span

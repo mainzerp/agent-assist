@@ -29,5 +29,3 @@ expected:
   service_calls: []
   speech_contains: ["timer"]
   speech_excludes: ["could not verify", "could not understand"]
-# TODO: add a sibling scenario covering eligibility=true native delegation
-# (LLM stub returns delegate_native_plain_timer; assertion expects directive in response).

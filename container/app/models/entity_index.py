@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class EntityIndexEntry(BaseModel):
@@ -32,6 +32,7 @@ class EntityIndexEntry(BaseModel):
     state: str | None = Field(None, description="Current runtime state for background readers that need it")
     has_date: bool = Field(False, description="input_datetime runtime flag")
     has_time: bool = Field(False, description="input_datetime runtime flag")
+    _content_hash: str | None = PrivateAttr(default=None)
 
     @property
     def embedding_text(self) -> str:
@@ -70,6 +71,8 @@ class EntityIndexEntry(BaseModel):
         did not. ``None`` is coerced to ``""`` so the hash matches the
         coercion already done by ``EntityIndex._build_metadata``.
         """
+        if self._content_hash is not None:
+            return self._content_hash
         payload = {
             "entity_id": self.entity_id or "",
             "friendly_name": self.friendly_name or "",

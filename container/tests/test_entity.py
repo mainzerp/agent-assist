@@ -48,8 +48,8 @@ class TestLevenshteinSignal:
 
     def test_empty_strings(self):
         score = LevenshteinSignal.score("", "")
-        # rapidfuzz returns 0.0 for two empty strings (no characters to compare)
-        assert score == pytest.approx(0.0) or score == pytest.approx(1.0)
+        # rapidfuzz returns 1.0 for two empty strings (perfect match by definition)
+        assert score == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------

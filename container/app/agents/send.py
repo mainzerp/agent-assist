@@ -7,7 +7,7 @@ import re
 
 from app.agents.base import BaseAgent
 from app.analytics.tracer import _optional_span
-from app.db.repository import SendDeviceMappingRepository
+from app.db.repository import SendDeviceMappingRepository, SettingsRepository
 from app.models.agent import (
     AgentCard,
     AgentErrorCode,
@@ -131,10 +131,11 @@ class SendAgent(BaseAgent):
         try:
             prompt_template = await self._load_prompt_async("send")
             wrapped_content = self._wrap_user_input(content)
-            prompt = prompt_template.format(
-                delivery_type=delivery_type,
-                target_name=target_name,
-                content=wrapped_content,
+            prompt = (
+                prompt_template
+                .replace("{delivery_type}", delivery_type)
+                .replace("{target_name}", target_name)
+                .replace("{content}", wrapped_content)
             )
             messages = [
                 {"role": "system", "content": prompt},
@@ -165,7 +166,7 @@ class SendAgent(BaseAgent):
 
     async def _deliver_tts(self, media_player_entity: str, content: str) -> None:
         """Send via TTS to a satellite media_player entity."""
-        tts_engine = "tts.google_translate_say"
+        tts_engine = await SettingsRepository.get_value("tts.engine", "tts.google_translate_say")
         await self._ha_client.call_service(
             "tts",
             "speak",

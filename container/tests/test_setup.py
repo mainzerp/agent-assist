@@ -431,7 +431,7 @@ class TestLLMTest:
             )
             assert resp.status_code == 200
             assert "test-error" in resp.text
-            assert "Error:" in resp.text
+            assert "Provider test failed" in resp.text
 
     async def test_llm_test_unknown_provider(self, setup_client: httpx.AsyncClient):
         mock_litellm_mod = MagicMock()

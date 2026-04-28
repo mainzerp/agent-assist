@@ -213,7 +213,7 @@ async def resolve_entity_deterministic_first(
             entity_id_query = term.lower()
             if not _ENTITY_ID_RE.fullmatch(entity_id_query):
                 continue
-            exact_entry = entity_index.get_by_id(entity_id_query)
+            exact_entry = await entity_index.get_by_id_async(entity_id_query)
             if not exact_entry:
                 continue
             if agent_id and not await entity_is_visible(agent_id, exact_entry.entity_id, entity_index):

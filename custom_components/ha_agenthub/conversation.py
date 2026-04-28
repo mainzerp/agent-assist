@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
-import contextvars
 import json
 import logging
 import re
 import time
-from dataclasses import dataclass
 from typing import Any, Literal
 
 import aiohttp
@@ -17,17 +14,10 @@ import aiohttp
 from homeassistant.components import assist_pipeline, conversation
 from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_URL, CONF_API_KEY, MATCH_ALL
+from homeassistant.const import MATCH_ALL
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er, intent
+from homeassistant.helpers import device_registry as dr, entity_registry as er, intent
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-
-try:
-    from homeassistant.helpers.event import async_track_state_change_event
-    _HAS_STATE_TRACKER = True
-except (ImportError, AttributeError):
-    async_track_state_change_event = None
-    _HAS_STATE_TRACKER = False
 
 from .const import (
     DOMAIN,
@@ -36,65 +26,9 @@ from .const import (
     RECONNECT_MAX_DELAY,
     WS_HEARTBEAT_INTERVAL,
     WS_IDLE_THRESHOLD,
-    CONF_NATIVE_PLAIN_TIMERS,
-    DEFAULT_NATIVE_PLAIN_TIMERS,
-    CONF_ENABLE_POST_FILLER_PUSH,
-    DEFAULT_ENABLE_POST_FILLER_PUSH,
-    ECHO_GUARD_TTL_SECONDS,
-    NATIVE_HA_AGENT_ID,
-    NATIVE_PLAIN_TIMER_DIRECTIVE,
-    NATIVE_PLAIN_TIMER_ELIGIBLE_FIELD,
-    NATIVE_PLAIN_TIMER_ELIGIBLE_HEADER,
-    POST_FILLER_FALLBACK_DELAY_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Native plain-timer delegation (0.25.1)
-# ---------------------------------------------------------------------------
-#
-# The integration no longer classifies utterances locally. Instead, when the
-# per-config-entry ``CONF_NATIVE_PLAIN_TIMERS`` opt-in is enabled, every
-# bridge request is marked eligible (additive JSON field + REST header).
-# The container timer-agent owns the semantic decision and may return a
-# ``directive=delegate_native_plain_timer`` response through the normal
-# orchestrator path. The integration honours the directive by calling the
-# proven native seam (``conversation.async_converse(...,
-# agent_id=NATIVE_HA_AGENT_ID)``).
-#
-# Recursion safety: ``_async_delegate_to_native`` falls back to the bridge
-# on pre-handler errors. To prevent that fallback from triggering a second
-# directive loop, eligibility is suppressed via a task-local ContextVar
-# while a directive is being honoured.
-
-
-@dataclass(slots=True)
-class _BridgeDirective:
-    """Internal carrier returned by bridge senders when the container
-    instructs the integration to delegate to native HA Assist."""
-
-    directive: str
-    reason: str | None = None
-    conversation_id: str | None = None
-
-
-# Task-local suppression of the eligibility flag/header. When True, neither
-# the WebSocket payload nor the REST request includes the eligibility
-# signal so the bridge cannot
-# emit a second native directive for the same turn.
-_suppress_native_plain_timer_eligibility: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "ha_agenthub_suppress_native_plain_timer_eligibility",
-    default=False,
-)
-
-MAX_POST_FILLER_WAIT_SECONDS = 8.0
-PUSH_FINAL_WAIT_SECONDS = 30.0
-SPEAK_FILLER_ONLY_ON_TIMEOUT = False
-FILLER_ONLY_TIMEOUT_TEXT = "Entschuldigung, da ist etwas schiefgelaufen."
-_SAT_BUSY_STATES = frozenset({"listening", "processing", "responding"})
-_SAT_IDLE_STATES = frozenset({"idle"})
 
 
 class _WsDroppedAfterSendError(Exception):
@@ -153,18 +87,6 @@ def _strip_markdown(text: str) -> str:
     text = re.sub(r" {2,}", " ", text)
     lines = [line.strip() for line in text.splitlines()]
     return "\n".join(lines).strip()
-
-
-_WHITESPACE_RE = re.compile(r"\s+")
-
-
-def _normalize_for_echo(text: str) -> str:
-    """Normalize text for echo comparison: strip markdown, lowercase,
-    collapse whitespace. Used only by the post-filler-push echo guard."""
-    if not text:
-        return ""
-    stripped = _strip_markdown(text)
-    return _WHITESPACE_RE.sub(" ", stripped).strip().lower()
 
 
 async def async_setup_entry(
@@ -226,10 +148,6 @@ class HaAgentHubConversationEntity(
         # first completed task forever.
         self._inflight_bridge: dict[tuple[str, str], tuple[float, asyncio.Task]] = {}
         self._coalesce_window_sec: float = 0.25
-        # V4: at most one in-flight post-filler push task per satellite.
-        self._inflight_pushes: dict[str, asyncio.Task] = {}
-        # V4 reentrancy guard for assist_satellite.announce echo loops.
-        self._recent_announcements: dict[str, tuple[str, float]] = {}
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
@@ -258,26 +176,11 @@ class HaAgentHubConversationEntity(
             name="ha_agenthub_ws_reconnect",
         )
 
-        def _cancel_pushes() -> None:
-            if not self._inflight_pushes:
-                return
-            self.hass.async_create_task(self._cancel_and_await_pushes(None))
-
-        self._entry.async_on_unload(_cancel_pushes)
-
     async def async_will_remove_from_hass(self) -> None:
         """When entity will be removed from Home Assistant."""
         if hasattr(self, "_reconnect_task") and self._reconnect_task:
             self._reconnect_task.cancel()
             self._reconnect_task = None
-        if self._inflight_pushes:
-            try:
-                await asyncio.shield(self._cancel_and_await_pushes(None))
-            except Exception:
-                logger.debug(
-                    "ha-agenthub: push cancellation during entity removal raised",
-                    exc_info=True,
-                )
         await self._disconnect_ws()
         await super().async_will_remove_from_hass()
 
@@ -333,16 +236,22 @@ class HaAgentHubConversationEntity(
     async def _reconnect_loop(self) -> None:
         """Background loop that maintains the WebSocket connection."""
         while True:
-            if self._ws is None or self._ws.closed:
-                connected = await self._connect_ws()
-                if not connected:
-                    delay = self._reconnect_delay
-                    self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
-                    logger.debug("Reconnect in %.1fs", delay)
-                    await asyncio.sleep(delay)
-                    continue
-            # Connection is alive -- sleep before checking again
-            await asyncio.sleep(30)
+            try:
+                if self._ws is None or self._ws.closed:
+                    connected = await self._connect_ws()
+                    if not connected:
+                        delay = self._reconnect_delay
+                        self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
+                        logger.debug("Reconnect in %.1fs", delay)
+                        await asyncio.sleep(delay)
+                        continue
+                # Connection is alive -- sleep before checking again
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Unexpected error in reconnect loop")
+                await asyncio.sleep(5)
 
     async def _ensure_connected(self) -> bool:
         """Ensure WebSocket is connected, reconnect if needed."""
@@ -361,7 +270,7 @@ class HaAgentHubConversationEntity(
         if self._ws is not None and not self._ws.closed:
             if time.monotonic() - self._ws_last_active > WS_IDLE_THRESHOLD:
                 try:
-                    pong = await self._ws.ping()
+                    pong = self._ws.ping()
                     await asyncio.wait_for(pong, timeout=2.0)
                     self._ws_last_active = time.monotonic()
                 except (asyncio.TimeoutError, Exception):
@@ -400,36 +309,13 @@ class HaAgentHubConversationEntity(
         text are coalesced so only one WebSocket/REST round-trip runs;
         this matches traces where the container saw two identical turns
         back-to-back from production HA setups.
-
-        0.25.1: the integration no longer classifies utterances locally.
-        Native plain-timer delegation is decided by the container's timer-agent
-        path and surfaces as a directive on the bridge response;
-        ``_async_bridge_with_cleanup`` honours the directive inside the
-        coalesced task so duplicate suppression still applies.
         """
         cid = user_input.conversation_id or ""
         text = (user_input.text or "").strip()
         device_id = getattr(user_input, "device_id", None)
-        sat: str | None = None
-        echo_suppressed = False
-        if isinstance(device_id, str) and device_id:
-            sat = self._resolve_satellite_entity(user_input)
-            if self._is_likely_echo(sat, text):
-                echo_suppressed = True
-                logger.debug(
-                    "ha-agenthub: echo-suppressing turn sat=%s text_len=%d",
-                    sat, len(text),
-                )
-                response = intent.IntentResponse(language=user_input.language or "en")
-                response.async_set_speech("")
-                return conversation.ConversationResult(
-                    response=response,
-                    conversation_id=user_input.conversation_id,
-                )
         logger.debug(
-            "ha-agenthub: turn-entry cid=%s device_id=%s sat=%s text_len=%d echo_guard=%s",
-            cid, device_id, sat, len(text),
-            "hit" if echo_suppressed else "miss",
+            "ha-agenthub: turn-entry cid=%s device_id=%s text_len=%d",
+            cid, device_id, len(text),
         )
         key = (cid, text)
 
@@ -458,167 +344,16 @@ class HaAgentHubConversationEntity(
     ) -> conversation.ConversationResult:
         task = asyncio.current_task()
         try:
-            outcome = await self._async_bridge_to_container(user_input)
-            if isinstance(outcome, _BridgeDirective):
-                return await self._handle_bridge_directive(user_input, outcome)
-            return outcome
+            return await self._async_bridge_to_container(user_input)
         finally:
             async with self._coalesce_lock:
                 existing = self._inflight_bridge.get(key)
                 if task is not None and existing is not None and existing[1] is task:
                     self._inflight_bridge.pop(key, None)
 
-    async def _handle_bridge_directive(
-        self,
-        user_input: conversation.ConversationInput,
-        directive: _BridgeDirective,
+    async def _async_bridge_to_container(
+        self, user_input: conversation.ConversationInput
     ) -> conversation.ConversationResult:
-        """Honour a directive returned by the container bridge.
-
-        Currently only ``delegate_native_plain_timer`` is supported. The
-        eligibility flag is suppressed for the duration of the native
-        attempt so that ``_async_delegate_to_native``'s own pre-handler
-        bridge fallback cannot trigger a second directive loop.
-        """
-        if directive.directive == NATIVE_PLAIN_TIMER_DIRECTIVE:
-            native_callable = self._resolve_native_delegate()
-            reason = directive.reason or "native"
-            if native_callable is None:
-                logger.warning(
-                    "HA-AgentHub: native delegate unavailable, retrying bridge "
-                    "(path=agenthub, reason=native_unavailable)"
-                )
-                token = _suppress_native_plain_timer_eligibility.set(True)
-                try:
-                    fallback = await self._async_bridge_to_container(user_input)
-                finally:
-                    _suppress_native_plain_timer_eligibility.reset(token)
-                if isinstance(fallback, _BridgeDirective):
-                    # Bridge unexpectedly emitted a second directive even with
-                    # suppression on. Surface a benign error instead of looping.
-                    return self._build_result(
-                        "Sorry, the assistant could not complete that request.",
-                        user_input.conversation_id,
-                        user_input.language,
-                    )
-                return fallback
-            logger.debug(
-                "HA-AgentHub: honouring native plain-timer directive "
-                "(path=native, reason=%s)",
-                reason,
-            )
-            token = _suppress_native_plain_timer_eligibility.set(True)
-            try:
-                return await self._async_delegate_to_native(
-                    user_input, native_callable, reason
-                )
-            finally:
-                _suppress_native_plain_timer_eligibility.reset(token)
-
-        # Unknown directive: log and run one bridge fallback with eligibility
-        # suppressed. Never recurse on unknown values.
-        logger.warning(
-            "HA-AgentHub: ignoring unknown bridge directive %r (path=agenthub)",
-            directive.directive,
-        )
-        token = _suppress_native_plain_timer_eligibility.set(True)
-        try:
-            fallback = await self._async_bridge_to_container(user_input)
-        finally:
-            _suppress_native_plain_timer_eligibility.reset(token)
-        if isinstance(fallback, _BridgeDirective):
-            return self._build_result(
-                "Sorry, the assistant could not complete that request.",
-                user_input.conversation_id,
-                user_input.language,
-            )
-        return fallback
-
-    # ------------------------------------------------------------------
-    # Native plain-timer delegation helpers (0.25.0)
-    # ------------------------------------------------------------------
-
-    def _is_native_plain_timers_enabled(self) -> bool:
-        """Return True if the integration is opted into native plain-timer
-        delegation. Default False keeps existing behavior unchanged when the
-        flag is absent or the entry data is missing."""
-        try:
-            data = getattr(self._entry, "data", None) or {}
-            return bool(data.get(CONF_NATIVE_PLAIN_TIMERS, DEFAULT_NATIVE_PLAIN_TIMERS))
-        except Exception:
-            return DEFAULT_NATIVE_PLAIN_TIMERS
-
-    def _is_post_filler_push_enabled(self) -> bool:
-        """Return True if post-filler announce push is enabled."""
-        try:
-            options = getattr(self._entry, "options", None) or {}
-            return bool(
-                options.get(
-                    CONF_ENABLE_POST_FILLER_PUSH,
-                    DEFAULT_ENABLE_POST_FILLER_PUSH,
-                )
-            )
-        except Exception:
-            return DEFAULT_ENABLE_POST_FILLER_PUSH
-
-    def _resolve_native_delegate(self):
-        """Resolve the HA conversation delegate seam.
-
-        Phase 1 proven seam: ``conversation.async_converse(..., agent_id=
-        NATIVE_HA_AGENT_ID)``. The ``agent_id`` ensures HA core dispatches
-        directly to the built-in default agent, never re-entering this
-        custom entity. Returns the callable or None if the API is missing
-        on the running HA core (e.g., very old core or the stub used in
-        tests).
-        """
-        try:
-            return getattr(conversation, "async_converse", None)
-        except Exception:
-            return None
-
-    async def _async_delegate_to_native(
-        self,
-        user_input: conversation.ConversationInput,
-        native_callable,
-        reason_code: str,
-    ) -> conversation.ConversationResult:
-        """Delegate the request to HA's built-in default conversation agent.
-
-        On success the native ConversationResult is returned directly; per
-        plan D9 we never retry the request through AgentHub once native
-        has produced a definitive response. Only delegate-side construction
-        errors (raised before the native handler runs) fall through to the
-        AgentHub bridge as a safety net.
-        """
-        context = getattr(user_input, "context", None)
-        try:
-            result = await native_callable(
-                self.hass,
-                user_input.text,
-                conversation_id=user_input.conversation_id,
-                context=context,
-                language=user_input.language,
-                agent_id=NATIVE_HA_AGENT_ID,
-            )
-            logger.info(
-                "HA-AgentHub: native Assist handled plain timer "
-                "(path=native, reason=%s)",
-                reason_code,
-            )
-            return result
-        except Exception:
-            # Definitive native handler errors (e.g., intent-not-matched)
-            # are surfaced inside ConversationResult, not raised. A raised
-            # exception here means we never reached the native handler --
-            # safe to fall back to AgentHub once.
-            logger.warning(
-                "HA-AgentHub: native delegation failed before handler ran, "
-                "falling back to AgentHub (path=agenthub, reason=native_error)",
-                exc_info=True,
-            )
-            return await self._async_bridge_to_container(user_input)
-
-    async def _async_bridge_to_container(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult | _BridgeDirective:
         """Single WS (preferred) or REST attempt to the HA-AgentHub container."""
         try:
             async with self._ws_lock:
@@ -649,321 +384,83 @@ class HaAgentHubConversationEntity(
         return result
 
     def _resolve_origin_context(self, user_input: conversation.ConversationInput) -> dict[str, str]:
-        """Resolve device_id/area_id and their human-readable names.
+        """Forward raw device_id and area_id to the container.
 
-        FLOW-CTX-1 (0.18.6): IDs alone were not enough for traces or
-        area-aware entity resolution. Adding the display names here
-        means the container can annotate speech and the trace UI
-        with "Kitchen Satellite / Kitchen" instead of opaque UUIDs.
-        Lookup failures degrade silently -- the IDs stay authoritative.
+        The container maintains its own entity index and resolves
+        human-readable names from its synced copy.  The bridge must
+        not perform entity resolution (Prime Directive 1).
         """
         extra: dict[str, str] = {}
         device_id = getattr(user_input, "device_id", None)
-        if not device_id:
-            return extra
-        extra["device_id"] = device_id
-        try:
-            device_reg = dr.async_get(self.hass)
-            device = device_reg.async_get(device_id)
-        except Exception:
-            device = None
-        if not device:
-            return extra
-
-        device_name = device.name_by_user or device.name
-        if device_name:
-            extra["device_name"] = device_name
-
-        area_id = device.area_id
-        if not area_id:
-            return extra
-        extra["area_id"] = area_id
-        try:
-            area_reg = ar.async_get(self.hass)
-            area = area_reg.async_get_area(area_id)
-            if area and area.name:
-                extra["area_name"] = area.name
-        except Exception:
-            logger.debug("area_registry lookup failed for %s", area_id, exc_info=True)
+        if device_id:
+            extra["device_id"] = device_id
+            # HA ConversationInput does not expose area_id directly;
+            # the container resolves it from its own entity index via
+            # the device_id we forward above.
         return extra
 
-    def _filler_gate_key(self, user_input) -> str:
-        """Return the per-origin key used to gate filler completion."""
-        device_id = getattr(user_input, "device_id", None)
-        if isinstance(device_id, str) and device_id:
-            return f"device:{device_id}"
-        area_id = getattr(user_input, "area_id", None)
-        if isinstance(area_id, str) and area_id:
-            return f"area:{area_id}"
-        return "__global__"
+    def _resolve_satellite_entity(self, device_id: str | None) -> str | None:
+        """Find the assist_satellite entity_id associated with a device.
 
-    def _is_likely_echo(self, satellite: str | None, inbound_text: str) -> bool:
-        """Return True iff a recent announce on this satellite carried the
-        same normalized text and the TTL has not expired."""
-        if not satellite:
-            return False
-        entry = self._recent_announcements.get(satellite)
-        if entry is None:
-            return False
-        announced_norm, expiry = entry
-        if time.monotonic() >= expiry:
-            self._recent_announcements.pop(satellite, None)
-            return False
-        return _normalize_for_echo(inbound_text) == announced_norm
-
-    async def _cancel_and_await_pushes(
-        self, satellite_ids: Iterable[str] | None = None
-    ) -> None:
-        """Cancel in-flight push tasks and await their completion.
-
-        If satellite_ids is None, cancels all tasks in self._inflight_pushes.
-        Otherwise cancels only the matching keys. Always awaits with
-        return_exceptions=True so a CancelledError or other exception in one
-        task does not block cleanup of the others.
+        This is used solely to route container-directed filler_push
+        directives to the correct satellite for audio playback.  It
+        does not perform entity resolution on behalf of the container
+        (Prime Directive 1).
         """
-        if satellite_ids is None:
-            keys = list(self._inflight_pushes.keys())
-        else:
-            keys = [key for key in satellite_ids if key in self._inflight_pushes]
-        tasks: list[asyncio.Task] = []
-        for key in keys:
-            task = self._inflight_pushes.get(key)
-            if task is not None and not task.done():
-                task.cancel()
-                tasks.append(task)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        for key in keys:
-            self._inflight_pushes.pop(key, None)
-
-    async def _spawn_post_filler_push(
-        self,
-        *,
-        local_ws: aiohttp.ClientWebSocketResponse,
-        satellite_entity_id: str | None,
-        user_input: conversation.ConversationInput,
-        gate_key: str,
-    ) -> None:
-        """Spawn the post-filler background push task."""
-        key = satellite_entity_id or f"__no_sat__:{gate_key}"
-        previous = self._inflight_pushes.get(key)
-        if previous is not None and not previous.done():
-            logger.info(
-                "ha-agenthub: cancelling previous post-filler push key=%s sat=%s",
-                gate_key, satellite_entity_id,
-            )
-            await self._cancel_and_await_pushes([key])
-        push_coro = self._post_filler_push(
-            local_ws=local_ws,
-            satellite_entity_id=satellite_entity_id,
-            user_input=user_input,
-            gate_key=gate_key,
-            key=key,
-        )
+        if not device_id:
+            return None
         try:
-            task = self._entry.async_create_background_task(
-                self.hass,
-                push_coro,
-                name=f"ha_agenthub_post_filler_push:{key}",
-            )
+            entity_registry = er.async_get(self.hass)
+            entries = er.async_entries_for_device(entity_registry, device_id)
+            for entry in entries:
+                if entry.domain == "assist_satellite":
+                    return entry.entity_id
         except Exception:
-            push_coro.close()
-            raise
-        self._inflight_pushes[key] = task
+            logger.debug(
+                "Failed to resolve satellite entity for device %s", device_id, exc_info=True
+            )
+        return None
 
     async def _post_filler_push(
-        self,
-        *,
-        local_ws: aiohttp.ClientWebSocketResponse,
-        satellite_entity_id: str | None,
-        user_input: conversation.ConversationInput,
-        gate_key: str,
-        key: str,
+        self, filler_text: str, device_id: str | None
     ) -> None:
-        """Read the post-filler final response and push it after idle."""
-        final_text: str | None = None
-        final_parts: list[str] = []
-        observed_idle = asyncio.Event()
-        aborted_new_turn = False
-        unsub = None
+        """Execute a container-directed filler via assist_satellite.announce.
 
-        def _on_state(event) -> None:
-            nonlocal aborted_new_turn
-            new_state = event.data.get("new_state") if event else None
-            new_state_value = getattr(new_state, "state", None)
-            if new_state_value in _SAT_IDLE_STATES:
-                observed_idle.set()
-            elif new_state_value in _SAT_BUSY_STATES and observed_idle.is_set():
-                aborted_new_turn = True
-                observed_idle.set()
-
+        Blocks until the announcement has finished playing on the device.
+        The container decides when filler is needed; the integration merely
+        executes the service call (Prime Directive 1 boundary).
+        """
+        satellite_entity = self._resolve_satellite_entity(device_id)
+        if not satellite_entity:
+            logger.debug(
+                "No satellite entity for device %s, skipping filler push", device_id
+            )
+            return
         try:
-            if satellite_entity_id and _HAS_STATE_TRACKER and async_track_state_change_event is not None:
-                unsub = async_track_state_change_event(
-                    self.hass,
-                    [satellite_entity_id],
-                    _on_state,
-                )
-                try:
-                    current = self.hass.states.get(satellite_entity_id)
-                    if current is not None and current.state in _SAT_IDLE_STATES:
-                        observed_idle.set()
-                except Exception:
-                    logger.debug("ha-agenthub: state seed lookup failed", exc_info=True)
-
-            deadline_final = time.monotonic() + PUSH_FINAL_WAIT_SECONDS
-            while True:
-                remaining = deadline_final - time.monotonic()
-                if remaining <= 0:
-                    logger.warning(
-                        "ha-agenthub: post-filler push timed out waiting for final frame key=%s sat=%s",
-                        gate_key, satellite_entity_id,
-                    )
-                    if SPEAK_FILLER_ONLY_ON_TIMEOUT and satellite_entity_id:
-                        final_text = FILLER_ONLY_TIMEOUT_TEXT
-                    break
-                try:
-                    msg = await asyncio.wait_for(local_ws.receive(), timeout=remaining)
-                except asyncio.TimeoutError:
-                    continue
-
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    data = json.loads(msg.data)
-                    if data.get("is_filler", False):
-                        logger.info(
-                            "ha-agenthub: ignoring secondary filler in push key=%s",
-                            gate_key,
-                        )
-                        continue
-                    if data.get("directive"):
-                        logger.info(
-                            "ha-agenthub: post-filler push received directive, skipping announce key=%s sat=%s",
-                            gate_key, satellite_entity_id,
-                        )
-                        break
-
-                    token_text = data.get("token", "")
-                    if token_text:
-                        final_parts.append(token_text)
-                    if data.get("done", False):
-                        mediated = data.get("mediated_speech")
-                        if mediated:
-                            final_parts = [mediated]
-                        stream_sanitized = bool(data.get("sanitized", False))
-                        raw = "".join(final_parts)
-                        final_text = raw if stream_sanitized else _strip_markdown(raw)
-                        final_text = (final_text or "").strip()
-                        logger.info(
-                            "ha-agenthub: post-filler push received final key=%s sat=%s final_chars=%d",
-                            gate_key, satellite_entity_id, len(final_text),
-                        )
-                        break
-                elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                    logger.warning(
-                        "ha-agenthub: post-filler push WS closed before final key=%s sat=%s type=%s",
-                        gate_key, satellite_entity_id, msg.type,
-                    )
-                    break
-
-            if final_text is None or not final_text:
-                return
-
-            if not satellite_entity_id:
-                logger.warning(
-                    "ha-agenthub: post-filler push has final but no satellite to announce on key=%s",
-                    gate_key,
-                )
-                return
-
-            if not _HAS_STATE_TRACKER:
-                logger.debug(
-                    "ha-agenthub: state tracker unavailable; falling back to fixed delay key=%s sat=%s",
-                    gate_key, satellite_entity_id,
-                )
-                try:
-                    await asyncio.sleep(POST_FILLER_FALLBACK_DELAY_SECONDS)
-                except asyncio.CancelledError:
-                    raise
-            elif not observed_idle.is_set():
-                try:
-                    await asyncio.wait_for(
-                        observed_idle.wait(),
-                        timeout=MAX_POST_FILLER_WAIT_SECONDS,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "ha-agenthub: post-filler push satellite never reached idle within %.1fs key=%s sat=%s",
-                        MAX_POST_FILLER_WAIT_SECONDS, gate_key, satellite_entity_id,
-                    )
-                    return
-
-            if aborted_new_turn:
-                logger.info(
-                    "ha-agenthub: abandoning post-filler push (new turn detected) key=%s sat=%s",
-                    gate_key, satellite_entity_id,
-                )
-                return
-
-            normalized_announced = _normalize_for_echo(final_text)
-            self._recent_announcements[satellite_entity_id] = (
-                normalized_announced,
-                time.monotonic() + ECHO_GUARD_TTL_SECONDS,
+            await self.hass.services.async_call(
+                "assist_satellite",
+                "announce",
+                {
+                    "message": filler_text,
+                    "preannounce": False,
+                },
+                target={"entity_id": satellite_entity},
+                blocking=True,
             )
-            try:
-                logger.info(
-                    "ha-agenthub: post-filler push dispatching announce key=%s sat=%s final_chars=%d",
-                    gate_key, satellite_entity_id, len(final_text),
-                )
-                await self.hass.services.async_call(
-                    "assist_satellite",
-                    "announce",
-                    {
-                        "entity_id": satellite_entity_id,
-                        "message": final_text,
-                        "preannounce": False,
-                    },
-                    blocking=False,
-                )
-            except Exception:
-                logger.warning(
-                    "ha-agenthub: assist_satellite.announce failed in push key=%s sat=%s",
-                    gate_key, satellite_entity_id, exc_info=True,
-                )
-        except asyncio.CancelledError:
-            logger.info(
-                "ha-agenthub: post-filler push cancelled key=%s sat=%s",
-                gate_key, satellite_entity_id,
+            logger.debug(
+                "Filler pushed to %s: %s", satellite_entity, filler_text[:80]
             )
-            raise
         except Exception:
             logger.warning(
-                "ha-agenthub: post-filler push raised unexpectedly key=%s sat=%s",
-                gate_key, satellite_entity_id, exc_info=True,
+                "Failed to push filler to satellite %s", satellite_entity, exc_info=True
             )
-        finally:
-            if unsub is not None:
-                try:
-                    unsub()
-                except Exception:
-                    logger.debug("ha-agenthub: state listener unsub raised", exc_info=True)
-            try:
-                if local_ws is not None and not local_ws.closed:
-                    await local_ws.close()
-            except Exception:
-                logger.debug("ha-agenthub: local_ws close raised", exc_info=True)
-            current = self._inflight_pushes.get(key)
-            if current is asyncio.current_task():
-                self._inflight_pushes.pop(key, None)
 
-    async def _process_via_ws(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult | _BridgeDirective:
+    async def _process_via_ws(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         """Send request via WebSocket and accumulate streaming tokens."""
-        gate_key = HaAgentHubConversationEntity._filler_gate_key(self, user_input)
-        push_enabled = self._is_post_filler_push_enabled()
         logger.debug(
-            "ha-agenthub: ws-entry cid=%s ws_open=%s push_enabled=%s",
+            "ha-agenthub: ws-entry cid=%s ws_open=%s",
             user_input.conversation_id,
             self._ws is not None and not self._ws.closed,
-            push_enabled,
         )
         payload: dict[str, Any] = {
             "text": user_input.text,
@@ -971,17 +468,13 @@ class HaAgentHubConversationEntity(
             "language": user_input.language or "en",
         }
         payload.update(self._resolve_origin_context(user_input))
-        if (
-            self._is_native_plain_timers_enabled()
-            and not _suppress_native_plain_timer_eligibility.get()
-        ):
-            payload[NATIVE_PLAIN_TIMER_ELIGIBLE_FIELD] = True
         await self._ws.send_json(payload)
 
         try:
             speech_parts: list[str] = []
-            buffered_filler_parts: list[str] = []
+            buffered_filler_tasks: list[asyncio.Task] = []
             final_conversation_id = user_input.conversation_id
+            device_id = getattr(user_input, "device_id", None)
 
             received_done = False
             # P3-1: track per-stream sanitization. The orchestrator emits
@@ -996,46 +489,22 @@ class HaAgentHubConversationEntity(
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     data = json.loads(msg.data)
 
-                    if data.get("is_filler", False):
-                        filler_text = (data.get("token") or "").strip()
-                        if not filler_text:
-                            continue
-                        stripped_filler = _strip_markdown(filler_text)
-                        if not stripped_filler:
-                            continue
-                        if not push_enabled:
-                            buffered_filler_parts.append(stripped_filler)
-                            continue
-
-                        satellite = self._resolve_satellite_entity(user_input)
-                        local_ws = self._ws
-                        logger.info(
-                            "ha-agenthub: filler-first return key=%s sat=%s filler_chars=%d",
-                            gate_key, satellite, len(stripped_filler),
-                        )
-                        try:
-                            await self._spawn_post_filler_push(
-                                local_ws=local_ws,
-                                satellite_entity_id=satellite,
-                                user_input=user_input,
-                                gate_key=gate_key,
+                    # Container-directed filler_push directive: play via
+                    # assist_satellite.announce outside the pipeline so the
+                    # user hears interim audio while the real response is
+                    # still being prepared.
+                    filler_text = data.get("filler_push")
+                    if filler_text is not None:
+                        stripped_filler = _strip_markdown(str(filler_text).strip())
+                        if stripped_filler:
+                            # Launch as background task so we keep reading
+                            # the stream (the container may send more tokens
+                            # while the filler is playing).
+                            task = self.hass.async_create_task(
+                                self._post_filler_push(stripped_filler, device_id)
                             )
-                        except Exception:
-                            logger.exception(
-                                "ha-agenthub: failed to spawn post-filler push; keeping WS and falling back key=%s sat=%s",
-                                gate_key, satellite,
-                            )
-                            buffered_filler_parts.append(stripped_filler)
-                            continue
-                        else:
-                            self._ws = None
-                            self._ws_last_active = time.monotonic()
-                            response = intent.IntentResponse(language=user_input.language or "en")
-                            response.async_set_speech(stripped_filler)
-                            return conversation.ConversationResult(
-                                response=response,
-                                conversation_id=user_input.conversation_id,
-                            )
+                            buffered_filler_tasks.append(task)
+                        continue
 
                     token_text = data.get("token", "")
                     if token_text:
@@ -1044,17 +513,6 @@ class HaAgentHubConversationEntity(
                         received_done = True
                         stream_err = data.get("error")
                         final_conversation_id = data.get("conversation_id", final_conversation_id)
-                        # 0.25.1: directive on the final frame short-circuits the
-                        # bridge response. The integration delegates to native
-                        # Assist instead of returning the (empty) speech.
-                        directive_value = data.get("directive")
-                        if directive_value:
-                            self._ws_last_active = time.monotonic()
-                            return _BridgeDirective(
-                                directive=str(directive_value),
-                                reason=data.get("reason"),
-                                conversation_id=final_conversation_id,
-                            )
                         mediated = data.get("mediated_speech")
                         if mediated:
                             speech_parts = [mediated]
@@ -1086,28 +544,23 @@ class HaAgentHubConversationEntity(
                 raise aiohttp.ClientError("WebSocket stream ended without done token")
 
             self._ws_last_active = time.monotonic()
+
+            # Wait for any in-flight filler announcements to finish before
+            # returning the final response, preventing TTS overlap.
+            for task in buffered_filler_tasks:
+                try:
+                    await asyncio.wait_for(task, timeout=30.0)
+                except Exception:
+                    logger.warning("Filler task failed or timed out", exc_info=True)
+
             speech = "".join(speech_parts)
-            if buffered_filler_parts:
-                stripped_final = speech if stream_sanitized else _strip_markdown(speech)
-                stripped_final = (stripped_final or "").strip()
-                merged_filler = " ".join(part for part in buffered_filler_parts if part).strip()
-                if merged_filler and stripped_final:
-                    speech = f"{merged_filler}. {stripped_final}"
-                elif merged_filler:
-                    speech = merged_filler
-                else:
-                    speech = stripped_final
-                return self._build_result(
-                    speech,
-                    final_conversation_id,
-                    user_input.language,
-                    sanitized=True,
-                )
-            return self._build_result(speech, final_conversation_id, user_input.language, sanitized=stream_sanitized)
+            return self._build_result(
+                speech, final_conversation_id, user_input.language, sanitized=stream_sanitized
+            )
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as err:
             raise _WsDroppedAfterSendError() from err
 
-    async def _process_via_rest(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult | _BridgeDirective:
+    async def _process_via_rest(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
         """Fallback: send request via REST and get full response."""
         try:
             if self._session is None:
@@ -1119,12 +572,6 @@ class HaAgentHubConversationEntity(
                 "language": user_input.language or "en",
             }
             payload.update(self._resolve_origin_context(user_input))
-            if (
-                self._is_native_plain_timers_enabled()
-                and not _suppress_native_plain_timer_eligibility.get()
-            ):
-                payload[NATIVE_PLAIN_TIMER_ELIGIBLE_FIELD] = True
-                headers[NATIVE_PLAIN_TIMER_ELIGIBLE_HEADER] = "1"
             async with self._session.post(
                 f"{self._url}/api/conversation",
                 json=payload,
@@ -1138,27 +585,30 @@ class HaAgentHubConversationEntity(
                         user_input.language,
                     )
                 data = await resp.json()
-                directive_value = data.get("directive")
-                if directive_value:
-                    return _BridgeDirective(
-                        directive=str(directive_value),
-                        reason=data.get("reason"),
-                        conversation_id=data.get("conversation_id", user_input.conversation_id),
-                    )
                 return self._build_result(
                     data.get("speech", ""),
                     data.get("conversation_id", user_input.conversation_id),
                     user_input.language,
                     sanitized=bool(data.get("sanitized", False)),
                 )
-        except (aiohttp.ClientError, TimeoutError):
+        except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError):
             return self._build_result(
-                "Sorry, the assistant container is unavailable. Check that the container is running and reachable from Home Assistant.",
+                (
+                    "Sorry, the assistant container is unavailable. "
+                    "Check that the container is running and reachable from Home Assistant."
+                ),
                 user_input.conversation_id,
                 user_input.language,
             )
 
-    def _build_result(self, speech: str, conversation_id: str | None, language: str | None, *, sanitized: bool = False) -> conversation.ConversationResult:
+    def _build_result(
+        self,
+        speech: str,
+        conversation_id: str | None,
+        language: str | None,
+        *,
+        sanitized: bool = False,
+    ) -> conversation.ConversationResult:
         """Assemble a ConversationResult from the response.
 
         P3-1: ``sanitized`` indicates that the backend already stripped
@@ -1170,32 +620,3 @@ class HaAgentHubConversationEntity(
         response = intent.IntentResponse(language=language or "en")
         response.async_set_speech(speech if sanitized else _strip_markdown(speech))
         return conversation.ConversationResult(response=response, conversation_id=conversation_id)
-
-    def _resolve_satellite_entity(self, user_input) -> str | None:
-        """Resolve the originating assist_satellite entity from device or area context."""
-        try:
-            entity_reg = er.async_get(self.hass)
-            device_reg = dr.async_get(self.hass)
-
-            device_id = getattr(user_input, "device_id", None)
-            area_id = getattr(user_input, "area_id", None)
-            if isinstance(device_id, str) and device_id:
-                for entry in entity_reg.entities.values():
-                    if entry.domain == "assist_satellite" and entry.device_id == device_id:
-                        return entry.entity_id
-                device = device_reg.async_get(device_id)
-                if device and device.area_id:
-                    area_id = device.area_id
-
-            if not isinstance(area_id, str) or not area_id:
-                return None
-
-            for entry in entity_reg.entities.values():
-                if entry.domain != "assist_satellite" or not entry.device_id:
-                    continue
-                sat_device = device_reg.async_get(entry.device_id)
-                if sat_device and sat_device.area_id == area_id:
-                    return entry.entity_id
-        except Exception:
-            logger.debug("Failed to resolve assist satellite entity", exc_info=True)
-        return None

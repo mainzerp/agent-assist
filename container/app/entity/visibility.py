@@ -57,7 +57,7 @@ def _parse_rules(rules: Sequence[Mapping[str, Any]]) -> _VisibilityRules:
     return parsed
 
 
-def _passes_visibility_filters(
+async def _passes_visibility_filters(
     entity_id: str,
     rules: _VisibilityRules,
     entity_index: EntityIndex | None,
@@ -73,15 +73,24 @@ def _passes_visibility_filters(
     entry_loaded = False
     entry = None
 
-    def get_entry():
+    async def get_entry():
         nonlocal entry_loaded, entry
         if not entry_loaded:
-            entry = entity_index.get_by_id(entity_id) if entity_index is not None else None
+            if entity_index is not None:
+                import inspect
+
+                unbound = getattr(type(entity_index), "get_by_id_async", None)
+                if unbound is not None and inspect.iscoroutinefunction(unbound):
+                    entry = await entity_index.get_by_id_async(entity_id)
+                else:
+                    entry = entity_index.get_by_id(entity_id)
+            else:
+                entry = None
             entry_loaded = True
         return entry
 
     if rules.area_include or rules.area_exclude:
-        indexed_entry = get_entry()
+        indexed_entry = await get_entry()
         if fail_closed_on_metadata_gap and indexed_entry is None:
             return False
         area = indexed_entry.area if indexed_entry else None
@@ -91,7 +100,7 @@ def _passes_visibility_filters(
             return False
 
     if rules.device_class_include and domain in DEVICE_CLASS_DOMAINS:
-        indexed_entry = get_entry()
+        indexed_entry = await get_entry()
         if fail_closed_on_metadata_gap and indexed_entry is None:
             return False
         entity_device_class = indexed_entry.device_class if indexed_entry else None
@@ -99,7 +108,7 @@ def _passes_visibility_filters(
             return False
 
     if rules.device_class_exclude:
-        indexed_entry = get_entry()
+        indexed_entry = await get_entry()
         if fail_closed_on_metadata_gap and indexed_entry is None:
             return False
         entity_device_class = indexed_entry.device_class if indexed_entry else None
@@ -121,16 +130,15 @@ async def filter_visible_results(
         return results
 
     rules = _parse_rules(raw_rules)
-    filtered = [
-        result
-        for result in results
-        if _passes_visibility_filters(
+    filtered: list[TVisibilityCandidate] = []
+    for result in results:
+        if await _passes_visibility_filters(
             result.entity_id,
             rules,
             entity_index,
             fail_closed_on_metadata_gap=False,
-        )
-    ]
+        ):
+            filtered.append(result)
 
     if rules.entity_include:
         filtered_ids = {result.entity_id for result in filtered}
@@ -160,7 +168,7 @@ async def entity_is_visible(
     rules = _parse_rules(raw_rules)
     if entity_id in rules.entity_include:
         return True
-    return _passes_visibility_filters(
+    return await _passes_visibility_filters(
         entity_id,
         rules,
         entity_index,

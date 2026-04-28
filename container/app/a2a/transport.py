@@ -23,10 +23,29 @@ from app.models.agent import AgentTask
 logger = logging.getLogger(__name__)
 
 
+# Explicit allow-list of handler class names permitted for internal HA service calls.
+# More robust than module string matching which is trivially spoofed.
+_ALLOWED_INTERNAL_HA_SCOPE: frozenset[str] = frozenset({
+    "AutomationAgent",
+    "ClimateAgent",
+    "FillerAgent",
+    "GeneralAgent",
+    "LightAgent",
+    "MediaAgent",
+    "MusicAgent",
+    "OrchestratorAgent",
+    "RewriteAgent",
+    "SceneAgent",
+    "SecurityAgent",
+    "SendAgent",
+    "TimerAgent",
+})
+
+
 def _internal_ha_service_call_scope(handler):
-    module_name = type(handler).__module__
-    if module_name.startswith("app.agents.") and module_name != "app.agents.custom_loader":
-        return allow_internal_ha_service_calls(module_name)
+    class_name = type(handler).__name__
+    if class_name in _ALLOWED_INTERNAL_HA_SCOPE:
+        return allow_internal_ha_service_calls(class_name)
     return nullcontext()
 
 

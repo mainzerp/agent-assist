@@ -170,15 +170,6 @@ class TestAgentTask:
         ctx = TaskContext(language="de")
         assert ctx.language == "de"
 
-    def test_task_context_native_plain_timer_eligible_defaults_false(self):
-        ctx = TaskContext()
-        assert ctx.native_plain_timer_eligible is False
-
-    def test_task_context_native_plain_timer_eligible_round_trip(self):
-        ctx = TaskContext(native_plain_timer_eligible=True)
-        restored = TaskContext.model_validate(ctx.model_dump())
-        assert restored.native_plain_timer_eligible is True
-
     def test_task_context_background_event_round_trip(self):
         ctx = TaskContext(
             source="background",
@@ -196,18 +187,6 @@ class TestAgentTask:
     def test_missing_description_raises(self):
         with pytest.raises(ValidationError):
             AgentTask(user_text="hello")
-
-
-class TestTaskResult:
-    def test_task_result_directive_round_trip(self):
-        result = TaskResult(
-            speech="",
-            directive="delegate_native_plain_timer",
-            reason="native_start",
-        )
-        restored = TaskResult.model_validate_json(result.model_dump_json())
-        assert restored.directive == "delegate_native_plain_timer"
-        assert restored.reason == "native_start"
 
 
 # ---- Cache models ----

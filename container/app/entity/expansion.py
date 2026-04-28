@@ -133,28 +133,32 @@ class QueryExpansionService:
         key = (norm, lang_key)
         lock = await self._get_inflight_lock(key)
         async with lock:
-            cached = await self._cache.get(norm, lang_key)
-            if cached is not None:
-                return cached
+            try:
+                cached = await self._cache.get(norm, lang_key)
+                if cached is not None:
+                    return cached
 
-            expansions = await self._call_llm(norm, lang_key, (index_language or "").strip().lower())
-            try:
-                await self._cache.put(norm, lang_key, expansions)
-            except Exception:
-                logger.debug("cache put failed", exc_info=True)
-            try:
-                ttl = int(await SettingsRepository.get_value("entity_matching.expansion.ttl_seconds", "2592000"))
-                if ttl > 0:
-                    await self._cache.purge_expired(ttl)
-            except Exception:
-                pass
-            try:
-                cap = int(await SettingsRepository.get_value("entity_matching.expansion.max_cache_rows", "5000"))
-                if cap > 0:
-                    await self._cache.evict_lru(cap)
-            except Exception:
-                pass
-            return expansions
+                expansions = await self._call_llm(norm, lang_key, (index_language or "").strip().lower())
+                try:
+                    await self._cache.put(norm, lang_key, expansions)
+                except Exception:
+                    logger.debug("cache put failed", exc_info=True)
+                try:
+                    ttl = int(await SettingsRepository.get_value("entity_matching.expansion.ttl_seconds", "2592000"))
+                    if ttl > 0:
+                        await self._cache.purge_expired(ttl)
+                except Exception:
+                    pass
+                try:
+                    cap = int(await SettingsRepository.get_value("entity_matching.expansion.max_cache_rows", "5000"))
+                    if cap > 0:
+                        await self._cache.evict_lru(cap)
+                except Exception:
+                    pass
+                return expansions
+            finally:
+                async with self._lock_guard:
+                    self._inflight.pop(key, None)
 
     async def _get_prompt_template(self) -> str | None:
         if self._prompt_template is not None:

@@ -33,6 +33,7 @@ from app.models.conversation import StreamToken
 from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import require_admin_session
 from app.security.user_input import prepare_user_text
+from app.util import raise_api_error
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +176,7 @@ async def get_overview(request: Request):
         events = await AnalyticsRepository.query_by_range(
             event_type="request",
             start=start,
-            limit=100000,
+            limit=10000,
         )
         recent_requests = len(events)
     except Exception:
@@ -190,7 +191,7 @@ async def get_overview(request: Request):
         cache_events = await AnalyticsRepository.query_by_range(
             event_type="cache",
             start=start_cache,
-            limit=100000,
+            limit=10000,
         )
         if cache_events:
             total_lookups = len(cache_events)
@@ -251,7 +252,7 @@ async def get_overview_extended(request: Request):
         requests = await AnalyticsRepository.query_by_range(
             event_type="request",
             start=start_24h,
-            limit=100000,
+            limit=10000,
         )
 
     recent_requests = len(requests)
@@ -267,7 +268,7 @@ async def get_overview_extended(request: Request):
     with contextlib.suppress(Exception):
         all_events = await AnalyticsRepository.query_by_range(
             start=start_24h,
-            limit=100000,
+            limit=10000,
         )
 
     hit_types = {"routing_hit", "action_hit"}
@@ -388,7 +389,7 @@ async def get_agent_config(agent_id: str):
     """Get a single agent configuration."""
     config = await AgentConfigRepository.get(agent_id)
     if config is None:
-        return JSONResponse(status_code=404, content={"detail": "Agent not found"})
+        raise_api_error("Agent not found", status_code=404)
     return config
 
 
@@ -419,9 +420,9 @@ async def update_agent_config(agent_id: str, payload: AgentConfigUpdate, request
                 if agent_id not in core_agents:
                     await _registry.unregister(agent_id)
                     logger.info("Hot-unregistered agent: %s", agent_id)
-    except Exception as exc:
+    except Exception:
         logger.exception("Failed to update agent config for %s", agent_id)
-        return JSONResponse(status_code=500, content={"detail": str(exc) or "Failed to update agent"})
+        raise_api_error("Failed to update agent", status_code=500)
 
     return {"status": "ok", "agent_id": agent_id}
 
@@ -435,9 +436,9 @@ async def get_agent_prompt(agent_id: str):
     try:
         prompt_path = _validate_agent_path(agent_id)
     except ValueError:
-        return JSONResponse(status_code=400, content={"detail": "Invalid agent ID"})
+        raise_api_error("Invalid agent ID", status_code=400)
     if not prompt_path.is_file():
-        return JSONResponse(status_code=404, content={"detail": "Prompt file not found"})
+        raise_api_error("Prompt file not found", status_code=404)
     content = await asyncio.to_thread(prompt_path.read_text, encoding="utf-8")
     filename = prompt_path.name
     return {"agent_id": agent_id, "filename": filename, "content": content}
@@ -449,13 +450,13 @@ async def update_agent_prompt(agent_id: str, payload: PromptUpdate):
     try:
         prompt_path = _validate_agent_path(agent_id)
     except ValueError:
-        return JSONResponse(status_code=400, content={"detail": "Invalid agent ID"})
+        raise_api_error("Invalid agent ID", status_code=400)
     try:
         await asyncio.to_thread(prompt_path.parent.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(prompt_path.write_text, payload.content, encoding="utf-8")
-    except Exception as exc:
+    except Exception:
         logger.exception("Failed to update prompt for %s", agent_id)
-        return JSONResponse(status_code=500, content={"detail": str(exc) or "Failed to update prompt"})
+        raise_api_error("Failed to update prompt", status_code=500)
     filename = prompt_path.name
     return {"status": "ok", "agent_id": agent_id, "filename": filename}
 
@@ -482,8 +483,9 @@ async def get_extended_health(request: Request):
             components["ha_connection"] = {"status": "healthy"}
         else:
             components["ha_connection"] = {"status": "error", "detail": "Not initialized"}
-    except Exception as exc:
-        components["ha_connection"] = {"status": "error", "detail": str(exc)}
+    except Exception:
+        logger.warning("Extended health: HA connection check failed", exc_info=True)
+        components["ha_connection"] = {"status": "error", "detail": "Home Assistant unreachable"}
 
     # Entity index
     try:
@@ -506,8 +508,9 @@ async def get_extended_health(request: Request):
                 components["entity_index"] = {"status": "healthy", "count": stats.get("count", 0)}
         else:
             components["entity_index"] = {"status": "error", "detail": "Not initialized"}
-    except Exception as exc:
-        components["entity_index"] = {"status": "error", "detail": str(exc)}
+    except Exception:
+        logger.warning("Extended health: entity index check failed", exc_info=True)
+        components["entity_index"] = {"status": "error", "detail": "Entity index check failed"}
 
     # Cache
     try:
@@ -516,8 +519,9 @@ async def get_extended_health(request: Request):
             components["cache"] = {"status": "healthy", "stats": stats}
         else:
             components["cache"] = {"status": "error", "detail": "Not initialized"}
-    except Exception as exc:
-        components["cache"] = {"status": "error", "detail": str(exc)}
+    except Exception:
+        logger.warning("Extended health: cache check failed", exc_info=True)
+        components["cache"] = {"status": "error", "detail": "Cache check failed"}
 
     # MCP servers
     try:
@@ -526,8 +530,9 @@ async def get_extended_health(request: Request):
             components["mcp_servers"] = {"status": "healthy", "count": len(servers)}
         else:
             components["mcp_servers"] = {"status": "error", "detail": "Not initialized"}
-    except Exception as exc:
-        components["mcp_servers"] = {"status": "error", "detail": str(exc)}
+    except Exception:
+        logger.warning("Extended health: MCP servers check failed", exc_info=True)
+        components["mcp_servers"] = {"status": "error", "detail": "MCP servers check failed"}
 
     # Uptime
     if startup_time:

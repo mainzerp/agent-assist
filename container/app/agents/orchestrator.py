@@ -153,6 +153,7 @@ class OrchestratorAgent(BaseAgent):
         self._mediation_temperature: float = 0.3
         self._mediation_max_tokens: int = 2048
         self._per_agent_timeout_cache: dict[str, float] = {}
+        self._agent_card_cache: dict[str, AgentCard] = {}
         self._max_dispatch_timeout: float = 60.0
         self._known_agents_cache: tuple[float, set[str]] | None = None
         self._known_agents_ttl: float = 5.0
@@ -182,6 +183,7 @@ class OrchestratorAgent(BaseAgent):
         # P2-2: invalidate per-agent cache so changes to settings or
         # AgentCard.timeout_sec are picked up on the next dispatch.
         self._per_agent_timeout_cache.clear()
+        self._agent_card_cache.clear()
         # P3-7: also invalidate the known-agents memo so admin reloads
         # immediately observe newly registered/unregistered agents.
         self._known_agents_cache = None
@@ -225,14 +227,18 @@ class OrchestratorAgent(BaseAgent):
         # 2. AgentCard.timeout_sec from the registry.
         if resolved is None and self._registry is not None:
             try:
-                cards = await self._registry.list_agents()
-                for card in cards:
-                    if getattr(card, "agent_id", None) != agent_id:
-                        continue
+                card = self._agent_card_cache.get(agent_id)
+                if card is None:
+                    cards = await self._registry.list_agents()
+                    for c in cards:
+                        if getattr(c, "agent_id", None) == agent_id:
+                            card = c
+                            self._agent_card_cache[agent_id] = card
+                            break
+                if card is not None:
                     card_timeout = getattr(card, "timeout_sec", None)
                     if card_timeout is not None:
                         resolved = float(card_timeout)
-                    break
             except Exception:
                 logger.debug(
                     "Per-agent timeout: registry lookup failed for %s",
@@ -326,6 +332,21 @@ class OrchestratorAgent(BaseAgent):
             endpoint="local://orchestrator",
         )
 
+    @staticmethod
+    def _normalize_agent_result(result_data: Any) -> dict[str, Any]:
+        """Coerce an agent result into a dict, logging warnings on unexpected types."""
+        if isinstance(result_data, dict):
+            return result_data
+        if isinstance(result_data, str):
+            logger.warning("Agent returned string result instead of dict; wrapping as speech")
+            return {"speech": result_data}
+        if result_data is not None:
+            logger.warning(
+                "Agent returned unexpected result type %s; coercing to empty dict",
+                type(result_data).__name__,
+            )
+        return {}
+
     async def _dispatch_single(
         self,
         target_agent: str,
@@ -352,7 +373,6 @@ class OrchestratorAgent(BaseAgent):
             context.area_name = incoming_context.area_name
             context.source = incoming_context.source
             context.language = incoming_context.language
-            context.native_plain_timer_eligible = incoming_context.native_plain_timer_eligible
             context.injection_detected = incoming_context.injection_detected
         # FLOW-HIGH-3: Prefer the orchestrator-resolved language (from
         # _resolve_language / detect_user_language) over whatever the
@@ -426,7 +446,7 @@ class OrchestratorAgent(BaseAgent):
                 latency_ms = (time.perf_counter() - t0) * 1000
                 span["metadata"]["latency_ms"] = round(latency_ms, 1)
                 span["metadata"]["dispatch_timeout_sec"] = dispatch_timeout
-                result_data = response.result or {}
+                result_data = self._normalize_agent_result(response.result)
                 span["metadata"]["agent_response"] = (result_data.get("speech") or "")[:500]
                 span["metadata"]["condensed_task"] = condensed_task[:500]
             # P3-10: per-request hot-path log; debug.
@@ -462,7 +482,7 @@ class OrchestratorAgent(BaseAgent):
                         fb_span["metadata"]["from_agent"] = target_agent
                         fb_span["metadata"]["reason"] = "timeout"
                         fb_span["metadata"]["dispatch_timeout_sec"] = fb_timeout
-                        fb_result_data = response.result or {}
+                        fb_result_data = self._normalize_agent_result(response.result)
                         fb_span["metadata"]["agent_response"] = (fb_result_data.get("speech") or "")[:500]
                     await track_request(_FALLBACK_AGENT, cache_hit=False, latency_ms=fb_latency_ms)
                     target_agent = _FALLBACK_AGENT
@@ -501,7 +521,7 @@ class OrchestratorAgent(BaseAgent):
                         fb_span["metadata"]["from_agent"] = target_agent
                         fb_span["metadata"]["reason"] = "agent_error"
                         fb_span["metadata"]["dispatch_timeout_sec"] = fb_timeout
-                        fb_result_data = response.result or {}
+                        fb_result_data = self._normalize_agent_result(response.result)
                         fb_span["metadata"]["agent_response"] = (fb_result_data.get("speech") or "")[:500]
                     await track_request(_FALLBACK_AGENT, cache_hit=False, latency_ms=fb_latency_ms)
                     target_agent = _FALLBACK_AGENT
@@ -528,7 +548,7 @@ class OrchestratorAgent(BaseAgent):
                     },
                 )
 
-        result = response.result or {}
+        result = self._normalize_agent_result(response.result)
         speech = result.get("speech", "")
 
         # Log structured errors from agents for observability
@@ -1122,11 +1142,11 @@ class OrchestratorAgent(BaseAgent):
             from app.analytics.tracer import create_trace_summary
 
             classify_duration = None
-            for s in span_collector._spans:
+            for s in span_collector.get_spans():
                 if s.get("span_name") == "classify":
                     classify_duration = s.get("duration_ms")
                     break
-            agents = list({s.get("agent_id") for s in span_collector._spans if s.get("agent_id")})
+            agents = list({s.get("agent_id") for s in span_collector.get_spans() if s.get("agent_id")})
             if "orchestrator" not in agents:
                 agents.insert(0, "orchestrator")
             await create_trace_summary(
@@ -1493,6 +1513,8 @@ class OrchestratorAgent(BaseAgent):
         allow_classify_cache_lookup = _allow_classify_cache_lookup if _allow_classify_cache_lookup is not None else False
         next_classify_extra: dict[str, object] = {}
         used_origin_context = False
+        if task and task.context and (task.context.area_id or task.context.device_id):
+            used_origin_context = True
         if compound_bypass:
             next_classify_extra["compound_bypass"] = True
             next_classify_extra["compound_bypass_reason"] = "multi_sentence"
@@ -1504,187 +1526,185 @@ class OrchestratorAgent(BaseAgent):
             next_classify_extra["reason"] = _classify_reason
 
         agent_responses: list[tuple[str, str, bool]] = []
-        while True:
-            # 1. Classify intent (skip if pre-classified by handle_task_stream)
-            if pre_classified is not None:
-                classifications, routing_cached = pre_classified
-                target_agent, condensed_task, confidence = classifications[0]
-                pre_classified = None
-                if synthetic_preclassified:
-                    async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
-                        self._pipeline_record_classify_span(
-                            span,
-                            classifications,
-                            user_text,
-                            condensed_task,
-                            confidence,
-                            routing_cached,
-                            extended_metadata=True,
-                            extra_metadata=next_classify_extra or None,
-                        )
-                    synthetic_preclassified = False
-            else:
-                try:
-                    async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
-                        classifications, routing_cached = await self._classify(
-                            user_text,
-                            cache_result=None,
-                            conversation_id=conversation_id,
-                            span_collector=span_collector,
-                            language=detected_language,
-                            allow_cache_lookup=allow_classify_cache_lookup,
-                        )
-                        target_agent, condensed_task, confidence = classifications[0]
-                        self._pipeline_record_classify_span(
-                            span,
-                            classifications,
-                            user_text,
-                            condensed_task,
-                            confidence,
-                            routing_cached,
-                            extended_metadata=True,
-                            extra_metadata=next_classify_extra or None,
-                        )
-                except _RecoverableClassificationError as exc:
-                    return {
-                        "speech": exc.message,
-                        "conversation_id": conversation_id,
-                        "routed_to": "orchestrator",
-                        "action_executed": None,
-                        "voice_followup": False,
-                        "error": {
-                            "code": exc.code,
-                            "message": exc.message,
-                            "recoverable": True,
-                        },
-                    }
-            next_classify_extra = {}
-            allow_classify_cache_lookup = False
-
-            # P3-10: per-request routing log; debug.
-            logger.debug(
-                "Routed to %s (%s): %s (conversation=%s)",
-                target_agent,
-                f"{confidence * 100:.0f}%" if confidence is not None else "unknown",
-                condensed_task[:80],
-                conversation_id,
-            )
-
-            # 2. Build context with conversation turns
-            turns = await self._get_turns(conversation_id)
-
-            # Check for sequential send dispatch
-            is_sequential_send = any(a == "send-agent" for a, _, _ in classifications) and any(
-                a != "send-agent" for a, _, _ in classifications
-            )
-
-            # 3-4. Dispatch
-            incoming_context = task.context
-            failed_agents: list[tuple[str, str]] = []
-            agent_error = None
-            agent_voice_followup = False
-            directive = None
-            directive_reason = None
-            if is_sequential_send:
-                routed_to, speech, result = await self._handle_sequential_send(
-                    classifications,
-                    user_text,
-                    conversation_id,
-                    turns,
-                    span_collector,
-                    incoming_context=incoming_context,
-                    resolved_language=detected_language,
-                )
-                action_executed = (result or {}).get("action_executed")
-                has_error = bool((result or {}).get("error"))
-                agent_error = (result or {}).get("error")
-                agent_voice_followup = bool((result or {}).get("voice_followup"))
-            elif len(classifications) == 1:
-                agent_id, speech, result = await self._dispatch_single(
-                    target_agent,
-                    condensed_task,
-                    user_text,
-                    conversation_id,
-                    turns,
-                    span_collector,
-                    incoming_context=incoming_context,
-                    resolved_language=detected_language,
-                )
-                action_executed = (result or {}).get("action_executed")
-                routed_to = agent_id
-                directive = (result or {}).get("directive")
-                directive_reason = (result or {}).get("reason")
-                if directive:
-                    return {
-                        "speech": result.get("speech", ""),
-                        "conversation_id": conversation_id,
-                        "routed_to": routed_to,
-                        "action_executed": None,
-                        "voice_followup": False,
-                        "directive": directive,
-                        "reason": directive_reason,
-                    }
-
-                agent_error = (result or {}).get("error")
-                has_error = agent_error is not None
-                agent_voice_followup = bool((result or {}).get("voice_followup"))
-            else:
-                dispatch_coros = [
-                    self._dispatch_single(
-                        aid,
-                        ctask,
+        # 1. Classify intent (skip if pre-classified by handle_task_stream)
+        if pre_classified is not None:
+            classifications, routing_cached = pre_classified
+            target_agent, condensed_task, confidence = classifications[0]
+            pre_classified = None
+            if synthetic_preclassified:
+                async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
+                    self._pipeline_record_classify_span(
+                        span,
+                        classifications,
                         user_text,
-                        conversation_id,
-                        turns,
-                        span_collector,
-                        incoming_context=incoming_context,
-                        resolved_language=detected_language,
+                        condensed_task,
+                        confidence,
+                        routing_cached,
+                        extended_metadata=True,
+                        extra_metadata=next_classify_extra or None,
                     )
-                    for aid, ctask, _ in classifications
-                ]
-                dispatch_results = await asyncio.gather(*dispatch_coros, return_exceptions=True)
+                synthetic_preclassified = False
+        else:
+            try:
+                async with _optional_span(span_collector, "classify", agent_id="orchestrator") as span:
+                    classifications, routing_cached = await self._classify(
+                        user_text,
+                        cache_result=None,
+                        conversation_id=conversation_id,
+                        span_collector=span_collector,
+                        language=detected_language,
+                        allow_cache_lookup=allow_classify_cache_lookup,
+                    )
+                    target_agent, condensed_task, confidence = classifications[0]
+                    self._pipeline_record_classify_span(
+                        span,
+                        classifications,
+                        user_text,
+                        condensed_task,
+                        confidence,
+                        routing_cached,
+                        extended_metadata=True,
+                        extra_metadata=next_classify_extra or None,
+                    )
+            except _RecoverableClassificationError as exc:
+                return {
+                    "speech": exc.message,
+                    "conversation_id": conversation_id,
+                    "routed_to": "orchestrator",
+                    "action_executed": None,
+                    "voice_followup": False,
+                    "error": {
+                        "code": exc.code,
+                        "message": exc.message,
+                        "recoverable": True,
+                    },
+                }
+        next_classify_extra = {}
+        allow_classify_cache_lookup = False
 
-                agent_responses = []
-                action_executed = None
-                routed_agents: list[str] = []
-                for idx, dr in enumerate(dispatch_results):
-                    agent_id_for_idx = classifications[idx][0]
-                    if isinstance(dr, Exception):
-                        logger.warning("Multi-agent dispatch error for %s: %s", agent_id_for_idx, dr)
-                        failed_agents.append((agent_id_for_idx, str(dr)))
-                        continue
-                    aid, sp, res = dr
-                    res_dict = res or {}
-                    res_error = res_dict.get("error") if isinstance(res_dict, dict) else None
-                    if res is None or res_error or sp in (_CANNED_TIMEOUT_SPEECH, _CANNED_GENERAL_ERROR_SPEECH):
-                        if res_error:
-                            reason = (
-                                res_error.get("code", "canned_error") if isinstance(res_error, dict) else "canned_error"
-                            )
-                        elif res is None:
-                            reason = "timeout"
-                        else:
-                            reason = "canned_speech"
-                        logger.warning(
-                            "Multi-agent dispatch reported error for %s: %s",
-                            agent_id_for_idx,
-                            reason,
+        # P3-10: per-request routing log; debug.
+        logger.debug(
+            "Routed to %s (%s): %s (conversation=%s)",
+            target_agent,
+            f"{confidence * 100:.0f}%" if confidence is not None else "unknown",
+            condensed_task[:80],
+            conversation_id,
+        )
+
+        # 2. Build context with conversation turns
+        turns = await self._get_turns(conversation_id)
+
+        # Check for sequential send dispatch
+        is_sequential_send = any(a == "send-agent" for a, _, _ in classifications) and any(
+            a != "send-agent" for a, _, _ in classifications
+        )
+
+        # 3-4. Dispatch
+        incoming_context = task.context
+        failed_agents: list[tuple[str, str]] = []
+        agent_error = None
+        agent_voice_followup = False
+        directive = None
+        directive_reason = None
+        if is_sequential_send:
+            routed_to, speech, result = await self._handle_sequential_send(
+                classifications,
+                user_text,
+                conversation_id,
+                turns,
+                span_collector,
+                incoming_context=incoming_context,
+                resolved_language=detected_language,
+            )
+            action_executed = (result or {}).get("action_executed")
+            has_error = bool((result or {}).get("error"))
+            agent_error = (result or {}).get("error")
+            agent_voice_followup = bool((result or {}).get("voice_followup"))
+        elif len(classifications) == 1:
+            agent_id, speech, result = await self._dispatch_single(
+                target_agent,
+                condensed_task,
+                user_text,
+                conversation_id,
+                turns,
+                span_collector,
+                incoming_context=incoming_context,
+                resolved_language=detected_language,
+            )
+            action_executed = (result or {}).get("action_executed")
+            routed_to = agent_id
+            directive = (result or {}).get("directive")
+            directive_reason = (result or {}).get("reason")
+            if directive:
+                return {
+                    "speech": result.get("speech", ""),
+                    "conversation_id": conversation_id,
+                    "routed_to": routed_to,
+                    "action_executed": None,
+                    "voice_followup": False,
+                    "directive": directive,
+                    "reason": directive_reason,
+                }
+
+            agent_error = (result or {}).get("error")
+            has_error = agent_error is not None
+            agent_voice_followup = bool((result or {}).get("voice_followup"))
+        else:
+            dispatch_coros = [
+                self._dispatch_single(
+                    aid,
+                    ctask,
+                    user_text,
+                    conversation_id,
+                    turns,
+                    span_collector,
+                    incoming_context=incoming_context,
+                    resolved_language=detected_language,
+                )
+                for aid, ctask, _ in classifications
+            ]
+            dispatch_results = await asyncio.gather(*dispatch_coros, return_exceptions=True)
+
+            agent_responses = []
+            action_executed = None
+            routed_agents: list[str] = []
+            for idx, dr in enumerate(dispatch_results):
+                agent_id_for_idx = classifications[idx][0]
+                if isinstance(dr, Exception):
+                    logger.warning("Multi-agent dispatch error for %s: %s", agent_id_for_idx, dr)
+                    failed_agents.append((agent_id_for_idx, str(dr)))
+                    continue
+                aid, sp, res = dr
+                res_dict = res or {}
+                res_error = res_dict.get("error") if isinstance(res_dict, dict) else None
+                if res is None or res_error or sp in (_CANNED_TIMEOUT_SPEECH, _CANNED_GENERAL_ERROR_SPEECH):
+                    if res_error:
+                        reason = (
+                            res_error.get("code", "canned_error") if isinstance(res_error, dict) else "canned_error"
                         )
-                        failed_agents.append((agent_id_for_idx, reason))
-                        continue
-                    routed_agents.append(aid)
-                    acted = bool(res and res.get("action_executed"))
-                    agent_responses.append((aid, sp, acted))
-                    if res and res.get("action_executed") and action_executed is None:
-                        action_executed = res["action_executed"]
-                    if res and res.get("voice_followup"):
-                        agent_voice_followup = True
+                    elif res is None:
+                        reason = "timeout"
+                    else:
+                        reason = "canned_speech"
+                    logger.warning(
+                        "Multi-agent dispatch reported error for %s: %s",
+                        agent_id_for_idx,
+                        reason,
+                    )
+                    failed_agents.append((agent_id_for_idx, reason))
+                    continue
+                routed_agents.append(aid)
+                acted = bool(res and res.get("action_executed"))
+                agent_responses.append((aid, sp, acted))
+                if res and res.get("action_executed") and action_executed is None:
+                    action_executed = res["action_executed"]
+                if res and res.get("voice_followup"):
+                    agent_voice_followup = True
 
-                target_agent = routed_agents[0] if routed_agents else _FALLBACK_AGENT
-                routed_to = ", ".join(routed_agents) if routed_agents else _FALLBACK_AGENT
-                speech = ""
-                has_error = len(failed_agents) > 0
-            break
+            target_agent = routed_agents[0] if routed_agents else _FALLBACK_AGENT
+            routed_to = ", ".join(routed_agents) if routed_agents else _FALLBACK_AGENT
+            speech = ""
+            has_error = len(failed_agents) > 0
 
         # 5. Mediate response, store turn, trace
         voice_followup_effective = False
@@ -1827,6 +1847,8 @@ class OrchestratorAgent(BaseAgent):
         # 1. Classify (non-streaming -- fast via Groq)
         classify_extra: dict[str, object] = {}
         used_origin_context = False
+        if task and task.context and (task.context.area_id or task.context.device_id):
+            used_origin_context = True
         if compound_bypass:
             classify_extra["compound_bypass"] = True
             classify_extra["compound_bypass_reason"] = "multi_sentence"
@@ -1993,9 +2015,8 @@ class OrchestratorAgent(BaseAgent):
                         seq_filler_text = filler_text
                         seq_filler_send_ms = (time.perf_counter() - t0_request) * 1000
                         yield {
-                            "token": filler_text,
+                            "filler_push": filler_text,
                             "done": False,
-                            "is_filler": True,
                             "conversation_id": conversation_id,
                         }
                         seq_filler_sent = True
@@ -2075,7 +2096,6 @@ class OrchestratorAgent(BaseAgent):
             context.device_name = task.context.device_name
             context.area_name = task.context.area_name
             context.source = task.context.source
-            context.native_plain_timer_eligible = task.context.native_plain_timer_eligible
             context.injection_detected = task.context.injection_detected
         if self._ha_client:
             try:
@@ -2133,21 +2153,22 @@ class OrchestratorAgent(BaseAgent):
         async def _process_chunk(chunk):
             """Process a single stream chunk: collect speech and detect actions."""
             nonlocal action_executed, stream_error, stream_voice_followup, stream_directive, stream_reason
-            token = chunk.result.get("token", "")
-            done = chunk.result.get("done", False)
-            error = chunk.result.get("error")
+            chunk_result = chunk.result if isinstance(chunk.result, dict) else {}
+            token = chunk_result.get("token", "")
+            done = chunk_result.get("done", False)
+            error = chunk_result.get("error")
             if error:
                 logger.warning("Agent streaming error: %s", error)
                 stream_error = error
             if token:
                 collected_speech.append(token)
-            if done and chunk.result.get("action_executed"):
-                action_executed = chunk.result["action_executed"]
-            if done and chunk.result.get("voice_followup"):
+            if done and chunk_result.get("action_executed"):
+                action_executed = chunk_result["action_executed"]
+            if done and chunk_result.get("voice_followup"):
                 stream_voice_followup = True
-            if done and chunk.result.get("directive"):
-                stream_directive = chunk.result["directive"]
-                stream_reason = chunk.result.get("reason")
+            if done and chunk_result.get("directive"):
+                stream_directive = chunk_result["directive"]
+                stream_reason = chunk_result.get("reason")
             return token
 
         async def _stream_with_filler(stream_iter, span=None):
@@ -2224,10 +2245,9 @@ class OrchestratorAgent(BaseAgent):
                         if pre_first_chunk is None:
                             filler_send_ms = (time.perf_counter() - t0_request) * 1000
                             yield {
-                                "token": filler_text,
+                                "filler_push": filler_text,
                                 "done": False,
-                                "is_filler": True,
-                                "conversation_id": None,
+                                "conversation_id": conversation_id,
                             }
                             filler_sent = True
                             logger.debug("Filler sent for %s: %s", target_agent, filler_text[:80])
@@ -2236,8 +2256,10 @@ class OrchestratorAgent(BaseAgent):
                         item = pre_first_chunk
                     else:
                         item = await queue.get()
-                    if item is not _sentinel:
-                        first_chunk = item
+                    if item is _sentinel:
+                        # Sentinel consumed early; nothing more to drain
+                        return
+                    first_chunk = item
 
                 # Process first chunk
                 if first_chunk is not None:
@@ -2369,12 +2391,10 @@ class OrchestratorAgent(BaseAgent):
             return 1000
 
     async def _invoke_filler_agent(self, user_text: str, target_agent: str, language: str) -> str | None:
-        """Call the filler-agent directly to generate a filler phrase.
+        """Call the filler-agent via the A2A dispatcher to generate a filler phrase.
 
         Returns the filler text or None if generation fails.
         """
-        if not self._filler_agent:
-            return None
         try:
             context = TaskContext(language=language)
             filler_task = AgentTask(
@@ -2382,8 +2402,17 @@ class OrchestratorAgent(BaseAgent):
                 user_text=user_text,
                 context=context,
             )
-            result = await self._filler_agent.handle_task(filler_task)
-            speech = result.speech if hasattr(result, "speech") else (result or {}).get("speech", "")
+            request = JsonRpcRequest(
+                method="message/send",
+                params={
+                    "agent_id": "filler-agent",
+                    "task": filler_task.model_dump(),
+                },
+                id=f"filler-{uuid.uuid4().hex[:8]}",
+            )
+            response = await self._dispatcher.dispatch(request)
+            result_data = self._normalize_agent_result(response.result)
+            speech = result_data.get("speech", "")
             return speech.strip() if speech else None
         except Exception:
             logger.warning("Filler agent invocation failed", exc_info=True)
@@ -2427,12 +2456,12 @@ class OrchestratorAgent(BaseAgent):
         # Import here to avoid a circular import at module load time
         # (action_executor -> orchestrator via analytics/spans).
         from app.agents.action_executor import (
-            _EXPECTED_STATE_BY_ACTION,
+            _EXPECTED_STATE_BY_DOMAIN_ACTION,
             _extract_state_from_call_result,
             call_service_with_verification,
         )
 
-        expected_state = _EXPECTED_STATE_BY_ACTION.get(action)
+        expected_state = _EXPECTED_STATE_BY_DOMAIN_ACTION.get((domain, action))
 
         # FLOW-VERIFY-SHARED (0.18.5): delegate the REST+WS dance to the
         # shared helper so the orchestrator and domain executors agree on
@@ -2479,7 +2508,9 @@ class OrchestratorAgent(BaseAgent):
             # (observed=off after turn_on) means HA accepted but the
             # bus did not follow through; fall through to live
             # dispatch so the user gets a truthful response.
-            if observed_state == expected_state:
+            if observed_state == expected_state or (
+                isinstance(expected_state, frozenset) and observed_state in expected_state
+            ):
                 return {
                     "success": True,
                     "entity_id": entity_id,
@@ -2702,7 +2733,7 @@ class OrchestratorAgent(BaseAgent):
                 else:
                     # P3-10: per-request cache-hit log; debug.
                     logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
-                    condensed = user_text
+                    condensed = cache_result.condensed_task or user_text
                     return [(cache_result.agent_id, condensed, 1.0)], True
         elif allow_cache_lookup and self._cache_manager:
             # Fallback: no pre-computed result (e.g. called without handle_task)
@@ -2721,7 +2752,7 @@ class OrchestratorAgent(BaseAgent):
                     else:
                         # P3-10: per-request cache-hit log; debug.
                         logger.debug("Routing cache hit: %s for '%s'", cache_result.agent_id, user_text[:80])
-                        condensed = user_text
+                        condensed = cache_result.condensed_task or user_text
                         return [(cache_result.agent_id, condensed, 1.0)], True
             except Exception:
                 logger.warning("Routing cache check failed, proceeding with LLM", exc_info=True)

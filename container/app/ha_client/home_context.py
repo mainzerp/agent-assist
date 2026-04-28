@@ -26,11 +26,7 @@ class HomeContextProvider:
         self._context: HomeContext | None = None
         self._last_fetched: float = 0.0
         self._ttl_seconds: int = 3600  # 1 hour
-        # FLOW-MED-2: lazily created inside :meth:`refresh` so an
-        # event-loop is guaranteed to be running when the lock is
-        # bound. Building the Lock at module-import time would tie it
-        # to whatever loop existed then, which is usually none.
-        self._refresh_lock: asyncio.Lock | None = None
+        self._refresh_lock = asyncio.Lock()
 
     async def get(self, ha_client: Any) -> HomeContext:
         """Return cached HomeContext, refreshing from HA if stale."""
@@ -49,9 +45,6 @@ class HomeContextProvider:
         only the first caller actually hits HA; the rest return the
         freshly cached context.
         """
-        if self._refresh_lock is None:
-            self._refresh_lock = asyncio.Lock()
-
         async with self._refresh_lock:
             now = time.monotonic()
             if self._context and (now - self._last_fetched) < self._ttl_seconds:

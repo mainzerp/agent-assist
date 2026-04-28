@@ -160,9 +160,11 @@ class PluginLoader:
             try:
                 handler = getattr(plugin, phase.value)
                 if phase == LifecyclePhase.SHUTDOWN:
-                    await handler()
+                    await asyncio.wait_for(handler(), timeout=30.0)
                 else:
-                    await handler(self._context)
+                    await asyncio.wait_for(handler(self._context), timeout=30.0)
+            except TimeoutError:
+                logger.warning("Plugin '%s' %s hook timed out after 30s", name, phase.value)
             except Exception:
                 logger.exception("Plugin '%s' failed during %s phase", name, phase.value)
 
@@ -179,6 +181,16 @@ class PluginLoader:
             if not file_path or not file_path.exists():
                 logger.error("Cannot enable plugin '%s': file not found", name)
                 return False
+
+        # Validate path is strictly inside the plugin directory
+        resolved = file_path.resolve()
+        plugin_dir = self._plugin_dir.resolve()
+        sep = os.sep
+        if not str(resolved).startswith(str(plugin_dir) + sep) and resolved != plugin_dir:
+            logger.error(
+                "Plugin file %s must reside in %s", resolved, plugin_dir
+            )
+            raise ValueError(f"Plugin file {resolved} must reside in {plugin_dir}")
 
         try:
             plugin_cls = await self._import_plugin_class(file_path)
@@ -199,7 +211,9 @@ class PluginLoader:
             for phase in (LifecyclePhase.CONFIGURE, LifecyclePhase.STARTUP, LifecyclePhase.READY):
                 try:
                     handler = getattr(instance, phase.value)
-                    await handler(self._context)
+                    await asyncio.wait_for(handler(self._context), timeout=30.0)
+                except TimeoutError:
+                    logger.warning("Plugin '%s' %s hook timed out after 30s", name, phase.value)
                 except Exception:
                     logger.exception("Plugin '%s' failed during %s on enable", name, phase.value)
 

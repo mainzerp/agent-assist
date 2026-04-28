@@ -86,7 +86,7 @@ class EntityIndex:
         """Build an EntityIndexEntry from stored Chroma metadata."""
         aliases_str = meta.get("aliases", "") or ""
         id_tokens_str = meta.get("id_tokens", "") or ""
-        return EntityIndexEntry(
+        entry = EntityIndexEntry(
             entity_id=entity_id,
             friendly_name=meta.get("friendly_name", ""),
             domain=meta.get("domain", ""),
@@ -100,6 +100,8 @@ class EntityIndex:
             has_date=str(meta.get("has_date", "0")) == "1",
             has_time=str(meta.get("has_time", "0")) == "1",
         )
+        entry._content_hash = meta.get("content_hash") or None
+        return entry
 
     def populate(self, entities: list[EntityIndexEntry]) -> None:
         """Bulk upsert all HA entities into the entity_index collection.
@@ -463,6 +465,11 @@ class EntityIndex:
         """Async wrapper -- offloads search() to thread pool."""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, partial(self.search, query, n_results=n_results))
+
+    async def get_by_id_async(self, entity_id: str) -> EntityIndexEntry | None:
+        """Async wrapper -- offloads get_by_id() to thread pool."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.get_by_id, entity_id)
 
     async def list_entries_async(
         self,

@@ -124,7 +124,11 @@ class MCPToolManager:
             raise ValueError(f"MCP server '{server_name}' not found")
         if not client.connected:
             raise ConnectionError(f"MCP server '{server_name}' is not connected")
-        timeout = float(client.timeout)
+        try:
+            timeout = float(client.timeout)
+        except Exception:
+            logger.warning("Invalid timeout for MCP server '%s', defaulting to 30.0", server_name)
+            timeout = 30.0
         try:
             return await asyncio.wait_for(
                 client.call_tool(tool_name, arguments),

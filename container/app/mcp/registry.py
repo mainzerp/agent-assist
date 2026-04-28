@@ -102,7 +102,7 @@ class MCPServerRegistry:
 
     async def disconnect_all(self) -> None:
         """Disconnect all MCP clients. Called on shutdown."""
-        for name, client in self._clients.items():
+        for name, client in list(self._clients.items()):
             try:
                 await client.disconnect()
             except Exception:

@@ -25,6 +25,7 @@ from app.ha_client.auth import get_ha_token, set_ha_token
 from app.ha_client.rest import test_ha_connection
 from app.security.auth import API_KEY_SECRET_NAME, require_admin_session
 from app.security.encryption import delete_secret, retrieve_secret, store_secret
+from app.util import raise_api_error
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,9 @@ PROVIDER_SECRET_KEYS = {
     "anthropic": "anthropic_api_key",
 }
 _ENTITY_ID_LOOKS_VALID_RE = re.compile(r"^[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+$")
+_ENTITY_ID_SAFE_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
 _WEEKDAY_CODES = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
+_JINJA2_META_RE = re.compile(r"\{\{|\}\}|\{%|%\}|\{#|#\}|\|")
 
 
 class ProviderKeyUpdate(BaseModel):
@@ -321,6 +324,12 @@ def set_registry(reg) -> None:
     _registry = reg
 
 
+def _validate_no_template_metacharacters(value: str | None) -> None:
+    """Reject strings that contain Jinja2 template metacharacters."""
+    if value and _JINJA2_META_RE.search(value):
+        raise HTTPException(status_code=400, detail="Invalid device ID: contains template metacharacters")
+
+
 async def _resolve_origin_label(
     ha_client: Any,
     area_registry: dict[str, str],
@@ -330,6 +339,7 @@ async def _resolve_origin_label(
     if not ha_client:
         return origin_device_id or origin_area
     if origin_device_id:
+        _validate_no_template_metacharacters(origin_device_id)
         try:
             raw = await ha_client.render_template(
                 "{{ device_attr('"
@@ -349,12 +359,22 @@ async def _resolve_origin_label(
     return None
 
 
+def _validate_entity_id_safe(entity_id: str) -> bool:
+    """Reject entity IDs that do not match the safe regex or contain Jinja2 metacharacters."""
+    if not entity_id:
+        return False
+    if _JINJA2_META_RE.search(entity_id):
+        return False
+    return bool(_ENTITY_ID_SAFE_RE.match(entity_id))
+
+
 async def _resolve_ha_device_id(
     ha_client: Any,
     entity_id: str,
 ) -> str | None:
     if not ha_client or not entity_id:
         return None
+    _validate_no_template_metacharacters(entity_id)
     template = "{{ device_id('" + entity_id + "') }}"
     rendered: str | None = None
     try:
@@ -933,8 +953,9 @@ async def test_llm_provider(payload: ProviderTestRequest):
             kwargs["api_base"] = base_url
         await litellm.acompletion(**kwargs)
         return {"status": "ok", "provider": provider}
-    except Exception as e:
-        return {"status": "error", "detail": str(e)}
+    except Exception:
+        logger.warning("LLM provider test failed for %s", provider, exc_info=True)
+        return {"status": "error", "detail": "Provider test failed. Check server logs."}
 
 
 @router.get("/llm-providers/configured")
@@ -1149,6 +1170,9 @@ async def get_timer_satellites(request: Request):
 
     known_ids: set[str] = set()
     for entity_id in satellite_entities:
+        if not _validate_entity_id_safe(entity_id):
+            logger.warning("Skipping invalid entity_id in satellite lookup: %s", entity_id)
+            continue
         device_id = await _resolve_ha_device_id(ha_client, entity_id)
         if device_id:
             known_ids.add(device_id)
@@ -1260,13 +1284,42 @@ async def create_timer(payload: TimerCreatePayload, request: Request):
     return {"status": "ok", "id": timer_id}
 
 
-@router.get("/fernet-key-backup")
-async def get_fernet_key_backup():
-    """Export the Fernet key for backup. Handle with extreme care."""
+class FernetKeyBackupPayload(BaseModel):
+    passphrase: str
+
+
+@router.post("/fernet-key-backup")
+async def get_fernet_key_backup(payload: FernetKeyBackupPayload):
+    """Export the Fernet key encrypted with a user-supplied passphrase."""
     from app.security.encryption import export_fernet_key
 
+    passphrase = (payload.passphrase or "").strip()
+    if not passphrase:
+        return {"status": "error", "detail": "Passphrase required for key backup"}
+
+    import base64
+    import os
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+
+    key_plaintext = export_fernet_key().encode("utf-8")
+    salt = os.urandom(16)
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=600000,
+    )
+    aes_key = kdf.derive(passphrase.encode("utf-8"))
+    aesgcm = AESGCM(aes_key)
+    nonce = os.urandom(12)
+    ciphertext = aesgcm.encrypt(nonce, key_plaintext, None)
+    envelope = base64.b64encode(salt + nonce + ciphertext).decode("ascii")
     return {
-        "key": export_fernet_key(),
+        "status": "ok",
+        "encrypted_key": envelope,
         "warning": "Store this key securely. Loss of this key makes all encrypted secrets unrecoverable.",
     }
 

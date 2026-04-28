@@ -209,6 +209,6 @@ async def test_llm_endpoint(provider: str = Form(...), api_key: str = Form(...))
             max_tokens=10,
         )
         return HTMLResponse(f'<div class="test-result test-success">Connected to {html.escape(provider)}!</div>')
-    except Exception as e:
-        safe_msg = html.escape(str(e))
-        return HTMLResponse(f'<div class="test-result test-error">Error: {safe_msg}</div>')
+    except Exception:
+        logger.warning("LLM provider test failed in setup wizard", exc_info=True)
+        return HTMLResponse('<div class="test-result test-error">Provider test failed. Check server logs.</div>')

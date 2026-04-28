@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import re
 import shlex
 from typing import Any
 
@@ -42,6 +44,8 @@ sse_client = _sdk_sse_client
 
 logger = logging.getLogger(__name__)
 
+# Shell metacharacters that must not appear in an MCP stdio command.
+_SHELL_META_RE = re.compile(r"[;|&`$(){}\[\]<>]")
 
 _STOP = "STOP"
 _LIST_TOOLS = "list_tools"
@@ -50,6 +54,25 @@ _CALL_TOOL = "call_tool"
 # P3-11: how long ``disconnect`` waits for the owner task to drain its
 # request queue and exit cleanly before forcing a cancel.
 _OWNER_TASK_DISCONNECT_TIMEOUT_SEC = 5.0
+
+
+def _validate_mcp_command(command_or_url: str) -> None:
+    """Validate an MCP stdio command string before shlex.split().
+
+    Raises ValueError if the command contains unsafe characters, path
+    traversal, or is not an absolute path.
+    """
+    if not command_or_url:
+        raise ValueError("Invalid MCP command: empty command")
+    parts = command_or_url.split()
+    command = parts[0]
+    # Allow simple PATH-resolved commands (e.g. "python", "python3")
+    # as well as absolute paths. The shlex.split + shell-meta check
+    # below is the real safety boundary.
+    if _SHELL_META_RE.search(command_or_url):
+        raise ValueError("Invalid MCP command: contains unsafe characters or path traversal")
+    if ".." in command_or_url:
+        raise ValueError("Invalid MCP command: contains path traversal")
 
 
 class MCPClient:
@@ -148,11 +171,13 @@ class MCPClient:
                 await session.initialize()
                 self._session = session
                 self._connected = True
-                assert self._ready is not None
+                if self._ready is None:
+                    raise RuntimeError("MCP client not initialized")
                 self._ready.set()
 
                 while True:
-                    assert self._req_q is not None
+                    if self._req_q is None:
+                        raise RuntimeError("MCP client not initialized")
                     fut, op, args = await self._req_q.get()
                     if op == _STOP:
                         if not fut.done():
@@ -191,6 +216,7 @@ class MCPClient:
         stdio_client = _mod.stdio_client
         stdio_server_parameters_cls = _mod.StdioServerParameters
 
+        _validate_mcp_command(self._command_or_url)
         parts = shlex.split(self._command_or_url)
         command = parts[0]
         args = parts[1:] if len(parts) > 1 else []
@@ -229,7 +255,8 @@ class MCPClient:
     async def _submit(self, op: str, args: tuple) -> Any:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
-        assert self._req_q is not None
+        if self._req_q is None:
+            raise RuntimeError("MCP client not initialized")
         await self._req_q.put((fut, op, args))
         return await fut
 
@@ -251,7 +278,8 @@ class MCPClient:
             if self._has_owner():
                 loop = asyncio.get_running_loop()
                 fut: asyncio.Future = loop.create_future()
-                assert self._req_q is not None
+                if self._req_q is None:
+                    raise RuntimeError("MCP client not initialized")
                 await self._req_q.put((fut, _STOP, ()))
                 try:
                     await asyncio.wait_for(self._owner_task, timeout=_OWNER_TASK_DISCONNECT_TIMEOUT_SEC)
@@ -261,7 +289,8 @@ class MCPClient:
                         self._name,
                         _OWNER_TASK_DISCONNECT_TIMEOUT_SEC,
                     )
-                    assert self._owner_task is not None
+                    if self._owner_task is None:
+                        raise RuntimeError("MCP client not initialized")
                     self._owner_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await self._owner_task

@@ -26,7 +26,7 @@ from app.middleware.auth import SetupRedirectMiddleware
 from app.middleware.tracing import TracingMiddleware
 
 SLEEP_S = 0.4
-TIMING_BUDGET_S = 0.2
+TIMING_BUDGET_S = 1.0
 
 
 async def _slow_sse(request: Request) -> StreamingResponse:

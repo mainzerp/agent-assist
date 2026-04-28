@@ -45,7 +45,7 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     query = arguments.get("query", "")
-    max_results = min(int(arguments.get("max_results", 5)), 10)
+    max_results = max(1, min(int(arguments.get("max_results", 5)), 10))
 
     if not query:
         return [TextContent(type="text", text="Error: query is required")]

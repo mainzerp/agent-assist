@@ -222,6 +222,28 @@ _ACTION_DOMAINS_LIGHT: dict[str, frozenset[str]] = {
 # FLOW-VERIFY-1: map each action to the state we expect HA to end up in.
 # ``toggle`` has no deterministic target, so it is intentionally absent and
 # the caller must treat ``expected`` as ``None`` (= "any next change").
+_EXPECTED_STATE_BY_DOMAIN_ACTION: dict[tuple[str, str], str | frozenset[str] | None] = {
+    # Light
+    ("light", "turn_on"): "on",
+    ("light", "turn_off"): "off",
+    ("light", "set_brightness"): "on",
+    ("light", "set_color"): "on",
+    ("light", "set_color_temp"): "on",
+    # Climate
+    ("climate", "turn_on"): frozenset({"heat", "cool"}),
+    ("climate", "turn_off"): "off",
+    # Security
+    ("lock", "lock"): "locked",
+    ("lock", "unlock"): "unlocked",
+    # Media
+    ("media_player", "turn_on"): "on",
+    ("media_player", "turn_off"): "off",
+    # Music
+    ("music", "turn_on"): "playing",
+    ("music", "turn_off"): "off",
+}
+
+# Kept for backward compatibility with callers that expect action-only mapping.
 _EXPECTED_STATE_BY_ACTION: dict[str, str] = {
     "turn_on": "on",
     "turn_off": "off",
@@ -446,7 +468,15 @@ def _build_service_data(action: dict) -> dict[str, Any]:
     if "color_name" in params:
         data["color_name"] = params["color_name"]
     if "rgb_color" in params:
-        data["rgb_color"] = params["rgb_color"]
+        rc = params["rgb_color"]
+        if isinstance(rc, list) and len(rc) == 3 and all(isinstance(v, int) for v in rc):
+            data["rgb_color"] = rc
+    if "effect" in params:
+        data["effect"] = str(params["effect"])
+    if "white" in params:
+        data["white"] = int(params["white"]) if isinstance(params["white"], (int, float)) else params["white"]
+    if "flash" in params:
+        data["flash"] = str(params["flash"])
     if "color_temp" in params:
         data["color_temp"] = int(params["color_temp"])
     if "color_temp_kelvin" in params:
@@ -581,7 +611,7 @@ async def _resolve_light_entity(
             area_matches = [
                 entry
                 for entry in visible_entries
-                if entry.domain in {"light", "switch"} and _normalize_lookup_text(entry.area or "") in area_queries
+                if entry.domain in allowed_domains and _normalize_lookup_text(entry.area or "") in area_queries
             ]
             candidate, ambiguity = _select_deterministic_candidate(
                 area_matches,
@@ -811,7 +841,7 @@ async def execute_action(
 
     # FLOW-VERIFY-1 / FLOW-VERIFY-SHARED (0.18.5): delegate the
     # call_service + WS-waiter dance to the shared helper.
-    expected_state = _EXPECTED_STATE_BY_ACTION.get(action_name)
+    expected_state = _EXPECTED_STATE_BY_DOMAIN_ACTION.get((domain, action_name))
     with allow_internal_ha_service_calls(f"action-executor:{agent_id or 'unknown'}"):
         verify = await call_service_with_verification(
             ha_client,

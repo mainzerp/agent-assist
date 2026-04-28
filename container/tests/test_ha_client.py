@@ -436,7 +436,6 @@ class TestHAConfigFlow:
             data={
                 "url": "http://ha.local",
                 "api_key": "stored-token",
-                "native_plain_timers": False,
             },
             options={
                 "enable_post_filler_push": True,

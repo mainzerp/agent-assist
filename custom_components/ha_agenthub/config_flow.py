@@ -17,17 +17,16 @@ from .const import (
     DEFAULT_CONTAINER_URL,
     HEALTH_PATH,
     INTEGRATION_TITLE,
-    CONF_ENABLE_POST_FILLER_PUSH,
-    CONF_NATIVE_PLAIN_TIMERS,
-    DEFAULT_ENABLE_POST_FILLER_PUSH,
-    DEFAULT_NATIVE_PLAIN_TIMERS,
 )
 
 logger = logging.getLogger(__name__)
 
 
 def _normalize_url(url: str) -> str:
-    return (url or "").strip().rstrip("/")
+    normalized = (url or "").strip().rstrip("/")
+    if normalized and not normalized.startswith(("http://", "https://")):
+        raise ValueError("URL must start with http:// or https://")
+    return normalized
 
 
 def _password_selector() -> TextSelector:
@@ -37,7 +36,7 @@ def _password_selector() -> TextSelector:
 def _build_user_schema() -> vol.Schema:
     return vol.Schema(
         {
-            vol.Required(CONF_URL, default=DEFAULT_CONTAINER_URL): str,
+            vol.Required(CONF_URL, default=DEFAULT_CONTAINER_URL): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
             vol.Required(CONF_API_KEY): _password_selector(),
         }
     )
@@ -46,19 +45,8 @@ def _build_user_schema() -> vol.Schema:
 def _build_options_schema(current: dict[str, Any]) -> vol.Schema:
     return vol.Schema(
         {
-            vol.Required(CONF_URL, default=current.get(CONF_URL, DEFAULT_CONTAINER_URL)): str,
+            vol.Required(CONF_URL, default=current.get(CONF_URL, DEFAULT_CONTAINER_URL)): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
             vol.Optional(CONF_API_KEY, default=""): _password_selector(),
-            vol.Optional(
-                CONF_NATIVE_PLAIN_TIMERS,
-                default=current.get(CONF_NATIVE_PLAIN_TIMERS, DEFAULT_NATIVE_PLAIN_TIMERS),
-            ): bool,
-            vol.Optional(
-                CONF_ENABLE_POST_FILLER_PUSH,
-                default=current.get(
-                    CONF_ENABLE_POST_FILLER_PUSH,
-                    DEFAULT_ENABLE_POST_FILLER_PUSH,
-                ),
-            ): bool,
         }
     )
 
@@ -147,15 +135,6 @@ class HaAgentHubOptionsFlow(OptionsFlow):
             url = _normalize_url(user_input[CONF_URL])
             new_api_key = (user_input.get(CONF_API_KEY) or "").strip()
             api_key = new_api_key or current.get(CONF_API_KEY, "")
-            native_plain_timers = bool(
-                user_input.get(CONF_NATIVE_PLAIN_TIMERS, DEFAULT_NATIVE_PLAIN_TIMERS)
-            )
-            enable_post_filler_push = bool(
-                user_input.get(
-                    CONF_ENABLE_POST_FILLER_PUSH,
-                    DEFAULT_ENABLE_POST_FILLER_PUSH,
-                )
-            )
 
             error = await _validate_connection(url, api_key)
             if error:
@@ -166,11 +145,8 @@ class HaAgentHubOptionsFlow(OptionsFlow):
                     data={
                         CONF_URL: url,
                         CONF_API_KEY: api_key,
-                        CONF_NATIVE_PLAIN_TIMERS: native_plain_timers,
                     },
-                    options={
-                        CONF_ENABLE_POST_FILLER_PUSH: enable_post_filler_push,
-                    },
+                    options={},
                 )
                 return self.async_create_entry(data={})
 

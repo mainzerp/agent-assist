@@ -5,17 +5,23 @@ secrets, user accounts, conversation history, and analytics.
 """
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 import aiosqlite
 
+logger = logging.getLogger(__name__)
+
 from app.config import settings
 from app.defaults import CACHE_DEFAULTS, DEFAULT_LOCAL_EMBEDDING_MODEL
 
 _write_conn: aiosqlite.Connection | None = None
 _write_lock = asyncio.Lock()
+
+_DB_WRITE_MAX_RETRIES = 3
+_DB_WRITE_BASE_DELAY = 0.5
 
 
 def _db_path() -> Path:
@@ -25,14 +31,36 @@ def _db_path() -> Path:
     return p
 
 
+async def _open_write_connection() -> aiosqlite.Connection:
+    """Open a fresh write connection with retry on OperationalError."""
+    for attempt in range(1, _DB_WRITE_MAX_RETRIES + 1):
+        try:
+            conn = await aiosqlite.connect(str(_db_path()))
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA foreign_keys=ON")
+            return conn
+        except aiosqlite.OperationalError:
+            logger.warning("DB write connection failed (attempt %d/%d)", attempt, _DB_WRITE_MAX_RETRIES, exc_info=True)
+            if attempt < _DB_WRITE_MAX_RETRIES:
+                await asyncio.sleep(_DB_WRITE_BASE_DELAY * (2 ** (attempt - 1)))
+            else:
+                raise
+
+
 async def _get_or_create_write_connection() -> aiosqlite.Connection:
     """Get or create the shared write connection."""
     global _write_conn
+    if _write_conn is not None:
+        try:
+            await _write_conn.execute("SELECT 1")
+        except aiosqlite.OperationalError:
+            logger.warning("DB write connection stale, recreating")
+            with suppress(Exception):
+                await _write_conn.close()
+            _write_conn = None
     if _write_conn is None:
-        _write_conn = await aiosqlite.connect(str(_db_path()))
-        _write_conn.row_factory = aiosqlite.Row
-        await _write_conn.execute("PRAGMA journal_mode=WAL")
-        await _write_conn.execute("PRAGMA foreign_keys=ON")
+        _write_conn = await _open_write_connection()
     return _write_conn
 
 
@@ -909,8 +937,12 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
 
     if current_version < 9:
         # Migration 9: Add conversation_turns column to trace_summary
-        with suppress(Exception):
+        try:
             await db.execute("ALTER TABLE trace_summary ADD COLUMN conversation_turns TEXT")
+        except aiosqlite.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                logger.error("Migration failed adding column conversation_turns: %s", e)
+                raise
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (9)")
 
     if current_version < 10:
@@ -923,8 +955,12 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
 
     if current_version < 11:
         # Migration 11: Add reasoning_effort column to agent_configs
-        with suppress(Exception):
+        try:
             await db.execute("ALTER TABLE agent_configs ADD COLUMN reasoning_effort TEXT")
+        except aiosqlite.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                logger.error("Migration failed adding column reasoning_effort: %s", e)
+                raise
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (11)")
 
     if current_version < 12:
@@ -942,8 +978,12 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
 
     if current_version < 13:
         # Migration 13: Add end_time column to trace_spans
-        with suppress(Exception):
+        try:
             await db.execute("ALTER TABLE trace_spans ADD COLUMN end_time TEXT")
+        except aiosqlite.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                logger.error("Migration failed adding column end_time: %s", e)
+                raise
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (13)")
 
     if current_version < 14:
@@ -1006,8 +1046,12 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         # can show "Kitchen Satellite / Kitchen" next to each
         # conversation instead of an opaque device_id UUID.
         for column in ("device_id", "area_id", "device_name", "area_name"):
-            with suppress(Exception):
+            try:
                 await db.execute(f"ALTER TABLE trace_summary ADD COLUMN {column} TEXT")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    logger.error("Migration failed adding column %s: %s", column, e)
+                    raise
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (16)")
 
     if current_version < 17:
@@ -1130,8 +1174,12 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
 
     if current_version < 21:
         # Migration 21 (1.0.0): persist wake-briefing alarm flags explicitly.
-        with suppress(Exception):
+        try:
             await db.execute("ALTER TABLE scheduled_timers ADD COLUMN briefing INTEGER NOT NULL DEFAULT 0")
+        except aiosqlite.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                logger.error("Migration failed adding column briefing: %s", e)
+                raise
         await db.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (21)")
 
     if current_version < 22:

@@ -8,12 +8,12 @@ agent:
       path: ./agents/research.yaml
       description: >
         Read-focused codebase analysis agent. Produces docs/SubAgent/<NAME>_ANALYSIS.md.
-        Use as the first phase of any non-trivial task. Runs with read-only tools only.
+        Use as the first phase of any non-trivial task.
     planner:
       path: ./agents/planner.yaml
       description: >
         Produces a detailed implementation plan with checklist at docs/SubAgent/<NAME>_PLAN.md.
-        Run after the research subagent returns. Runs with read-only tools only.
+        Run after the research subagent returns.
     implementer:
       path: ./agents/implementer.yaml
       description: >

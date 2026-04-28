@@ -47,12 +47,12 @@ async def analytics_overview(
     requests = await AnalyticsRepository.query_by_range(
         event_type="request",
         start=start,
-        limit=100000,
+        limit=10000,
     )
     cache_events = await AnalyticsRepository.query_by_range(
         event_type=None,
         start=start,
-        limit=100000,
+        limit=10000,
     )
 
     total_requests = len(requests)
@@ -91,7 +91,7 @@ async def analytics_requests(
     events = await AnalyticsRepository.query_by_range(
         event_type="request",
         start=start,
-        limit=100000,
+        limit=10000,
     )
 
     # Bucket by time interval
@@ -127,7 +127,7 @@ async def analytics_agents(
     events = await AnalyticsRepository.query_by_range(
         event_type="request",
         start=start,
-        limit=100000,
+        limit=10000,
     )
 
     agent_latencies: dict[str, list[float]] = defaultdict(list)
@@ -163,7 +163,7 @@ async def analytics_cache(
 ):
     """Cache hit rate time-series in Chart.js format."""
     start = (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
-    events = await AnalyticsRepository.query_by_range(start=start, limit=100000)
+    events = await AnalyticsRepository.query_by_range(start=start, limit=10000)
 
     hit_types = {"routing_hit", "action_hit"}
     miss_types = {"miss"}
@@ -209,7 +209,7 @@ async def analytics_tokens(
     events = await AnalyticsRepository.query_by_range(
         event_type="token_usage",
         start=start,
-        limit=100000,
+        limit=10000,
     )
 
     by_agent: dict[str, dict] = defaultdict(lambda: {"tokens_in": 0, "tokens_out": 0, "calls": 0})
@@ -248,7 +248,7 @@ async def analytics_rewrite(
     events = await AnalyticsRepository.query_by_range(
         event_type="rewrite_invocation",
         start=start,
-        limit=100000,
+        limit=10000,
     )
 
     total = len(events)

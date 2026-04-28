@@ -1,6 +1,23 @@
 # Version
 
-**Current Version:** 1.4.1
+**Current Version:** 1.5.0
+
+## Recent Changes (since 1.4.1)
+
+- **Security:** Fixed MCP stdio command injection, Jinja2 template injection in timer admin endpoints, plugin loader path traversal, and LLM provider test error secret leakage.
+- **Security:** Added rate limiting middleware (per-IP and per-API-key), WebSocket per-message rate limiting, and CORS middleware configuration.
+- **Security:** Hardened Fernet key backup endpoint with passphrase-based encryption.
+- **Security:** Added CI security scanning (bandit, pip-audit) and aligned CI Python version with Docker (3.12).
+- **Architecture:** Removed native plain-timer delegation, post-filler push, and satellite entity resolution from the Home Assistant integration to restore Prime Directive 1 compliance (thin I/O bridge only).
+- **Architecture:** Routed filler agent through A2A dispatcher instead of direct invocation (Prime Directive 6).
+- **Architecture:** Removed hardcoded German/English alarm keyword routing from timer executor (Prime Directive 9).
+- **Reliability:** Fixed streaming filler deadlock, blocking I/O on event loop during entity resolution, and response.result type safety in orchestrator.
+- **Reliability:** Hardened WebSocket auth handshake locking, plugin lifecycle timeouts, background task exception retrieval, and DB write connection auto-recovery.
+- **Reliability:** Fixed HA integration WebSocket ping double-await, reconnect loop crash resilience, and REST fallback JSON decode handling.
+- **API:** Standardized error response formats, sanitized cache admin and health check error disclosure, and capped analytics pagination at 10,000 rows.
+- **API:** Changed default `cookie_secure` to `True` and added dynamic SQL column name validation.
+- **Code Quality:** Expanded cached-action expected-state map to climate, security, media, and music domains. Fixed sensor area matching in light executor. Added LLM choices bounds checking.
+- **Tests:** Re-enabled 5 skipped cache tests, fixed flaky streaming middleware test and nondeterministic entity matcher test, and added concurrent cache stress test.
 
 ## Recent Changes (since 1.4.0)
 

@@ -9,7 +9,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.a2a.dispatcher import Dispatcher
@@ -32,6 +33,7 @@ from app.db.repository import SettingsRepository, SetupStateRepository
 from app.db.schema import init_db
 from app.entity.ingest import parse_ha_states
 from app.middleware.auth import SetupRedirectMiddleware, apply_auth_dependencies
+from app.middleware.rate_limit import rate_limit_admin
 from app.middleware.tracing import TracingMiddleware
 from app.models.entity_index import EntityIndexEntry
 from app.setup.routes import router as setup_router
@@ -330,6 +332,11 @@ async def lifespan(app: FastAPI):
     await plugin_loader.run_lifecycle(LifecyclePhase.READY)
     app.state.plugin_loader = plugin_loader
 
+    if not settings.cookie_secure:
+        logger.warning(
+            "COOKIE_SECURE is disabled. Admin session and CSRF cookies "
+            "will be sent over plain HTTP. Enable COOKIE_SECURE for production."
+        )
     logger.info("Startup complete (setup_complete=%s)", setup_complete)
     yield
 
@@ -424,12 +431,22 @@ def create_app() -> FastAPI:
     # Tracing middleware (trace ID + request logging)
     app.add_middleware(TracingMiddleware)
 
+    # CORS middleware
+    _cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=bool(_cors_origins),
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     # Include routers
     app.include_router(health_routes.router)
     app.include_router(setup_router)
     app.include_router(conversation_routes.router)
-    app.include_router(admin_routes.router)
-    app.include_router(dashboard_api_routes.router)
+    app.include_router(admin_routes.router, dependencies=[Depends(rate_limit_admin)])
+    app.include_router(dashboard_api_routes.router, dependencies=[Depends(rate_limit_admin)])
     app.include_router(dashboard_router)
 
     # Batch C routers
@@ -437,16 +454,16 @@ def create_app() -> FastAPI:
     from app.api.routes import conversations_api as conversations_api_routes
     from app.api.routes import entity_index_api as entity_index_api_routes
 
-    app.include_router(conversations_api_routes.router)
-    app.include_router(cache_api_routes.router)
-    app.include_router(entity_index_api_routes.router)
+    app.include_router(conversations_api_routes.router, dependencies=[Depends(rate_limit_admin)])
+    app.include_router(cache_api_routes.router, dependencies=[Depends(rate_limit_admin)])
+    app.include_router(entity_index_api_routes.router, dependencies=[Depends(rate_limit_admin)])
 
     # Batch D routers
     from app.api.routes import analytics_api as analytics_api_routes
     from app.api.routes import traces_api as traces_api_routes
 
-    app.include_router(analytics_api_routes.router)
-    app.include_router(traces_api_routes.router)
+    app.include_router(analytics_api_routes.router, dependencies=[Depends(rate_limit_admin)])
+    app.include_router(traces_api_routes.router, dependencies=[Depends(rate_limit_admin)])
 
     # Batch E routers
     from app.api.routes import custom_agents_api as custom_agents_api_routes
@@ -454,16 +471,16 @@ def create_app() -> FastAPI:
     from app.api.routes import entity_visibility_api as entity_visibility_api_routes
     from app.api.routes import mcp_api as mcp_api_routes
 
-    app.include_router(mcp_api_routes.router)
-    app.include_router(custom_agents_api_routes.router)
-    app.include_router(entity_visibility_api_routes.router)
-    app.include_router(entity_visibility_api_routes.entities_router)
-    app.include_router(domain_agent_map_api_routes.router)
+    app.include_router(mcp_api_routes.router, dependencies=[Depends(rate_limit_admin)])
+    app.include_router(custom_agents_api_routes.router, dependencies=[Depends(rate_limit_admin)])
+    app.include_router(entity_visibility_api_routes.router, dependencies=[Depends(rate_limit_admin)])
+    app.include_router(entity_visibility_api_routes.entities_router, dependencies=[Depends(rate_limit_admin)])
+    app.include_router(domain_agent_map_api_routes.router, dependencies=[Depends(rate_limit_admin)])
 
     # Batch F routers
     from app.api.routes import plugins_api as plugins_api_routes
 
-    app.include_router(plugins_api_routes.router)
+    app.include_router(plugins_api_routes.router, dependencies=[Depends(rate_limit_admin)])
 
     # Redirect root to dashboard
     from starlette.responses import RedirectResponse

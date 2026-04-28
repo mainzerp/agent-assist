@@ -13,6 +13,11 @@ from app.models.agent import AgentConfig
 
 logger = logging.getLogger(__name__)
 
+
+class LLMError(Exception):
+    """Raised when the LLM provider returns an unusable response."""
+
+
 # Suppress litellm's internal verbose logging unless user wants debug.
 litellm.suppress_debug_info = True
 
@@ -60,14 +65,16 @@ async def complete(
             response = await litellm.acompletion(**call_kwargs)
             pspan["metadata"]["model"] = model
             pspan["metadata"]["provider"] = model.split("/")[0] if "/" in model else "unknown"
-        if response.choices and response.choices[0].finish_reason == "length":
+        if not response.choices:
+            raise LLMError("Empty choices from provider")
+        if response.choices[0].finish_reason == "length":
             logger.warning(
                 "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
                 agent_id,
                 model,
                 max_tokens,
             )
-        content = (response.choices[0].message.content or "").strip()
+        content = (response.choices[0].message.content or "").strip() if response.choices[0].message else ""
 
         # Single retry on empty response (e.g. rate limiting)
         if not content:
@@ -75,26 +82,28 @@ async def complete(
                 "Empty LLM response for agent=%s model=%s finish_reason=%s, retrying once after 1s",
                 agent_id,
                 model,
-                response.choices[0].finish_reason,
+                response.choices[0].finish_reason if response.choices else "unknown",
             )
             await asyncio.sleep(_LLM_EMPTY_RESPONSE_RETRY_DELAY_SEC)
             async with _optional_span(span_collector, "llm_provider_call", agent_id=agent_id) as pspan:
                 response = await litellm.acompletion(**call_kwargs)
                 pspan["metadata"]["model"] = model
                 pspan["metadata"]["retry"] = True
-            if response.choices and response.choices[0].finish_reason == "length":
+            if not response.choices:
+                raise LLMError("Empty choices from provider on retry")
+            if response.choices[0].finish_reason == "length":
                 logger.warning(
                     "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
                     agent_id,
                     model,
                     max_tokens,
                 )
-            content = (response.choices[0].message.content or "").strip()
+            content = (response.choices[0].message.content or "").strip() if response.choices[0].message else ""
 
         if not content:
             raise ValueError(
                 f"Empty LLM response for agent={agent_id} after retry "
-                f"(finish_reason={response.choices[0].finish_reason})"
+                f"(finish_reason={response.choices[0].finish_reason if response.choices else 'unknown'})"
             )
         if hasattr(response, "usage") and response.usage:
             await track_token_usage(
@@ -184,12 +193,16 @@ async def complete_with_tools(
                 tokens_in=response.usage.prompt_tokens or 0,
                 tokens_out=response.usage.completion_tokens or 0,
             )
+        if not response.choices:
+            raise LLMError("Empty choices from provider")
         msg = response.choices[0].message
+        if msg is None:
+            return ""
         tool_calls = getattr(msg, "tool_calls", None)
 
         if not tool_calls:
             # No tool calls -- return the text content
-            if response.choices and response.choices[0].finish_reason == "length":
+            if response.choices[0].finish_reason == "length":
                 logger.warning(
                     "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
                     agent_id,
@@ -268,12 +281,14 @@ async def complete_with_tools(
             tokens_in=response.usage.prompt_tokens or 0,
             tokens_out=response.usage.completion_tokens or 0,
         )
-    if response.choices and response.choices[0].finish_reason == "length":
+    if not response.choices:
+        raise LLMError("Empty choices from provider")
+    if response.choices[0].finish_reason == "length":
         logger.warning(
             "LLM response truncated (finish_reason=length) for agent=%s model=%s max_tokens=%s",
             agent_id,
             model,
             max_tokens,
         )
-    content = (response.choices[0].message.content or "").strip()
+    content = (response.choices[0].message.content or "").strip() if response.choices[0].message else ""
     return content or ""

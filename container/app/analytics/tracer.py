@@ -330,6 +330,10 @@ class SpanCollector:
                 span["end_time"] = datetime.now(UTC).isoformat()
             self._spans.append(span)
 
+    def get_spans(self) -> list[dict[str, Any]]:
+        """Return a shallow copy of the collected spans."""
+        return list(self._spans)
+
     async def flush(self) -> None:
         """Bulk insert all collected spans. Fire-and-forget."""
         if not self._spans:

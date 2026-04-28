@@ -87,40 +87,40 @@ class HAWebSocketClient:
             async with self._ws_lock:
                 self._session = aiohttp.ClientSession()
                 self._ws = await self._session.ws_connect(ws_url, heartbeat=HEARTBEAT_INTERVAL)
-            self._ws_last_active = time.monotonic()
+                self._ws_last_active = time.monotonic()
 
-            # P3-2: bound both handshake receives. A half-open HA that
-            # never replies must not block the receive loop forever.
-            try:
-                msg = await asyncio.wait_for(self._ws.receive_json(), timeout=AUTH_HANDSHAKE_TIMEOUT)
-            except TimeoutError:
-                self._logger.error("HA WebSocket handshake timed out waiting for auth_required")
-                await self._close_session()
-                return False
-            if msg.get("type") != "auth_required":
-                self._logger.error("Unexpected initial message from HA WebSocket")
-                await self._close_session()
-                return False
+                # P3-2: bound both handshake receives. A half-open HA that
+                # never replies must not block the receive loop forever.
+                try:
+                    msg = await asyncio.wait_for(self._ws.receive_json(), timeout=AUTH_HANDSHAKE_TIMEOUT)
+                except TimeoutError:
+                    self._logger.error("HA WebSocket handshake timed out waiting for auth_required")
+                    await self._close_session()
+                    return False
+                if msg.get("type") != "auth_required":
+                    self._logger.error("Unexpected initial message from HA WebSocket")
+                    await self._close_session()
+                    return False
 
-            await self._ws.send_json({"type": "auth", "access_token": token})
-            try:
-                auth_response = await asyncio.wait_for(self._ws.receive_json(), timeout=AUTH_HANDSHAKE_TIMEOUT)
-            except TimeoutError:
-                self._logger.error("HA WebSocket handshake timed out waiting for auth_ok")
-                await self._close_session()
-                return False
+                await self._ws.send_json({"type": "auth", "access_token": token})
+                try:
+                    auth_response = await asyncio.wait_for(self._ws.receive_json(), timeout=AUTH_HANDSHAKE_TIMEOUT)
+                except TimeoutError:
+                    self._logger.error("HA WebSocket handshake timed out waiting for auth_ok")
+                    await self._close_session()
+                    return False
 
-            if auth_response.get("type") != "auth_ok":
-                self._logger.error("HA WebSocket auth failed")
-                await self._close_session()
-                return False
+                if auth_response.get("type") != "auth_ok":
+                    self._logger.error("HA WebSocket auth failed")
+                    await self._close_session()
+                    return False
 
-            self._running = True
-            self._logger.info("Connected to HA WebSocket")
+                self._running = True
+                self._logger.info("Connected to HA WebSocket")
 
-            # Auto-subscribe to all registered event types
-            for event_type in self._listeners:
-                await self.subscribe_events(event_type)
+                # Auto-subscribe to all registered event types
+                for event_type in self._listeners:
+                    await self.subscribe_events(event_type)
 
             return True
         except Exception:
@@ -318,7 +318,7 @@ class HAWebSocketClient:
             awaiting it with a timeout and for cancelling on its own error
             paths if desired.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future: asyncio.Future[str] = loop.create_future()
         self._state_waiters.setdefault(entity_id, []).append((future, expected))
         return future

@@ -584,7 +584,7 @@ class TestAgentEditorFailures:
             )
 
         assert resp.status_code == 500
-        assert resp.json()["detail"] == "save failed"
+        assert resp.json()["detail"] == "Failed to update agent"
 
     async def test_update_agent_prompt_rejects_invalid_agent_id(self, dashboard_client: httpx.AsyncClient):
         resp = await dashboard_client.put(

@@ -26,6 +26,7 @@ from app.cache.vector_store import (
 from app.config import settings
 from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import require_admin_session
+from app.util import raise_api_error
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +51,9 @@ async def get_cache_stats(request: Request):
     try:
         stats = cache_manager.get_stats()
         return stats
-    except Exception as exc:
+    except Exception:
         logger.warning("Failed to get cache stats", exc_info=True)
-        return {"error": str(exc)}
+        return {"status": "error", "detail": "Cache operation failed"}
 
 
 @router.get("/entries")
@@ -138,9 +139,9 @@ async def browse_cache_entries(
             "per_page": per_page,
             "pages": (filtered_total + per_page - 1) // per_page if per_page else 0,
         }
-    except Exception as exc:
+    except Exception:
         logger.warning("Failed to browse cache entries", exc_info=True)
-        return {"entries": [], "total": 0, "error": str(exc)}
+        return {"entries": [], "total": 0, "status": "error", "detail": "Cache operation failed"}
 
 
 @router.post("/flush")
@@ -160,9 +161,9 @@ async def flush_cache(request: Request, payload: FlushRequest):
     try:
         await asyncio.to_thread(cache_manager.flush, tier)
         return {"status": "ok", "flushed": tier or "all"}
-    except Exception as exc:
+    except Exception:
         logger.warning("Failed to flush cache", exc_info=True)
-        return {"status": "error", "detail": str(exc)}
+        return {"status": "error", "detail": "Cache operation failed"}
 
 
 @router.get("/export")
@@ -174,10 +175,7 @@ async def export_cache(
     await ensure_setup_runtime_initialized(request.app)
     cache_manager = getattr(request.app.state, "cache_manager", None)
     if cache_manager is None:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "error", "detail": "cache not initialized"},
-        )
+        raise_api_error("Cache not initialized", status_code=503)
 
     tiers = list(ALLOWED_TIERS) if tier == "all" else [tier]
     raw_version = getattr(settings, "app_version", None)
@@ -186,12 +184,9 @@ async def export_cache(
 
     try:
         generator = iter_export_chunks(cache_manager, tiers, app_version=app_version)
-    except Exception as exc:
+    except Exception:
         logger.warning("Failed to start cache export", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "detail": str(exc)},
-        )
+        raise_api_error("Cache export failed", status_code=500)
 
     return StreamingResponse(
         generator,
@@ -211,47 +206,29 @@ async def import_cache(
     """Import a cache export envelope. Returns an ImportSummary as JSON."""
     cache_manager = getattr(request.app.state, "cache_manager", None)
     if cache_manager is None:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "error", "detail": "cache not initialized"},
-        )
+        raise_api_error("Cache not initialized", status_code=503)
 
     if mode not in ("merge", "replace"):
-        return JSONResponse(
-            status_code=400,
-            content={"status": "error", "detail": f"invalid mode {mode!r}"},
-        )
+        raise_api_error(f"Invalid mode {mode!r}", status_code=400)
 
     requested_tiers = [t.strip() for t in (tiers or "").split(",") if t.strip()]
     requested_tiers = [t for t in requested_tiers if t in ("routing", "action")]
     if not requested_tiers:
-        return JSONResponse(
-            status_code=400,
-            content={"status": "error", "detail": "no supported tiers requested"},
-        )
+        raise_api_error("No supported tiers requested", status_code=400)
 
     try:
         raw = await file.read()
-    except Exception as exc:
+    except Exception:
         logger.warning("Failed to read cache import upload", exc_info=True)
-        return JSONResponse(
-            status_code=400,
-            content={"status": "error", "detail": f"failed to read upload: {exc}"},
-        )
+        raise_api_error("Failed to read upload", status_code=400)
 
     if len(raw) > MAX_IMPORT_BYTES:
-        return JSONResponse(
-            status_code=413,
-            content={"status": "error", "detail": "payload too large"},
-        )
+        raise_api_error("Payload too large", status_code=413)
 
     try:
         envelope = parse_envelope(raw)
     except ImportValidationError as exc:
-        return JSONResponse(
-            status_code=400,
-            content={"status": "error", "detail": str(exc)},
-        )
+        raise_api_error(str(exc), status_code=400)
 
     try:
         summary = await import_envelope(
@@ -261,16 +238,10 @@ async def import_cache(
             tiers=requested_tiers,
         )
     except ImportValidationError as exc:
-        return JSONResponse(
-            status_code=400,
-            content={"status": "error", "detail": str(exc)},
-        )
-    except Exception as exc:
+        raise_api_error(str(exc), status_code=400)
+    except Exception:
         logger.warning("Cache import failed", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "detail": str(exc)},
-        )
+        raise_api_error("Cache import failed", status_code=500)
 
     return {
         "status": "ok",
