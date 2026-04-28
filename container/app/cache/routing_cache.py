@@ -43,7 +43,7 @@ class RoutingCache(_BaseCache[RoutingCacheEntry]):
             max_entries_key="cache.routing.max_entries",
             max_entries_default=50000,
             semantic_fallback_enabled_key="cache.routing.semantic_fallback_enabled",
-            semantic_fallback_enabled_default=True,
+            semantic_fallback_enabled_default=False,
         )
         threshold_raw = await self._get_setting(
             "cache.routing.semantic_threshold",
