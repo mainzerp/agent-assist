@@ -644,6 +644,7 @@ async def _initialize_setup_dependent_services(app: FastAPI, *, source: str) -> 
             )
 
     filler_agent = FillerAgent(ha_client=ha_client, entity_index=entity_index)
+    await registry.register(filler_agent)
     orchestrator_agent = OrchestratorAgent(
         dispatcher=dispatcher,
         registry=registry,

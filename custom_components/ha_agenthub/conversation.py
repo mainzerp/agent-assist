@@ -408,16 +408,20 @@ class HaAgentHubConversationEntity(
         (Prime Directive 1).
         """
         if not device_id:
+            logger.warning("filler_push: no device_id in ConversationInput, cannot resolve satellite")
             return None
         try:
             entity_registry = er.async_get(self.hass)
             entries = er.async_entries_for_device(entity_registry, device_id)
+            logger.info("filler_push: device %s has %d registry entries", device_id, len(entries))
             for entry in entries:
+                logger.info("filler_push: entry domain=%s entity_id=%s", entry.domain, entry.entity_id)
                 if entry.domain == "assist_satellite":
                     return entry.entity_id
+            logger.warning("filler_push: no assist_satellite entity found for device %s", device_id)
         except Exception:
-            logger.debug(
-                "Failed to resolve satellite entity for device %s", device_id, exc_info=True
+            logger.warning(
+                "filler_push: failed to resolve satellite entity for device %s", device_id, exc_info=True
             )
         return None
 
@@ -432,8 +436,8 @@ class HaAgentHubConversationEntity(
         """
         satellite_entity = self._resolve_satellite_entity(device_id)
         if not satellite_entity:
-            logger.debug(
-                "No satellite entity for device %s, skipping filler push", device_id
+            logger.warning(
+                "filler_push: no satellite entity for device %s, skipping", device_id
             )
             return
         try:
@@ -447,12 +451,12 @@ class HaAgentHubConversationEntity(
                 target={"entity_id": satellite_entity},
                 blocking=True,
             )
-            logger.debug(
-                "Filler pushed to %s: %s", satellite_entity, filler_text[:80]
+            logger.info(
+                "filler_push: successfully announced on %s: %s", satellite_entity, filler_text[:80]
             )
         except Exception:
             logger.warning(
-                "Failed to push filler to satellite %s", satellite_entity, exc_info=True
+                "filler_push: failed to announce on %s", satellite_entity, exc_info=True
             )
 
     async def _process_via_ws(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
@@ -496,6 +500,7 @@ class HaAgentHubConversationEntity(
                     filler_text = data.get("filler_push")
                     if filler_text is not None:
                         stripped_filler = _strip_markdown(str(filler_text).strip())
+                        logger.info("filler_push: received from container (%s): %s", device_id, stripped_filler[:80])
                         if stripped_filler:
                             # Launch as background task so we keep reading
                             # the stream (the container may send more tokens

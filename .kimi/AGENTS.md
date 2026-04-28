@@ -36,7 +36,7 @@ The orchestrator NEVER writes code, edits files, or runs implementation commands
 
 ## Important Rules
 
-- Do not use emojis anywhere (messages, docs, comments, commit messages, generated output, or source code) unless explicitly requested.
+- Do not use emojis anywhere unless explicitly requested.
 - Update `VERSION.md` when implementing new user-facing features.
 - Use Semantic Versioning (SemVer): `MAJOR.MINOR.PATCH`.
 - Current-state documentation only; roadmap items belong in `docs/roadmap.md`.

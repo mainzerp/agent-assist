@@ -234,6 +234,7 @@ async def lifespan(app: FastAPI):
         # Setup wizard path: register the core agents with None HA deps
         # so the A2A surface is usable enough to serve the wizard.
         filler_agent = FillerAgent(ha_client=None, entity_index=None)
+        await registry.register(filler_agent)
         orchestrator_agent = OrchestratorAgent(
             dispatcher=dispatcher,
             registry=registry,
