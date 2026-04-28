@@ -1,6 +1,10 @@
 # Version
 
-**Current Version:** 1.5.3
+**Current Version:** 1.5.4
+
+## Recent Changes (since 1.5.3)
+
+- **Container:** Disabled semantic fallback in the routing cache. The routing cache now uses exact string match only (normalized query_text + language). This eliminates false positives where different intents were incorrectly cached as routing hits (e.g. "LEGO models" matching a previous "AI models" cache entry). The action cache retains semantic fallback because it matches on structured action signatures, not raw user text.
 
 ## Recent Changes (since 1.5.2)
 
