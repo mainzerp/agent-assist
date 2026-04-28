@@ -62,15 +62,10 @@ class GeneralAgent(BaseAgent):
         if task.context and task.context.conversation_turns:
             self._append_conversation_turn_messages(messages, task.context.conversation_turns)
 
-        # task.description = condensed task from orchestrator (primary input)
-        # task.user_text = original unmodified user text (fallback only)
-        user_content = self._wrap_user_input(task.description)
-        if task.user_text and task.user_text != task.description:
-            user_content = (
-                f"Routing summary:\n{self._wrap_user_input(task.description)}\n\n"
-                f"Original user message:\n{self._wrap_user_input(task.user_text)}"
-            )
-        messages.append({"role": "user", "content": user_content})
+        # Prime Directive: the orchestrator owns intent classification and
+        # condensation.  Agents MUST NOT see the raw user_text — they receive
+        # only the distilled description.
+        messages.append({"role": "user", "content": self._wrap_user_input(task.description)})
 
         # Check for available MCP tools
         llm_kwargs = {}

@@ -8,7 +8,6 @@ import re
 
 from app.agents.action_executor import parse_action
 from app.agents.base import BaseAgent
-from app.db.repository import SettingsRepository
 from app.models.agent import ActionExecuted, AgentError, AgentErrorCode, AgentTask, TaskResult
 
 logger = logging.getLogger(__name__)
@@ -103,29 +102,11 @@ class ActionableAgent(BaseAgent):
         if task.context and task.context.conversation_turns:
             self._append_conversation_turn_messages(messages, task.context.conversation_turns)
 
+        # Prime Directive: the orchestrator owns intent classification and
+        # condensation.  Agents MUST NOT see the raw user_text — they receive
+        # only the distilled description (which already carries verbatim
+        # entity tokens via _append_original_suffix when needed).
         user_content = self._wrap_user_input(task.description)
-        if task.user_text and task.user_text != task.description:
-            try:
-                primary_source = await SettingsRepository.get_value(
-                    "agents.actionable.primary_text_source",
-                    "original_when_translated",
-                )
-            except Exception:
-                primary_source = "original_when_translated"
-            if (primary_source or "").lower() == "original_when_translated":
-                # 0.23.0: when the orchestrator translated the user
-                # message into a condensed task, give the agent the
-                # ORIGINAL text first so original-language entity tokens
-                # are preserved through the LLM call.
-                user_content = (
-                    f"User request:\n{self._wrap_user_input(task.user_text)}\n\n"
-                    f"Routing summary:\n{self._wrap_user_input(task.description)}"
-                )
-            else:
-                user_content = (
-                    f"Routing summary:\n{self._wrap_user_input(task.description)}\n\n"
-                    f"Original user message:\n{self._wrap_user_input(task.user_text)}"
-                )
 
         messages.append({"role": "user", "content": user_content})
 
