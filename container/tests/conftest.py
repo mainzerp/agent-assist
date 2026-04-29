@@ -455,3 +455,14 @@ def mock_settings() -> dict[str, str]:
         "a2a.max_iterations": "3",
         "general.conversation_context_turns": "3",
     }
+
+
+@pytest.fixture(autouse=True)
+def _ensure_voluptuous_mock():
+    """Ensure voluptuous is mocked for HA custom_components tests."""
+    import sys
+    from unittest.mock import MagicMock
+
+    if "voluptuous" not in sys.modules:
+        sys.modules["voluptuous"] = MagicMock()
+    yield

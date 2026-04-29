@@ -10,17 +10,6 @@ import httpx
 import pytest
 import respx
 
-
-@pytest.fixture(autouse=True)
-def _ensure_voluptuous_mock():
-    import sys
-    from unittest.mock import MagicMock
-
-    if "voluptuous" not in sys.modules:
-        sys.modules["voluptuous"] = MagicMock()
-    yield
-
-
 from app.ha_client.auth import (
     HA_TOKEN_SECRET_KEY,
     build_auth_headers,
