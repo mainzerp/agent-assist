@@ -33,3 +33,7 @@
 ## Open / Carried Over
 
 - None currently.
+
+## Critical Do-Nots
+
+- **NEVER delete Docker volumes** (`docker compose down -v`, `docker volume rm`, etc.) unless the user *explicitly* requests it. This destroys the SQLite database, ChromaDB data, API keys, HA connection config, and all cached state. If a container fails to start due to data corruption, prefer `docker compose down` (without `-v`) and container recreation, or manual cleanup of specific files inside the volume. Losing a volume forces a full re-setup of the container.

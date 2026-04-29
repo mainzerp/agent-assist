@@ -18,7 +18,7 @@ from app.db.repository import (
     SetupStateRepository,
 )
 from app.ha_client.rest import test_ha_connection
-from app.middleware.rate_limit import rate_limit_login
+from app.middleware.rate_limit import rate_limit_setup
 from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import (
     ensure_csrf_token,
@@ -77,7 +77,7 @@ async def render_step(request: Request, step_num: int):
 @router.post(
     "/step/1",
     response_class=HTMLResponse,
-    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_login)],
+    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_setup)],
 )
 async def save_admin_password(
     request: Request,
@@ -94,7 +94,7 @@ async def save_admin_password(
 @router.post(
     "/step/2",
     response_class=HTMLResponse,
-    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_login)],
+    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_setup)],
 )
 async def save_ha_connection(
     request: Request,
@@ -113,7 +113,7 @@ async def save_ha_connection(
 @router.post(
     "/step/3",
     response_class=HTMLResponse,
-    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_login)],
+    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_setup)],
 )
 async def generate_api_key(request: Request):
     """Step 3: Auto-generate container API key, store encrypted, show once."""
@@ -138,7 +138,7 @@ async def generate_api_key(request: Request):
 @router.post(
     "/step/4",
     response_class=HTMLResponse,
-    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_login)],
+    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_setup)],
 )
 async def save_llm_keys(
     request: Request,
@@ -160,7 +160,7 @@ async def save_llm_keys(
 @router.post(
     "/step/5",
     response_class=HTMLResponse,
-    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_login)],
+    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_setup)],
 )
 async def complete_setup(request: Request):
     """Step 5: Mark setup complete and trigger post-setup initialization."""
@@ -175,7 +175,7 @@ async def complete_setup(request: Request):
 
 @router.post(
     "/test/ha",
-    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_login)],
+    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_setup)],
 )
 async def test_ha_endpoint(ha_url: str = Form(...), ha_token: str = Form(...)):
     """Test HA connection with provided URL and token."""
@@ -187,7 +187,7 @@ async def test_ha_endpoint(ha_url: str = Form(...), ha_token: str = Form(...)):
 
 @router.post(
     "/test/llm",
-    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_login)],
+    dependencies=[Depends(verify_csrf), Depends(require_admin_or_setup_open), Depends(rate_limit_setup)],
 )
 async def test_llm_endpoint(provider: str = Form(...), api_key: str = Form(...)):
     """Test LLM provider with a small completion request."""

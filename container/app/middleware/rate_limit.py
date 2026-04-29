@@ -76,6 +76,16 @@ async def rate_limit_login(request: Request) -> None:
     await _check_rate_limit(ip, max_requests=5, window_seconds=900, scope="login")
 
 
+async def rate_limit_setup(request: Request) -> None:
+    """30 requests per minute per IP for /setup/* endpoints.
+
+    The setup wizard involves multiple sequential form submissions
+    and page reloads; a tight limit blocks legitimate first-time setup.
+    """
+    ip = _get_client_ip(request)
+    await _check_rate_limit(ip, max_requests=30, window_seconds=60, scope="setup")
+
+
 async def rate_limit_admin(request: Request) -> None:
     """60 requests per minute per IP for /api/admin/* endpoints."""
     ip = _get_client_ip(request)

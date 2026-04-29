@@ -10,7 +10,9 @@ logger = logging.getLogger(__name__)
 
 
 async def _safe_http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    logger.warning("HTTP %d: %s %s", exc.status_code, request.method, request.url.path)
+    method = getattr(request, "method", "WS") if hasattr(request, "method") else "WS"
+    path = getattr(getattr(request, "url", None), "path", "unknown")
+    logger.warning("HTTP %d: %s %s", exc.status_code, method, path)
     return JSONResponse(
         status_code=exc.status_code, content={"detail": exc.detail}, headers=getattr(exc, "headers", None)
     )
@@ -34,7 +36,7 @@ class SetupRedirectMiddleware:
     immediately.
     """
 
-    ALLOWED_PREFIXES = ("/setup", "/api/health", "/static")
+    ALLOWED_PREFIXES = ("/setup", "/api/health", "/static", "/dashboard/static")
 
     def __init__(self, app) -> None:
         self.app = app
