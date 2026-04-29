@@ -322,8 +322,9 @@ class EntityIndex:
                 if entity_id in chroma_map:
                     old_doc, old_meta = chroma_map[entity_id]
                     new_doc = entry.embedding_text
-                    new_meta = self._build_metadata(entry)
-                    if new_doc != old_doc or new_meta != old_meta:
+                    # Use content_hash (excludes volatile state) instead of full
+                    # metadata comparison to avoid re-embedding on every restart.
+                    if new_doc != old_doc or entry.content_hash != self._stored_hash(old_meta):
                         to_upsert.append(entry)
                         updated += 1
                     else:
@@ -337,6 +338,10 @@ class EntityIndex:
             removed = len(to_remove)
 
             # Batch upsert changed/new entities
+            total_entities = len(ha_map)
+            self._status["total"] = total_entities
+            self._status["processed"] = unchanged + removed
+            self._status["progress"] = int(self._status["processed"] / total_entities * 100) if total_entities else 0
             if to_upsert:
                 for start_idx in range(0, len(to_upsert), BATCH_SIZE):
                     batch = to_upsert[start_idx : start_idx + BATCH_SIZE]
@@ -349,6 +354,8 @@ class EntityIndex:
                         documents=documents,
                         metadatas=metadatas,
                     )
+                    self._status["processed"] = min(unchanged + removed + start_idx + len(batch), total_entities)
+                    self._status["progress"] = int(self._status["processed"] / total_entities * 100) if total_entities else 0
 
             # Batch delete removed entities
             if to_remove:
@@ -358,6 +365,8 @@ class EntityIndex:
 
             self._last_refresh = datetime.now(UTC).isoformat()
             self._status["state"] = "ready"
+            self._status["processed"] = total_entities
+            self._status["progress"] = 100
 
             self._sync_stats = {
                 "added": added,
