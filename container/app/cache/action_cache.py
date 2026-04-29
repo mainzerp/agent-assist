@@ -71,8 +71,6 @@ class ActionCache(_BaseCache[ActionCacheEntry]):
             enabled_default=True,
             max_entries_key="cache.action.max_entries",
             max_entries_default=50000,
-            semantic_fallback_enabled_key="cache.action.semantic_fallback_enabled",
-            semantic_fallback_enabled_default=False,
             legacy_enabled_keys=("cache.response.enabled",),
             legacy_max_entries_keys=("cache.response.max_entries",),
         )

@@ -477,13 +477,6 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "Routing cache max entries (LRU eviction)",
         ),
         (
-            "cache.routing.semantic_fallback_enabled",
-            "true" if CACHE_DEFAULTS["cache.routing.semantic_fallback_enabled"] else "false",
-            "bool",
-            "cache",
-            "Enable routing cache semantic fallback after an exact-id miss",
-        ),
-        (
             "cache.action.enabled",
             "true" if CACHE_DEFAULTS["cache.action.enabled"] else "false",
             "bool",
@@ -503,13 +496,6 @@ async def _seed_defaults(db: aiosqlite.Connection) -> None:
             "int",
             "cache",
             "Action cache max entries (LRU eviction)",
-        ),
-        (
-            "cache.action.semantic_fallback_enabled",
-            "true" if CACHE_DEFAULTS["cache.action.semantic_fallback_enabled"] else "false",
-            "bool",
-            "cache",
-            "Enable action cache semantic fallback after an exact-id miss",
         ),
         # Embedding settings
         (
@@ -1335,13 +1321,6 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
                     "Routing cache max entries (LRU eviction)",
                 ),
                 (
-                    "cache.routing.semantic_fallback_enabled",
-                    "true" if CACHE_DEFAULTS["cache.routing.semantic_fallback_enabled"] else "false",
-                    "bool",
-                    "cache",
-                    "Enable routing cache semantic fallback after an exact-id miss",
-                ),
-                (
                     "cache.action.enabled",
                     "true" if CACHE_DEFAULTS["cache.action.enabled"] else "false",
                     "bool",
@@ -1361,13 +1340,6 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
                     "int",
                     "cache",
                     "Action cache max entries (LRU eviction)",
-                ),
-                (
-                    "cache.action.semantic_fallback_enabled",
-                    "true" if CACHE_DEFAULTS["cache.action.semantic_fallback_enabled"] else "false",
-                    "bool",
-                    "cache",
-                    "Enable action cache semantic fallback after an exact-id miss",
                 ),
             ],
         )

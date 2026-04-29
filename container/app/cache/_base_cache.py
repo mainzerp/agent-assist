@@ -92,7 +92,6 @@ class _BaseCache[TEntry](ABC):
         self._store = vector_store
         self._collection_name = collection_name
         self._enabled: bool = True
-        self._semantic_fallback_enabled: bool = True
         self._max_entries: int = default_max_entries
         self._eviction_interval: int = 100
         self._lru_trigger_fraction: float = _LRU_TRIGGER_FRACTION
@@ -148,11 +147,8 @@ class _BaseCache[TEntry](ABC):
         enabled_default: bool,
         max_entries_key: str,
         max_entries_default: int,
-        semantic_fallback_enabled_key: str | None = None,
-        semantic_fallback_enabled_default: bool = True,
         legacy_enabled_keys: tuple[str, ...] = (),
         legacy_max_entries_keys: tuple[str, ...] = (),
-        legacy_semantic_fallback_enabled_keys: tuple[str, ...] = (),
     ) -> None:
         enabled_raw = await self._get_setting(
             enabled_key,
@@ -170,15 +166,6 @@ class _BaseCache[TEntry](ABC):
         self._lru_trigger_fraction = self._coerce_float(trigger_raw, _LRU_TRIGGER_FRACTION)
         interval_raw = await self._get_setting("cache.lru.eviction_interval", "100")
         self._eviction_interval = self._coerce_int(interval_raw, 100)
-        if semantic_fallback_enabled_key:
-            semantic_raw = await self._get_setting(
-                semantic_fallback_enabled_key,
-                "true" if semantic_fallback_enabled_default else "false",
-                legacy_keys=legacy_semantic_fallback_enabled_keys,
-            )
-            self._semantic_fallback_enabled = self._coerce_bool(semantic_raw, semantic_fallback_enabled_default)
-        else:
-            self._semantic_fallback_enabled = True
 
     def prepare_for_flush(self) -> None:
         self._state.invalidate()
@@ -289,7 +276,6 @@ class _BaseCache[TEntry](ABC):
             "count": self.count(),
             "enabled": self._enabled,
             "max_entries": self._max_entries,
-            "semantic_fallback_enabled": self._semantic_fallback_enabled,
         }
 
     def _lookup_common(
@@ -318,29 +304,7 @@ class _BaseCache[TEntry](ABC):
             if entry is not None:
                 return exact_id, entry, 1.0
 
-        if not self._semantic_fallback_enabled:
-            return None, None, None
-
-        result = self._store.query(
-            self._collection_name,
-            query_texts=[query_text],
-            n_results=1,
-            where={"language": lang},
-            include=["metadatas", "distances", "documents"],
-        )
-        ids = result.get("ids") or []
-        if not ids or not ids[0]:
-            return None, None, None
-        entry_id = ids[0][0]
-        distance = result["distances"][0][0]
-        similarity = 1.0 - distance
-        entry = self._hydrate_hit(
-            entry_id,
-            result["documents"][0][0],
-            result["metadatas"][0][0],
-            similarity=similarity,
-        )
-        return entry_id, entry, similarity
+        return None, None, None
 
     def _hydrate_hit(
         self,

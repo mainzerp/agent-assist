@@ -83,28 +83,9 @@ async def test_exact_text_hit_replays_without_classify():
 
 
 @pytest.mark.asyncio
-async def test_semantic_fallback_disabled_exact_match_only():
+async def test_no_exact_match_no_replay():
     manager = _make_manager()
-    entry = make_action_cache_entry(query_text="turn on kitchen light")
     manager._action_cache.lookup_with_id = MagicMock(return_value=(None, None, None))
-    execute_cached_action = AsyncMock()
-
-    result = await manager.try_replay_action(
-        query_text="switch on the kitchen lamp",
-        language=entry.language,
-        resolve_entity=AsyncMock(),
-        check_visibility=AsyncMock(),
-        execute_cached_action=execute_cached_action,
-    )
-
-    assert result is None
-    execute_cached_action.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_semantic_fallback_below_threshold_misses():
-    manager = _make_manager()
-    manager._action_cache.lookup_with_id = MagicMock(return_value=(None, None, 0.91))
     execute_cached_action = AsyncMock()
 
     result = await manager.try_replay_action(

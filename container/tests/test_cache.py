@@ -33,7 +33,7 @@ from app.cache.vector_store import (
     VectorStore,
 )
 from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
-from app.models.cache import CachedAction
+from app.models.cache import CachedAction, RoutingCacheEntry
 from tests.helpers import make_action_cache_entry, make_routing_cache_entry
 
 
@@ -99,21 +99,15 @@ class TestActionCache:
         assert similarity == pytest.approx(1.0)
         store.query.assert_not_called()
 
-    def test_lookup_semantic_below_threshold_misses(self):
+    def test_lookup_no_exact_match_returns_none(self):
         cache, store = self._make_cache()
-        entry = make_action_cache_entry(query_text="turn on kitchen light")
-        metadata = cache._serialize_metadata(entry)
-        store.query.return_value = {
-            "ids": [["semantic-1"]],
-            "documents": [[entry.query_text]],
-            "metadatas": [[metadata]],
-            "distances": [[0.08]],
-        }
+        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
 
         hit, similarity = cache.lookup("switch on the kitchen lamp", language="en")
 
         assert hit is None
-        assert similarity == pytest.approx(0.92)
+        assert similarity is None
+        store.query.assert_not_called()
 
     def test_purge_readonly_entries_deletes_query_rows(self):
         cache, store = self._make_cache()
@@ -339,33 +333,28 @@ class TestRoutingCacheExtended:
         cache._max_entries = 100
         return cache, store
 
-    def test_lookup_hit_above_threshold(self):
+    def test_lookup_exact_match_hit(self):
         cache, store = self._make_cache()
-        store.query.return_value = {
-            "ids": [["entry-1"]],
-            "distances": [[0.05]],  # similarity = 0.95
-            "documents": [["turn on kitchen light"]],
-            "metadatas": [
-                [
-                    {
-                        "agent_id": "light-agent",
-                        "confidence": "0.95",
-                        "hit_count": "2",
-                        "created_at": "2025-01-01T00:00:00",
-                        "last_accessed": "2025-01-01T00:00:00",
-                        "language": "en",
-                    }
-                ]
-            ],
+        entry_data = RoutingCacheEntry(
+            query_text="turn on kitchen light",
+            agent_id="light-agent",
+            confidence=0.95,
+            condensed_task="turn on kitchen light",
+            language="en",
+        )
+        metadata = cache._serialize_metadata(entry_data)
+        exact_id = cache.make_entry_id("turn on kitchen light", language="en")
+        store.get.return_value = {
+            "ids": [exact_id],
+            "documents": ["turn on kitchen light"],
+            "metadatas": [metadata],
         }
-        # Exact-id lookup returns empty; semantic fallback hits.
-        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
         entry, similarity = cache.lookup("turn on kitchen light")
         assert entry is not None
         assert entry.agent_id == "light-agent"
-        assert similarity == pytest.approx(0.95)
+        assert similarity == pytest.approx(1.0)
 
-    def test_lookup_miss_below_threshold(self):
+    def test_lookup_no_match_returns_none(self):
         cache, store = self._make_cache()
         store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
         store.query.return_value = {
@@ -387,15 +376,16 @@ class TestRoutingCacheExtended:
         }
         entry, similarity = cache.lookup("different query")
         assert entry is None
-        assert similarity == pytest.approx(0.85)
+        assert similarity is None
+        store.query.assert_not_called()
 
     def test_lookup_empty_results(self):
         cache, store = self._make_cache()
         store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
-        store.query.return_value = {"ids": [[]], "distances": [[]], "documents": [[]], "metadatas": [[]]}
         entry, similarity = cache.lookup("anything")
         assert entry is None
         assert similarity is None
+        store.query.assert_not_called()
 
     def test_store_upserts_entry(self):
         # v4: RoutingCache.store() accepts an entry object
@@ -443,7 +433,6 @@ class TestRoutingCacheExtended:
                 "cache.routing.enabled": "true",
                 "cache.routing.max_entries": "1000",
                 "cache.routing.semantic_threshold": "0.90",
-                "cache.routing.semantic_fallback_enabled": "true",
             }.get(key, default)
 
         with patch("app.cache._base_cache.SettingsRepository") as mock_base:
@@ -454,29 +443,26 @@ class TestRoutingCacheExtended:
 
     def test_routing_cache_rejects_corrupted_condensed_task(self, caplog):
         cache, store = self._make_cache()
-        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
-        store.query.return_value = {
-            "ids": [["entry-corrupt"]],
-            "distances": [[0.05]],  # similarity = 0.95, well above threshold
-            "documents": [["warm im wohnzimmer"]],
+        exact_id = cache.make_entry_id("warm im wohnzimmer", language="de")
+        store.get.return_value = {
+            "ids": [exact_id],
+            "documents": ["warm im wohnzimmer"],
             "metadatas": [
-                [
-                    {
-                        "agent_id": "climate-agent",
-                        "confidence": "0.96",
-                        "hit_count": "1",
-                        "condensed_task": "climate-agent (96%): living room temperature",
-                        "created_at": "",
-                        "last_accessed": "",
-                        "language": "de",
-                    }
-                ]
+                {
+                    "agent_id": "climate-agent",
+                    "confidence": "0.96",
+                    "hit_count": "1",
+                    "condensed_task": "climate-agent (96%): living room temperature",
+                    "created_at": "",
+                    "last_accessed": "",
+                    "language": "de",
+                }
             ],
         }
         with caplog.at_level(logging.WARNING, logger="app.cache.routing_cache"):
             entry, similarity = cache.lookup("warm im wohnzimmer", language="de")
         assert entry is None
-        assert similarity == pytest.approx(0.95)
+        assert similarity == pytest.approx(1.0)
         assert any("corrupted condensed task" in rec.message for rec in caplog.records)
 
     def test_store_uses_deterministic_id(self):
@@ -629,101 +615,76 @@ class TestActionCacheExtended:
         cache._max_entries = 100
         return cache, store
 
-    def test_lookup_hit_above_threshold(self):
+    def test_lookup_exact_match_hit(self):
         cache, store = self._make_cache()
         action = CachedAction(service="light/turn_on", entity_id="light.kitchen_ceiling", service_data={})
-        # Exact-id lookup returns empty; semantic fallback hits.
-        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
-        store.query.return_value = {
-            "ids": [["resp-1"]],
-            "distances": [[0.02]],  # similarity = 0.98
-            "documents": [["turn on kitchen light"]],
+        exact_id = cache.make_entry_id("turn on kitchen light", language="en")
+        store.get.return_value = {
+            "ids": [exact_id],
+            "documents": ["turn on kitchen light"],
             "metadatas": [
-                [
-                    {
-                        "response_text": "Done, light is on.",
-                        "agent_id": "light-agent",
-                        "confidence": "0.98",
-                        "hit_count": "1",
-                        "entity_ids": '["light.kitchen_ceiling"]',
-                        "cached_action": action.model_dump_json(),
-                        "created_at": "2025-01-01T00:00:00",
-                        "last_accessed": "2025-01-01T00:00:00",
-                        "language": "en",
-                        "schema_version": "4",
-                    }
-                ]
+                {
+                    "response_text": "Done, light is on.",
+                    "agent_id": "light-agent",
+                    "confidence": "0.98",
+                    "hit_count": "1",
+                    "entity_ids": '["light.kitchen_ceiling"]',
+                    "cached_action": action.model_dump_json(),
+                    "created_at": "2025-01-01T00:00:00",
+                    "last_accessed": "2025-01-01T00:00:00",
+                    "language": "en",
+                    "schema_version": "4",
+                }
             ],
         }
         entry, similarity = cache.lookup("turn on kitchen light")
         assert entry is not None
         assert entry.response_text == "Done, light is on."
-        assert similarity == pytest.approx(0.98)
+        assert similarity == pytest.approx(1.0)
 
-    def test_lookup_miss_below_threshold(self):
+    def test_lookup_no_match_returns_none(self):
         cache, store = self._make_cache()
         store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
-        store.query.return_value = {
-            "ids": [["resp-1"]],
-            "distances": [[0.10]],  # similarity = 0.90 < 0.95
-            "documents": [["something else"]],
-            "metadatas": [
-                [
-                    {
-                        "response_text": "nope",
-                        "agent_id": "gen",
-                        "confidence": "0.90",
-                        "hit_count": "0",
-                        "entity_ids": "",
-                        "cached_action": "",
-                        "created_at": "",
-                        "last_accessed": "",
-                        "language": "en",
-                        "schema_version": "4",
-                    }
-                ]
-            ],
-        }
-        entry, _similarity = cache.lookup("totally different")
+        entry, similarity = cache.lookup("totally different")
         assert entry is None
+        assert similarity is None
+        store.query.assert_not_called()
 
     def test_lookup_empty_results(self):
         cache, store = self._make_cache()
         store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
-        store.query.return_value = {"ids": [[]], "distances": [[]], "documents": [[]], "metadatas": [[]]}
         entry, similarity = cache.lookup("anything")
         assert entry is None
         assert similarity is None
+        store.query.assert_not_called()
 
     def test_lookup_with_cached_action(self):
         cache, store = self._make_cache()
         action = CachedAction(service="light/turn_on", entity_id="light.kitchen", service_data={})
-        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
-        store.query.return_value = {
-            "ids": [["resp-1"]],
-            "distances": [[0.01]],
-            "documents": [["turn on kitchen"]],
+        exact_id = cache.make_entry_id("turn on kitchen", language="en")
+        store.get.return_value = {
+            "ids": [exact_id],
+            "documents": ["turn on kitchen"],
             "metadatas": [
-                [
-                    {
-                        "response_text": "Done.",
-                        "agent_id": "light-agent",
-                        "confidence": "0.99",
-                        "hit_count": "0",
-                        "entity_ids": '["light.kitchen"]',
-                        "cached_action": action.model_dump_json(),
-                        "created_at": "",
-                        "last_accessed": "",
-                        "language": "en",
-                        "schema_version": "4",
-                    }
-                ]
+                {
+                    "response_text": "Done.",
+                    "agent_id": "light-agent",
+                    "confidence": "0.99",
+                    "hit_count": "0",
+                    "entity_ids": '["light.kitchen"]',
+                    "cached_action": action.model_dump_json(),
+                    "created_at": "",
+                    "last_accessed": "",
+                    "language": "en",
+                    "schema_version": "4",
+                }
             ],
         }
-        entry, _similarity = cache.lookup("turn on kitchen")
+        entry, similarity = cache.lookup("turn on kitchen")
         assert entry is not None
         assert entry.cached_action is not None
         assert entry.cached_action.service == "light/turn_on"
+        assert similarity == pytest.approx(1.0)
 
     def test_store_upserts_entry(self):
         cache, store = self._make_cache()
@@ -891,11 +852,9 @@ class TestCacheManagerExtended:
                 "cache.routing.enabled": "true",
                 "cache.routing.max_entries": "50000",
                 "cache.routing.semantic_threshold": "0.92",
-                "cache.routing.semantic_fallback_enabled": "true",
                 "cache.action.enabled": "true",
                 "cache.action.max_entries": "50000",
                 "cache.action.semantic_threshold": "0.95",
-                "cache.action.semantic_fallback_enabled": "true",
                 "personality.prompt": "",
             }.get(key, default)
 
@@ -922,11 +881,9 @@ class TestCacheManagerExtended:
                 "cache.routing.enabled": "true",
                 "cache.routing.max_entries": "50000",
                 "cache.routing.semantic_threshold": "0.90",
-                "cache.routing.semantic_fallback_enabled": "true",
                 "cache.action.enabled": "true",
                 "cache.action.max_entries": "50000",
                 "cache.action.semantic_threshold": "0.90",
-                "cache.action.semantic_fallback_enabled": "true",
                 "personality.prompt": "",
             }.get(key, default)
 
@@ -969,29 +926,26 @@ class TestCacheManagerExtended:
 
     def test_routing_cache_lookup_returns_condensed_task(self):
         cache, store = TestRoutingCacheExtended()._make_cache()
-        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
-        store.query.return_value = {
-            "ids": [["entry-1"]],
-            "distances": [[0.05]],
-            "documents": [["turn on light"]],
+        exact_id = cache.make_entry_id("turn on light", language="en")
+        store.get.return_value = {
+            "ids": [exact_id],
+            "documents": ["turn on light"],
             "metadatas": [
-                [
-                    {
-                        "agent_id": "light-agent",
-                        "confidence": "0.95",
-                        "hit_count": "0",
-                        "condensed_task": "Turn on the light",
-                        "created_at": "2025-01-01T00:00:00",
-                        "last_accessed": "2025-01-01T00:00:00",
-                        "language": "en",
-                    }
-                ]
+                {
+                    "agent_id": "light-agent",
+                    "confidence": "0.95",
+                    "hit_count": "0",
+                    "condensed_task": "Turn on the light",
+                    "created_at": "2025-01-01T00:00:00",
+                    "last_accessed": "2025-01-01T00:00:00",
+                    "language": "en",
+                }
             ],
         }
         entry, similarity = cache.lookup("turn on light")
         assert entry is not None
         assert entry.condensed_task == "Turn on the light"
-        assert similarity == pytest.approx(0.95)
+        assert similarity == pytest.approx(1.0)
 
     @pytest.mark.skip(
         reason="Phase 1 rewrite: missing event-loop setup; condensed_task carry covered in test_routing_cache_skip.py"
@@ -1453,30 +1407,26 @@ class TestCacheTraceSimilarity:
         """CacheResult.similarity is populated on a routing cache hit (v4: process())."""
         store = MagicMock(spec=VectorStore)
         manager = CacheManager(store)
-        # Exact-id get returns empty so semantic path is used.
-        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
-        store.query.return_value = {
-            "ids": [["r-1"]],
-            "distances": [[0.05]],
-            "documents": [["turn on light"]],
+        exact_id = manager._routing_cache.make_entry_id("turn on light", language="en")
+        store.get.return_value = {
+            "ids": [exact_id],
+            "documents": ["turn on light"],
             "metadatas": [
-                [
-                    {
-                        "agent_id": "light-agent",
-                        "confidence": "0.95",
-                        "hit_count": "0",
-                        "condensed_task": "Turn on",
-                        "created_at": "2025-01-01T00:00:00",
-                        "last_accessed": "2025-01-01T00:00:00",
-                        "language": "en",
-                    }
-                ]
+                {
+                    "agent_id": "light-agent",
+                    "confidence": "0.95",
+                    "hit_count": "0",
+                    "condensed_task": "Turn on",
+                    "created_at": "2025-01-01T00:00:00",
+                    "last_accessed": "2025-01-01T00:00:00",
+                    "language": "en",
+                }
             ],
         }
         with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
             result = await manager.process("turn on light")
         assert result.hit_type == "routing_hit"
-        assert result.similarity == pytest.approx(0.95)
+        assert result.similarity == pytest.approx(1.0)
 
     @pytest.mark.asyncio
     async def test_cache_result_includes_similarity_on_miss(self):
@@ -1485,22 +1435,10 @@ class TestCacheTraceSimilarity:
         manager = CacheManager(store)
         store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
         store.query.return_value = {
-            "ids": [["r-1"]],
-            "distances": [[0.20]],
-            "documents": [["other"]],
-            "metadatas": [
-                [
-                    {
-                        "agent_id": "general-agent",
-                        "confidence": "0.80",
-                        "hit_count": "0",
-                        "condensed_task": "",
-                        "created_at": "",
-                        "last_accessed": "",
-                        "language": "en",
-                    }
-                ]
-            ],
+            "ids": [[]],
+            "distances": [[]],
+            "documents": [[]],
+            "metadatas": [[]],
         }
         with patch("app.cache.cache_manager.track_cache_event", new_callable=AsyncMock):
             result = await manager.process("some query")
@@ -1508,32 +1446,27 @@ class TestCacheTraceSimilarity:
         assert result.similarity is None
 
     def test_routing_cache_lookup_returns_similarity_tuple(self):
-        """routing_cache.lookup() returns (entry, similarity) tuple (v4: _semantic_threshold)."""
+        """routing_cache.lookup() returns (entry, similarity) tuple (v4: exact match)."""
         store = MagicMock(spec=VectorStore)
         cache = RoutingCache(store)
-        cache._semantic_threshold = 0.92
-        # Exact-id get returns empty so semantic path is used.
-        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
-        store.query.return_value = {
-            "ids": [["e-1"]],
-            "distances": [[0.03]],
-            "documents": [["test"]],
+        exact_id = cache.make_entry_id("test", language="en")
+        store.get.return_value = {
+            "ids": [exact_id],
+            "documents": ["test"],
             "metadatas": [
-                [
-                    {
-                        "agent_id": "light-agent",
-                        "confidence": "0.97",
-                        "hit_count": "0",
-                        "created_at": "2025-01-01T00:00:00",
-                        "last_accessed": "2025-01-01T00:00:00",
-                        "language": "en",
-                    }
-                ]
+                {
+                    "agent_id": "light-agent",
+                    "confidence": "0.97",
+                    "hit_count": "0",
+                    "created_at": "2025-01-01T00:00:00",
+                    "last_accessed": "2025-01-01T00:00:00",
+                    "language": "en",
+                }
             ],
         }
         entry, sim = cache.lookup("test")
         assert entry is not None
-        assert sim == pytest.approx(0.97)
+        assert sim == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1560,25 +1493,21 @@ class TestRoutingCacheEviction:
         """Pending hit updates should flush when buffer reaches _flush_interval."""
         cache, store = self._make_cache()
         cache._flush_interval = 3
-        # Exact-id get returns empty so semantic lookup is triggered.
-        store.get.return_value = {"ids": [], "documents": [], "metadatas": []}
 
         for i in range(3):
-            store.query.return_value = {
-                "ids": [[f"entry-{i}"]],
-                "distances": [[0.05]],
-                "documents": [[f"query-{i}"]],
+            exact_id = cache.make_entry_id(f"query-{i}", language="en")
+            store.get.return_value = {
+                "ids": [exact_id],
+                "documents": [f"query-{i}"],
                 "metadatas": [
-                    [
-                        {
-                            "agent_id": "light-agent",
-                            "confidence": "0.95",
-                            "hit_count": "1",
-                            "created_at": "2025-01-01T00:00:00",
-                            "last_accessed": "2025-01-01T00:00:00",
-                            "language": "en",
-                        }
-                    ]
+                    {
+                        "agent_id": "light-agent",
+                        "confidence": "0.95",
+                        "hit_count": "1",
+                        "created_at": "2025-01-01T00:00:00",
+                        "last_accessed": "2025-01-01T00:00:00",
+                        "language": "en",
+                    }
                 ],
             }
             cache.lookup(f"query-{i}")

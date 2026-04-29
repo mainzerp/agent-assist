@@ -1,9 +1,10 @@
 # Version
 
-**Current Version:** 1.9.4
+**Current Version:** 1.9.6
 
 ## Recent Changes (since 1.8.0)
 
+- **Cache v1.9.6:** Completely removed semantic fallback from both routing and action caches. The code no longer contains any embedding-based fallback path; only exact SHA-256 hash matches are possible. This eliminates the entire class of false-positive cache hits (e.g. "Keller ausschalten" matching "Keller einschalten") and prevents accidental re-activation via stale DB settings.
 - **Security:** Closed Jinja2 template injection via `device_id` with strict whitelist validation (`^[a-zA-Z0-9_]+$`).
 - **Security:** Added explicit SQLite transactions (`BEGIN` + `rollback()`) in `get_db_write()` to prevent partial writes on exception.
 - **Security:** Fixed singleton race conditions in `get_vector_store()` and `get_embedding_engine()` with `asyncio.Lock` double-checked locking.
