@@ -8,9 +8,18 @@ from typing import Any
 import aiohttp
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_URL, CONF_API_KEY
-from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType
+from homeassistant.helpers.selector import (
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .const import (
     DOMAIN,
@@ -38,7 +47,9 @@ def _build_user_schema() -> vol.Schema:
     return vol.Schema(
         {
             vol.Optional(CONF_NAME, default=INTEGRATION_TITLE): TextSelector(),
-            vol.Required(CONF_URL, default=DEFAULT_CONTAINER_URL): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
+            vol.Required(CONF_URL, default=DEFAULT_CONTAINER_URL): TextSelector(
+                TextSelectorConfig(type=TextSelectorType.URL)
+            ),
             vol.Required(CONF_API_KEY): _password_selector(),
         }
     )
@@ -48,7 +59,9 @@ def _build_options_schema(current: dict[str, Any]) -> vol.Schema:
     return vol.Schema(
         {
             vol.Optional(CONF_NAME, default=current.get(CONF_NAME, "")): TextSelector(),
-            vol.Required(CONF_URL, default=current.get(CONF_URL, DEFAULT_CONTAINER_URL)): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
+            vol.Required(
+                CONF_URL, default=current.get(CONF_URL, DEFAULT_CONTAINER_URL)
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
             vol.Optional(CONF_API_KEY, default=""): _password_selector(),
         }
     )

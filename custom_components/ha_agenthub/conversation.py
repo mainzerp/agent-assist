@@ -120,16 +120,23 @@ async def async_setup_entry(
         (DOMAIN, f"{DOMAIN}_conversation"),
     ]
     for int_domain, old_uid in migration_pairs:
-        entity_id = entity_registry.async_get_entity_id("conversation", int_domain, old_uid)
+        entity_id = entity_registry.async_get_entity_id(
+            "conversation", int_domain, old_uid
+        )
         if entity_id:
             entity_registry.async_update_entity(entity_id, new_unique_id=entry.entry_id)
             logger.info(
                 "Migrated entity %s unique_id from %s/%s to %s",
-                entity_id, int_domain, old_uid, entry.entry_id,
+                entity_id,
+                int_domain,
+                old_uid,
+                entry.entry_id,
             )
 
     data = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([HaAgentHubConversationEntity(entry, data["url"], data["api_key"])])
+    async_add_entities(
+        [HaAgentHubConversationEntity(entry, data["url"], data["api_key"])]
+    )
 
 
 class HaAgentHubConversationEntity(
@@ -270,7 +277,9 @@ class HaAgentHubConversationEntity(
                     connected = await self._connect_ws()
                     if not connected:
                         delay = self._reconnect_delay
-                        self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
+                        self._reconnect_delay = min(
+                            self._reconnect_delay * 2, RECONNECT_MAX_DELAY
+                        )
                         logger.debug("Reconnect in %.1fs", delay)
                         await asyncio.sleep(delay)
                         continue
@@ -344,7 +353,9 @@ class HaAgentHubConversationEntity(
         device_id = getattr(user_input, "device_id", None)
         logger.debug(
             "ha-agenthub: turn-entry cid=%s device_id=%s text_len=%d",
-            cid, device_id, len(text),
+            cid,
+            device_id,
+            len(text),
         )
         key = (cid, text)
 
@@ -406,13 +417,17 @@ class HaAgentHubConversationEntity(
                         logger.warning("WebSocket error, falling back to REST")
                         await self._disconnect_ws_locked()
         except Exception:
-            logger.warning("Unexpected WS dispatch failure, falling back to REST", exc_info=True)
+            logger.warning(
+                "Unexpected WS dispatch failure, falling back to REST", exc_info=True
+            )
 
         result = await self._process_via_rest(user_input)
         self._schedule_reconnect()
         return result
 
-    def _resolve_origin_context(self, user_input: conversation.ConversationInput) -> dict[str, str]:
+    def _resolve_origin_context(
+        self, user_input: conversation.ConversationInput
+    ) -> dict[str, str]:
         """Forward raw device_id and area_id to the container.
 
         The container maintains its own entity index and resolves
@@ -437,20 +452,34 @@ class HaAgentHubConversationEntity(
         (Prime Directive 1).
         """
         if not device_id:
-            logger.warning("filler_push: no device_id in ConversationInput, cannot resolve satellite")
+            logger.warning(
+                "filler_push: no device_id in ConversationInput, cannot resolve satellite"
+            )
             return None
         try:
             entity_registry = er.async_get(self.hass)
             entries = er.async_entries_for_device(entity_registry, device_id)
-            logger.info("filler_push: device %s has %d registry entries", device_id, len(entries))
+            logger.info(
+                "filler_push: device %s has %d registry entries",
+                device_id,
+                len(entries),
+            )
             for entry in entries:
-                logger.info("filler_push: entry domain=%s entity_id=%s", entry.domain, entry.entity_id)
+                logger.info(
+                    "filler_push: entry domain=%s entity_id=%s",
+                    entry.domain,
+                    entry.entity_id,
+                )
                 if entry.domain == "assist_satellite":
                     return entry.entity_id
-            logger.warning("filler_push: no assist_satellite entity found for device %s", device_id)
+            logger.warning(
+                "filler_push: no assist_satellite entity found for device %s", device_id
+            )
         except Exception:
             logger.warning(
-                "filler_push: failed to resolve satellite entity for device %s", device_id, exc_info=True
+                "filler_push: failed to resolve satellite entity for device %s",
+                device_id,
+                exc_info=True,
             )
         return None
 
@@ -467,7 +496,8 @@ class HaAgentHubConversationEntity(
         if previous is not None and not previous.done():
             logger.info(
                 "ha-agenthub: cancelling previous post-filler push key=%s sat=%s",
-                gate_key, satellite_entity_id,
+                gate_key,
+                satellite_entity_id,
             )
             previous.cancel()
         task = self._entry.async_create_background_task(
@@ -527,7 +557,8 @@ class HaAgentHubConversationEntity(
                 if remaining <= 0:
                     logger.warning(
                         "ha-agenthub: post-filler push timed out waiting for final frame key=%s sat=%s",
-                        gate_key, satellite_entity_id,
+                        gate_key,
+                        satellite_entity_id,
                     )
                     break
                 try:
@@ -546,7 +577,8 @@ class HaAgentHubConversationEntity(
                     if data.get("directive"):
                         logger.info(
                             "ha-agenthub: post-filler push received directive, skipping announce key=%s sat=%s",
-                            gate_key, satellite_entity_id,
+                            gate_key,
+                            satellite_entity_id,
                         )
                         break
 
@@ -563,13 +595,17 @@ class HaAgentHubConversationEntity(
                         final_text = (final_text or "").strip()
                         logger.info(
                             "ha-agenthub: post-filler push received final key=%s sat=%s final_chars=%d",
-                            gate_key, satellite_entity_id, len(final_text),
+                            gate_key,
+                            satellite_entity_id,
+                            len(final_text),
                         )
                         break
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                     logger.warning(
                         "ha-agenthub: post-filler push WS closed before final key=%s sat=%s type=%s",
-                        gate_key, satellite_entity_id, msg.type,
+                        gate_key,
+                        satellite_entity_id,
+                        msg.type,
                     )
                     break
 
@@ -592,14 +628,17 @@ class HaAgentHubConversationEntity(
                 except asyncio.TimeoutError:
                     logger.warning(
                         "ha-agenthub: post-filler push satellite never reached idle within %.1fs key=%s sat=%s",
-                        MAX_POST_FILLER_WAIT_SECONDS, gate_key, satellite_entity_id,
+                        MAX_POST_FILLER_WAIT_SECONDS,
+                        gate_key,
+                        satellite_entity_id,
                     )
                     return
 
             if aborted_new_turn:
                 logger.info(
                     "ha-agenthub: abandoning post-filler push (new turn detected) key=%s sat=%s",
-                    gate_key, satellite_entity_id,
+                    gate_key,
+                    satellite_entity_id,
                 )
                 return
 
@@ -607,7 +646,9 @@ class HaAgentHubConversationEntity(
             try:
                 logger.info(
                     "ha-agenthub: post-filler push dispatching announce key=%s sat=%s final_chars=%d",
-                    gate_key, satellite_entity_id, len(final_text),
+                    gate_key,
+                    satellite_entity_id,
+                    len(final_text),
                 )
                 await self.hass.services.async_call(
                     "assist_satellite",
@@ -622,27 +663,34 @@ class HaAgentHubConversationEntity(
             except Exception:
                 logger.warning(
                     "ha-agenthub: assist_satellite.announce failed in push key=%s sat=%s",
-                    gate_key, satellite_entity_id, exc_info=True,
+                    gate_key,
+                    satellite_entity_id,
+                    exc_info=True,
                 )
             finally:
                 self._push_in_progress_satellites.discard(satellite_entity_id)
         except asyncio.CancelledError:
             logger.info(
                 "ha-agenthub: post-filler push cancelled key=%s sat=%s",
-                gate_key, satellite_entity_id,
+                gate_key,
+                satellite_entity_id,
             )
             raise
         except Exception:
             logger.warning(
                 "ha-agenthub: post-filler push raised unexpectedly key=%s sat=%s",
-                gate_key, satellite_entity_id, exc_info=True,
+                gate_key,
+                satellite_entity_id,
+                exc_info=True,
             )
         finally:
             if unsub is not None:
                 try:
                     unsub()
                 except Exception:
-                    logger.debug("ha-agenthub: state listener unsub raised", exc_info=True)
+                    logger.debug(
+                        "ha-agenthub: state listener unsub raised", exc_info=True
+                    )
             try:
                 if local_ws is not None and not local_ws.closed:
                     await local_ws.close()
@@ -652,7 +700,9 @@ class HaAgentHubConversationEntity(
             if current is asyncio.current_task():
                 self._inflight_pushes.pop(key, None)
 
-    async def _process_via_ws(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
+    async def _process_via_ws(
+        self, user_input: conversation.ConversationInput
+    ) -> conversation.ConversationResult:
         """Send request via WebSocket and accumulate streaming tokens."""
         logger.debug(
             "ha-agenthub: ws-entry cid=%s ws_open=%s",
@@ -698,7 +748,8 @@ class HaAgentHubConversationEntity(
                         stripped_filler = _strip_markdown(str(filler_text).strip())
                         logger.info(
                             "ha-agenthub: filler-first return key=%s filler_chars=%d",
-                            gate_key, len(stripped_filler),
+                            gate_key,
+                            len(stripped_filler),
                         )
                         if stripped_filler:
                             satellite = self._resolve_satellite_entity(device_id)
@@ -710,7 +761,9 @@ class HaAgentHubConversationEntity(
                                 gate_key=gate_key,
                             )
                             self._ws_last_active = time.monotonic()
-                            response = intent.IntentResponse(language=user_input.language or "en")
+                            response = intent.IntentResponse(
+                                language=user_input.language or "en"
+                            )
                             response.async_set_speech(stripped_filler)
                             return conversation.ConversationResult(
                                 response=response,
@@ -724,7 +777,9 @@ class HaAgentHubConversationEntity(
                     if data.get("done", False):
                         received_done = True
                         stream_err = data.get("error")
-                        final_conversation_id = data.get("conversation_id", final_conversation_id)
+                        final_conversation_id = data.get(
+                            "conversation_id", final_conversation_id
+                        )
                         mediated = data.get("mediated_speech")
                         if mediated:
                             speech_parts = [mediated]
@@ -737,7 +792,8 @@ class HaAgentHubConversationEntity(
                             # Application-level error from the container (done chunk), not a
                             # transport failure — do not raise (would become _WsDroppedAfterSend).
                             logger.warning(
-                                "Container reported error in stream done chunk: %s", stream_err
+                                "Container reported error in stream done chunk: %s",
+                                stream_err,
                             )
                             if not "".join(speech_parts).strip():
                                 speech_parts = [
@@ -758,12 +814,17 @@ class HaAgentHubConversationEntity(
             self._ws_last_active = time.monotonic()
             speech = "".join(speech_parts)
             return self._build_result(
-                speech, final_conversation_id, user_input.language, sanitized=stream_sanitized
+                speech,
+                final_conversation_id,
+                user_input.language,
+                sanitized=stream_sanitized,
             )
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as err:
             raise _WsDroppedAfterSendError() from err
 
-    async def _process_via_rest(self, user_input: conversation.ConversationInput) -> conversation.ConversationResult:
+    async def _process_via_rest(
+        self, user_input: conversation.ConversationInput
+    ) -> conversation.ConversationResult:
         """Fallback: send request via REST and get full response."""
         try:
             if self._session is None:
@@ -822,4 +883,6 @@ class HaAgentHubConversationEntity(
         """
         response = intent.IntentResponse(language=language or "en")
         response.async_set_speech(speech if sanitized else _strip_markdown(speech))
-        return conversation.ConversationResult(response=response, conversation_id=conversation_id)
+        return conversation.ConversationResult(
+            response=response, conversation_id=conversation_id
+        )
