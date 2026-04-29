@@ -1,4 +1,6 @@
 > **CRITICAL: `.github/instructions/prime-directives.md` contains project-specific architectural and correctness rules. They define what the codebase must enforce at runtime. Read and respect them when analyzing, changing, or implementing any part of this project. They are non-negotiable and override all other guidance.**
+>
+> **MEMORY: Read `.kimi/memory.md` at the start of every session to recall accumulated context, lessons learned, and recurring patterns. Append new learnings to it before the session ends so they persist across conversations.**
 
 ## Capabilities
 
@@ -101,6 +103,7 @@ The orchestrator asks the user directly in chat (no special tool). The task is n
 8. **The ORCHESTRATOR never implements** - never writes code, edits files, or executes implementation steps directly. ALL implementation goes through the `implementer` subagent, no exceptions, even for trivial changes.
 9. **Update `VERSION.md`** when implementing new user-facing features - track feature additions in the changelog.
 10. **Do not use emojis** anywhere (messages, docs, comments, commit messages, generated output, or source code including string literals and UI text) unless explicitly requested.
+11. **Read `.kimi/memory.md` at session start** and append new learnings, patterns, or gotchas to it before the session ends. This file is the orchestrator's persistent memory across conversations.
 
 ## Version Tracking
 

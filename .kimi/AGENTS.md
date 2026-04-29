@@ -6,6 +6,7 @@ This file contains project-specific guidance for AI agents working on the HA-Age
 
 - **Prime Directives**: `.github/instructions/prime-directives.md` — architectural and correctness rules that are non-negotiable.
 - **Project Definition**: `.github/instructions/project-definition.md` — full project overview, architecture, and current runtime behavior.
+- **Orchestrator Memory**: `.kimi/memory.md` — persistent memory across sessions. Read at session start; append new learnings before session end.
 
 ## Agent Configuration
 
