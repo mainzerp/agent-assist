@@ -1,6 +1,6 @@
 # Version
 
-**Current Version:** 1.9.2
+**Current Version:** 1.9.3
 
 ## Recent Changes (since 1.8.0)
 
