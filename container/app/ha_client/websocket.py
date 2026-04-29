@@ -272,7 +272,9 @@ class HAWebSocketClient:
                                 self._logger.error("Event callback error", exc_info=True)
                     elif event_type == "result":
                         msg_id = data.get("id")
-                        self._logger.debug("_receive_loop: got result id=%d pending=%s", msg_id, msg_id in self._pending_responses)
+                        self._logger.debug(
+                            "_receive_loop: got result id=%d pending=%s", msg_id, msg_id in self._pending_responses
+                        )
                         if isinstance(msg_id, int) and msg_id in self._pending_responses:
                             future = self._pending_responses.pop(msg_id)
                             if not future.done():

@@ -330,9 +330,7 @@ async def schedule_entity_index_prime(
     task = getattr(app.state, "entity_index_init_task", None)
     if task is not None and not task.done():
         return False
-    app.state.entity_index_init_task = _spawn(
-        _prime_entity_index(app, ha_client, entity_index, vector_store)
-    )
+    app.state.entity_index_init_task = _spawn(_prime_entity_index(app, ha_client, entity_index, vector_store))
     return True
 
 
@@ -437,11 +435,7 @@ def _resolve_registry_event_entity_ids(app: FastAPI, entity_index: EntityIndex, 
         if isinstance(value, str) and value.strip()
     }
     if names:
-        entity_ids.update(
-            entry.entity_id
-            for entry in entries
-            if (entry.device_name or "").strip().lower() in names
-        )
+        entity_ids.update(entry.entity_id for entry in entries if (entry.device_name or "").strip().lower() in names)
 
     if entity_ids:
         return sorted(entity_ids)

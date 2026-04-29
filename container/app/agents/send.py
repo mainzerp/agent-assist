@@ -132,8 +132,7 @@ class SendAgent(BaseAgent):
             prompt_template = await self._load_prompt_async("send")
             wrapped_content = self._wrap_user_input(content)
             prompt = (
-                prompt_template
-                .replace("{delivery_type}", delivery_type)
+                prompt_template.replace("{delivery_type}", delivery_type)
                 .replace("{target_name}", target_name)
                 .replace("{content}", wrapped_content)
             )

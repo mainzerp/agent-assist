@@ -25,21 +25,23 @@ logger = logging.getLogger(__name__)
 
 # Explicit allow-list of handler class names permitted for internal HA service calls.
 # More robust than module string matching which is trivially spoofed.
-_ALLOWED_INTERNAL_HA_SCOPE: frozenset[str] = frozenset({
-    "AutomationAgent",
-    "ClimateAgent",
-    "FillerAgent",
-    "GeneralAgent",
-    "LightAgent",
-    "MediaAgent",
-    "MusicAgent",
-    "OrchestratorAgent",
-    "RewriteAgent",
-    "SceneAgent",
-    "SecurityAgent",
-    "SendAgent",
-    "TimerAgent",
-})
+_ALLOWED_INTERNAL_HA_SCOPE: frozenset[str] = frozenset(
+    {
+        "AutomationAgent",
+        "ClimateAgent",
+        "FillerAgent",
+        "GeneralAgent",
+        "LightAgent",
+        "MediaAgent",
+        "MusicAgent",
+        "OrchestratorAgent",
+        "RewriteAgent",
+        "SceneAgent",
+        "SecurityAgent",
+        "SendAgent",
+        "TimerAgent",
+    }
+)
 
 
 def _internal_ha_service_call_scope(handler):

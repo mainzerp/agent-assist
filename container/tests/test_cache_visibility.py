@@ -254,6 +254,7 @@ class TestCachedActionEmptyResponse:
         assert result["state"] == "on"
         assert result["source"] == "call_service"
 
+
 # ---------------------------------------------------------------------------
 # FLOW-CRIT-3: sequential-send must not pipe canned content-failure text
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-﻿"""Routing skip cache tier for intent-to-agent decisions."""
+"""Routing skip cache tier for intent-to-agent decisions."""
 
 from __future__ import annotations
 

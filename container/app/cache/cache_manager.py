@@ -184,7 +184,9 @@ class CacheManager:
                     await asyncio.to_thread(self._action_cache.invalidate_by_entry_id, entry_id)
                 return None
             try:
-                visible = await check_visibility(entry.agent_id if entry.agent_id is not None else requesting_agent_id, entity_id)
+                visible = await check_visibility(
+                    entry.agent_id if entry.agent_id is not None else requesting_agent_id, entity_id
+                )
             except Exception:
                 logger.warning("Action cache visibility recheck failed", exc_info=True)
                 visible = False
