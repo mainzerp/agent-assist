@@ -1,6 +1,11 @@
 # Version
 
-**Current Version:** 1.12.4
+**Current Version:** 1.12.5
+
+## Recent Changes (since 1.12.4)
+
+- **Cache Rewrite:** Fixed the action cache so the original agent response is preserved alongside the rewritten version. On cache hits the rewrite agent now re-variates from the *original* agent text instead of receiving an already-rewritten phrase as input. This prevents the rewrite from converging to a single frozen phrase over repeated hits.
+- **Cache Metadata:** `ActionCacheEntry` now stores `original_response_text`, `rewrite_applied`, and `rewrite_latency_ms` so replay outcomes carry accurate rewrite metadata into traces.
 
 ## Recent Changes (since 1.12.3)
 

@@ -31,6 +31,12 @@ class ActionCacheEntry(BaseModel):
     executed_at: str | None = None
     hit_count: int = 0
     schema_version: int = 4
+    # 1.12.4: preserve original agent response so rewrite agent can re-variate
+    # from the raw text on every cache hit instead of rewriting an already
+    # rewritten phrase.
+    original_response_text: str | None = None
+    rewrite_applied: bool = False
+    rewrite_latency_ms: float | None = None
 
 
 class RoutingCacheEntry(BaseModel):

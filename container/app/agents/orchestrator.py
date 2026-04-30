@@ -1005,6 +1005,7 @@ class OrchestratorAgent(BaseAgent):
         condensed_task: str,
         confidence: float | None,
         speech: str,
+        original_response_text: str = "",
         action_executed,
         has_error: bool,
         task: AgentTask | None = None,
@@ -1072,6 +1073,7 @@ class OrchestratorAgent(BaseAgent):
                         condensed_task=condensed_task,
                         confidence=confidence_value,
                         response_text=speech,
+                        original_response_text=original_response_text or speech,
                         cached_action=cached_action,
                         entity_ids=entity_ids,
                         origin_area_id=(
@@ -1371,6 +1373,7 @@ class OrchestratorAgent(BaseAgent):
                     condensed_task=condensed_task,
                     confidence=confidence,
                     speech=speech,
+                    original_response_text=original_speech,
                     action_executed=action_executed,
                     has_error=has_error,
                     task=task,

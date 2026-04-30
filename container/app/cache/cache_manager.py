@@ -203,6 +203,8 @@ class CacheManager:
             similarity=similarity,
             language=entry.language,
             cached_action=entry.cached_action,
+            rewrite_applied=entry.rewrite_applied,
+            original_response_text=entry.original_response_text,
         )
 
     async def try_routing_skip(
@@ -244,19 +246,27 @@ class CacheManager:
         *,
         conversation=None,
     ) -> str:
-        """Apply rewrite to an action-cache full hit and return final speech."""
+        """Apply rewrite to an action-cache full hit and return final speech.
+
+        Uses the original agent response (before any prior rewrite) as input
+        so the rewrite agent re-variates from the raw text on every hit
+        instead of rewriting an already-rewritten phrase.
+        """
         if not self._rewrite_agent or not self._rewrite_enabled or not result.response_text:
             return result.response_text or ""
+        # 1.12.4: prefer the original agent response so we do not feed the
+        # rewrite agent an already-rewritten phrase.
+        source_text = result.original_response_text or result.response_text
         original_text = result.response_text
         t0 = time.perf_counter()
         try:
-            rewritten = await self._rewrite_agent.rewrite(result.response_text)
+            rewritten = await self._rewrite_agent.rewrite(source_text)
             rewrite_ms = (time.perf_counter() - t0) * 1000
             if rewritten:
                 result.response_text = rewritten
                 result.rewrite_applied = True
                 result.rewrite_latency_ms = rewrite_ms
-                result.original_response_text = original_text
+                result.original_response_text = source_text
                 await track_rewrite(latency_ms=rewrite_ms, success=True)
                 return rewritten
             result.rewrite_latency_ms = rewrite_ms
