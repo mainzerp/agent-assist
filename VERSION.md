@@ -1,6 +1,10 @@
 # Version
 
-**Current Version:** 1.12.2
+**Current Version:** 1.12.3
+
+## Recent Changes (since 1.12.2)
+
+- **Database:** Fixed SQLite write-transaction failure with `aiosqlite>=0.20.0`. The library changed its default `isolation_level` from `None` (autocommit) to `""` (implicit transactions). Our explicit `BEGIN` in `get_db_write()` then collided with the implicit transaction, causing `cannot start a transaction within a transaction` on every trace span flush and all other write operations. The write connection now opens with `isolation_level=None` so explicit `BEGIN`/`COMMIT`/`ROLLBACK` control is restored.
 
 ## Recent Changes (since 1.10.0)
 

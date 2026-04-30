@@ -35,7 +35,7 @@ async def _open_write_connection() -> aiosqlite.Connection:
     """Open a fresh write connection with retry on OperationalError."""
     for attempt in range(1, _DB_WRITE_MAX_RETRIES + 1):
         try:
-            conn = await aiosqlite.connect(str(_db_path()))
+            conn = await aiosqlite.connect(str(_db_path()), isolation_level=None)
             conn.row_factory = aiosqlite.Row
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.execute("PRAGMA foreign_keys=ON")
