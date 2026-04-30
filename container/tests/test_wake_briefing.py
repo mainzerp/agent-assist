@@ -69,6 +69,14 @@ async def test_compose_wake_briefing_happy_path_uses_gateway_and_calendar_facts(
 
     with (
         patch("app.entity.visibility.EntityVisibilityRepository.get_rules", new=AsyncMock(return_value=[])),
+        patch(
+            "app.db.repository.CalendarEntitySettingsRepository.get_enabled_entity_ids",
+            new=AsyncMock(return_value=["calendar.work"]),
+        ),
+        patch(
+            "app.db.repository.CalendarEntitySettingsRepository.get_universal_entity_ids",
+            new=AsyncMock(return_value=[]),
+        ),
         patch("app.agents.wake_briefing.complete", new=AsyncMock(return_value="Good morning.")) as complete_mock,
     ):
         result = await compose_wake_briefing(
@@ -178,6 +186,14 @@ async def test_compose_wake_briefing_skips_hidden_calendar_entities() -> None:
         patch(
             "app.entity.visibility.EntityVisibilityRepository.get_rules",
             new=AsyncMock(return_value=[{"rule_type": "area_include", "rule_value": "office"}]),
+        ),
+        patch(
+            "app.db.repository.CalendarEntitySettingsRepository.get_enabled_entity_ids",
+            new=AsyncMock(return_value=["calendar.work", "calendar.private"]),
+        ),
+        patch(
+            "app.db.repository.CalendarEntitySettingsRepository.get_universal_entity_ids",
+            new=AsyncMock(return_value=[]),
         ),
         patch("app.agents.wake_briefing.complete", new=AsyncMock(return_value="Calendar only")) as complete_mock,
     ):
