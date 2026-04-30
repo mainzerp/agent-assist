@@ -87,10 +87,7 @@ async def call_llm_with_mcp_tools(
             result = await execute_tool(name, arguments)
             tool_span["metadata"]["result_chars"] = len(result or "")
             if include_tool_payload_metadata:
-                tool_span["metadata"]["result"] = _truncate_string(
-                    sanitize_trace_value(result or ""),
-                    500,
-                )
+                tool_span["metadata"]["result"] = sanitize_trace_value(result or "")
             return result
 
     return await complete_with_tools(

@@ -235,6 +235,7 @@ async def get_trace_detail(trace_id: str):
     return_span = None
     filler_generate_span = None
     filler_send_span = None
+    mcp_tool_spans = []
     routing_cached = False
 
     for span in spans:
@@ -253,9 +254,28 @@ async def get_trace_detail(trace_id: str):
             filler_generate_span = span
         elif span.get("span_name") == "filler_send":
             filler_send_span = span
+        elif span.get("span_name") == "mcp_tool_call":
+            mcp_tool_spans.append(span)
 
     user_input = summary.get("user_input", "")
     final_response = summary.get("final_response", "")
+
+    def _append_tool_calls(agent_id: str = "") -> None:
+        for tool_span in mcp_tool_spans:
+            if agent_id and tool_span.get("agent_id") != agent_id:
+                continue
+            tool_meta = tool_span.get("metadata") or {}
+            agent_communication.append(
+                {
+                    "from_agent": tool_span.get("agent_id", "agent"),
+                    "to_agent": "tool: " + str(tool_meta.get("tool_name", "?")),
+                    "task": tool_meta.get("arguments") or tool_meta.get("argument_keys", []),
+                    "response": tool_meta.get("result", ""),
+                    "is_tool_call": True,
+                    "tool_server": tool_meta.get("server_name", ""),
+                    "duration_ms": tool_span.get("duration_ms"),
+                }
+            )
 
     # Detect action_cache_hit (no classify span, return span has action_cache_hit
     # or the legacy response_cache_hit key)
@@ -358,6 +378,7 @@ async def get_trace_detail(trace_id: str):
             if condensed == user_input:
                 step_content["task_pass_through"] = True
             agent_communication.append(step_content)
+            _append_tool_calls(content_agent)
 
             # Filler (if present)
             if filler_generate_span:
@@ -409,6 +430,7 @@ async def get_trace_detail(trace_id: str):
                     "sequential_step": "send",
                 }
             )
+            _append_tool_calls(send_agent)
 
             # Final return
             mediated = False
@@ -480,6 +502,8 @@ async def get_trace_detail(trace_id: str):
                         }
                     )
 
+                _append_tool_calls(target)
+
                 # 5. Agent responds to orchestrator
                 agent_communication.append(
                     {
@@ -511,6 +535,7 @@ async def get_trace_detail(trace_id: str):
                 if condensed == user_input:
                     step2["task_pass_through"] = True
                 agent_communication.append(step2)
+                _append_tool_calls(target)
 
                 agent_communication.append(
                     {
@@ -537,6 +562,9 @@ async def get_trace_detail(trace_id: str):
                         "parallel": True,
                     }
                 )
+            for ds in dispatch_spans:
+                _append_tool_calls(ds.get("agent_id", ""))
+
             # Combined return
             mediated = True  # Multi-agent always has LLM merge
             if return_span:

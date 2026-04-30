@@ -141,11 +141,19 @@
                         <div class="mb-md" :class="comm.parallel ? 'parallel-step' : ''">
                             <div class="flex-center mb-40">
                                 <span class="step-num" x-text="'#' + (idx + 1)"></span>
-                                <span class="badge" :class="'badge-' + agentClass(comm.from_agent)"
-                                      x-text="comm.from_agent"></span>
-                                <span class="text-silver text-xs">--&gt;</span>
-                                <span class="badge" :class="'badge-' + agentClass(comm.to_agent)"
-                                      x-text="comm.to_agent"></span>
+                                <template x-if="!comm.is_tool_call">
+                                    <span class="badge" :class="'badge-' + agentClass(comm.from_agent)"
+                                          x-text="comm.from_agent"></span>
+                                    <span class="text-silver text-xs">--&gt;</span>
+                                    <span class="badge" :class="'badge-' + agentClass(comm.to_agent)"
+                                          x-text="comm.to_agent"></span>
+                                </template>
+                                <template x-if="comm.is_tool_call">
+                                    <span class="badge" :class="'badge-' + agentClass(comm.from_agent)"
+                                          x-text="comm.from_agent"></span>
+                                    <span class="text-silver text-xs">calls</span>
+                                    <span class="badge badge-indigo" x-text="comm.to_agent.replace('tool: ', '')"></span>
+                                </template>
                                 <template x-if="comm.parallel">
                                     <span class="text-3xs text-teal-glow fw-600 ml-xs">PARALLEL</span>
                                 </template>
@@ -156,6 +164,9 @@
                                 <template x-if="comm.is_filler">
                                     <span class="badge" :class="comm.filler_stage === 'sent' ? 'badge-green' : 'badge-teal'"
                                           x-text="comm.filler_stage === 'sent' ? 'FILLER SENT' : (comm.filler_was_sent === false ? 'FILLER GENERATED (unused)' : 'FILLER GENERATED')"></span>
+                                </template>
+                                <template x-if="comm.is_tool_call">
+                                    <span class="badge badge-indigo text-2xs">TOOL CALL</span>
                                 </template>
                             </div>
                             <template x-if="comm.task">
@@ -197,14 +208,36 @@
                                     </div>
                                 </div>
                             </template>
-                            <template x-if="comm.response_unchanged">
+                            <template x-if="comm.is_tool_call">
+                                <div class="ml-2 mt-sm">
+                                    <div class="flex-center gap-xs">
+                                        <span class="text-muted text-2xs">Tool:</span>
+                                        <span class="badge badge-indigo text-2xs" x-text="comm.to_agent.replace('tool: ', '')"></span>
+                                        <span x-show="comm.tool_server" class="text-3xs text-silver" x-text="'(' + comm.tool_server + ')'"></span>
+                                        <span x-show="comm.duration_ms" class="text-3xs text-silver" x-text="Math.round(comm.duration_ms) + 'ms'"></span>
+                                    </div>
+                                    <template x-if="comm.task && (typeof comm.task === 'string' || comm.task.length > 0)">
+                                        <div class="mt-xs">
+                                            <span class="text-muted text-2xs">Arguments:</span>
+                                            <pre class="pre-cloud-xs" x-text="JSON.stringify(comm.task, null, 2)"></pre>
+                                        </div>
+                                    </template>
+                                    <template x-if="comm.response">
+                                        <div class="mt-xs">
+                                            <span class="text-muted text-2xs">Result:</span>
+                                            <pre class="pre-cloud-xs" x-text="comm.response"></pre>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+                            <template x-if="!comm.is_tool_call && comm.response_unchanged">
                                 <div class="ml-2">
                                     <span class="text-xs text-silver italic">
                                         Returned unchanged
                                     </span>
                                 </div>
                             </template>
-                            <template x-if="!comm.response_unchanged && comm.response">
+                            <template x-if="!comm.is_tool_call && !comm.response_unchanged && comm.response">
                                 <div class="ml-2">
                                     <span class="text-muted text-2xs">Response:</span>
                                     <pre class="pre-cloud-sm" x-text="comm.response"></pre>
