@@ -1,6 +1,11 @@
 # Version
 
-**Current Version:** 1.12.3
+**Current Version:** 1.12.4
+
+## Recent Changes (since 1.12.3)
+
+- **Trace UI:** Fixed Action-Cache-Hit traces incorrectly showing "Routing Source: Cached". The backend now distinguishes `action_cache_hit` from `routing_cached`, and the frontend shows "Action Cached" for action-cache hits while preserving "Routing Cached" for true routing-cache hits.
+- **Trace UI:** Rewrite-Agent communication step now correctly shows `from_agent: "rewrite-agent"` instead of `from_agent: "action cache"`, making it clear that the rewrite agent actively performed the rewrite.
 
 ## Recent Changes (since 1.12.2)
 

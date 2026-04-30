@@ -288,7 +288,6 @@ async def get_trace_detail(trace_id: str):
     if action_cache_hit:
         # Action cache hit short-circuit
         target = (return_span.get("metadata") or {}).get("from_agent", "")
-        routing_cached = True
         agent_communication.append(
             {
                 "from_agent": "user",
@@ -320,15 +319,16 @@ async def get_trace_detail(trace_id: str):
             rw_meta = rewrite_span.get("metadata") or {}
             agent_communication.append(
                 {
-                    "from_agent": "action cache",
-                    "to_agent": "rewrite-agent",
-                    "task": (rw_meta.get("original_text") or "")[:200],
-                    "response": (rw_meta.get("rewritten_text") or "")[:200],
+                    "from_agent": "rewrite-agent",
+                    "to_agent": "orchestrator",
+                    "task": rw_meta.get("original_text", ""),
+                    "response": rw_meta.get("rewritten_text", ""),
+                    "is_rewrite": True,
                 }
             )
         agent_communication.append(
             {
-                "from_agent": "orchestrator (action cache)",
+                "from_agent": "orchestrator",
                 "to_agent": "user",
                 "task": "",
                 "response": final_response,
@@ -585,6 +585,7 @@ async def get_trace_detail(trace_id: str):
         "confidence": summary.get("routing_confidence"),
         "duration_ms": summary.get("routing_duration_ms"),
         "reasoning": summary.get("routing_reasoning"),
+        "action_cache_hit": action_cache_hit,
     }
 
     # Enrich with multi-agent routing details from classify span

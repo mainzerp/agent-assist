@@ -113,8 +113,13 @@
                     </div>
                     <div class="span-detail-row">
                         <span class="span-detail-label">Routing Source</span>
-                        <span class="badge" :class="traceDetail.routing_cached ? 'trace-stage-bar' : 'badge-muted'"
-                            x-text="traceDetail.routing_cached ? 'Cached' : 'LLM'"></span>
+                        <template x-if="traceDetail.routing?.action_cache_hit">
+                            <span class="badge trace-stage-bar">Action Cached</span>
+                        </template>
+                        <template x-if="!traceDetail.routing?.action_cache_hit">
+                            <span class="badge" :class="traceDetail.routing_cached ? 'trace-stage-bar' : 'badge-muted'"
+                                x-text="traceDetail.routing_cached ? 'Routing Cached' : 'LLM'"></span>
+                        </template>
                     </div>
                 </div>
             </div>
