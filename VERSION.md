@@ -1,6 +1,6 @@
 # Version
 
-**Current Version:** 1.11.0
+**Current Version:** 1.12.0
 
 ## Recent Changes (since 1.10.0)
 
