@@ -341,6 +341,12 @@ async def lifespan(app: FastAPI):
             "will be sent over plain HTTP. Enable COOKIE_SECURE for production."
         )
     logger.info("Startup complete (setup_complete=%s)", setup_complete)
+
+    # Start SSE tickers for live dashboard updates
+    from app.api.routes.sse import register_sse_tickers
+
+    register_sse_tickers(app)
+
     yield
 
     # --- Shutdown ---
@@ -451,6 +457,11 @@ def create_app() -> FastAPI:
     app.include_router(admin_routes.router, dependencies=[Depends(rate_limit_admin)])
     app.include_router(dashboard_api_routes.router, dependencies=[Depends(rate_limit_admin)])
     app.include_router(dashboard_router)
+
+    # SSE router
+    from app.api.routes import sse as sse_routes
+
+    app.include_router(sse_routes.router, dependencies=[Depends(rate_limit_admin)])
 
     # Batch C routers
     from app.api.routes import cache_api as cache_api_routes

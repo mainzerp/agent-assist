@@ -1,6 +1,6 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Cache{% endblock %}
-{% block nav_cache %}active{% endblock %}
+{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/cache.css') }}">{% endblock %}
 {% block header_title %}Cache Management{% endblock %}
 {% block page_content %}
 <div x-data="cachePage()" x-init="loadStats(); loadEntries()">
@@ -60,14 +60,14 @@
                 <span class="stat-card-label">Backup</span>
             </div>
 
-            <div class="grid-2 mt-sm" style="gap: 0.75rem;">
+            <div class="grid-2 mt-sm gap-md">
                 <div class="border-right-subtle pr-md">
                     <div class="flex-center justify-start mb-sm">
                         <svg width="16" height="16" fill="none" stroke="var(--teal)" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                         <span class="text-teal text-sm fw-600">Export</span>
                     </div>
                     <div class="btn-group">
-                        <select class="form-input" x-model="exportTier" style="max-width: 8rem; min-width: 0;">
+                        <select class="form-input max-w-128 min-w-0" x-model="exportTier">
                             <option value="all">All</option>
                             <option value="routing">Routing</option>
                             <option value="action">Action</option>

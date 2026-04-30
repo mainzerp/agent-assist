@@ -1,6 +1,6 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Agents{% endblock %}
-{% block nav_agents %}active{% endblock %}
+{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/agents.css') }}">{% endblock %}
 {% block header_title %}Agent Configuration{% endblock %}
 {% block page_content %}
 <div x-data="agentsPage()" x-init="loadAgents()">
@@ -54,7 +54,7 @@
                     <template x-if="visibilitySummary[agent.agent_id] && (visibilitySummary[agent.agent_id].device_classes || []).length > 0">
                         <template x-for="dc in visibilitySummary[agent.agent_id].device_classes" :key="dc">
                                      <a :href="window.dashUrl('/dashboard/entity-index') + '?agent=' + encodeURIComponent(agent.agent_id)"
-                               class="badge cursor-pointer no-underline text-xs" style="background:rgba(99,102,241,0.15); color:#818cf8;"
+                               class="badge badge-indigo cursor-pointer no-underline text-xs"
                                x-text="'sensor:' + dc"></a>
                         </template>
                     </template>
@@ -154,7 +154,7 @@
                                 <template x-for="server in mcpServers.filter(s => s.connected)" :key="server.name">
                                     <label class="badge cursor-pointer text-xs"
                                            :class="isServerAssigned(agent.agent_id, server.name) ? 'badge-purple' : 'badge-muted'">
-                                        <input type="checkbox" style="display:none;"
+                                        <input type="checkbox" class="sr-only"
                                                :checked="isServerAssigned(agent.agent_id, server.name)"
                                                @change="toggleServerAssignment(agent.agent_id, server.name)">
                                         <span x-text="server.name"></span>

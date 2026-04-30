@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app import __version__ as _app_version
+from app.dashboard.static_assets import static_url, static_version
 from app.db.repository import (
     AdminAccountRepository,
     SettingsRepository,
@@ -21,6 +22,7 @@ from app.ha_client.rest import test_ha_connection
 from app.middleware.rate_limit import rate_limit_setup
 from app.runtime_setup import ensure_setup_runtime_initialized
 from app.security.auth import (
+    _rooted_url,
     ensure_csrf_token,
     require_admin_or_setup_open,
     set_csrf_cookie,
@@ -33,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals["app_version"] = _app_version
+templates.env.globals["static_url"] = static_url
+templates.env.globals["static_version"] = static_version
+templates.env.globals["root_url"] = _rooted_url
 
 router = APIRouter(prefix="/setup", tags=["setup"])
 

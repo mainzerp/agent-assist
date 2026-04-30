@@ -9,6 +9,8 @@ from fastapi.templating import Jinja2Templates
 
 from app import __version__ as _app_version
 from app.config import settings as app_settings
+from app.dashboard.nav_config import NAV_GROUPS
+from app.dashboard.static_assets import static_url, static_version
 from app.defaults import DEFAULT_LOCAL_EMBEDDING_MODEL
 from app.middleware.rate_limit import rate_limit_login
 from app.security.auth import (
@@ -30,6 +32,9 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals["app_version"] = _app_version
 templates.env.globals["default_local_embedding_model"] = DEFAULT_LOCAL_EMBEDDING_MODEL
 templates.env.globals["root_url"] = _rooted_url
+templates.env.globals["static_url"] = static_url
+templates.env.globals["static_version"] = static_version
+templates.env.globals["nav_groups"] = NAV_GROUPS
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -273,3 +278,13 @@ async def settings_page(
 ):
     """Unified settings page for all advanced configuration."""
     return _render_dashboard(request, "settings.html")
+
+
+@router.get("/traces/{trace_id}", response_class=HTMLResponse)
+async def trace_detail_page(
+    request: Request,
+    trace_id: str,
+    _session: dict = Depends(require_admin_session_redirect),
+):
+    """Trace detail page."""
+    return _render_dashboard(request, "trace_detail.html", trace_id=trace_id)

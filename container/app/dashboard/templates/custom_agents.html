@@ -1,8 +1,8 @@
 {% extends "dashboard_base.html" %}
 
 {% block page_title %}Custom Agents{% endblock %}
+{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/custom_agents.css') }}">{% endblock %}
 {% block header_title %}Custom Agents{% endblock %}
-{% block nav_custom_agents %}active{% endblock %}
 
 {% block page_content %}
 <div x-data="customAgents()">

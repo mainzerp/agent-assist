@@ -1,6 +1,6 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Analytics{% endblock %}
-{% block nav_analytics %}active{% endblock %}
+{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/analytics.css') }}">{% endblock %}
 {% block header_title %}Analytics{% endblock %}
 {% block page_content %}
 <div x-data="analyticsPage()" x-init="loadAll()">
@@ -137,7 +137,7 @@
         </div>
         <div class="card">
             <h3 class="card-title mb-md">Rewrite Stats</h3>
-            <div class="stat-grid" style="grid-template-columns: 1fr 1fr;">
+            <div class="stat-grid-2cols">
                 <div>
                     <div class="text-muted text-xs">Total</div>
                     <div class="text-lg" x-text="rewriteData.total ?? 0"></div>
@@ -211,6 +211,10 @@ function analyticsPage() {
         },
 
         renderChart(propName, canvasId, data, type, color) {
+            if (typeof Chart === 'undefined') {
+                setTimeout(() => this.renderChart(propName, canvasId, data, type, color), 100);
+                return;
+            }
             if (this[propName]) {
                 this[propName].destroy();
             }
@@ -230,11 +234,11 @@ function analyticsPage() {
                     responsive: true,
                     maintainAspectRatio: false,
                     scales: {
-                        y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' } },
-                        x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' } }
+                        y: { beginAtZero: true, grid: { color: chartRgba('text', 0.05) }, ticks: { color: chartColors().text } },
+                        x: { grid: { color: chartRgba('text', 0.05) }, ticks: { color: chartColors().text } }
                     },
                     plugins: {
-                        legend: { labels: { color: '#e2e8f0' } }
+                        legend: { labels: { color: chartColors().text } }
                     }
                 }
             });

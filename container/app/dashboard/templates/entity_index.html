@@ -1,6 +1,6 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Entity Index{% endblock %}
-{% block nav_entity_index %}active{% endblock %}
+{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/entity_index.css') }}">{% endblock %}
 {% block header_title %}Entity Index{% endblock %}
 {% block page_content %}
 <div x-data="entityIndexPage()" x-init="init()">
@@ -40,7 +40,7 @@
                 <svg class="stat-card-icon text-sage" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
                 <span class="stat-card-label">Last Refresh</span>
             </div>
-            <div class="stat-card-value text-base" x-text="stats.last_refresh || 'never'"></div>
+            <div class="stat-card-value text-base" x-text="formatDateTime(stats.last_refresh)"></div>
         </div>
     </div>
 
@@ -52,7 +52,7 @@
                 <div class="stat-card-header">
                     <span class="stat-card-label">Last Sync</span>
                 </div>
-                <div class="stat-card-value text-base" x-text="stats.sync?.last_sync || 'never'"></div>
+                <div class="stat-card-value text-base" x-text="formatDateTime(stats.sync?.last_sync)"></div>
             </div>
             <div class="stat-card">
                 <div class="stat-card-header">
@@ -124,8 +124,7 @@
             <template x-if="stats.embedding?.state === 'building'">
                 <div class="mt-sm">
                     <div class="progress-bar">
-                        <div class="progress-fill" style="background: var(--soft-amber); transition: width 0.3s;"
-                             :style="'width: ' + (stats.embedding.progress || 0) + '%'"></div>
+                        <div class="progress-fill" x-effect="$el.style.setProperty('--progress-width', (stats.embedding.progress || 0) + '%')"></div>
                     </div>
                     <div class="text-dim mt-xs text-xs"
                          x-text="stats.embedding.processed + ' / ' + stats.embedding.total + ' (' + stats.embedding.progress + '%)'"></div>
@@ -162,8 +161,7 @@
                     <option :value="a" x-text="a"></option>
                 </template>
             </select>
-            <select class="form-input"
-                    style="width: auto; min-width: 160px;"
+            <select class="form-input w-auto min-w-160"
                     x-model="previewDomain">
                 <option value="">(any domain)</option>
                 <option value="light">light</option>
@@ -415,15 +413,13 @@
                                         <span class="badge badge-blue badge-close">
                                             <span x-text="agent"></span>
                                             <button type="button"
-                                                    style="background: none; border: none; color: inherit; cursor: pointer; padding: 0; margin: 0; line-height: 1; font-size: 0.85rem; opacity: 0.7;"
-                                                    @mouseenter="$el.style.opacity='1'" @mouseleave="$el.style.opacity='0.7'"
+                                                    class="badge-close-btn"
                                                     @click="removeAgentFromDomain(item, agent)"
                                                     title="Remove agent">&times;</button>
                                         </span>
                                     </template>
                                     <!-- Add agent dropdown -->
-                                    <select class="form-input"
-                                            style="width: auto; min-width: 140px; max-width: 200px; padding: 0.2rem 0.5rem; font-size: 0.75rem; border-radius: 9999px; display: inline-block;"
+                                    <select class="form-input form-input-inline"
                                             @change="addAgentToDomain(item, $event.target.value); $event.target.value = ''"
                                     >
                                         <option value="">+ Add agent...</option>
@@ -482,15 +478,13 @@
                                         <span class="badge badge-blue badge-close">
                                             <span x-text="agent"></span>
                                             <button type="button"
-                                                    style="background: none; border: none; color: inherit; cursor: pointer; padding: 0; margin: 0; line-height: 1; font-size: 0.85rem; opacity: 0.7;"
-                                                    @mouseenter="$el.style.opacity='1'" @mouseleave="$el.style.opacity='0.7'"
+                                                    class="badge-close-btn"
                                                     @click="removeAgentFromDeviceClass(item, agent)"
                                                     title="Remove agent">&times;</button>
                                         </span>
                                     </template>
                                     <!-- Add agent dropdown -->
-                                    <select class="form-input"
-                                            style="width: auto; min-width: 140px; max-width: 200px; padding: 0.2rem 0.5rem; font-size: 0.75rem; border-radius: 9999px; display: inline-block;"
+                                    <select class="form-input form-input-inline"
                                             @change="addAgentToDeviceClass(item, $event.target.value); $event.target.value = ''"
                                     >
                                         <option value="">+ Add agent...</option>
@@ -524,6 +518,19 @@ function entityIndexPage() {
         refreshing: false,
         refreshMessage: '',
         pollInterval: null,
+
+        formatDateTime(isoString) {
+            if (!isoString || isoString === 'never') return 'never';
+            try {
+                const d = new Date(isoString);
+                if (isNaN(d.getTime())) return isoString;
+                const pad = (n) => String(n).padStart(2, '0');
+                return pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + '.' + d.getFullYear() +
+                       ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+            } catch (e) {
+                return isoString;
+            }
+        },
 
         // --- Domain Agent Mapping state ---
         domainAgentMap: [],

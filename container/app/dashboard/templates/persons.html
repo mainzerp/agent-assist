@@ -1,6 +1,6 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Persons{% endblock %}
-{% block nav_persons %}active{% endblock %}
+{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/persons.css') }}">{% endblock %}
 {% block header_title %}Persons{% endblock %}
 {% block page_content %}
 <div x-data="personsPage()" x-init="loadPersons()">

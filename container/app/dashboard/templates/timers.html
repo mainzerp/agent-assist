@@ -1,11 +1,11 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Timers & Alarms{% endblock %}
-{% block nav_timers %}active{% endblock %}
+{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/timers.css') }}">{% endblock %}
 {% block header_title %}Timers & Alarms{% endblock %}
 {% block page_content %}
 <div x-data="timersPage()" x-init="init()">
 
-    <div id="timers-alpine-warning" class="card" style="display:none;margin-bottom:1rem;border-color:var(--danger,#f38ba8);">
+    <div id="timers-alpine-warning" class="card alpine-warning">
         <p class="m-0 text-danger fw-600">
             Interactive controls failed to initialize (Alpine.js unavailable). Edit actions may not work until you reload the page or restore network access.
         </p>
@@ -94,7 +94,7 @@
             <label class="form-label-block">Sensor entities</label>
             <div class="flex-center flex-wrap">
                 <input type="text" x-model="newSensorEntity" placeholder="sensor.dishwasher_status"
-                       style="flex:1 1 240px;box-sizing:border-box;padding:0.45rem 0.6rem;background:var(--input-bg,#313244);border:1px solid var(--border,#45475a);border-radius:4px;color:inherit;"/>
+                       class="form-input-native"/>
                 <button class="btn btn-sm btn-secondary" @click="addSensorEntity()">Add Sensor</button>
             </div>
             <div class="flex flex-wrap gap-sm mt-75" x-show="wakeBriefing.sensor_entities.length > 0">
@@ -649,14 +649,17 @@ function timersPage() {
 </script>
 <script>
 (function() {
+    var banner = document.getElementById('timers-alpine-warning');
+    if (!banner) return;
+
     function showAlpineWarning() {
-        var banner = document.getElementById('timers-alpine-warning');
-        if (!banner) {
-            return;
-        }
         banner.style.display = 'block';
     }
+    function hideAlpineWarning() {
+        banner.style.display = 'none';
+    }
 
+    document.addEventListener('alpine:init', hideAlpineWarning);
     document.addEventListener('dashboard:alpine-missing', showAlpineWarning);
 
     window.setTimeout(function() {

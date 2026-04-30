@@ -1,6 +1,6 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Overview{% endblock %}
-{% block nav_overview %}active{% endblock %}
+{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/overview.css') }}">{% endblock %}
 {% block header_title %}System Overview{% endblock %}
 {% block page_content %}
 <div x-data="overviewPage()" x-init="loadAll()">
@@ -236,6 +236,10 @@ function overviewPage() {
 
         initCharts() {
             if (!this.data) return;
+            if (typeof Chart === 'undefined') {
+                setTimeout(function() { this.initCharts(); }.bind(this), 100);
+                return;
+            }
             var rtCtx = document.getElementById("requestTrendChart");
             if (rtCtx) {
                 this.requestTrendChart = new Chart(rtCtx, {
@@ -245,8 +249,8 @@ function overviewPage() {
                         datasets: [{
                             label: "Requests",
                             data: this.data.request_trend.data,
-                            borderColor: "rgba(94, 234, 212, 0.9)",
-                            backgroundColor: "rgba(94, 234, 212, 0.15)",
+                            borderColor: chartRgba('teal', 0.9),
+                            backgroundColor: chartRgba('teal', 0.15),
                             fill: true,
                             borderWidth: 2,
                             tension: 0.3
@@ -258,9 +262,9 @@ function overviewPage() {
             var adCtx = document.getElementById("agentDistChart");
             if (adCtx && this.data.agent_distribution.length) {
                 var palette = [
-                    "rgba(94,234,212,0.8)", "rgba(96,165,250,0.8)",
-                    "rgba(251,191,36,0.8)", "rgba(134,239,172,0.8)",
-                    "rgba(251,113,133,0.8)", "rgba(168,85,247,0.8)"
+                    chartRgba('teal', 0.8), chartRgba('blue', 0.8),
+                    chartRgba('amber', 0.8), chartRgba('sage', 0.8),
+                    chartRgba('coral', 0.8), chartRgba('lavender', 0.8)
                 ];
                 this.agentDistChart = new Chart(adCtx, {
                     type: "doughnut",
@@ -275,7 +279,7 @@ function overviewPage() {
                         responsive: true,
                         maintainAspectRatio: false,
                         plugins: {
-                            legend: { position: "right", labels: { color: "#e2e8f0", boxWidth: 12, padding: 12 } }
+                            legend: { position: "right", labels: { color: chartColors().text, boxWidth: 12, padding: 12 } }
                         }
                     }
                 });
@@ -290,9 +294,9 @@ function overviewPage() {
                         datasets: [{
                             data: [tier.routing_hits, tier.action_hits, tier.misses],
                             backgroundColor: [
-                                "rgba(134,239,172,0.8)",
-                                "rgba(94,234,212,0.8)",
-                                "rgba(251,113,133,0.8)"
+                                chartRgba('sage', 0.8),
+                                chartRgba('teal', 0.8),
+                                chartRgba('coral', 0.8)
                             ]
                         }]
                     },
@@ -300,7 +304,7 @@ function overviewPage() {
                         responsive: true,
                         maintainAspectRatio: false,
                         plugins: {
-                            legend: { position: "right", labels: { color: "#e2e8f0", boxWidth: 12, padding: 12 } }
+                            legend: { position: "right", labels: { color: chartColors().text, boxWidth: 12, padding: 12 } }
                         }
                     }
                 });
@@ -365,11 +369,11 @@ function chartOptions() {
         responsive: true,
         maintainAspectRatio: false,
         scales: {
-            y: { beginAtZero: true, grid: { color: "rgba(255,255,255,0.05)" }, ticks: { color: "#94a3b8" } },
-            x: { grid: { color: "rgba(255,255,255,0.05)" }, ticks: { color: "#94a3b8" } }
+            y: { beginAtZero: true, grid: { color: chartRgba('text', 0.05) }, ticks: { color: chartColors().text } },
+            x: { grid: { color: chartRgba('text', 0.05) }, ticks: { color: chartColors().text } }
         },
         plugins: {
-            legend: { labels: { color: "#e2e8f0" } }
+            legend: { labels: { color: chartColors().text } }
         }
     };
 }

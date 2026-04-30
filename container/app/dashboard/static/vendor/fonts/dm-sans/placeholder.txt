@@ -1,0 +1,4 @@
+Placeholder for DM Sans woff2 font files.
+Weights: 400, 500, 600, 700, plus 400 italic.
+Source: https://fonts.google.com/specimen/DM+Sans
+License: SIL Open Font License 1.1

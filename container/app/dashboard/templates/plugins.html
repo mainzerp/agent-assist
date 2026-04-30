@@ -1,8 +1,8 @@
 {% extends "dashboard_base.html" %}
 
 {% block page_title %}Plugins{% endblock %}
+{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/plugins.css') }}">{% endblock %}
 {% block header_title %}Plugins{% endblock %}
-{% block nav_plugins %}active{% endblock %}
 
 {% block page_content %}
 <div x-data="pluginsPage()">

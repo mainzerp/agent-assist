@@ -1,0 +1,4 @@
+Placeholder for JetBrains Mono woff2 font files.
+Weights: 400, 500, 600, 700.
+Source: https://fonts.google.com/specimen/JetBrains+Mono
+License: SIL Open Font License 1.1

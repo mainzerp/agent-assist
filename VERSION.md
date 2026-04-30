@@ -1,6 +1,20 @@
 # Version
 
-**Current Version:** 1.10.0
+**Current Version:** 1.11.0
+
+## Recent Changes (since 1.10.0)
+
+- **Frontend Redesign:** Comprehensive structural refresh of the admin dashboard and setup wizard.
+  - All external assets (fonts, htmx, Alpine.js, Chart.js, vis-timeline) are now vendored under `container/app/dashboard/static/vendor/`; templates no longer reference CDNs.
+  - The monolithic 2214-line `style.css` has been split into modular CSS files (`tokens.css`, `base.css`, `layout.css`, `components.css`, `utilities.css`, `pages/*.css`, `auth.css`).
+  - Sidebar reorganized into five collapsible groups (Operate, Configure, Domain Data, Performance, System) driven by `nav_config.py`; group state persists to `localStorage`.
+  - Shared JS helpers extracted into `static/components.js` (`dashPage`, `dashDataTable`, `dashSidebarGroups`, `dashCommandPalette`, `dashLiveStream`).
+  - Cmd+K / Ctrl+K command palette opens from any authenticated page; searches nav items and exposes common admin actions.
+  - Settings page restructured into a left-rail + right-pane layout with categories (LLM, Embedding, Entity Matching, Cache, Communication, Agents, Home Context, MCP, Plugins), hash deep-linking, and client-side search.
+  - Traces split into a list page (`/dashboard/traces`) and a detail page (`/dashboard/traces/{trace_id}`) with Gantt timeline.
+  - SSE live updates for Overview, System Health, Timers, and Traces list with automatic polling fallback.
+  - Login and setup wizard share a unified `auth_base.html` shell.
+  - Dark-only theme refreshed with elevation tokens, motion tokens, and a single focus-ring color.
 
 ## Recent Changes (since 1.9.6)
 

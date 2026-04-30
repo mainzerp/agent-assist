@@ -1,6 +1,6 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Chat{% endblock %}
-{% block nav_chat %}active{% endblock %}
+{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/chat.css') }}">{% endblock %}
 {% block header_title %}Chat Test Interface{% endblock %}
 {% block page_content %}
 <div x-data="chatPage()" x-init="init()">

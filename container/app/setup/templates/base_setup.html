@@ -4,16 +4,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HA-AgentHub Setup</title>
-    <script src="https://unpkg.com/htmx.org@2.0.4"
-        integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+"
-        crossorigin="anonymous"></script>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/dashboard/static/style.css?v=8">
+    <link rel="icon" type="image/svg+xml" href="{{ root_url(request, '/dashboard/static/favicon.svg') }}">
+    <link rel="alternate icon" type="image/png" href="{{ root_url(request, '/dashboard/static/favicon.png') }}">
+    <link rel="apple-touch-icon" href="{{ root_url(request, '/dashboard/static/favicon.png') }}">
+    <link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/fonts.css') }}">
+    <link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/tokens.css') }}">
+    <link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/base.css') }}">
+    <link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/layout.css') }}">
+    <link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/components.css') }}">
+    <link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/utilities.css') }}">
+    <link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/auth.css') }}">
+    <script src="{{ static_url(request, '/dashboard/static/vendor/htmx/htmx-2.0.4.min.js') }}" defer></script>
 </head>
 <body class="setup-shell">
-    <div class="setup-container">
+    <a href="#main" class="skip-link">Skip to content</a>
+    <div class="setup-container" id="main" tabindex="-1">
         <h1 class="page-title">HA-AgentHub Setup</h1>
         {% block progress %}
         <div class="setup-progress">

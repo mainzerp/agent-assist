@@ -1,0 +1,91 @@
+﻿
+/* --- Login page (standalone, no sidebar) --- */
+
+.login-container {
+    max-width: 400px;
+    margin: 6rem auto;
+    padding: 2rem;
+    background: color-mix(in srgb, var(--bg-basalt) 80%, transparent);
+    border: 1px solid color-mix(in srgb, var(--bg-stone) 60%, transparent);
+    border-radius: 0.75rem;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+
+.login-container h1 {
+    margin-bottom: 1.5rem;
+    text-align: center;
+}
+
+.login-container label {
+    display: block;
+    margin-bottom: 0.25rem;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.login-container input {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 1rem;
+    border: 1px solid var(--bg-stone);
+    border-radius: 0.75rem;
+    background: var(--bg-obsidian);
+    color: var(--color-light);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.login-container input:focus {
+    outline: none;
+    border-color: var(--teal);
+    box-shadow: 0 0 0 1px rgba(45, 212, 191, 0.3);
+}
+
+.login-container button {
+    width: 100%;
+    padding: 0.75rem;
+    background: var(--teal-glow);
+    color: #fff;
+    border: none;
+    border-radius: 0.75rem;
+    cursor: pointer;
+    font-size: 1rem;
+    font-weight: 600;
+    transition: background 0.2s ease;
+}
+
+.login-container button:hover {
+    background: var(--teal-dim);
+}
+
+.login-error {
+    background: rgba(232, 119, 119, 0.2);
+    color: var(--color-light);
+    border: 1px solid rgba(232, 119, 119, 0.3);
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.75rem;
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+}
+
+/* --- Base header (login page) --- */
+
+header {
+    background: var(--bg-card);
+    color: var(--text-primary);
+    padding: 0.75rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+header a {
+    color: var(--text-primary);
+    text-decoration: none;
+    font-weight: 600;
+}
+
+main {
+    max-width: 960px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+}
+

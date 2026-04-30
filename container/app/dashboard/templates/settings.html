@@ -1,6 +1,6 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Settings{% endblock %}
-{% block nav_settings %}active{% endblock %}
+{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/settings.css') }}">{% endblock %}
 {% block header_title %}Settings{% endblock %}
 {% block page_content %}
 <div x-data="settingsPage()" x-init="loadAll()">
@@ -11,303 +11,309 @@
         </div>
     </div>
 
-    <!-- Global save feedback -->
-    <div x-show="message" x-transition class="alert mb-md" role="status" aria-live="polite" aria-atomic="true"
-         :class="messageType === 'error' ? 'alert-error' : 'alert-success'"
-         x-text="message"></div>
-
-    <!-- Section 0: LLM Providers -->
-    <details class="card mb-md" open>
-        <summary>LLM Providers</summary>
-        <div class="details-content">
-            <p class="text-muted mb-md text-sm">
-                Configure API keys for LLM providers. Keys are encrypted at rest.
-            </p>
-            <div class="provider-grid">
-                <template x-for="p in [{id:'openrouter', label:'OpenRouter', placeholder:'sk-or-...', type:'password'}, {id:'groq', label:'Groq', placeholder:'gsk_...', type:'password'}, {id:'anthropic', label:'Anthropic', placeholder:'sk-ant-...', type:'password'}, {id:'ollama', label:'Ollama', placeholder:'http://localhost:11434', type:'url'}]" :key="p.id">
-                    <div class="provider-row">
-                        <span class="form-label m-0 fw-600" x-text="p.label"></span>
-                        <div>
-                            <span x-show="providers[p.id] && providers[p.id].configured" class="badge badge-teal text-2xs"
-                                  x-text="p.id === 'ollama' ? 'Configured' : ('...' + (providers[p.id] && providers[p.id].masked_key || ''))"></span>
-                            <span x-show="!providers[p.id] || !providers[p.id].configured" class="badge text-2xs badge-danger">No key</span>
-                        </div>
-                        <input :type="p.type" class="form-input m-0" x-model="providerKeys[p.id]" :placeholder="p.placeholder">
-                        <div class="flex gap-xs flex-shrink-0">
-                            <button class="btn btn-primary btn-sm" @click="saveProviderKey(p.id)"
-                                x-show="providerKeys[p.id]">Save</button>
-                            <button class="btn btn-secondary btn-sm" @click="testProvider(p.id)">Test</button>
-                        </div>
-                    </div>
+    <div class="grid-2 items-start">
+        <!-- Left rail -->
+        <div class="settings-rail max-w-220">
+            <div class="settings-search">
+                <input type="text" class="form-input" placeholder="Search settings..."
+                       x-model="search" @input="applySearch()">
+            </div>
+            <nav aria-label="Settings categories">
+                <template x-for="cat in categories" :key="cat.key">
+                    <a :href="'#\'' + cat.key + '\''"
+                       class="settings-rail-item"
+                       :class="activeCategory === cat.key ? 'active' : ''"
+                       @click.prevent="setCategory(cat.key)"
+                       :aria-current="activeCategory === cat.key ? 'page' : false">
+                        <span x-text="cat.label"></span>
+                        <span class="settings-rail-count" x-show="cat.count > 0" x-text="cat.count"></span>
+                    </a>
                 </template>
-            </div>
-              <div x-show="providerMessage" x-transition class="alert mt-sm" role="status" aria-live="polite" aria-atomic="true"
-                 :class="providerMessageType === 'error' ? 'alert-error' : 'alert-success'"
-                 x-text="providerMessage"></div>
+            </nav>
         </div>
-    </details>
 
-    <!-- Section 1: Embedding -->
-    <details class="card mb-md" open>
-        <summary>Embedding</summary>
-        <div class="details-content">
-            <div class="form-grid-2">
-                <div class="form-group">
-                    <label class="form-label">Provider</label>
-                    <select class="form-input" x-model="s['embedding.provider']">
-                        <option value="local">local</option>
-                        <option value="openrouter">openrouter</option>
-                        <option value="groq">groq</option>
-                        <option value="anthropic">anthropic</option>
-                        <option value="ollama">ollama</option>
-                        <option value="external" x-show="s['embedding.provider'] === 'external'" style="display:none;">external (legacy)</option>
-                    </select>
+        <!-- Right pane -->
+        <div class="settings-pane">
+            <!-- Section 0: LLM Providers -->
+            <section data-category="llm" x-show="activeCategory === 'llm'" x-cloak>
+                <h3 class="section-title">LLM Providers</h3>
+                <p class="text-muted mb-md text-sm">Configure API keys for LLM providers. Keys are encrypted at rest.</p>
+                <div class="provider-grid">
+                    <template x-for="p in [{id:'openrouter', label:'OpenRouter', placeholder:'sk-or-...', type:'password'}, {id:'groq', label:'Groq', placeholder:'gsk_...', type:'password'}, {id:'anthropic', label:'Anthropic', placeholder:'sk-ant-...', type:'password'}, {id:'ollama', label:'Ollama', placeholder:'http://localhost:11434', type:'url'}]" :key="p.id">
+                        <div class="provider-row">
+                            <span class="form-label m-0 fw-600" x-text="p.label"></span>
+                            <div>
+                                <span x-show="providers[p.id] && providers[p.id].configured" class="badge badge-teal text-2xs"
+                                      x-text="p.id === 'ollama' ? 'Configured' : ('...' + (providers[p.id] && providers[p.id].masked_key || ''))"></span>
+                                <span x-show="!providers[p.id] || !providers[p.id].configured" class="badge text-2xs badge-danger">No key</span>
+                            </div>
+                            <input :type="p.type" class="form-input m-0" x-model="providerKeys[p.id]" :placeholder="p.placeholder">
+                            <div class="flex gap-xs flex-shrink-0">
+                                <button class="btn btn-primary btn-sm" @click="saveProviderKey(p.id)"
+                                    x-show="providerKeys[p.id]">Save</button>
+                                <button class="btn btn-secondary btn-sm" @click="testProvider(p.id)">Test</button>
+                            </div>
+                        </div>
+                    </template>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">Model</label>
-                    <input type="text" class="form-input"
-                           :value="s['embedding.provider'] === 'local' ? s['embedding.local_model'] : s['embedding.external_model']"
-                           @input="if(s['embedding.provider'] === 'local') { s['embedding.local_model'] = $event.target.value } else { s['embedding.external_model'] = $event.target.value }"
-                           :placeholder="getEmbeddingPlaceholder(s['embedding.provider'])">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Dimension</label>
-                    <input type="number" class="form-input" x-model.number="s['embedding.dimension']" min="1">
-                </div>
-            </div>
-            <div class="form-actions">
-                <button class="btn btn-primary btn-sm" @click="saveSection('embedding')">Save Embedding</button>
-            </div>
-        </div>
-    </details>
+                <div x-show="providerMessage" x-transition class="alert mt-sm" role="status" aria-live="polite" aria-atomic="true"
+                     :class="providerMessageType === 'error' ? 'alert-error' : 'alert-success'"
+                     x-text="providerMessage"></div>
+            </section>
 
-    <!-- Section 2: Entity Matching -->
-    <details class="card mb-md">
-        <summary>Entity Matching</summary>
-        <div class="details-content">
-            <div class="form-grid-2">
-                <div class="form-group">
-                    <label class="form-label">Confidence Threshold: <span class="text-mono" x-text="s['entity_matching.confidence_threshold']"></span></label>
-                    <input type="range" min="0" max="1" step="0.01" x-model.number="s['entity_matching.confidence_threshold']">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Top N Candidates</label>
-                    <input type="number" class="form-input" x-model.number="s['entity_matching.top_n_candidates']" min="1" max="20">
-                </div>
-            </div>
-            <h4 class="section-header mt-md mb-sm text-sm">Signal Weights</h4>
-            <div class="form-grid-2">
-                <template x-for="w in weightKeys" :key="w.key">
+            <!-- Section 1: Embedding -->
+            <section data-category="embedding" x-show="activeCategory === 'embedding'" x-cloak>
+                <h3 class="section-title">Embedding</h3>
+                <div class="form-grid-2">
                     <div class="form-group">
-                        <label class="form-label"><span x-text="w.label"></span>: <span class="text-mono" x-text="weights[w.key]"></span></label>
-                        <input type="range" min="0" max="1" step="0.01" x-model.number="weights[w.key]">
+                        <label class="form-label">Provider</label>
+                        <select class="form-input" x-model="s['embedding.provider']">
+                            <option value="local">local</option>
+                            <option value="openrouter">openrouter</option>
+                            <option value="groq">groq</option>
+                            <option value="anthropic">anthropic</option>
+                            <option value="ollama">ollama</option>
+                            <option value="external" x-show="s['embedding.provider'] === 'external'" class="hidden">external (legacy)</option>
+                        </select>
                     </div>
-                </template>
-            </div>
-            <div class="form-actions">
-                <button class="btn btn-primary btn-sm" @click="saveEntityMatching()">Save Entity Matching</button>
-            </div>
-        </div>
-    </details>
-
-    <!-- Section 3: Cache Thresholds -->
-    <details class="card mb-md">
-        <summary>Cache Thresholds</summary>
-        <div class="details-content">
-            <div class="form-grid-2">
-                <div class="form-group">
-                    <label class="form-label">Cache Enabled</label>
-                    <input type="checkbox" x-model="s['cache.enabled']">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Compound Utterance Bypass</label>
-                    <input type="checkbox" x-model="s['cache.compound_utterance_bypass']">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Routing Enabled</label>
-                    <input type="checkbox" x-model="s['cache.routing.enabled']">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Routing Semantic Threshold: <span class="text-mono" x-text="s['cache.routing.semantic_threshold']"></span></label>
-                    <input type="range" min="0" max="1" step="0.01" x-model.number="s['cache.routing.semantic_threshold']">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Routing Max Entries</label>
-                    <input type="number" class="form-input" x-model.number="s['cache.routing.max_entries']" min="1">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Action Enabled</label>
-                    <input type="checkbox" x-model="s['cache.action.enabled']">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Action Semantic Threshold: <span class="text-mono" x-text="s['cache.action.semantic_threshold']"></span></label>
-                    <input type="range" min="0" max="1" step="0.01" x-model.number="s['cache.action.semantic_threshold']">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Action Max Entries</label>
-                    <input type="number" class="form-input" x-model.number="s['cache.action.max_entries']" min="1">
-                </div>
-            </div>
-            <div class="form-actions">
-                <button class="btn btn-primary btn-sm" @click="saveSection('cache')">Save Cache</button>
-            </div>
-        </div>
-    </details>
-
-    <!-- Section 4: Communication -->
-    <details class="card mb-md">
-        <summary>Communication</summary>
-        <div class="details-content">
-            <h4 class="section-header mb-sm text-sm">Home Assistant</h4>
-            <p class="text-muted mb-md text-80">
-                REST and WebSocket traffic to your HA instance (entity sync, service calls, real-time state).
-                Matches the setup wizard; changing URL or token reloads clients immediately.
-            </p>
-            <div class="ha-config">
-                <div class="form-group m-0">
-                    <label class="form-label">HA base URL</label>
-                    <input type="url" class="form-input" x-model="haConn.url"
-                           placeholder="http://homeassistant.local:8123">
-                </div>
-                <div class="form-group m-0">
-                    <label class="form-label">Long-lived access token</label>
-                    <div class="flex-center flex-wrap">
-                        <input type="password" class="form-input flex-1 min-w-200"
-                               x-model="haConn.token" placeholder="Leave blank to keep existing token"
-                               autocomplete="off">
-                        <span x-show="haConn.token_configured" class="badge badge-teal text-2xs"
-                              x-text="haConn.token_masked ? ('Saved ' + haConn.token_masked) : 'Saved'"></span>
-                        <span x-show="!haConn.token_configured" class="badge text-2xs badge-danger">No token</span>
+                    <div class="form-group">
+                        <label class="form-label">Model</label>
+                        <input type="text" class="form-input"
+                               :value="s['embedding.provider'] === 'local' ? s['embedding.local_model'] : s['embedding.external_model']"
+                               @input="if(s['embedding.provider'] === 'local') { s['embedding.local_model'] = $event.target.value } else { s['embedding.external_model'] = $event.target.value }"
+                               :placeholder="getEmbeddingPlaceholder(s['embedding.provider'])">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Dimension</label>
+                        <input type="number" class="form-input" x-model.number="s['embedding.dimension']" min="1">
                     </div>
                 </div>
-                <div class="flex flex-wrap gap-35">
-                    <button type="button" class="btn btn-primary btn-sm" @click="saveHaConnection()">Save HA connection</button>
-                    <button type="button" class="btn btn-secondary btn-sm" @click="testHaConnection()">Test connection</button>
+                <div class="form-actions">
+                    <button class="btn btn-primary btn-sm" @click="saveSection('embedding')">Save Embedding</button>
                 </div>
-            </div>
-              <div x-show="haConnMessage" x-transition class="alert mt-sm" role="status" aria-live="polite" aria-atomic="true"
-                 :class="haConnMessageType === 'error' ? 'alert-error' : 'alert-success'"
-                 x-text="haConnMessage"></div>
+            </section>
 
-            <h4 class="section-header mt-md mb-sm text-sm">Home Assistant integration (HA to Agent Hub)</h4>
-            <p class="text-muted mb-md text-80">
-                The HA-AgentHub integration in Home Assistant calls this container with
-                <span class="text-mono text-xs">Authorization: Bearer &lt;this key&gt;</span>
-                on <span class="text-mono text-xs">/api/conversation</span> and the conversation WebSocket.
-                Paste the same key under HA-AgentHub integration settings (API Key).
-            </p>
-            <div class="max-w-720">
-                <div class="flex-center flex-wrap mb-sm">
-                    <span x-show="containerApiKey.configured" class="badge badge-teal text-2xs"
-                          x-text="containerApiKey.token_masked ? ('Key saved ' + containerApiKey.token_masked) : 'Key saved'"></span>
-                    <span x-show="!containerApiKey.configured" class="badge text-2xs badge-danger">No key configured</span>
-                </div>
-                <div class="form-group m-0 mb-sm">
-                    <label class="form-label">Set custom API key (min. 16 characters)</label>
-                    <div class="flex flex-wrap items-center gap-35">
-                        <input type="password" class="form-input flex-1 min-w-200"
-                               x-model="containerApiKey.customInput" placeholder="Paste a key or leave empty"
-                               autocomplete="off">
-                        <button type="button" class="btn btn-primary btn-sm" @click="saveContainerApiKey()">Save key</button>
+            <!-- Section 2: Entity Matching -->
+            <section data-category="entity_matching" x-show="activeCategory === 'entity_matching'" x-cloak>
+                <h3 class="section-title">Entity Matching</h3>
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label class="form-label">Confidence Threshold: <span class="text-mono" x-text="s['entity_matching.confidence_threshold']"></span></label>
+                        <input type="range" min="0" max="1" step="0.01" x-model.number="s['entity_matching.confidence_threshold']">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Top N Candidates</label>
+                        <input type="number" class="form-input" x-model.number="s['entity_matching.top_n_candidates']" min="1" max="20">
                     </div>
                 </div>
-                <div class="flex flex-wrap items-center gap-35">
-                    <button type="button" class="btn btn-secondary btn-sm" @click="rotateContainerApiKey()">Generate new key</button>
+                <h4 class="section-header mt-md mb-sm text-sm">Signal Weights</h4>
+                <div class="form-grid-2">
+                    <template x-for="w in weightKeys" :key="w.key">
+                        <div class="form-group">
+                            <label class="form-label"><span x-text="w.label"></span>: <span class="text-mono" x-text="weights[w.key]"></span></label>
+                            <input type="range" min="0" max="1" step="0.01" x-model.number="weights[w.key]">
+                        </div>
+                    </template>
                 </div>
-                <template x-if="containerApiKey.shownOnce">
-                    <div class="mt-sm api-key-shown">
-                        <p class="text-muted mb-sm text-xs m-0">Copy this key now. It is not shown again after you leave the page.</p>
-                        <pre class="api-key-text"
-                             x-text="containerApiKey.shownOnce"></pre>
-                        <div class="flex flex-wrap gap-35">
-                            <button type="button" class="btn btn-primary btn-sm" @click="copyContainerApiKeyShown()">Copy to clipboard</button>
-                            <button type="button" class="btn btn-secondary btn-sm" @click="containerApiKey.shownOnce = null">Hide</button>
+                <div class="form-actions">
+                    <button class="btn btn-primary btn-sm" @click="saveEntityMatching()">Save Entity Matching</button>
+                </div>
+            </section>
+
+            <!-- Section 3: Cache -->
+            <section data-category="cache" x-show="activeCategory === 'cache'" x-cloak>
+                <h3 class="section-title">Cache Thresholds</h3>
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label class="form-label">Cache Enabled</label>
+                        <input type="checkbox" x-model="s['cache.enabled']">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Compound Utterance Bypass</label>
+                        <input type="checkbox" x-model="s['cache.compound_utterance_bypass']">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Routing Enabled</label>
+                        <input type="checkbox" x-model="s['cache.routing.enabled']">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Routing Semantic Threshold: <span class="text-mono" x-text="s['cache.routing.semantic_threshold']"></span></label>
+                        <input type="range" min="0" max="1" step="0.01" x-model.number="s['cache.routing.semantic_threshold']">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Routing Max Entries</label>
+                        <input type="number" class="form-input" x-model.number="s['cache.routing.max_entries']" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Action Enabled</label>
+                        <input type="checkbox" x-model="s['cache.action.enabled']">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Action Semantic Threshold: <span class="text-mono" x-text="s['cache.action.semantic_threshold']"></span></label>
+                        <input type="range" min="0" max="1" step="0.01" x-model.number="s['cache.action.semantic_threshold']">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Action Max Entries</label>
+                        <input type="number" class="form-input" x-model.number="s['cache.action.max_entries']" min="1">
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary btn-sm" @click="saveSection('cache')">Save Cache</button>
+                </div>
+            </section>
+
+            <!-- Section 4: Communication -->
+            <section data-category="communication" x-show="activeCategory === 'communication'" x-cloak>
+                <h3 class="section-title">Communication</h3>
+                <h4 class="section-header mb-sm text-sm">Home Assistant</h4>
+                <p class="text-muted mb-md text-80">REST and WebSocket traffic to your HA instance (entity sync, service calls, real-time state).</p>
+                <div class="ha-config">
+                    <div class="form-group m-0">
+                        <label class="form-label">HA base URL</label>
+                        <input type="url" class="form-input" x-model="haConn.url" placeholder="http://homeassistant.local:8123">
+                    </div>
+                    <div class="form-group m-0">
+                        <label class="form-label">Long-lived access token</label>
+                        <div class="flex-center flex-wrap">
+                            <input type="password" class="form-input flex-1 min-w-200"
+                                   x-model="haConn.token" placeholder="Leave blank to keep existing token"
+                                   autocomplete="off">
+                            <span x-show="haConn.token_configured" class="badge badge-teal text-2xs"
+                                  x-text="haConn.token_masked ? ('Saved ' + haConn.token_masked) : 'Saved'"></span>
+                            <span x-show="!haConn.token_configured" class="badge text-2xs badge-danger">No token</span>
                         </div>
                     </div>
-                </template>
-            </div>
-              <div x-show="containerApiKeyMessage" x-transition class="alert mt-sm" role="status" aria-live="polite" aria-atomic="true"
-                 :class="containerApiKeyMessageType === 'error' ? 'alert-error' : 'alert-success'"
-                 x-text="containerApiKeyMessage"></div>
+                    <div class="flex flex-wrap gap-35">
+                        <button type="button" class="btn btn-primary btn-sm" @click="saveHaConnection()">Save HA connection</button>
+                        <button type="button" class="btn btn-secondary btn-sm" @click="testHaConnection()">Test connection</button>
+                    </div>
+                </div>
+                <div x-show="haConnMessage" x-transition class="alert mt-sm" role="status" aria-live="polite" aria-atomic="true"
+                     :class="haConnMessageType === 'error' ? 'alert-error' : 'alert-success'"
+                     x-text="haConnMessage"></div>
 
-            <h4 class="section-header mt-md mb-sm text-sm">Voice / streaming to HA</h4>
-            <div class="form-grid-2">
-                <div class="form-group">
-                    <label class="form-label">Streaming Mode</label>
-                    <select class="form-input" x-model="s['communication.streaming_mode']">
-                        <option value="websocket">websocket</option>
-                        <option value="sse">sse</option>
-                        <option value="none">none</option>
-                    </select>
+                <h4 class="section-header mt-md mb-sm text-sm">Home Assistant integration (HA to Agent Hub)</h4>
+                <p class="text-muted mb-md text-80">The HA-AgentHub integration in Home Assistant calls this container with <span class="text-mono text-xs">Authorization: Bearer &lt;this key&gt;</span> on <span class="text-mono text-xs">/api/conversation</span> and the conversation WebSocket.</p>
+                <div class="max-w-720">
+                    <div class="flex-center flex-wrap mb-sm">
+                        <span x-show="containerApiKey.configured" class="badge badge-teal text-2xs"
+                              x-text="containerApiKey.token_masked ? ('Key saved ' + containerApiKey.token_masked) : 'Key saved'"></span>
+                        <span x-show="!containerApiKey.configured" class="badge text-2xs badge-danger">No key configured</span>
+                    </div>
+                    <div class="form-group m-0 mb-sm">
+                        <label class="form-label">Set custom API key (min. 16 characters)</label>
+                        <div class="flex flex-wrap items-center gap-35">
+                            <input type="password" class="form-input flex-1 min-w-200"
+                                   x-model="containerApiKey.customInput" placeholder="Paste a key or leave empty"
+                                   autocomplete="off">
+                            <button type="button" class="btn btn-primary btn-sm" @click="saveContainerApiKey()">Save key</button>
+                        </div>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-35">
+                        <button type="button" class="btn btn-secondary btn-sm" @click="rotateContainerApiKey()">Generate new key</button>
+                    </div>
+                    <template x-if="containerApiKey.shownOnce">
+                        <div class="mt-sm api-key-shown">
+                            <p class="text-muted mb-sm text-xs m-0">Copy this key now. It is not shown again after you leave the page.</p>
+                            <pre class="api-key-text" x-text="containerApiKey.shownOnce"></pre>
+                            <div class="flex flex-wrap gap-35">
+                                <button type="button" class="btn btn-primary btn-sm" @click="copyContainerApiKeyShown()">Copy to clipboard</button>
+                                <button type="button" class="btn btn-secondary btn-sm" @click="containerApiKey.shownOnce = null">Hide</button>
+                            </div>
+                        </div>
+                    </template>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">WS Reconnect Interval (s)</label>
-                    <input type="number" class="form-input" x-model.number="s['communication.ws_reconnect_interval']" min="1">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Stream Buffer Size</label>
-                    <input type="number" class="form-input" x-model.number="s['communication.stream_buffer_size']" min="1">
-                </div>
-            </div>
-            <div class="form-actions">
-                <button class="btn btn-primary btn-sm" @click="saveSection('communication')">Save Communication</button>
-            </div>
-        </div>
-    </details>
+                <div x-show="containerApiKeyMessage" x-transition class="alert mt-sm" role="status" aria-live="polite" aria-atomic="true"
+                     :class="containerApiKeyMessageType === 'error' ? 'alert-error' : 'alert-success'"
+                     x-text="containerApiKeyMessage"></div>
 
-    <!-- Section 5: A2A -->
-    <details class="card mb-md">
-        <summary>A2A (Agent-to-Agent)</summary>
-        <div class="details-content">
-            <div class="form-grid-2">
-                <div class="form-group">
-                    <label class="form-label">Default Timeout (s)</label>
-                    <input type="number" class="form-input" x-model.number="s['a2a.default_timeout']" min="1">
+                <h4 class="section-header mt-md mb-sm text-sm">Voice / streaming to HA</h4>
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label class="form-label">Streaming Mode</label>
+                        <select class="form-input" x-model="s['communication.streaming_mode']">
+                            <option value="websocket">websocket</option>
+                            <option value="sse">sse</option>
+                            <option value="none">none</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">WS Reconnect Interval (s)</label>
+                        <input type="number" class="form-input" x-model.number="s['communication.ws_reconnect_interval']" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Stream Buffer Size</label>
+                        <input type="number" class="form-input" x-model.number="s['communication.stream_buffer_size']" min="1">
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">Max Iterations</label>
-                    <input type="number" class="form-input" x-model.number="s['a2a.max_iterations']" min="1">
+                <div class="form-actions">
+                    <button class="btn btn-primary btn-sm" @click="saveSection('communication')">Save Communication</button>
                 </div>
-            </div>
-            <div class="form-actions">
-                <button class="btn btn-primary btn-sm" @click="saveSection('a2a')">Save A2A</button>
-            </div>
-        </div>
-    </details>
+            </section>
 
-    <!-- Section 6: General -->
-    <details class="card mb-md">
-        <summary>General</summary>
-        <div class="details-content">
-            <div class="form-grid-2">
-                <div class="form-group">
-                    <label class="form-label">Conversation Context Turns</label>
-                    <input type="number" class="form-input" x-model.number="s['general.conversation_context_turns']" min="1" max="20">
+            <!-- Section 5: Agents -->
+            <section data-category="agents" x-show="activeCategory === 'agents'" x-cloak>
+                <h3 class="section-title">A2A (Agent-to-Agent)</h3>
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label class="form-label">Default Timeout (s)</label>
+                        <input type="number" class="form-input" x-model.number="s['a2a.default_timeout']" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Max Iterations</label>
+                        <input type="number" class="form-input" x-model.number="s['a2a.max_iterations']" min="1">
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">Language</label>
-                    <select class="form-input" x-model="s['language']">
-                        <option value="auto">Auto-detect</option>
-                        <option value="de">Deutsch</option>
-                        <option value="en">English</option>
-                        <option value="fr">Francais</option>
-                        <option value="es">Espanol</option>
-                        <option value="it">Italiano</option>
-                        <option value="nl">Nederlands</option>
-                        <option value="pt">Portugues</option>
-                        <option value="pl">Polski</option>
-                        <option value="ru">Russkiy</option>
-                        <option value="ja">Nihongo</option>
-                        <option value="zh">Zhongwen</option>
-                        <option value="ko">Hangugeo</option>
-                    </select>
+                <div class="form-actions">
+                    <button class="btn btn-primary btn-sm" @click="saveSection('a2a')">Save A2A</button>
                 </div>
-            </div>
-            <div class="form-actions">
-                <button class="btn btn-primary btn-sm" @click="saveLanguage()">Save General</button>
-            </div>
+            </section>
+
+            <!-- Section 6: Home Context -->
+            <section data-category="home_context" x-show="activeCategory === 'home_context'" x-cloak>
+                <h3 class="section-title">General</h3>
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label class="form-label">Conversation Context Turns</label>
+                        <input type="number" class="form-input" x-model.number="s['general.conversation_context_turns']" min="1" max="20">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Language</label>
+                        <select class="form-input" x-model="s['language']">
+                            <option value="auto">Auto-detect</option>
+                            <option value="de">Deutsch</option>
+                            <option value="en">English</option>
+                            <option value="fr">Francais</option>
+                            <option value="es">Espanol</option>
+                            <option value="it">Italiano</option>
+                            <option value="nl">Nederlands</option>
+                            <option value="pt">Portugues</option>
+                            <option value="pl">Polski</option>
+                            <option value="ru">Russkiy</option>
+                            <option value="ja">Nihongo</option>
+                            <option value="zh">Zhongwen</option>
+                            <option value="ko">Hangugeo</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary btn-sm" @click="saveLanguage()">Save General</button>
+                </div>
+            </section>
+
+            <!-- Section 7: MCP -->
+            <section data-category="mcp" x-show="activeCategory === 'mcp'" x-cloak>
+                <h3 class="section-title">MCP Servers</h3>
+                <p class="text-muted text-sm">MCP server configuration is managed on the <a href="{{ root_url(request, '/dashboard/mcp-servers') }}" class="section-link">MCP Servers</a> page.</p>
+            </section>
+
+            <!-- Section 8: Plugins -->
+            <section data-category="plugins" x-show="activeCategory === 'plugins'" x-cloak>
+                <h3 class="section-title">Plugins</h3>
+                <p class="text-muted text-sm">Plugin management is on the <a href="{{ root_url(request, '/dashboard/plugins') }}" class="section-link">Plugins</a> page.</p>
+            </section>
         </div>
-    </details>
+    </div>
 </div>
 
 <script>
@@ -315,8 +321,7 @@ function settingsPage() {
     return {
         s: {},
         weights: {},
-        message: '',
-        messageType: 'success',
+
         providers: {
             openrouter: { configured: false, masked_key: null },
             groq: { configured: false, masked_key: null },
@@ -344,12 +349,65 @@ function settingsPage() {
             { key: 'weight.embedding', label: 'Embedding' },
             { key: 'weight.alias', label: 'Alias' },
         ],
+        activeCategory: 'llm',
+        search: '',
+        categories: [
+            { key: 'llm', label: 'LLM', count: 0 },
+            { key: 'embedding', label: 'Embedding', count: 0 },
+            { key: 'entity_matching', label: 'Entity Matching', count: 0 },
+            { key: 'cache', label: 'Cache', count: 0 },
+            { key: 'communication', label: 'Communication', count: 0 },
+            { key: 'agents', label: 'Agents', count: 0 },
+            { key: 'home_context', label: 'Home Context', count: 0 },
+            { key: 'mcp', label: 'MCP', count: 0 },
+            { key: 'plugins', label: 'Plugins', count: 0 },
+        ],
+
+        init() {
+            var hash = window.location.hash.replace('#', '');
+            if (hash && this.categories.find(function(c) { return c.key === hash; })) {
+                this.activeCategory = hash;
+            }
+        },
 
         async loadAll() {
             await Promise.all([
                 this.loadSettings(), this.loadWeights(), this.loadProviders(),
                 this.loadHaConnection(), this.loadContainerApiKey(),
             ]);
+            this.updateCounts();
+        },
+
+        setCategory(cat) {
+            this.activeCategory = cat;
+            window.location.hash = cat;
+        },
+
+        applySearch() {
+            var term = this.search.toLowerCase().trim();
+            var sections = document.querySelectorAll('[data-category]');
+            sections.forEach(function(sec) {
+                var rows = sec.querySelectorAll('.form-group, .provider-row, .ha-config, [data-setting]');
+                var sectionMatch = false;
+                rows.forEach(function(row) {
+                    var text = row.textContent.toLowerCase();
+                    var match = !term || text.indexOf(term) !== -1;
+                    row.style.display = match ? '' : 'none';
+                    if (match) sectionMatch = true;
+                });
+                sec.style.display = sectionMatch ? '' : 'none';
+            });
+            this.updateCounts();
+        },
+
+        updateCounts() {
+            var self = this;
+            this.categories.forEach(function(cat) {
+                var sec = document.querySelector('[data-category="' + cat.key + '"]');
+                if (!sec) { cat.count = 0; return; }
+                var visible = sec.querySelectorAll('.form-group:not([style*="display: none"]), .provider-row:not([style*="display: none"])');
+                cat.count = visible.length;
+            });
         },
 
         async loadHaConnection() {
@@ -627,14 +685,12 @@ function settingsPage() {
         },
 
         async saveEntityMatching() {
-            // Save settings-table values (threshold, top_n)
             var settingsPayload = {};
             for (var key in this.s) {
                 if (key.startsWith('entity_matching.')) {
                     settingsPayload[key] = this.s[key];
                 }
             }
-            // Save weights (separate table)
             var weightsPayload = {};
             for (var key in this.weights) {
                 weightsPayload[key] = this.weights[key];
@@ -683,10 +739,7 @@ function settingsPage() {
         },
 
         showMessage(msg, type) {
-            this.message = msg;
-            this.messageType = type;
-            var self = this;
-            setTimeout(function() { self.message = ''; }, 3000);
+            window.toast(msg, type);
         }
     };
 }

@@ -1,6 +1,6 @@
 {% extends "dashboard_base.html" %}
 {% block page_title %}Personality{% endblock %}
-{% block nav_personality %}active{% endblock %}
+{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/personality.css') }}">{% endblock %}
 {% block header_title %}Personality Configuration{% endblock %}
 {% block page_content %}
 <div x-data="personalityPage()" x-init="loadConfig()">

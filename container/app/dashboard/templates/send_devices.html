@@ -1,8 +1,8 @@
 {% extends "dashboard_base.html" %}
 
 {% block page_title %}Send Devices{% endblock %}
+{% block page_css %}<link rel="stylesheet" href="{{ static_url(request, '/dashboard/static/css/pages/send_devices.css') }}">{% endblock %}
 {% block header_title %}Send Devices{% endblock %}
-{% block nav_send_devices %}active{% endblock %}
 
 {% block page_content %}
 <div x-data="sendDevicesPage()" x-init="loadMappings()">
@@ -12,11 +12,6 @@
             <p class="page-subtitle">Configure device mappings for the send-agent. Map display names to HA notify or TTS services.</p>
         </div>
     </div>
-
-    <!-- Status message -->
-    <div x-show="message" x-cloak class="alert" :class="messageType === 'error' ? 'alert-error' : 'alert-success'"
-         :role="messageType === 'error' ? 'alert' : 'status'" :aria-live="messageType === 'error' ? 'assertive' : 'polite'" aria-atomic="true" x-text="message"
-         x-transition @click="message = ''"></div>
 
     <!-- Add new mapping form -->
     <div class="card mb-lg">
@@ -105,17 +100,15 @@ function sendDevicesPage() {
     return {
         mappings: [],
         availableTargets: [],
+        persons: [],
         newMapping: { display_name: '', device_type: 'notify', ha_service_target: '' },
-        message: '',
-        messageType: 'success',
 
         async loadMappings() {
             try {
                 this.mappings = await window.dashboardApi.json('/api/admin/send-devices');
             } catch (e) {
                 if (e.code === 'auth_expired') return;
-                this.message = e.detail || 'Failed to load mappings';
-                this.messageType = 'error';
+                window.toast(e.detail || 'Failed to load mappings', 'error');
                 this.mappings = [];
             }
             await this.loadAvailableTargets();
@@ -152,14 +145,12 @@ function sendDevicesPage() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(this.newMapping),
                 });
-                this.message = 'Mapping created';
-                this.messageType = 'success';
+                window.toast('Mapping created', 'success');
                 this.newMapping = { display_name: '', device_type: 'notify', ha_service_target: '', person_entity_id: '' };
                 await this.loadMappings();
             } catch (e) {
                 if (e.code === 'auth_expired') return;
-                this.message = e.detail || 'Failed to create mapping';
-                this.messageType = 'error';
+                window.toast(e.detail || 'Failed to create mapping', 'error');
             }
         },
 
@@ -167,13 +158,11 @@ function sendDevicesPage() {
             if (!confirm('Delete this mapping?')) return;
             try {
                 await window.dashboardApi.request(`/api/admin/send-devices/${id}`, { method: 'DELETE' });
-                this.message = 'Mapping deleted';
-                this.messageType = 'success';
+                window.toast('Mapping deleted', 'success');
                 await this.loadMappings();
             } catch (e) {
                 if (e.code === 'auth_expired') return;
-                this.message = e.detail || 'Failed to delete mapping';
-                this.messageType = 'error';
+                window.toast(e.detail || 'Failed to delete mapping', 'error');
             }
         },
     };

@@ -1,0 +1,4 @@
+Placeholder for Outfit woff2 font files.
+Weights: 400, 500, 600, 700.
+Source: https://fonts.google.com/specimen/Outfit
+License: SIL Open Font License 1.1

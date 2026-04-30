@@ -362,8 +362,8 @@ class TestDashboardTemplateRendering:
         assert '@keydown.escape.window="showEditModal=false"' in html
 
     def test_dashboard_x_cloak_global_rule(self):
-        style_path = Path(__file__).resolve().parents[1] / "app" / "dashboard" / "static" / "style.css"
-        css = style_path.read_text(encoding="utf-8")
+        layout_css_path = Path(__file__).resolve().parents[1] / "app" / "dashboard" / "static" / "css" / "layout.css"
+        css = layout_css_path.read_text(encoding="utf-8")
         assert "[x-cloak]" in css
 
     def test_dashboard_polling_templates_clear_refresh_interval(self):
