@@ -564,10 +564,7 @@ input[type="range"]::-webkit-slider-thumb {
     white-space: nowrap;
 }
 
-.stat-card-value.text-base {
-    font-size: 1rem;
-    font-weight: 500;
-}
+
 
 .stat-card-detail {
     font-size: 0.75rem;
