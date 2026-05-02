@@ -15,7 +15,7 @@ from app.a2a.protocol import JsonRpcRequest
 from app.analytics.tracer import SpanCollector
 from app.middleware.rate_limit import WsMessageRateLimiter, rate_limit_conversation
 from app.models.agent import AgentTask, TaskContext
-from app.models.conversation import ConversationRequest, ConversationResponse, StreamToken
+from app.models.conversation import ActionResult, ConversationRequest, ConversationResponse, StreamToken
 from app.security.auth import require_api_key, require_api_key_ws
 from app.security.user_input import prepare_user_text
 
@@ -34,6 +34,36 @@ def set_dispatcher(dispatcher) -> None:
     """Called by main.py to inject the A2A dispatcher."""
     global _dispatcher
     _dispatcher = dispatcher
+
+
+def _normalize_action_executed(raw) -> ActionResult | None:
+    """Adapt internal ``ActionExecuted`` / dict shapes to the public ``ActionResult`` model."""
+    if raw is None:
+        return None
+    if isinstance(raw, ActionResult):
+        return raw
+    if hasattr(raw, "model_dump"):
+        raw = raw.model_dump()
+    if not isinstance(raw, dict):
+        return None
+    service = raw.get("service", "")
+    if not service:
+        action = raw.get("action", "")
+        entity_id = raw.get("entity_id", "")
+        if action and "." in entity_id:
+            domain = entity_id.split(".")[0]
+            service = f"{domain}/{action}"
+        else:
+            service = action
+    result = raw.get("result", "")
+    if not result:
+        result = "success" if raw.get("success") else "error"
+    return ActionResult(
+        service=service,
+        entity_id=raw.get("entity_id", ""),
+        result=result,
+        service_data=raw.get("service_data"),
+    )
 
 
 def _build_a2a_request(
@@ -101,6 +131,8 @@ async def conversation_rest(
     return ConversationResponse(
         speech=result.get("speech", ""),
         conversation_id=result.get("conversation_id") or conv_request.conversation_id,
+        action_executed=_normalize_action_executed(result.get("action_executed")),
+        routed_agent=result.get("routed_to") or result.get("agent_id"),
         voice_followup=bool(result.get("voice_followup")),
         sanitized=bool(result.get("sanitized", True)),
         directive=result.get("directive"),
@@ -141,6 +173,10 @@ async def conversation_sse(
                     directive=chunk.result.get("directive") if chunk.done else None,
                     reason=chunk.result.get("reason") if chunk.done else None,
                     filler_push=chunk.result.get("filler_push") if not chunk.done else None,
+                    action_executed=_normalize_action_executed(chunk.result.get("action_executed"))
+                    if chunk.done
+                    else None,
+                    routed_agent=chunk.result.get("routed_to") or chunk.result.get("agent_id") if chunk.done else None,
                 )
                 yield f"data: {token.model_dump_json()}\n\n"
         finally:
@@ -220,6 +256,12 @@ async def ws_conversation(
                         directive=chunk.result.get("directive") if chunk.done else None,
                         reason=chunk.result.get("reason") if chunk.done else None,
                         filler_push=chunk.result.get("filler_push") if not chunk.done else None,
+                        action_executed=_normalize_action_executed(chunk.result.get("action_executed"))
+                        if chunk.done
+                        else None,
+                        routed_agent=chunk.result.get("routed_to") or chunk.result.get("agent_id")
+                        if chunk.done
+                        else None,
                     )
                     await websocket.send_json(token.model_dump())
             except WebSocketDisconnect:

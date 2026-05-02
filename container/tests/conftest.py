@@ -464,3 +464,113 @@ def _ensure_voluptuous_mock():
     if "voluptuous" not in sys.modules:
         sys.modules["voluptuous"] = MagicMock()
     yield
+
+
+# ---------------------------------------------------------------------------
+# 10. build_scenario_backed_app -- real pipeline with deterministic stubs
+# ---------------------------------------------------------------------------
+
+
+def build_scenario_backed_app(
+    scenario,
+    db_path: Path,
+    *,
+    api_key: str = "test-api-key",
+):
+    """Build a FastAPI app wired to a real orchestrator pipeline for a scenario.
+
+    Uses :func:`tests.scenarios.runner.build_pipeline` and
+    :func:`tests.scenarios.runner._temp_db` so the orchestrator, agents,
+    entity index, and deterministic LLM stub are all real.
+    """
+    from app.api.routes import conversation as conversation_routes
+    from app.main import create_app
+
+    app = create_app()
+
+    @asynccontextmanager
+    async def _scenario_lifespan(_app):
+        from tests.scenarios.runner import _temp_db, build_pipeline
+
+        async with _temp_db(db_path):
+            # Apply scenario preconditions
+            if scenario.preconditions.settings:
+                from app.db.schema import get_db_write
+
+                async with get_db_write() as db:
+                    for k, v in scenario.preconditions.settings.items():
+                        await db.execute(
+                            "INSERT OR REPLACE INTO settings (key, value, value_type, category, description) "
+                            "VALUES (?, ?, 'string', 'test', '')",
+                            (k, v),
+                        )
+                    await db.commit()
+
+            if scenario.preconditions.send_device_mappings:
+                from app.db.schema import get_db_write
+
+                async with get_db_write() as db:
+                    for m in scenario.preconditions.send_device_mappings:
+                        await db.execute(
+                            "INSERT INTO send_device_mappings (display_name, device_type, ha_service_target, created_at) "
+                            "VALUES (?, ?, ?, ?)",
+                            (
+                                m.get("display_name") or m.get("alias") or "device",
+                                m.get("device_type", "notify"),
+                                m.get("ha_service_target") or m.get("entity_id") or "",
+                                "2026-04-22T00:00:00+00:00",
+                            ),
+                        )
+                    await db.commit()
+
+            handles = await build_pipeline(scenario, db_path)
+            handles.llm.feed_from_scenario(scenario)
+
+            # Register orchestrator so the dispatcher can route to it
+            await handles.registry.register(handles.orchestrator)
+
+            # Inject real handles into app state
+            _app.state.orchestrator = handles.orchestrator
+            _app.state.registry = handles.registry
+            _app.state.dispatcher = handles.dispatcher
+            _app.state.ha_client = handles.ha_client
+            _app.state.entity_index = handles.entity_index
+            _app.state.entity_matcher = handles.entity_matcher
+            _app.state.setup_runtime_initialized = True
+
+            # Wire dispatcher to conversation routes
+            conversation_routes.set_dispatcher(handles.dispatcher)
+
+            async def _complete_router(agent_id, messages, **kwargs):
+                return await handles.llm.complete(agent_id, messages, **kwargs)
+
+            # Seed API key so auth works end-to-end
+            from app.security.encryption import store_secret
+
+            await store_secret("container_api_key", api_key)
+
+            # Mark setup complete so SetupRedirectMiddleware allows requests
+            from app.db.repository import SetupStateRepository
+
+            for step in ("admin_password", "ha_connection", "container_api_key", "llm_providers", "review_complete"):
+                await SetupStateRepository.set_step_completed(step)
+
+            from unittest.mock import patch
+
+            llm_patcher = patch("app.llm.client.complete", new=_complete_router)
+            llm_patcher.start()
+            base_patcher = None
+            try:
+                base_patcher = patch("app.agents.base.complete", new=_complete_router)
+                base_patcher.start()
+            except Exception:
+                base_patcher = None
+            try:
+                yield
+            finally:
+                llm_patcher.stop()
+                if base_patcher is not None:
+                    base_patcher.stop()
+
+    app.router.lifespan_context = _scenario_lifespan
+    return app

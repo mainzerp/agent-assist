@@ -1871,9 +1871,12 @@ class OrchestratorAgent(BaseAgent):
                 "done": True,
                 "conversation_id": conversation_id,
                 "mediated_speech": strip_markdown(result.get("speech", "")),
+                "routed_to": "orchestrator",
             }
             if result.get("error"):
                 final_chunk["error"] = result["error"]
+            if result.get("action_executed"):
+                final_chunk["action_executed"] = result["action_executed"]
             yield final_chunk
             return
         if self._cache_manager:
@@ -2012,6 +2015,7 @@ class OrchestratorAgent(BaseAgent):
                 "done": True,
                 "conversation_id": conversation_id,
                 "mediated_speech": mediated_text,
+                "routed_to": target_agent,
             }
             if vf_eff:
                 final_chunk["voice_followup"] = True
@@ -2376,6 +2380,7 @@ class OrchestratorAgent(BaseAgent):
                 "done": True,
                 "conversation_id": conversation_id,
                 "directive": stream_directive,
+                "routed_to": target_agent,
             }
             if stream_reason is not None:
                 final_chunk["reason"] = stream_reason
@@ -2419,11 +2424,14 @@ class OrchestratorAgent(BaseAgent):
             "done": True,
             "conversation_id": conversation_id,
             "mediated_speech": mediated_text,
+            "routed_to": target_agent,
         }
         if stream_error:
             final_chunk["error"] = stream_error
         if vf_eff:
             final_chunk["voice_followup"] = True
+        if action_executed:
+            final_chunk["action_executed"] = action_executed
         self._schedule_ha_voice_followup_if_requested(task, vf_eff)
         yield final_chunk
 

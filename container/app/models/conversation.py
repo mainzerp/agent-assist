@@ -33,6 +33,7 @@ class ConversationResponse(BaseModel):
     speech: str = Field(..., description="Response text for TTS or display")
     conversation_id: str | None = None
     action_executed: ActionResult | None = None
+    routed_agent: str | None = None
     voice_followup: bool = Field(
         False,
         description="True when the container will re-open Assist listening on the satellite (HA voice)",
@@ -92,6 +93,8 @@ class StreamToken(BaseModel):
     # via assist_satellite.announce.  When present the integration must
     # play it immediately and continue reading the stream.
     filler_push: str | None = None
+    action_executed: ActionResult | None = None
+    routed_agent: str | None = None
 
     @model_validator(mode="after")
     def _force_unsanitized_filler(self) -> StreamToken:

@@ -395,3 +395,239 @@ async def csrf_post(
     if token is not None:
         payload["csrf_token"] = token
     return await client.post(url, data=payload)
+
+
+# ---------------------------------------------------------------------------
+# Bridge Action Audit helpers
+# ---------------------------------------------------------------------------
+
+
+class BridgeActionAudit:
+    """Black-box assertion helpers for HA-bridge action-audit tests."""
+
+    @staticmethod
+    def assert_routing(response: dict, expected_agent: str, scenario_id: str = "") -> None:
+        """Assert that ``response["routed_agent"]`` matches ``expected_agent``."""
+        actual = response.get("routed_agent")
+        prefix = f"[{scenario_id}] " if scenario_id else ""
+        if actual != expected_agent:
+            raise AssertionError(f"{prefix}routing mismatch: expected {expected_agent!r} got {actual!r}")
+
+    @staticmethod
+    def assert_action_executed(
+        response: dict,
+        expected_service: str,
+        expected_entity: str | None = None,
+        expected_data_keys: list[str] | None = None,
+        scenario_id: str = "",
+    ) -> None:
+        """Assert that ``response["action_executed"]`` matches expectations."""
+        action = response.get("action_executed") or {}
+        prefix = f"[{scenario_id}] " if scenario_id else ""
+        if not action:
+            raise AssertionError(f"{prefix}expected action_executed, got None")
+        actual_service = action.get("service")
+        if actual_service != expected_service:
+            raise AssertionError(
+                f"{prefix}action_executed.service mismatch: expected {expected_service!r} got {actual_service!r}"
+            )
+        if expected_entity is not None:
+            actual_entity = action.get("entity_id")
+            if actual_entity != expected_entity:
+                raise AssertionError(
+                    f"{prefix}action_executed.entity_id mismatch: expected {expected_entity!r} got {actual_entity!r}"
+                )
+        if expected_data_keys:
+            service_data = action.get("service_data") or {}
+            for key in expected_data_keys:
+                if key not in service_data:
+                    raise AssertionError(
+                        f"{prefix}action_executed.service_data missing key {key!r}; got {service_data!r}"
+                    )
+
+    @staticmethod
+    def assert_full_contract(response: dict, expected: dict, scenario_id: str = "") -> None:
+        """Dataclass-driven assertion over the full response/action contract.
+
+        ``expected`` keys:
+        - ``routed_agent``: str
+        - ``action_executed.service``: str
+        - ``action_executed.entity_id``: str
+        - ``action_executed.service_data_keys``: list[str]
+        - ``speech_contains``: list[str]
+        """
+        prefix = f"[{scenario_id}] " if scenario_id else ""
+        if "routed_agent" in expected:
+            BridgeActionAudit.assert_routing(response, expected["routed_agent"], scenario_id)
+        if "action_executed" in expected:
+            ae_expected = expected["action_executed"]
+            BridgeActionAudit.assert_action_executed(
+                response,
+                expected_service=ae_expected.get("service", ""),
+                expected_entity=ae_expected.get("entity_id"),
+                expected_data_keys=ae_expected.get("service_data_keys"),
+                scenario_id=scenario_id,
+            )
+        speech = response.get("speech") or response.get("mediated_speech") or response.get("token", "")
+        for needle in expected.get("speech_contains", []):
+            if needle.lower() not in speech.lower():
+                raise AssertionError(f"{prefix}expected speech to contain {needle!r}; got {speech!r}")
+
+
+# ---------------------------------------------------------------------------
+# HA Mimic Client -- mimics the HA integration's bridge behavior
+# ---------------------------------------------------------------------------
+
+
+class HAMimicClient:
+    """Async test helper that mimics the HA integration conversation client.
+
+    Uses ``fastapi.testclient.TestClient`` (sync) for both HTTP and WebSocket
+    because ``httpx`` does not support WebSocket. Sync TestClient calls are
+    wrapped with :func:`asyncio.to_thread` so the helper can be used inside
+    ``pytest-asyncio`` tests without blocking the event loop.
+    """
+
+    def __init__(self, app, api_key: str = "test-api-key") -> None:
+        self.app = app
+        self.api_key = api_key
+        self._client = None
+        self._ws = None
+
+    async def __aenter__(self):
+        import asyncio
+
+        from fastapi.testclient import TestClient
+
+        def _enter():
+            c = TestClient(self.app)
+            c.__enter__()
+            return c
+
+        self._client = await asyncio.to_thread(_enter)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
+
+    async def connect_ws(self):
+        """Open a WebSocket to ``/ws/conversation`` with Bearer auth."""
+        import asyncio
+
+        if self._client is None:
+            raise RuntimeError("HAMimicClient must be entered via async with before connect_ws")
+
+        def _connect():
+            ws = self._client.websocket_connect(
+                "/ws/conversation",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+            ws.__enter__()
+            return ws
+
+        self._ws = await asyncio.to_thread(_connect)
+
+    async def send_turn(
+        self,
+        text: str,
+        conversation_id: str | None = None,
+        language: str = "en",
+        device_id: str | None = None,
+    ) -> list[dict]:
+        """Send a conversation turn over WS and accumulate StreamToken dicts."""
+        import asyncio
+
+        if self._ws is None:
+            raise RuntimeError("WebSocket not connected; call connect_ws() first")
+        payload: dict[str, object] = {"text": text, "language": language}
+        if conversation_id is not None:
+            payload["conversation_id"] = conversation_id
+        if device_id is not None:
+            payload["device_id"] = device_id
+        await asyncio.to_thread(self._ws.send_json, payload)
+        tokens: list[dict] = []
+        while True:
+            msg = await asyncio.to_thread(self._ws.receive_json)
+            tokens.append(msg)
+            if msg.get("done"):
+                break
+        return tokens
+
+    async def rest_turn(
+        self,
+        text: str,
+        conversation_id: str | None = None,
+        language: str = "en",
+        device_id: str | None = None,
+    ) -> dict:
+        """POST to ``/api/conversation`` and return the JSON response."""
+        import asyncio
+
+        if self._client is None:
+            raise RuntimeError("HAMimicClient must be entered via async with before rest_turn")
+        payload: dict[str, object] = {"text": text, "language": language}
+        if conversation_id is not None:
+            payload["conversation_id"] = conversation_id
+        if device_id is not None:
+            payload["device_id"] = device_id
+        resp = await asyncio.to_thread(
+            self._client.post,
+            "/api/conversation",
+            json=payload,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def sse_turn(
+        self,
+        text: str,
+        conversation_id: str | None = None,
+        language: str = "en",
+        device_id: str | None = None,
+    ) -> list[dict]:
+        """POST to ``/api/conversation/stream``, parse SSE, return StreamToken dicts."""
+        import asyncio
+        import json
+
+        if self._client is None:
+            raise RuntimeError("HAMimicClient must be entered via async with before sse_turn")
+        payload: dict[str, object] = {"text": text, "language": language}
+        if conversation_id is not None:
+            payload["conversation_id"] = conversation_id
+        if device_id is not None:
+            payload["device_id"] = device_id
+        resp = await asyncio.to_thread(
+            self._client.post,
+            "/api/conversation/stream",
+            json=payload,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+        )
+        resp.raise_for_status()
+        tokens: list[dict] = []
+        for line in resp.text.splitlines():
+            if line.startswith("data:"):
+                data = json.loads(line.removeprefix("data:").strip())
+                tokens.append(data)
+                if data.get("done"):
+                    break
+        return tokens
+
+    async def close(self):
+        """Close WS and the underlying TestClient."""
+        import asyncio
+
+        if self._ws is not None:
+
+            def _exit_ws():
+                self._ws.__exit__(None, None, None)
+
+            await asyncio.to_thread(_exit_ws)
+            self._ws = None
+        if self._client is not None:
+
+            def _exit():
+                self._client.__exit__(None, None, None)
+
+            await asyncio.to_thread(_exit)
+            self._client = None

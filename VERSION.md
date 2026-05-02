@@ -1,6 +1,11 @@
 # Version
 
-**Current Version:** 1.13.1
+**Current Version:** 1.14.0
+
+## Recent Changes (since 1.13.1)
+
+- **HA Bridge Test Suite:** Added comprehensive end-to-end integration tests for the Home Assistant bridge covering REST, SSE, and WebSocket conversation transports. The suite includes 13 basic bridge tests (`test_ha_bridge_basic.py`), 5 advanced WebSocket tests (`test_ha_bridge_ws.py`), and full scenario parity coverage (`test_ha_bridge_scenarios.py`) parametrizing all 102 YAML scenarios across REST, WS, and REST-vs-WS speech parity assertions. Tests use a deterministic LLM stub with FIFO-per-agent queues, a fresh app-per-transport pattern to prevent stub state contamination, and `starlette.testclient.TestClient` wrapped in `asyncio.to_thread` for synchronous WebSocket testing inside async pytest.
+- **HA Bridge Action-Audit API:** Extended `ConversationResponse` and `StreamToken` to expose `routed_agent` and `action_executed` for bridge-level action auditing. Added `test_ha_bridge_action_audit.py` with 20 black-box integration tests covering routing, entity resolution, and action execution through REST, SSE, and WebSocket. The orchestrator streaming path now forwards `routed_to` and `action_executed` on the terminal `done=True` frame.
 
 ## Recent Changes (since 1.13.0)
 
@@ -149,6 +154,10 @@
 - Documentation alignment: `docs/configuration.md`, `.github/instructions/project-definition.md`, and the cache dashboard template now use the canonical `cache.action.semantic_threshold` / `cache.routing.semantic_threshold` keys, document `max_entries=50000` for both tiers, and surface the new LRU policy settings.
 
 ## Version History
+
+### 1.13.1 (PATCH) -- Orchestrator entity-name preservation
+
+- Hardened entity-name preservation in the orchestrator classification prompt. The LLM is now explicitly warned that translating any entity, room, device, or location name will cause the downstream agent to fail to find the device. The dynamic `language_hint` injected for non-English utterances carries the same warning.
 
 ### 1.4.1 (PATCH) -- Neutral structured replay context
 
