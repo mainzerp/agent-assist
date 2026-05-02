@@ -75,6 +75,7 @@ CRITICAL -- ENTITY NAMES MUST NEVER BE TRANSLATED:
 - Examples of WRONG behavior:
   * If a non-English room name appears in the input (e.g. a German, French, or Spanish word), DO NOT translate it to English.
   * If the user uses a localized device name, DO NOT replace it with an English equivalent.
+- The condensed task should be written in English, BUT entity, room, device, and location names must remain in their ORIGINAL language and spelling. Never "help" by translating them. If you translate an entity name, the downstream agent will fail to find the device.
 
 Examples:
 

@@ -2573,7 +2573,9 @@ class OrchestratorAgent(BaseAgent):
                 f"User language hint: the user message is in '{lang}'. "
                 "Entity, room, device, and location names in the user input are "
                 "ALREADY in the user's language and MUST be copied verbatim into "
-                "the condensed task. Do not translate them to English."
+                "the condensed task. Do not translate them to English. "
+                "If you translate any entity, room, device, or location name, "
+                "the downstream agent will fail to find it."
             )
         else:
             language_hint = ""
@@ -2739,7 +2741,9 @@ class OrchestratorAgent(BaseAgent):
                 f"User language hint: the user message is in '{lang}'. "
                 "Entity, room, device, and location names in the user input are "
                 "ALREADY in the user's language and MUST be copied verbatim into "
-                "the condensed task. Do not translate them to English."
+                "the condensed task. Do not translate them to English. "
+                "If you translate any entity, room, device, or location name, "
+                "the downstream agent will fail to find it."
             )
         else:
             language_hint = ""

@@ -1,6 +1,10 @@
 # Version
 
-**Current Version:** 1.13.0
+**Current Version:** 1.13.1
+
+## Recent Changes (since 1.13.0)
+
+- **Orchestrator Prompt:** Hardened entity-name preservation in the orchestrator classification prompt. The LLM is now explicitly warned that translating any entity, room, device, or location name will cause the downstream agent to fail to find the device. The dynamic `language_hint` injected for non-English utterances carries the same warning.
 
 ## Recent Changes (since 1.12.5)
 
