@@ -74,7 +74,7 @@ jobs:
 
       - name: Scan image with Trivy
         if: env.PUSH_TO_GHCR == 'true'
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@v0.36.0
         continue-on-error: true
         with:
           image-ref: ${{ steps.ghcr.outputs.image }}:main
@@ -104,7 +104,7 @@ jobs:
 
       - name: Scan PR image with Trivy
         if: github.event_name == 'pull_request'
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@v0.36.0
         continue-on-error: true
         with:
           image-ref: agent-assist:ci
