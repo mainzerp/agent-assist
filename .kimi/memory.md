@@ -34,6 +34,26 @@
 
 - None currently.
 
+## Lessons Learned (2026-05-02)
+
+- Added `build_scenario_backed_app()` to `conftest.py` to wire real orchestrator pipeline into FastAPI test apps. Must call `conversation_routes.set_dispatcher(handles.dispatcher)` after building pipeline so API routes use real dispatcher instead of mocks.
+- `HAMimicClient` test helper uses `starlette.testclient.TestClient` wrapped in `asyncio.to_thread` for WebSocket testing inside async pytest, because `httpx` does not support WebSocket.
+- When running scenarios through REST/WS layers, use a fresh app-per-transport pattern to prevent deterministic LLM stub state contamination between transports.
+- Scenario parametrization through API layer: 102 YAML scenarios * 3 tests each (REST + WS + parity) = 306 tests. All pass deterministically with no real LLM calls.
+
+## Lessons Learned (2026-05-02) -- Action-Audit Bridge Tests
+
+- `ConversationResponse` and `StreamToken` models already had `action_executed` field in the model, but it was never populated by the REST/SSE/WS handlers. Adding `routed_agent` and wiring `action_executed` in `conversation.py` enables true black-box bridge tests.
+- The orchestrator's streaming path (`handle_task_stream`) needed `routed_to` and `action_executed` added to the final `done=True` chunk so WS/SSE done frames carry the metadata.
+- Internal `ActionExecuted` shapes may differ from public `ActionResult` model; a `_normalize_action_executed()` adapter helper in routes is useful.
+- Bridge tests that assert ONLY on API responses (no `app.state` poking) are cleaner and survive refactors better, but require the API to expose the necessary metadata.
+
+## Meta-Workflow Fixes
+
+- 2026-05-02: Plan subagent was consistently hanging in refinement loops, producing 50-80 KB plans with 30+ heading levels and endless "V1 vs V2" comparison tables. Fixed by adding hard anti-loop rules to AGENTS.md: 300-line/20 KB max plan size, no recursive file reading, no design-alternative sections, max 3 heading levels, max 5 acceptance criteria per item, one-pass output only.
+- 2026-05-02: `explore` and `plan` subagent types have NO write access (built-in tool restrictions: explore = read/search/no-write, plan = read/search/no-write/no-shell). The workflow diagram incorrectly claimed they "create analysis doc" and "create plan doc". Fixed AGENTS.md: all three phases now use `coder` subagent_type with prompt-enforced tool restrictions. Research mode = ReadFile/Grep/Glob/WriteFile (docs/SubAgent only). Planning mode = ReadFile/Grep/Glob/WriteFile (docs/SubAgent only). Implementation mode = full toolset.
+- 2026-05-02: Added parallel agent execution rules to AGENTS.md. Research: up to 3 parallel agents for separate modules, followed by a Synthesis agent. Implementation: up to 3 parallel agents for independent work streams, followed by a Merge & Verify agent. Planning remains strictly sequential. Fallback to sequential execution if Merge & Verify finds unresolvable conflicts.
+
 ## Critical Do-Nots
 
 - **NEVER delete Docker volumes** (`docker compose down -v`, `docker volume rm`, etc.) unless the user *explicitly* requests it. This destroys the SQLite database, ChromaDB data, API keys, HA connection config, and all cached state. If a container fails to start due to data corruption, prefer `docker compose down` (without `-v`) and container recreation, or manual cleanup of specific files inside the volume. Losing a volume forces a full re-setup of the container.

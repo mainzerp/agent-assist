@@ -30,21 +30,38 @@ Your job is to receive the user's request, delegate analysis and planning to spe
 ```
 User Request
     |
-YOU (Orchestrator): Receive request, spawn Research subagent
+YOU (Orchestrator): Receive request, spawn 1-3 Research subagents
+    - Spawn multiple agents IN PARALLEL only if the request touches
+      clearly separated modules/domains (see "Parallel Agent Execution")
     |
-SUBAGENT #1: Research & Analysis (explore)
-    - Reads files, analyzes codebase
-    - Creates analysis doc in docs/SubAgent/[NAME]_ANALYSIS.md
-    - Returns summary + analysis file path
+SUBAGENT #1a...#1n: Research & Analysis (coder, research mode)
+    - Prompt enforces: ReadFile/Grep/Glob/WriteFile, NO Shell,
+      NO StrReplaceFile, NO source code edits.
+    - Each agent investigates ONE distinct topic only.
+    - Writes analysis to docs/SubAgent/[NAME]_{TOPIC}_ANALYSIS.md
+    - Returns summary + file path
     - NEVER asks the user questions, NEVER requests plan approval
     |
-YOU (Orchestrator): Receive results, spawn Planning subagent
+YOU (Orchestrator): Spawn Synthesis subagent (only if parallel research was used)
     |
-SUBAGENT #2: Planning (plan)
+SUBAGENT #1-Synth: Synthesis (coder, synthesis mode)
+    - Prompt enforces: ReadFile/WriteFile ONLY. Reads all
+      docs/SubAgent/[NAME]_*_ANALYSIS.md files.
+    - Writes a single combined docs/SubAgent/[NAME]_ANALYSIS.md
+    - Removes duplicates, resolves contradictions, adds cross-references.
+    - Does NOT add new research — only synthesizes existing findings.
+    - Returns summary
+    |
+YOU (Orchestrator): Receive results, spawn Planning subagent (no EnterPlanMode)
+    |
+SUBAGENT #2: Planning (coder, planning mode)
+    - Prompt enforces: ReadFile/Grep/Glob/WriteFile ONLY. You may write ONLY
+      to docs/SubAgent/[NAME]_PLAN.md. NO Shell, NO StrReplaceFile,
+      NO source code edits.
     - Reads analysis from docs/SubAgent/[NAME]_ANALYSIS.md
-    - Creates detailed step-by-step plan with checklist in
+    - Writes concise step-by-step plan with checklist to
       docs/SubAgent/[NAME]_PLAN.md
-    - Returns summary + plan file path
+    - Returns summary + file path
     - NEVER asks the user questions, NEVER requests plan approval
     |
 YOU (Orchestrator): Plan Approval (in-chat)
@@ -55,14 +72,25 @@ YOU (Orchestrator): Plan Approval (in-chat)
     - Waits for the user's reply.
     - If "request changes": re-spawn Planner with the user's feedback.
     - If "cancel": stop and report.
-    - If "yes": spawn the Implementation subagent.
+    - If "yes": spawn 1-3 Implementation subagents.
+    - Spawn multiple agents IN PARALLEL only if the plan has clearly
+      independent work streams (see "Parallel Agent Execution")
     - YOU never write code, edit files, or run implementation commands.
       ALL implementation goes through the implementer subagent.
     |
-SUBAGENT #3: Implementation (coder, fresh context)
-    - Reads the approved plan in docs/SubAgent/[NAME]_PLAN.md
-    - Implements according to the plan
+SUBAGENT #3a...#3n: Implementation (coder, implement mode, fresh context)
+    - Reads the approved plan (or assigned partial plan)
+    - Implements ONLY the assigned work stream
     - Returns completion summary
+    |
+YOU (Orchestrator): Spawn Merge & Verify subagent (only if parallel implementation was used)
+    |
+SUBAGENT #3-Merge: Merge & Verify (coder, full toolset)
+    - Runs the full test suite (`pytest` or equivalent)
+    - Runs lint checks (`ruff check`, `ruff format`)
+    - Fixes any merge conflicts, import breaks, or integration issues
+      caused by parallel edits
+    - Returns final verification summary
     |
 YOU (Orchestrator): Final Confirmation
     - Posts a summary of changes made
@@ -70,21 +98,61 @@ YOU (Orchestrator): Final Confirmation
     - Repeat clarifications as needed until the user confirms.
 ```
 
+## Parallel Agent Execution
+
+The Orchestrator MAY spawn multiple subagents in parallel during Research and Implementation if the criteria below are met. Planning MUST always remain a single sequential agent.
+
+### Research Parallelization
+
+**When to use:** The user request touches 2+ clearly separated domains/modules that can be analyzed independently (e.g. "frontend + backend API", "HA integration + container", "database schema + business logic").
+
+**Rules:**
+1. **MAX 3 parallel research agents.**
+2. Each agent gets a distinct `{TOPIC}` suffix in its filename: `docs/SubAgent/[NAME]_{TOPIC}_ANALYSIS.md`.
+3. Each agent's prompt MUST include: `You are analyzing ONLY the [TOPIC] aspect. Do NOT investigate other topics. Write your findings to docs/SubAgent/[NAME]_[TOPIC]_ANALYSIS.md.`
+4. After all parallel agents return, spawn a single **Synthesis agent** (coder, synthesis mode) that:
+   - Reads all `docs/SubAgent/[NAME]_*_ANALYSIS.md` files
+   - Writes a single combined `docs/SubAgent/[NAME]_ANALYSIS.md`
+   - Removes duplicate findings, resolves contradictions, adds cross-references between topics
+   - Does NOT add new research — only synthesizes existing findings
+5. The Planning phase then reads only the combined `[NAME]_ANALYSIS.md`.
+
+### Implementation Parallelization
+
+**When to use:** The approved plan has 2+ clearly independent work streams with NO overlapping files (each stream modifies a disjoint set of files).
+
+**Rules:**
+1. **MAX 3 parallel implementation agents.**
+2. The Orchestrator MUST split the approved plan into separate files:
+   - `docs/SubAgent/[NAME]_PART1_PLAN.md`
+   - `docs/SubAgent/[NAME]_PART2_PLAN.md`
+   - (etc.)
+3. Each agent's prompt MUST include: `You are implementing ONLY Part N. Do NOT touch files assigned to other parts. Read docs/SubAgent/[NAME]_PART{N}_PLAN.md.`
+4. Each agent returns its completion summary.
+5. After all parallel agents return, spawn a single **Merge & Verify agent** (coder, full toolset) that:
+   - Runs the full test suite (`pytest` or equivalent)
+   - Runs lint checks (`ruff check`, `ruff format`)
+   - Fixes any merge conflicts, import breaks, or integration issues caused by parallel edits
+   - Returns the final verification summary
+6. **Fallback:** If the Merge & Verify agent finds unresolvable conflicts, the Orchestrator MUST abort parallel execution, discard the parallel changes, and re-run Implementation sequentially with a single agent.
+
 ## Invoking Subagents
 
 Subagents launched via the Agent tool run in an isolated context and return results when complete.
 
 For this project's workflow, use these built-in subagent types:
 
-| Phase | Subagent Type | Purpose | Tools |
-|-------|---------------|---------|-------|
-| Research | `explore` | Fast read-only codebase exploration | Read, search, no write |
-| Planning | `plan` | Implementation planning and architecture design | Read, search, no Shell, no write |
+| Phase | Subagent Type | Purpose | Tool Restrictions (enforced via prompt) |
+|-------|---------------|---------|------------------------------------------|
+| Research | `coder` | Fast codebase exploration | Read, search, WriteFile (docs/SubAgent only), NO Shell, NO StrReplaceFile. |
+| Synthesis | `coder` | Combine parallel research findings | Read, WriteFile (docs/SubAgent only), NO Shell, NO StrReplaceFile, NO source edits, NO new research. |
+| Planning | `coder` | Implementation planning and architecture design | Read, search, WriteFile (docs/SubAgent only). NO Shell, NO StrReplaceFile, NO source edits. |
 | Implementation | `coder` | General software engineering: read/write files, run commands, search code | Full toolset |
+| Merge & Verify | `coder` | Merge parallel implementations, run tests and lint | Full toolset |
 
 Invoke them explicitly:
-- `Spawn the explore subagent to investigate <topic>.`
-- `Spawn the plan subagent to plan based on docs/SubAgent/X_ANALYSIS.md.`
+- `Spawn the coder subagent in read-only research mode to investigate <topic>.`
+- `Spawn the coder subagent in planning mode to plan based on docs/SubAgent/X_ANALYSIS.md.`
 - `Spawn the coder subagent to implement docs/SubAgent/X_PLAN.md.`
 
 **Subagents always run in a fresh context window.** Do not try to carry implicit state between phases; pass artifacts via the files under `docs/SubAgent/`.
